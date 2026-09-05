@@ -1,6 +1,6 @@
 {
   "suite": "bin/smoke/run-host-live.smoke.ts",
-  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside; a manager restart takes a run recorded running back under the next epoch.",
+  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records (frame stripped) and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside under the caller's own name; a manager restart takes a run recorded running back under the next epoch, each attempt under its own holder id, and no launch is served until that reconcile has returned.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-host-live.json",
@@ -8,7 +8,8 @@
     "The suite runs the manager from its built package, so a mutation on manager src is seen through",
     "that build and afterRestore rebuilds so the restored source is the artifact again. Each mutant",
     "aims at one guarantee the family makes: validation before any record, the answer-after-record",
-    "wait, and the boot reconcile filter that decides which runs a successor takes back."
+    "wait, and the boot reconcile filter that decides which runs a successor takes back.",
+    "The fix round's mutants each remove one gate the review named: the boot gate, the per-attempt holder id, the caller-derived answerer, the frame strip, and the client deadline outliving the activation wait."
   ],
   "mutations": [
     {
@@ -39,6 +40,69 @@
       "expectRed": "the successor takes the parked run back",
       "cell": "the successor takes the parked run back: still running, now under epoch 2, the pause still open",
       "note": "The flipped filter keeps `status` narrowed for the rows below (an `|| true` narrows it to never and fails tsc). It resumes the completed runs, which replay to completion again, and leaves the parked one at epoch 1, which the takeback cell reads."
+    },
+    {
+      "name": "run-start is served before the boot reconcile has returned",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "  async start(args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {\n    this.assertReconciled();\n",
+      "replace": "  async start(args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a start before the reconcile has returned is refused unavailable, never launched",
+      "cell": "a start before the reconcile has returned is refused unavailable, never launched"
+    },
+    {
+      "name": "run-resume is served while the boot reconcile is still collecting",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "  async resume(args: { runId: string; timeout?: string }): Promise<{ runId: string }> {\n    this.assertReconciled();\n",
+      "replace": "  async resume(args: { runId: string; timeout?: string }): Promise<{ runId: string }> {\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a resume of the very run the reconcile is taking back, arriving while it collects, is refused unavailable",
+      "cell": "a resume of the very run the reconcile is taking back, arriving while it collects, is refused unavailable"
+    },
+    {
+      "name": "a held slot is not a conflict (two attempts of one run)",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "    if (this.runs.has(runId)) throw new EpEnvelopeError(\"conflict\",",
+      "replace": "    if (this.runs.has(runId) && this.runs.size < 0) throw new EpEnvelopeError(\"conflict\",",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "run-resume of a run this manager is driving is a conflict",
+      "cell": "run-resume of a run this manager is driving is a conflict"
+    },
+    {
+      "name": "every attempt activates under the manager's constant holder id",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "    const attemptHolder = { id: `${this.ctx.holder.id}.${takeoverId}`, lifecycleUid: this.ctx.holder.lifecycleUid };",
+      "replace": "    const attemptHolder = { id: this.ctx.holder.id, lifecycleUid: this.ctx.holder.lifecycleUid };",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "each attempt activated under ITS OWN holder id",
+      "cell": "each attempt activated under ITS OWN holder id (the manager's id plus the takeover id), so no two attempts share the tuple the barrier admits as one process"
+    },
+    {
+      "name": "the answerer is a constant rather than the caller",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return a.name;\n    return caller;",
+      "replace": "    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return a.name;\n    return \"smoke\";",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the answer is recorded under the CALLER as the manager knows them",
+      "cell": "the answer is recorded under the CALLER as the manager knows them (an unmanaged credential: its principal), never a name the request chose"
+    },
+    {
+      "name": "the validation refusal echoes the rendered source frame",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "        verdict.errors.map((e) => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })),",
+      "replace": "        verdict.errors.map((e) => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...e })),",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "each problem names its file and line and carries no rendered source frame",
+      "cell": "each problem names its file and line and carries no rendered source frame (the caller holds the source)"
+    },
+    {
+      "name": "the client launch deadline falls inside the activation wait",
+      "file": "packages/core/src/run-host.ts",
+      "find": "export const RUN_LAUNCH_DEADLINE_MS = RUN_ACTIVATION_WAIT_MS + 10_000;",
+      "replace": "export const RUN_LAUNCH_DEADLINE_MS = RUN_ACTIVATION_WAIT_MS - 5_000;",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS",
+      "cell": "RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, so the manager's own \"still launching\" refusal is what a slow activation reads as"
     }
   ]
 }

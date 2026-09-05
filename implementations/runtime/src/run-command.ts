@@ -35,6 +35,7 @@ import {
   replayRunJournal,
   resolveService,
   runDriverCaller,
+  RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
   unansweredRequest,
   walkKvEntries,
@@ -42,16 +43,17 @@ import {
   type ParsedArgs,
   type RunJournalRow,
   type RunListRow,
+  type RunStatusValue,
   type RunStatusView,
 } from "@cotal-ai/core";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
-import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
+import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type ControlAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
 import { resolveCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--file <program>] | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--local] [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]> [--local] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -76,9 +78,12 @@ interface Planes {
   close(): Promise<void>;
 }
 
-/** One raw connection to the resolved mesh, with the planes a driver needs over it. */
-async function openPlanes(values: RunValues): Promise<Planes> {
-  const conn = await connectOrExit(values, "admin");
+/** One raw connection to the resolved mesh under the verb's OWN profile, with the planes over it.
+ *  A drive rides the run's `run-driver` credential (SPEC 14.6), minted for the one run and attempt
+ *  it drives; a read or an answer rides a one-shot `run-operator` credential for that call. An
+ *  open mesh connects bare either way. */
+async function openPlanes(values: RunValues, role: "run-driver" | "run-operator", mint: NonNullable<ConnectOpts["mint"]>): Promise<Planes> {
+  const conn = await connectOrExit(values, role, { mint });
   const nc = await connect({
     servers: conn.server,
     ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }),
@@ -163,7 +168,7 @@ function reportOutcome(runId: string, out: DriveOutcome): void {
   process.exitCode = 2;
 }
 
-async function start(values: RunValues, planes: Planes): Promise<void> {
+async function start(values: RunValues): Promise<void> {
   const source = readProgram(values);
   const endpoint = values.endpoint ?? "manager";
   // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
@@ -171,54 +176,56 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
   // outside any realistic horizon rather than a rare one-shot refusal.
   const runId = `run-${randomBytes(16).toString("hex")}`;
   const who = cliHolder();
-  const handler = new MeshHandler(
-    planes.nc,
-    planes.kv,
-    planes.js,
-    planes.jsm,
-    {
-      space: planes.space,
-      endpoint,
-      runId,
-      caller: runDriverCaller(runId),
-      instanceId: who.instanceId,
-      epoch: 1,
-      holder: { id: who.id, lifecycleUid: who.lifecycleUid },
-      defaultCheckpointTimeout: values.timeout ?? "1h",
-    },
-    new EpfSettleWatcher(planes.jsm, planes.space),
-    () => Date.now(),
-  );
-  console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
-  const out = await startRun(planes.js, planes.jsm, {
-    space: planes.space,
-    endpoint,
-    runId,
-    source,
-    kv: planes.kv,
-    lease: { holder: who.id, epoch: 1, fencingToken: 1, takeoverId: newTakeoverId() },
-    handler,
-    ...(values.file !== undefined ? { file: values.file } : {}),
-    ...(planes.resultBytes !== undefined ? { resultBytes: planes.resultBytes } : {}),
-  });
-  reportOutcome(runId, out);
+  const takeoverId = newTakeoverId();
+  const planes = await openPlanes(values, "run-driver", { runDriver: { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch: 1 } });
+  try {
+    await drive(values, planes, { endpoint, runId, source, who, epoch: 1, fencingToken: 1, takeoverId, mode: "new" });
+  } finally {
+    await planes.close();
+  }
 }
 
-async function resume(values: RunValues, planes: Planes, runId: string | undefined): Promise<void> {
+async function resume(values: RunValues, runId: string | undefined): Promise<void> {
   if (runId === undefined) {
     console.error(USAGE);
     process.exit(1);
   }
   const endpoint = values.endpoint ?? "manager";
-  const record = await readRunRecord(planes.kv, endpoint, runId);
-  if (record === undefined) {
-    console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
-    process.exit(1);
+  // The record and the recorded program are READ under a one-shot operator credential, since the
+  // driver's own credential is minted for an epoch the record decides.
+  const reader = await openPlanes(values, "run-operator", { runOperator: { endpoint, runId, takeoverId: newTakeoverId() } });
+  let source: string;
+  let status: RunStatusValue | undefined;
+  try {
+    const record = await readRunRecord(reader.kv, endpoint, runId);
+    if (record === undefined) {
+      console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
+      process.exit(1);
+    }
+    source = await resumeSource(values, reader, endpoint, runId);
+    status = record.status?.value;
+  } finally {
+    await reader.close();
   }
-  const source = await resumeSource(values, planes, endpoint, runId);
-  const status = record.status?.value;
   const who = cliHolder();
   const epoch = (status?.epoch ?? 0) + 1;
+  const takeoverId = newTakeoverId();
+  const planes = await openPlanes(values, "run-driver", { runDriver: { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch } });
+  try {
+    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: (status?.fencingToken ?? 0) + 1, takeoverId, mode: "existing" });
+  } finally {
+    await planes.close();
+  }
+}
+
+/** One drive attempt in this process: the handler bound to this invocation as holder, the run
+ *  held until it settles. */
+async function drive(
+  values: RunValues,
+  planes: Planes,
+  a: { endpoint: string; runId: string; source: string; who: ReturnType<typeof cliHolder>; epoch: number; fencingToken: number; takeoverId: string; mode: "new" | "existing" },
+): Promise<void> {
+  const { endpoint, runId, source, who, epoch, fencingToken, takeoverId } = a;
   const handler = new MeshHandler(
     planes.nc,
     planes.kv,
@@ -237,22 +244,19 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
     new EpfSettleWatcher(planes.jsm, planes.space),
     () => Date.now(),
   );
-  const out = await driveRun(planes.js, planes.jsm, {
+  const req = {
     space: planes.space,
     endpoint,
     runId,
     source,
     kv: planes.kv,
-    lease: {
-      holder: who.id,
-      epoch,
-      fencingToken: (status?.fencingToken ?? 0) + 1,
-      takeoverId: newTakeoverId(),
-    },
+    lease: { holder: who.id, epoch, fencingToken, takeoverId },
     handler,
     ...(values.file !== undefined ? { file: values.file } : {}),
     ...(planes.resultBytes !== undefined ? { resultBytes: planes.resultBytes } : {}),
-  });
+  };
+  if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
+  const out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
   reportOutcome(runId, out);
 }
 
@@ -295,12 +299,13 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   for (const r of rows) console.log(line(r));
 }
 
-async function journal(planes: Planes, runId: string | undefined): Promise<void> {
+async function journal(planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined) {
     console.error(USAGE);
     process.exit(1);
   }
-  const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, newTakeoverId());
+  // The replay durable is named by the takeover id this call's credential was minted for.
+  const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   if (replay.records.length === 0) {
     console.log(`run ${runId}: no journal records (never started, or retired)`);
     return;
@@ -329,7 +334,7 @@ async function journal(planes: Planes, runId: string | undefined): Promise<void>
   }
 }
 
-async function answer(values: RunValues, planes: Planes, runId: string | undefined, stepKey: string | undefined): Promise<void> {
+async function answer(values: RunValues, planes: Planes, runId: string | undefined, stepKey: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined || stepKey === undefined || values.by === undefined) {
     console.error(USAGE);
     console.error("run answer: <runId> <stepKey> and --by <who> are required");
@@ -349,6 +354,7 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
       ...(values.value !== undefined ? { value: parsedValue } : {}),
       ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
       now: Date.now(),
+      takeoverId,
     },
   );
   console.log(JSON.stringify(result, null, 2));
@@ -386,7 +392,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   });
   try {
     const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, { deadlineMs: 10_000 });
-    const r = await invokeCommand(nc, t.space, service, command, args, { deadlineMs: 20_000 });
+    // A start or resume is answered only once the drive has activated, which the manager waits on
+    // for a bounded time; the deadline here outlives that wait, so the manager's own "still
+    // launching" refusal is what a slow activation reads as, never a manager that did not answer.
+    const r = await invokeCommand(nc, t.space, service, command, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       console.error(`run ${command.slice(4)}: ${renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err)}`);
@@ -452,6 +461,16 @@ function printRuns(space: string, rows: readonly RunListRow[]): void {
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
   const endpoint = values.endpoint !== undefined ? { endpoint: values.endpoint } : {};
+  // A hosted drive is recorded under the manager's own endpoint; a caller cannot choose another,
+  // so an `--endpoint` here is refused rather than dropped.
+  if ((verb === "start" || verb === "resume") && values.endpoint !== undefined) {
+    console.error(`run ${verb}: --endpoint is not taken on the hosted path; the manager records the run under its own endpoint. \`--local\` drives under a chosen endpoint from this process`);
+    process.exit(1);
+  }
+  if (verb === "answer" && values.by !== undefined) {
+    console.error("run answer: --by is not taken on the hosted path; the manager records you as the answerer from your credential. `--local --by <who>` names the answerer when driving from this process");
+    process.exit(1);
+  }
   if (verb === "start") {
     const source = readProgram(values);
     const started = await askHost(values, "run-start", {
@@ -466,7 +485,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   if (verb === "resume") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
     if (values.file !== undefined) {
-      console.error("run resume: the manager resumes a run from its recorded program, so --file is not taken; a run with no recorded program is resumed with --local --file <program>");
+      console.error(`run resume: the manager resumes a run from its recorded program, so --file is not taken; a run with no recorded program is resumed with \`cotal run resume ${a} --local --file <program>\``);
       process.exit(1);
     }
     const resumed = await askHost(values, "run-resume", { runId: a, ...(values.timeout !== undefined ? { timeout: values.timeout } : {}) }) as { runId: string };
@@ -487,17 +506,16 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     printJournal(view.runId, view.journal);
     return;
   }
-  // answer
-  if (a === undefined || b === undefined || values.by === undefined) {
+  // answer: the manager records the caller as the answerer (SPEC 14.5), so no `--by` rides.
+  if (a === undefined || b === undefined) {
     console.error(USAGE);
-    console.error("run answer: <runId> <stepKey> and --by <who> are required");
+    console.error("run answer: <runId> <stepKey> are required");
     process.exit(1);
   }
   const value = parseAnswerValue(values);
   const result = await askHost(values, "run-answer", {
     runId: a,
     stepKey: b,
-    by: values.by,
     ...endpoint,
     ...(values.value !== undefined ? { value } : {}),
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
@@ -518,13 +536,19 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
     await hosted(values, verb, a, b);
     return;
   }
-  const planes = await openPlanes(values);
+  if (verb === "start") return start(values);
+  if (verb === "resume") return resume(values, a);
+  // The reads and the answer each ride a one-shot operator credential for that call; a journal or
+  // an answer names the run its replay durable is pinned to, and only the answer holds the writes.
+  const endpoint = values.endpoint ?? "manager";
+  const takeoverId = newTakeoverId();
+  const planes = await openPlanes(values, "run-operator", {
+    runOperator: { endpoint, takeoverId, ...(verb !== "ps" && a !== undefined ? { runId: a } : {}), ...(verb === "answer" ? { answers: true as const } : {}) },
+  });
   try {
-    if (verb === "start") await start(values, planes);
-    else if (verb === "resume") await resume(values, planes, a);
-    else if (verb === "ps") await ps(values, planes);
-    else if (verb === "journal") await journal(planes, a);
-    else await answer(values, planes, a, b);
+    if (verb === "ps") await ps(values, planes);
+    else if (verb === "journal") await journal(planes, a, takeoverId);
+    else await answer(values, planes, a, b, takeoverId);
   } finally {
     await planes.close();
   }

@@ -25,7 +25,8 @@ process.env.COTAL_HOME = home;
 const { connect } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
-  probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND,
+  probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
+  openRecordsBucket, readCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
 } = await import("@cotal-ai/core");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 type ReplyT = import("@cotal-ai/core").EndpointReply;
@@ -33,7 +34,7 @@ type RunStatusViewT = import("@cotal-ai/core").RunStatusView;
 type RunListRowT = import("@cotal-ai/core").RunListRow;
 type RunJournalRowT = import("@cotal-ai/core").RunJournalRow;
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
-const { Manager } = await import("@cotal-ai/manager");
+const { Manager, RunHosting } = await import("@cotal-ai/manager");
 // Importing the runtime is what registers the `cotal-lang` run host the manager resolves.
 const { runWorkflow } = await import("@cotal-ai/runtime");
 const { bootBroker } = await import("../../implementations/manager/smoke/_boot-broker.js");
@@ -114,6 +115,9 @@ try {
     c("run-start refuses an invalid program as bad-request", r.ok === false && r.error?.code === "bad-request", r.error);
     c("and the refusal carries each problem as an ai.cotal.lang.problem detail with its code",
       details.length > 0 && details.every((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && /^L\d{4}$/.test(String(d.code))), details);
+    const wheres = details.map((d) => (d as { where?: { file?: unknown; line?: unknown; frame?: unknown } }).where);
+    c("each problem names its file and line and carries no rendered source frame (the caller holds the source)",
+      wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
   }
@@ -145,11 +149,23 @@ try {
     c("run-status shows the open pause and what it asks", pending(parked, "Ship it?")?.step === "/checkpoint:approve#0", parked?.journal);
     const busy = await call("run-resume", { runId: cpId });
     c("run-resume of a run this manager is driving is a conflict", busy.ok === false && busy.error?.code === "conflict", busy.error);
-    const wrong = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:nope#0", by: "smoke" });
+    const wrong = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:nope#0" });
     c("run-answer at a key with no open pause is not-found", wrong.ok === false && wrong.error?.code === "not-found", wrong.error);
-    const answered = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:approve#0", by: "smoke", value: "yes" });
+    const named = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:approve#0", value: "yes", by: "someone-else" }).then((r) => r, (e: unknown) => ({ ok: false as const, error: { code: (e as { code?: string }).code, message: String((e as Error).message) } }));
+    c("a request that names its own answerer is refused at the contract: `by` is not an input", named.ok === false && named.error?.code === "bad-request", named.error);
+    const answered = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:approve#0", value: "yes" });
     const data = answered.data as { token?: string; answerId?: string; settle?: { kind?: string } } | undefined;
     c("run-answer resolves the open checkpoint and reports the settle", answered.ok === true && typeof data?.answerId === "string" && data.settle !== undefined, answered);
+    // The answer record, read under a one-shot run-operator READ credential: the form a served read
+    // rides, which holds no write row at all and is enough to point-read the records store.
+    const readNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: "manager", runId: cpId, takeoverId: newTakeoverId() } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const record = data?.token !== undefined && data.answerId !== undefined ? await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", data.token, data.answerId) : undefined;
+      c("the answer is recorded under the CALLER as the manager knows them (an unmanaged credential: its principal), never a name the request chose",
+        record?.by === principalKey(DEV_OWNER, id.id).key, record);
+    } finally {
+      await readNc.drain().catch(() => readNc.close());
+    }
     const done = await until(async () => { const v = await status(cpId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the hosted run completes", stateOf(done) === "completed", done?.status);
   }
@@ -161,6 +177,11 @@ try {
   }
 
   console.log("A5. a manager restart takes a parked run back from its journal");
+  let callB: (command: string, args?: Record<string, unknown>) => Promise<ReplyT> = call;
+  const statusB = async (id2: string): Promise<RunStatusViewT | undefined> => {
+    const x = await callB("run-status", { runId: id2 });
+    return x.ok ? x.data as RunStatusViewT : undefined;
+  };
   {
     const r = await call("run-start", { source: CHECKPOINT, file: "cp2.cotal.js" });
     const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
@@ -173,18 +194,18 @@ try {
     await mgrB.start();
     const serviceB = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
     // The successor serves at epoch 1; a currency read pinned at 0 would reject its every reply.
-    const callB = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
+    callB = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
       (await invokeCommand(nc!, spaceA, serviceB, command, args, { deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch })).reply;
-    const statusB = async (id2: string): Promise<RunStatusViewT | undefined> => {
-      const x = await callB("run-status", { runId: id2 });
-      return x.ok ? x.data as RunStatusViewT : undefined;
-    };
     const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 2 ? v : undefined; }, 15_000);
     c("the successor takes the parked run back: still running, now under epoch 2, the pause still open",
       taken?.status?.epoch === 2 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
     const busy = await callB("run-resume", { runId });
     c("and holds it: a resume is a conflict on the successor too", busy.ok === false && busy.error?.code === "conflict", busy.error);
-    const answered = await callB("run-answer", { runId, stepKey: "/checkpoint:approve#0", by: "smoke", value: "go" });
+    const activations = (taken?.journal ?? []).filter((row): row is Extract<RunJournalRowT, { kind: "activation" }> => row.kind === "activation");
+    const holders = activations.map((row) => row.holder);
+    c("each attempt activated under ITS OWN holder id (the manager's id plus the takeover id), so no two attempts share the tuple the barrier admits as one process",
+      activations.length === 2 && holders[0] !== holders[1] && holders.every((h) => /\.[0-9a-f]{16}$/.test(h)), holders);
+    const answered = await callB("run-answer", { runId, stepKey: "/checkpoint:approve#0", value: "go" });
     c("the answer lands on the taken-back run", answered.ok === true, answered);
     const done = await until(async () => { const v = await statusB(runId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and it completes under the successor", stateOf(done) === "completed" && done?.status?.epoch === 2, done?.status);
@@ -192,6 +213,81 @@ try {
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
   }
+  console.log("A6. the boot gate: no start or resume is served until the reconcile has taken back the predecessor's runs");
+  {
+    // A third checkpoint program parked under the successor, then the successor stopped: the run
+    // is recorded running and is exactly what the next incarnation's reconcile takes back.
+    const r = await callB("run-start", { source: CHECKPOINT, file: "cp3.cotal.js" });
+    const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+    const parked = await until(async () => { const v = await statusB(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
+    c("a third checkpoint program parks under the successor", parked !== undefined && stateOf(parked) === "running", parked?.status);
+    await mgrB.stop();
+    mgrB = undefined;
+    // The host on its own, as the manager composes it, so the window between "serving" and
+    // "reconciled" is held open by hand rather than raced.
+    const hosting = new RunHosting({
+      space: spaceA, servers: brokerA.servers, endpoint: "manager", instanceId: mintLifecycleUid(),
+      holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
+    });
+    const code = (e: unknown) => (e as { code?: string })?.code;
+    const early = await hosting.start({ source: PURE, file: "pure.cotal.js" }).then(() => undefined, (e: unknown) => e);
+    c("a start before the reconcile has returned is refused unavailable, never launched", code(early) === "unavailable" && hosting.liveCount === 0, early);
+    const reconciling = hosting.reconcile();
+    const during = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    c("a resume of the very run the reconcile is taking back, arriving while it collects, is refused unavailable", code(during) === "unavailable", during);
+    await reconciling;
+    c("the reconcile took the parked run back: one live drive", hosting.liveCount === 1, hosting.liveCount);
+    const after = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    c("and once it has, a resume of that run is a conflict: one attempt per run", code(after) === "conflict" && hosting.liveCount === 1, after);
+    // Started fresh on the successor at epoch 1, so the takeback is its epoch 2.
+    const taken = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return v?.status?.epoch === 2 ? v : undefined; }, 15_000);
+    c("the taken-back run is under epoch 2 with its pause still open", taken?.status?.epoch === 2 && pending(taken, "Ship it?") !== undefined, taken?.status);
+    const answered = await hosting.answer({ runId, stepKey: "/checkpoint:approve#0", value: "go" }, "dana").then((v) => v, (e: unknown) => e);
+    c("an answer through the host lands", typeof (answered as { answerId?: unknown })?.answerId === "string", answered);
+    const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
+    c("and the run completes there", stateOf(done) === "completed", done?.status);
+    await hosting.stop();
+    mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
+    await mgrB.start();
+  }
+
+  console.log("A7. `--local` on a static-auth mesh drives and answers under the run's own credentials");
+  {
+    // The mesh registry entry `cotal run` resolves the trust material through; the folder holds
+    // the space signer, so the local drive mints the run-driver and run-operator profiles itself.
+    recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
+    const file = join(wsA, "cp-local.cotal.js");
+    writeFileSync(file, CHECKPOINT);
+    const LOGS: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
+    const cli = async (positionals: string[], values: Record<string, string | boolean> = {}): Promise<string> => {
+      LOGS.length = 0;
+      await runWorkflow({ values: { server: brokerA.servers, space: spaceA, local: true, ...values }, positionals, raw: [] });
+      return LOGS.join("\n");
+    };
+    let localId = "", journal = "", answer = "", finished = "";
+    try {
+      // The drive holds this process until the pause is answered; it runs beside the answer below.
+      const driven = cli(["start"], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      for (let i = 0; i < 100 && localId === ""; i++) { await wait(100); localId = /starting run (run-[0-9a-f]+) on endpoint/.exec(LOGS.join("\n"))?.[1] ?? ""; }
+      for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
+      answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
+      finished = await driven;
+    } finally {
+      console.log = realLog;
+      process.exitCode = undefined;
+    }
+    c("a local start on the auth broker activates under the run-driver credential it minted for itself", localId !== "", localId);
+    c("a local journal read rides a one-shot run-operator READ credential", journal.includes("/checkpoint:approve#0  pending"), journal);
+    c("a local answer rides the ANSWERING form and names the answerer with --by", answer.includes('"settle": "resumed"') && answer.includes('"answerId"'), answer);
+    c("and the held local drive then completes", finished.includes(`run ${localId}: completed`), finished);
+  }
+
+  console.log("A8. the launch deadline a client uses outlives the manager's activation wait");
+  c("RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, so the manager's own \"still launching\" refusal is what a slow activation reads as",
+    RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, { RUN_LAUNCH_DEADLINE_MS, RUN_ACTIVATION_WAIT_MS });
+
   await nc.drain().catch(() => undefined);
   nc = undefined;
   await mgrB.stop();
@@ -237,7 +333,7 @@ try {
     runId = /started run (run-[0-9a-f]+) on the manager/.exec(out)?.[1] ?? "";
     let journal = "";
     for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", runId]); }
-    const answer = await cli(["answer", runId, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' });
+    const answer = await cli(["answer", runId, "/checkpoint:approve#0"], { value: '"yes"' });
     let done = "";
     for (let i = 0; i < 50 && !done.includes("completed, holder"); i++) { await wait(200); done = await cli(["journal", runId]); }
     const ps = await cli(["ps"]);
@@ -257,7 +353,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 42;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

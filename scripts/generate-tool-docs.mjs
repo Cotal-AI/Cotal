@@ -118,7 +118,7 @@ const ANNOTATIONS = {
     availability:
       "capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive",
     notes:
-      "`start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you (your agent name) as the answerer.",
+      "`start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.",
   },
   cotal_persona: {
     effect: "writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`",

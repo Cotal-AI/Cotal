@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
 import {
   normalizeMentions,
+  RUN_LAUNCH_DEADLINE_MS,
   subjectMatches,
   isConcreteChannel,
   assertValidChannel,
@@ -1412,10 +1413,12 @@ export class MeshAgent extends EventEmitter {
 
   /** One `run-*` command to the hosting manager. The five verbs are untargeted and ride the `run`
    *  capability's rows (open mode: anyone). `start` and `resume` return the run id as soon as the
-   *  manager has the drive; the run continues there. */
+   *  manager has the drive; the run continues there. Their deadline outlives the manager's own
+   *  activation wait, so a slow launch reads as the manager's "still launching" refusal and never
+   *  as a manager that did not answer. */
   async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>): Promise<ControlReply> {
     await this.requireConnected();
-    return this.managerInvoke(`run-${verb}`, args, { deadlineMs: 20_000 });
+    return this.managerInvoke(`run-${verb}`, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
   }
 
   // ---- the turn relay (seat side) ------------------------------------------------------------

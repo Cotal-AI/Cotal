@@ -125,20 +125,27 @@ cotal run start --file build.cotal.js                   # the manager starts it;
 cotal run ps                                            # list run records: state, holder, lineage
 cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
-cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --by dana --value '"yes"'
+cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
 takes the run id alone and the manager reads the source back; an edited program is a `migrate` or a
-`fork`, never a resume. An agent with `capabilities: [run]` has the same five verbs as the
-`cotal_run` tool ([MCP tools](mcp-tools.md)), so a program can be written and started from inside
-a session.
+`fork`, never a resume. An answer is recorded under the answerer the manager knows from the
+caller's credential: a managed agent by its name, anyone else by their principal. The request
+carries no name. An agent with `capabilities: [run]` has the same five verbs as the `cotal_run`
+tool ([MCP tools](mcp-tools.md)), so a program can be written and started from inside a session.
+A `start` or `resume` answers once the run's record is written, within a bounded wait; a manager
+that is still taking back a predecessor's runs at boot refuses both with `unavailable`, and a
+retry a moment later is the whole remedy.
 
 `--local` drives the run in this process instead: `start`, `resume` and `answer` exit when the
-drive settles, and `resume --local --file <program>` is how a run with no recorded program, or a
-run on a bare broker with no manager, is continued. A run whose step was refused (L5016) stays
-held; a resume on a host that can perform the step performs it live and continues from there.
+drive settles, `--by <who>` names the answerer, and `cotal run resume <runId> --local --file
+<program>` is how a run with no recorded program, or a run on a bare broker with no manager, is
+continued. On a static mesh the local drive mints the run's own credential from the folder's
+trust material, so it runs from the mesh's project folder; a user-auth mesh has no local drive,
+since only the manager holds the signer. A run whose step was refused (L5016) stays held; a
+resume on a host that can perform the step performs it live and continues from there.
 `journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
 back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
 mesh; on a bare broker a pause still resolves, it just cannot expire.
@@ -161,7 +168,11 @@ run and one takeover attempt. It holds publish on its own run's journal subject 
 durable, the run's records, the checkpoint plane at its own timer coordinates, the channel and
 presence reads a wait needs, and the manager's lifecycle commands as the run's own caller. It
 holds no consumer on the records store, so it lists its notices and migrations by walking the
-store one message at a time, and it cannot speak on a channel or read another run's journal.
+store one message at a time, and it cannot speak on a channel, read another run's journal, or
+file an answer. A served read or answer rides a one-shot `run-operator` credential minted for
+that one call: a read holds the records walk and the named run's replay and nothing it can write;
+an answer adds the answer record and the checkpoint settle. `cotal run --local` mints the same two
+profiles for itself on a static mesh, one per invocation.
 
 ## What ships today
 

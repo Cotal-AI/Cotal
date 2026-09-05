@@ -16,10 +16,12 @@
  * instance and epoch of this attempt).
  *
  * WHAT CANNOT BE, and is a NAMED RESIDUAL of this trusted profile:
- *   1. Checkpoint records and settle facts (`cp.<e>.>`, `epf.<e>.cp.>`, `answer.<e>.>`) are keyed by
- *      TOKEN, and a token is a step's request id, not run-derivable at mint. A driver can therefore
- *      arm, heartbeat, claim or answer any pause of its endpoint, not only its own run's. Same class
- *      as the commit principal's own residual on the same rows.
+ *   1. Checkpoint records and settle facts (`cp.<e>.>`, `epf.<e>.cp.>`) are keyed by TOKEN, and a
+ *      token is a step's request id, not run-derivable at mint. A driver can therefore arm,
+ *      heartbeat or claim any pause of its endpoint, not only its own run's. Same class as the
+ *      commit principal's own residual on the same rows. The driver holds NO write on the answer
+ *      record: it never files one (every answer is filed by a resolver, through the operator
+ *      profile below) and it reads the one a settle names through the stream-wide read in 2.
  *   2. The body-selected `STREAM.MSG.GET` reads on the records KV, EPF, EPT and CHAT are stream-wide:
  *      a compromised driver reads other runs' records, other pauses' facts and timers, and any chat
  *      message by sequence. Same class as every commit-side profile's fencing reads. There is NO
@@ -96,7 +98,6 @@ export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId:
     `$KV.${records}.notice.${e}.${run}.>`,
     `$KV.${records}.migration.${e}.${run}.>`,
     `$KV.${records}.cp.${e}.>`,
-    `$KV.${records}.answer.${e}.>`,
     `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
     // The checkpoint plane: settle facts (publish), the fact read, the schedule request pinned to
     // this attempt's coordinates, and the fire read.
@@ -148,6 +149,9 @@ export interface RunOperatorGrantArgs {
   runId?: string;
   /** The takeover id this call's journal replay durable is named by, one per call. */
   takeoverId: string;
+  /** Present for `run-answer` and NOTHING else: the call files an answer record and settles a
+   *  checkpoint, which are writes on token-keyed rows. A read call never holds them. */
+  answers?: true;
 }
 
 /**
@@ -156,27 +160,31 @@ export interface RunOperatorGrantArgs {
  * never carry a run's journal or records reach.
  *
  * `run-ps` walks the run records consumer-free; `run-status` also replays the named run's journal
- * through a per-call durable; `run-answer` replays it to find the open pause, files the answer
- * record and settles the checkpoint through the checkpoint plane. Every row is the endpoint's own;
- * the checkpoint rows are keyed by token and so span the endpoint's runs, the same named residual
- * the driver profile carries on the same rows. No publish on any journal subject, no run or
- * program record write, no consumer verb on the records store.
+ * through a per-call durable. Both are READS and hold no write row at all. `run-answer` replays the
+ * journal to find the open pause, files the answer record and settles the checkpoint through the
+ * checkpoint plane, and only that form (`answers: true`) holds those three writes. Every row is
+ * the endpoint's own; the checkpoint and answer rows are keyed by token and so span the endpoint's
+ * runs, the same named residual the driver profile carries on the `cp` rows (the pause's token is
+ * found by the replay, not derivable at mint). The records read is stream-wide by the store's own
+ * design (a KV point read is `STREAM.MSG.GET` on the one backing stream), the same as every
+ * commit-side profile's fencing read. No publish on any journal subject, no run or program record
+ * write, no consumer verb on the records store.
  */
 export function runOperatorGrants(space: string, args: RunOperatorGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
   const e = endpointToken(args.endpoint);
   const records = recordsBucket(space);
+  if (args.answers === true && args.runId === undefined) throw new Error("runOperatorGrants: an answering call names the ONE run it answers");
   const publish = [
     // The run and program records of the endpoint, read through the leader-served point read and
-    // the consumer-free walk; the answer record (create-only) and the checkpoint status a settle
-    // moves.
+    // the consumer-free walk.
     `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
-    `$KV.${records}.answer.${e}.>`,
-    `$KV.${records}.cp.${e}.>`,
     // The named run's journal replay, read-only, under this call's own takeover id.
     ...(args.runId === undefined ? [] : runJournalReplayGrants(space, args.runId, args.takeoverId)),
-    // The checkpoint plane: the settle fact publish and the fact read a resume performs.
-    `${spacePrefix(space)}.epf.${e}.cp.>`,
-    `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`,
+    // An ANSWER: the answer record (create-only), the checkpoint status a settle moves, the settle
+    // fact publish and the fact read its convergence performs. A read call holds none of these.
+    ...(args.answers === true
+      ? [`$KV.${records}.answer.${e}.>`, `$KV.${records}.cp.${e}.>`, `${spacePrefix(space)}.epf.${e}.cp.>`, `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`]
+      : []),
     "$JS.API.INFO",
   ];
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };

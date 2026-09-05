@@ -76,14 +76,14 @@ const runCommand: Command = {
   group: "Manager",
   summary: "operate workflow runs — start, resume, list, inspect, answer (hosted by the manager)",
   usage:
-    "run <start --file <program> [--timeout <dur>] | resume <runId> [--file <program>] | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--local] [--endpoint <ep>]",
+    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]> [--local]",
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start; resume --local when no program is recorded)" },
     { name: "local", type: "boolean", description: "drive in this process instead of on the manager (bare broker, or a run the manager cannot host)" },
-    { name: "endpoint", type: "string", value: "<ep>", description: "endpoint the run record lives under (default: manager)" },
+    { name: "endpoint", type: "string", value: "<ep>", description: "endpoint the run record lives under (ps, journal, answer; default: manager)" },
     { name: "timeout", type: "string", value: "<dur>", description: "default checkpoint timeout for this drive (default: 1h)" },
-    { name: "by", type: "string", value: "<who>", description: "who is answering (answer; required)" },
+    { name: "by", type: "string", value: "<who>", description: "who is answering (answer --local only; the manager records the caller)" },
     { name: "value", type: "string", value: "<json>", description: "checkpoint answer payload as JSON (answer)" },
     { name: "artifact", type: "string", value: "<ref>", description: "artifact reference attached to the answer (answer)" },
   ],

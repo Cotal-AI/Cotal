@@ -48,7 +48,7 @@ import {
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   createSpaceAuth, mintCreds, newIdentity, permissionsFor, DEV_OWNER, mintLifecycleUid,
-  runDriverGrants, runDriverCaller,
+  runDriverGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -788,7 +788,6 @@ console.log("6. the run-driver profile (SPEC 14.6): per run, per takeover attemp
         `$KV.cotal_records_${S}.notice.${EP}.${RUN}.>`,
         `$KV.cotal_records_${S}.migration.${EP}.${RUN}.>`,
         `$KV.cotal_records_${S}.cp.${EP}.>`,
-        `$KV.cotal_records_${S}.answer.${EP}.>`,
         `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
         `cotal.${S}.epf.${EP}.cp.>`,
         `$JS.API.STREAM.MSG.GET.EPF_${S}`,
@@ -844,6 +843,48 @@ console.log("6. the run-driver profile (SPEC 14.6): per run, per takeover attemp
     JSON.stringify(minted.pub) === JSON.stringify(g.publish) && minted.sub.length === 2 && minted.sub[0] === g.subscribe[0] && minted.sub[1]!.startsWith("_INBOX_"), minted);
   const refused = await mintCreds(auth, newIdentity(), "run-driver", {}).then(() => undefined, (e: Error) => e.message);
   c("and refuses to mint without the run/takeover/instance pin", typeof refused === "string" && refused.includes("opts.runDriver"), refused);
+  c("the driver holds NO write on the answer record: an answer is filed by a resolver under the operator profile, and the driver only reads the one a settle names",
+    !g.publish.some((r) => r.includes(`.answer.`)), g.publish);
+}
+
+// ---- 7. the run-operator profile (SPEC 14.3): one served read or answer, pinned EXACTLY -------------
+// Two forms of one profile: a READ (run-status, run-ps) holds the records point read and, when a run
+// is named, that run's replay durable, and NOTHING it can write; an ANSWER (run-answer) adds the
+// answer record, the checkpoint status a settle moves, the settle fact, and the fact read its
+// convergence performs. Every other read a served call could make is absent from both.
+console.log("7. the run-operator profile (SPEC 14.3): a read form and an answering form");
+{
+  const RUN = "run-cc33", TK = "tk0009";
+  const read = runOperatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK }, CONN);
+  const replay = [
+    `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
+    `$JS.API.CONSUMER.INFO.WFJ_${S}.wfj_${RUN}_${TK}`,
+    `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
+    `$JS.ACK.WFJ_${S}.wfj_${RUN}_${TK}.>`,
+    `$JS.API.CONSUMER.DELETE.WFJ_${S}.wfj_${RUN}_${TK}`,
+  ];
+  c("a READ of one run is EXACTLY the records point read + that run's replay durable + INFO, and nothing it can write",
+    JSON.stringify(read) === JSON.stringify({
+      publish: [`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, ...replay, "$JS.API.INFO"],
+      subscribe: [`_INBOX_${CONN}.>`],
+    }), read);
+  const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
+  c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
+    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, "$JS.API.INFO"]), list.publish);
+  const ans = runOperatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, answers: true }, CONN);
+  c("an ANSWER adds EXACTLY the answer record, the checkpoint status, the settle fact and the fact read, all keyed by the endpoint's tokens (the pause's token is found by the replay, not derivable at mint)",
+    JSON.stringify(ans.publish) === JSON.stringify([
+      `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, ...replay,
+      `$KV.cotal_records_${S}.answer.${EP}.>`, `$KV.cotal_records_${S}.cp.${EP}.>`, `cotal.${S}.epf.${EP}.cp.>`, `$JS.API.STREAM.MSG.GET.EPF_${S}`,
+      "$JS.API.INFO",
+    ]), ans.publish);
+  c("neither form holds a journal publish, a run or program record write, a consumer verb on the records store, or a destructive stream verb",
+    [...read.publish, ...ans.publish].every((r) => !/^cotal\.[^.]+\.wfj\./.test(r) && !/\.(?:run|program)\./.test(r) && !/^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_records_/.test(r) && !DESTRUCTIVE_JS.test(r)), { read: read.publish, ans: ans.publish });
+  const noRun = (() => { try { runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: true }, CONN); return undefined; } catch (e) { return (e as Error).message; } })();
+  c("an answering form with no run named is refused at the builder", typeof noRun === "string" && noRun.includes("ONE run"), noRun);
+  const minted = decode(await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, runId: RUN, takeoverId: TK, answers: true } }));
+  c("mintCreds(run-operator) emits exactly the builder's rows (the inbox keyed on the connection nkey)",
+    JSON.stringify(minted.pub) === JSON.stringify(ans.publish) && minted.sub.length === 1 && minted.sub[0]!.startsWith("_INBOX_"), minted);
 }
 
 console.log(fail === 0 ? `\nD32 MATRIX AUDIT OK ✅  (${ok} passed, ${fail} failed)` : `\nD32 MATRIX AUDIT FAILED ❌  (${ok} passed, ${fail} failed)`);

@@ -543,13 +543,14 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
     },
   },
 } as const;
+/** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
+ *  principal at the serve layer (SPEC 14.5), so a request cannot name someone else. */
 const RUN_ANSWER_INPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["runId", "stepKey", "by"],
+  type: "object", additionalProperties: false, required: ["runId", "stepKey"],
   properties: {
     runId: { type: "string", minLength: 1 },
     endpoint: { type: "string", minLength: 1 },
     stepKey: { type: "string", minLength: 1 },
-    by: { type: "string", minLength: 1 },
     value: {},
     artifact: { type: "string", minLength: 1 },
   },

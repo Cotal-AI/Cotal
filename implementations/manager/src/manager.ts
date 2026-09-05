@@ -1278,6 +1278,9 @@ export class Manager {
     // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
     // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh
     // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
+    // The serve surface is already live by here, so the family itself holds the gate: `runHost()`
+    // refuses `run-start`/`run-resume` as `unavailable` until the host exists and `RunHosting`
+    // refuses them until its reconcile has returned.
     if (!this.remoteAuthority) {
       this.runHosting = new RunHosting({
         space: this.space,
@@ -2320,13 +2323,26 @@ export class Manager {
    *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
    *  Both are least-privilege reductions, never widenings. */
-  /** The run host, or the refusal a remote-authority manager owes: it holds no space signer, so it
+  /** The run host, or one of two refusals. A remote-authority manager holds no space signer, so it
    *  cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
-   *  identity would be the fallback this tree does not take. */
+   *  identity would be the fallback this tree does not take: `unimplemented`, for good. An
+   *  ordinary manager whose host is not standing yet is still booting (the serve surface comes up
+   *  before the host): `unavailable`, retry. The two are told apart, since the first sentence
+   *  steers a caller to `--local` and the second must not. */
   private runHost(): RunHosting {
-    if (!this.runHosting)
-      throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run --local`");
-    return this.runHosting;
+    if (this.runHosting) return this.runHosting;
+    if (this.remoteAuthority)
+      throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
+    throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
+  }
+
+  /** The answerer a `run-answer` records (SPEC 14.5): the caller as this manager knows them. A
+   *  managed seat is named by its persona name; any other authenticated caller (an operator
+   *  instrument, a logged-in user) by its principal. Never the request body's word. */
+  private runAnswerer(ctx: EpServeContext): string {
+    const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return a.name;
+    return caller;
   }
 
   private managerServiceDefs(): EpCommandDef[] {
@@ -2439,7 +2455,7 @@ export class Manager {
       // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
       runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(args(ctx) as { source: string; file?: string; timeout?: string })),
       runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
-      runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; by: string; value?: unknown; artifact?: string })),
+      runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, this.runAnswerer(ctx))),
       runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),
       runPs: (ctx) => this.serveGated(ctx, () => this.runHost().list(args(ctx) as { endpoint?: string })),
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),

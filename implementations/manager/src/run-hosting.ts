@@ -20,7 +20,17 @@
  * A manager restart takes its runs back: at boot, every run recorded `running` under this
  * endpoint is resumed under a fresh takeover, epoch + 1, from its recorded program. A run whose
  * predecessor died mid-pause is picked up where its journal says it is; nothing about the crash is
- * recorded as the program's outcome.
+ * recorded as the program's outcome. Until that reconcile has returned, `run-start` and
+ * `run-resume` are refused `unavailable`: a resume served while the reconcile is still collecting
+ * would launch a second attempt of a run the reconcile is about to take back.
+ *
+ * ONE ATTEMPT PER RUN, HELD SYNCHRONOUSLY. A run's slot in the live map is claimed before the
+ * first await of a launch and released only by that attempt's own end, so two concurrent resumes,
+ * or a resume racing the boot reconcile, cannot both reach the activation barrier. Each attempt
+ * also presents its OWN holder id (the manager's endpoint id plus the takeover id): the journal's
+ * activation barrier admits an identical (token, holder, epoch) tuple as the same process picking
+ * its run back up, so a constant holder id would let two attempts co-activate through that
+ * relaxation instead of one being refused.
  */
 import { randomBytes } from "node:crypto";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
@@ -31,6 +41,7 @@ import {
   DEFAULT_SERVER,
   EpEnvelopeError,
   LANG_PROBLEM_DETAIL_KIND,
+  RUN_ACTIVATION_WAIT_MS,
   RUN_HOST_KIND,
   inspectCredHealth,
   mintCreds,
@@ -48,6 +59,8 @@ import {
   type RunHostOutcome,
   type RunHostPlanes,
   type RunListRow,
+  type RunProgramValue,
+  type RunStatusValue,
   type RunStatusView,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -60,7 +73,8 @@ export interface RunHostingContext {
   readonly endpoint: string;
   /** The registration instance id, the coordinate a checkpoint's timer schedule is addressed by. */
   readonly instanceId: string;
-  /** The holder a checkpoint's holder-bound resume names: this manager process. */
+  /** This manager process, as a checkpoint's holder-bound resume names it. Each attempt's holder
+   *  id is derived from `id` and the takeover id (see the header). */
   readonly holder: { readonly id: string; readonly lifecycleUid: string };
   /** The space signer on an auth mesh; undefined on an open mesh (bare connections). */
   readonly auth: SpaceAuth | undefined;
@@ -72,19 +86,24 @@ interface HostedRun {
   readonly takeoverId: string;
   readonly epoch: number;
   readonly identity: Identity;
-  nc: NatsConnection;
-  drive: RunHostDrive;
+  /** Set once the connection is up; a slot reserved before that holds neither. */
+  nc?: NatsConnection;
+  drive?: RunHostDrive;
   /** The current credential, re-minted in place by the renewal loop; the authenticator reads it
    *  on every (re)connect. Undefined on an open mesh. */
   creds?: string;
 }
 
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
-/** How long a start or resume waits for its attempt's status record before answering. */
-const ACTIVATION_WAIT_MS = 20_000;
+/** How many launches (start or resume) may be in their activation wait at once. Each holds a
+ *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
+ *  rather than letting a burst of starts pin unbounded connections for the wait's length. */
+const MAX_LAUNCHING = 8;
 
 export class RunHosting {
   private readonly runs = new Map<string, HostedRun>();
+  private launching = 0;
+  private reconciled = false;
   private stopping = false;
 
   constructor(private readonly ctx: RunHostingContext) {}
@@ -95,17 +114,27 @@ export class RunHosting {
     return registry.resolve<RunHost>(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
   }
 
+  /** The boot gate: no launch is served until the reconcile has taken back what a predecessor
+   *  was driving (see the header). */
+  private assertReconciled(): void {
+    if (!this.reconciled)
+      throw new EpEnvelopeError("unavailable", "the manager is still taking back the workflow runs a predecessor was driving; retry shortly (SPEC 14.3)");
+  }
+
   /** `run-start`: validate, mint the id, launch the drive, answer. The drive continues off-handler. */
   async start(args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {
+    this.assertReconciled();
     const host = this.host();
     const verdict = host.validate(args.source, args.file);
     if (!verdict.ok) {
       // The refusal carries every problem, as the runtime's own records, so a caller (a person at
-      // the CLI, an agent at the tool) can fix the program without a second round-trip.
+      // the CLI, an agent at the tool) can fix the program without a second round-trip. The
+      // rendered source frame stays out of it: the caller holds the source, and a refusal is not
+      // the place to echo it back.
       throw new EpEnvelopeError(
         "bad-request",
         `the program does not validate (${verdict.errors.length} problem${verdict.errors.length === 1 ? "" : "s"})`,
-        verdict.errors.map((e) => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...e })),
+        verdict.errors.map((e) => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })),
       );
     }
     // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
@@ -125,21 +154,30 @@ export class RunHosting {
 
   /** `run-resume`: take a recorded run over under a fresh takeover and continue it from its journal.
    *  The source is the recorded program; a run started before programs were recorded has no
-   *  hosted resume, and says so. */
+   *  hosted resume, and says so. The slot is claimed before the record read, so a second resume
+   *  arriving during it is a conflict rather than a second attempt. */
   async resume(args: { runId: string; timeout?: string }): Promise<{ runId: string }> {
+    this.assertReconciled();
     const host = this.host();
-    if (this.runs.has(args.runId))
-      throw new EpEnvelopeError("conflict", `run ${args.runId} is being driven by this manager already`);
-    const found = await this.withOperator({ runId: args.runId }, async (planes, kv) => {
-      const record = await readRunRecord(kv, this.ctx.endpoint, args.runId);
-      if (record === undefined) return undefined;
-      const program = await readRunProgram(kv, this.ctx.endpoint, args.runId);
-      return { status: record.status?.value, program };
-    });
-    if (found === undefined)
-      throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
-    if (found.program === undefined)
-      throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: no program is recorded for it, so a hosted resume has no source to run; drive it from a terminal with \`cotal run resume --local --file <program>\``);
+    const slot = this.claim(args.runId);
+    let found: { status: RunStatusValue | undefined; program: RunProgramValue | undefined } | undefined;
+    try {
+      found = await this.withOperator({ runId: args.runId }, async (_planes, kv) => {
+        const record = await readRunRecord(kv, this.ctx.endpoint, args.runId);
+        if (record === undefined) return undefined;
+        const program = await readRunProgram(kv, this.ctx.endpoint, args.runId);
+        return { status: record.status?.value, program };
+      });
+      if (found === undefined)
+        throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
+      if (found.program === undefined)
+        throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: no program is recorded for it, so a hosted resume has no source to run; drive it from a terminal with \`cotal run resume ${args.runId} --local --file <program>\``);
+    } catch (e) {
+      // Nothing was launched: the slot is this call's to give back.
+      this.free(slot);
+      throw e;
+    }
+    // From here the slot is the launch's: it frees it on a refusal, or the drive's own end does.
     await this.launch(host, {
       mode: "existing",
       runId: args.runId,
@@ -148,22 +186,24 @@ export class RunHosting {
       epoch: (found.status?.epoch ?? 0) + 1,
       fencingToken: (found.status?.fencingToken ?? 0) + 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
-    });
+    }, slot);
     return { runId: args.runId };
   }
 
-  /** `run-answer`: resolve an open checkpoint, or an open `ask` attempt, through the driver's door. */
-  async answer(args: { runId: string; endpoint?: string; stepKey: string; by: string; value?: unknown; artifact?: string }): Promise<unknown> {
+  /** `run-answer`: resolve an open checkpoint, or an open `ask` attempt, through the driver's door.
+   *  `by` is the caller as the manager knows them, decided by the serve layer from the
+   *  authenticated principal (SPEC 14.5), never read from the request. */
+  async answer(args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, by: string): Promise<unknown> {
     const host = this.host();
     const endpoint = args.endpoint ?? this.ctx.endpoint;
-    return await this.withOperator({ endpoint, runId: args.runId }, async (planes, _kv, takeoverId) => {
+    return await this.withOperator({ endpoint, runId: args.runId, answers: true }, async (planes, _kv, takeoverId) => {
       try {
         return await host.answer(planes, {
           endpoint,
           runId: args.runId,
           takeoverId,
           stepKey: args.stepKey,
-          by: args.by,
+          by,
           ...(args.value !== undefined ? { value: args.value } : {}),
           ...(args.artifact !== undefined ? { artifact: args.artifact } : {}),
           now: Date.now(),
@@ -198,8 +238,18 @@ export class RunHosting {
   /** Boot: take back every run this endpoint recorded `running`. A dead predecessor's drive left
    *  its status at `running`; a successor resumes each one under a fresh takeover. A run with no
    *  recorded program is left alone and named: nothing can be resumed without its source. Never
-   *  fatal to the manager; a run that cannot be taken back is logged, not lost (its journal stands). */
+   *  fatal to the manager; a run that cannot be taken back is logged, not lost (its journal
+   *  stands). Opens the boot gate on return, whichever way it went: a reconcile that could not
+   *  read the store leaves the family serving, since a later resume by hand is the remedy. */
   async reconcile(): Promise<void> {
+    try {
+      await this.takeBack();
+    } finally {
+      this.reconciled = true;
+    }
+  }
+
+  private async takeBack(): Promise<void> {
     let inherited: { runId: string; epoch: number; fencingToken: number; source: string; file?: string }[] = [];
     try {
       inherited = await this.withOperator({}, async (_planes, kv) => {
@@ -212,7 +262,7 @@ export class RunHosting {
           if (status === undefined || status.state !== "running") continue;
           const program = await readRunProgram(kv, this.ctx.endpoint, runId);
           if (program === undefined) {
-            this.ctx.log(`! run ${runId} is recorded running with no recorded program; it cannot be taken back here - resume it from a terminal with \`cotal run resume --local --file <program>\``);
+            this.ctx.log(`! run ${runId} is recorded running with no recorded program; it cannot be taken back here - resume it from a terminal with \`cotal run resume ${runId} --local --file <program>\``);
             continue;
           }
           out.push({ runId, epoch: status.epoch + 1, fencingToken: status.fencingToken + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}) });
@@ -220,7 +270,7 @@ export class RunHosting {
         return out;
       });
     } catch (e) {
-      this.ctx.log(`! workflow-run boot reconcile failed: ${(e as Error).message} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume\``);
+      this.ctx.log(`! workflow-run boot reconcile failed: ${(e as Error).message} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume <runId>\``);
       return;
     }
     if (inherited.length === 0) return;
@@ -256,10 +306,11 @@ export class RunHosting {
   /** Shutdown: ask every drive to stop at its next boundary and drain the connections of those
    *  that reach one. A drive parked in a pause reaches no boundary; its connection is closed under
    *  it, so nothing it writes on the way out can land and its record stays `running`, which is what
-   *  the next incarnation's reconcile takes back. */
+   *  the next incarnation's reconcile takes back. A slot still launching holds no drive yet; its
+   *  launch sees `stopping` and closes its own connection. */
   async stop(): Promise<void> {
     this.stopping = true;
-    const live = [...this.runs.values()];
+    const live = [...this.runs.values()].filter((r): r is HostedRun & { nc: NatsConnection; drive: RunHostDrive } => r.nc !== undefined && r.drive !== undefined);
     this.runs.clear();
     for (const run of live) run.drive.release("the hosting manager is stopping");
     await Promise.all(live.map(async (run) => {
@@ -274,20 +325,60 @@ export class RunHosting {
     return this.runs.size;
   }
 
+  /** Claim a run's slot SYNCHRONOUSLY: the one place the occupancy rule is decided, with no await
+   *  between the check and the set. A held slot is a conflict for every later claimant until the
+   *  attempt that holds it ends. */
+  private claim(runId: string): HostedRun {
+    if (this.runs.has(runId)) throw new EpEnvelopeError("conflict", `run ${runId} is being driven by this manager already`);
+    const takeoverId = newTakeoverId();
+    const slot: HostedRun = { runId, takeoverId, epoch: 0, identity: newIdentity() };
+    this.runs.set(runId, slot);
+    return slot;
+  }
+
+  /** Release a slot, only if it is still this attempt's: a later attempt of the same run is a new
+   *  entry and is never removed by an earlier one's end. */
+  private free(slot: HostedRun): void {
+    if (this.runs.get(slot.runId) === slot) this.runs.delete(slot.runId);
+  }
+
   private async launch(
     host: RunHost,
     req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string },
+    claimed?: HostedRun,
   ): Promise<void> {
     if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-    const takeoverId = newTakeoverId();
-    const identity = newIdentity();
+    if (this.launching >= MAX_LAUNCHING)
+      throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
+    const slot = claimed ?? this.claim(req.runId);
+    this.launching += 1;
+    try {
+      await this.drive(host, req, slot);
+    } catch (e) {
+      // A slot whose drive never started is freed here; one whose drive exists is freed by that
+      // drive's own end, so the run reads as held until its attempt has stopped.
+      if (slot.drive === undefined) this.free(slot);
+      throw e;
+    } finally {
+      this.launching -= 1;
+    }
+  }
+
+  private async drive(
+    host: RunHost,
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string },
+    slot: HostedRun,
+  ): Promise<void> {
+    const { takeoverId, identity } = slot;
     const auth = this.ctx.auth;
     const creds = auth
       ? await mintCreds(auth, identity, "run-driver", {
           runDriver: { endpoint: this.ctx.endpoint, runId: req.runId, takeoverId, instanceId: this.ctx.instanceId, epoch: req.epoch },
         })
       : undefined;
-    const holder: HostedRun = { runId: req.runId, takeoverId, epoch: req.epoch, identity, nc: undefined as unknown as NatsConnection, drive: undefined as unknown as RunHostDrive, ...(creds !== undefined ? { creds } : {}) };
+    // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from
+    // these, and the epoch is a per-attempt fact.
+    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, ...(creds !== undefined ? { creds } : {}) });
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.
@@ -298,41 +389,55 @@ export class RunHosting {
         : {}),
       maxReconnectAttempts: -1,
     });
-    holder.nc = nc;
     let planes: RunHostPlanes;
     try {
       planes = { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, this.ctx.space), space: this.ctx.space };
+      // Checked AFTER the last await before the drive starts: a stop that landed during the
+      // connect has already cleared the live map, and a drive started now would be nobody's.
+      if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
     } catch (e) {
       await nc.drain().catch(() => nc.close());
       throw e;
     }
     const max = nc.info?.max_payload;
+    // The holder this attempt activates as: this process AND this attempt (see the header).
+    const attemptHolder = { id: `${this.ctx.holder.id}.${takeoverId}`, lifecycleUid: this.ctx.holder.lifecycleUid };
     const drive = host.drive(planes, {
       mode: req.mode,
       endpoint: this.ctx.endpoint,
       runId: req.runId,
       source: req.source,
       ...(req.file !== undefined ? { file: req.file } : {}),
-      lease: { holder: this.ctx.holder.id, epoch: req.epoch, fencingToken: req.fencingToken, takeoverId },
-      holder: this.ctx.holder,
+      lease: { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken, takeoverId },
+      holder: attemptHolder,
       instanceId: this.ctx.instanceId,
       epoch: req.epoch,
       defaultCheckpointTimeout: req.timeout,
       // The broker's own max_payload, minus headroom for the record envelope around the entry.
       ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
     });
+    holder.nc = nc;
     holder.drive = drive;
-    this.runs.set(req.runId, holder);
     const activation = this.activated(planes.kv, req, drive);
     void drive.done.then(async (out) => {
       this.ctx.log(`run ${req.runId}: ${describeOutcome(out)}`);
-      // Only THIS attempt's entry is removed: a later resume of the same run id is a new entry.
-      if (this.runs.get(req.runId) === holder) this.runs.delete(req.runId);
+      this.free(holder);
       // The activation wait reads the record over this connection; it finishes before the drain.
       await activation.catch(() => undefined);
       await nc.drain().catch(() => nc.close());
     });
-    await activation;
+    try {
+      await activation;
+    } catch (e) {
+      // An attempt that never activated in time is not left holding a slot and a connection with
+      // nobody's word on it: it is released, and a drive that reaches no boundary within a
+      // moment has its connection closed under it, the same way a stop treats a parked drive.
+      // Its own end then frees the slot.
+      drive.release(`the hosting manager gave up waiting for its activation: ${(e as Error).message}`);
+      const reached = await Promise.race([drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
+      if (!reached) await nc.close();
+      throw e;
+    }
     this.ctx.log(`run ${req.runId}: ${req.mode === "new" ? "started" : "resumed"} on endpoint ${this.ctx.endpoint} (epoch ${req.epoch}, takeover ${takeoverId})`);
   }
 
@@ -343,7 +448,7 @@ export class RunHosting {
     const recorded = async (): Promise<boolean> =>
       (await readRunRecord(kv, this.ctx.endpoint, req.runId))?.status?.value.epoch === req.epoch;
     const settled = drive.done.then((out) => ({ out }));
-    const deadline = Date.now() + ACTIVATION_WAIT_MS;
+    const deadline = Date.now() + RUN_ACTIVATION_WAIT_MS;
     for (;;) {
       if (await recorded()) return;
       const early = await Promise.race([settled, new Promise<undefined>((r) => setTimeout(r, 50))]);
@@ -355,15 +460,15 @@ export class RunHosting {
         );
       }
       if (Date.now() > deadline)
-        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${ACTIVATION_WAIT_MS / 1000}s; it is still launching, and \`cotal run ps\` shows it once it does`);
+        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run ps\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
     }
   }
 
   /** One served read or answer over a one-shot `run-operator` connection (open mesh: bare). The
    *  takeover id the rows are minted for is handed to `fn`, so a journal replay inside names the
-   *  durable the credential admits. */
+   *  durable the credential admits. Only an answering call holds the answer and settle writes. */
   private async withOperator<T>(
-    scope: { endpoint?: string; runId?: string },
+    scope: { endpoint?: string; runId?: string; answers?: true },
     fn: (planes: RunHostPlanes, kv: KV, takeoverId: string) => Promise<T>,
   ): Promise<T> {
     const takeoverId = newTakeoverId();
@@ -373,7 +478,9 @@ export class RunHosting {
       servers: this.ctx.servers ?? DEFAULT_SERVER,
       ...(auth
         ? standaloneConnectOpts({
-            creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint, takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}) } }),
+            creds: await mintCreds(auth, newIdentity(), "run-operator", {
+              runOperator: { endpoint, takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}), ...(scope.answers === true ? { answers: true } : {}) },
+            }),
             /* not yet wired to a recorded transport */ tls: false,
           })
         : {}),
@@ -386,6 +493,14 @@ export class RunHosting {
       await nc.drain().catch(() => nc.close());
     }
   }
+}
+
+/** A validation problem without its rendered source frame (the caller holds the source). */
+function withoutFrame(e: Record<string, unknown>): Record<string, unknown> {
+  const where = e.where;
+  if (where === null || typeof where !== "object") return e;
+  const { frame: _frame, ...rest } = where as Record<string, unknown>;
+  return { ...e, where: rest };
 }
 
 function describeOutcome(out: RunHostOutcome): string {

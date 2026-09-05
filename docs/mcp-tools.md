@@ -312,7 +312,7 @@ Write a cotal-lang program and run it durably on the mesh's manager. `start` tak
 
 - **Side-effect:** starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive.
-- `start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you (your agent name) as the answerer.
+- `start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|

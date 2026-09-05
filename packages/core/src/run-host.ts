@@ -23,6 +23,14 @@ export const COTAL_LANG_RUN_HOST = "cotal-lang";
 /** The `error.details[].kind` a hosting daemon's validation refusal carries one language problem
  *  under (SPEC 13.3 extension detail): the record is the validator's own `LangErrorJson`. */
 export const LANG_PROBLEM_DETAIL_KIND = "ai.cotal.lang.problem";
+/** How long a hosting daemon waits for a launched drive's status record before answering a
+ *  start or resume. A client's invoke deadline for those two commands MUST exceed this, or the
+ *  daemon's "still launching" refusal can never reach the caller (it would time out first and
+ *  read as no manager answering). */
+export const RUN_ACTIVATION_WAIT_MS = 15_000;
+/** The invoke deadline a `run-start` / `run-resume` client uses: the activation wait plus the
+ *  round trips around it. */
+export const RUN_LAUNCH_DEADLINE_MS = RUN_ACTIVATION_WAIT_MS + 10_000;
 
 /** The planes a drive, an answer or a read rides: ONE broker connection and what hangs off it.
  *  The host that opens the connection knows whose credential it carries; the run host does not. */
@@ -88,6 +96,8 @@ export interface RunHostAnswerRequest {
   readonly takeoverId: string;
   /** The step's canonical key string, as `journal` renders it. */
   readonly stepKey: string;
+  /** The answerer as the host's authorization knows them (SPEC 14.5): derived by the host from
+   *  the caller's authenticated principal, never taken from the request body. */
   readonly by: string;
   readonly value?: unknown;
   readonly artifact?: string;

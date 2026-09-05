@@ -1314,7 +1314,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           }
           const missing = need("runId", "answer") ?? need("stepKey", "answer");
           if (missing) return missing;
-          const reply = await agent.run("answer", { runId: a.runId, stepKey: a.stepKey, by: config.name, value: a.value, artifact: a.artifact, endpoint: a.endpoint });
+          // The manager records the answerer from the caller's own credential (SPEC 14.5); the
+          // tool sends no name, so it cannot answer as anyone else.
+          const reply = await agent.run("answer", { runId: a.runId, stepKey: a.stepKey, value: a.value, artifact: a.artifact, endpoint: a.endpoint });
           if (!reply.ok) return err(renderRunRefusal("answer", reply));
           return ok(`Answered ${a.stepKey} on run ${a.runId} as ${config.name}: ${JSON.stringify(reply.data)}`);
         } catch (e) {

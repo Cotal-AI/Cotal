@@ -297,7 +297,9 @@ const SEAMS: Seam[] = [
   // connection (implementations/manager/src/run-hosting.ts) and `cotal run`'s hosted-client
   // connection (implementations/runtime/src/run-command.ts) add two typechecked calls; the
   // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 125, untypecheckedSites: 92 },
+  // 125/92 -> 126/93: run-host-live reads an answer record back under a run-operator READ
+  // credential of its own (one smoke-side call, tls: false).
+  { fn: "standaloneConnectOpts", key: "tls", sites: 126, untypecheckedSites: 93 },
 ];
 
 /**
