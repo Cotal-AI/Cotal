@@ -42,6 +42,11 @@ throws(
   "a non-integer restarts is refused",
 );
 throws(
+  () => readSupervise({ restarts: "2" }, "builder"),
+  /supervise\.restarts must be a positive integer/,
+  "a string restarts is refused",
+);
+throws(
   () => readSupervise({ restarts: 2, window: 10 }, "builder"),
   /supervise\.window must be a duration string/,
   "a numeric window is refused",
@@ -71,7 +76,7 @@ c(
 const bare = spawnArgs({ persona: "builder" } as never);
 c("absent supervise does not travel", !("supervise" in bare), bare);
 
-const EXPECTED = 11;
+const EXPECTED = 12;
 const ran = ok + fail;
 console.log(`spawn-policy.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {
