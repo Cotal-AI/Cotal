@@ -21,8 +21,8 @@
     {
       "name": "listing no longer restores a mesh record that preflight pruned",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  } catch (e) {\n    // Honesty only: preflight treats an unreachable broker as a stale registry entry and deletes it.\n    // A failed dependent must still keep that record, so restore if the connect pruned it.\n    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };\n  }",
-      "replace": "  } catch (e) {\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };\n  }",
+      "find": "    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
+      "replace": "    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
       "expectRed": "down: a failed dependent preserves the mesh registry",
       "cell": "down: a failed dependent preserves the mesh registry"
     }

@@ -200,8 +200,8 @@ export async function down(args: ParsedArgs): Promise<void> {
           withAgentsUnreaped = true;
         }
       }
+    // Still stop the stack. Unreachability must never strand an operator. Do not claim the reap.
     } else if (withAgents) {
-      // Still stop the stack. Unreachability must never strand an operator. Do not claim the reap.
       printWithAgentsUnreaped(listed.reason);
       withAgentsUnreaped = true;
     } else {
@@ -278,14 +278,14 @@ async function listManagerSeats(context: LocalProcessContext): Promise<SeatList>
   const mesh = meshForContext(context);
   if (!mesh)
     return { ok: false, reason: "this folder has no recorded mesh, so leftover seats cannot be listed" };
+  // Catchable: the default `connectOrExit` would `process.exit(1)` and strand a live manager
+  // whose broker is down. Listing is honesty, never a refuse-to-signal. Honesty only: preflight
+  // treats an unreachable broker as a stale registry entry and deletes it. A failed dependent
+  // must still keep that record, so restore if the connect pruned it.
   let target;
   try {
-    // Catchable: the default `connectOrExit` would `process.exit(1)` and strand a live manager
-    // whose broker is down. Listing is honesty, never a refuse-to-signal.
     target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
   } catch (e) {
-    // Honesty only: preflight treats an unreachable broker as a stale registry entry and deletes it.
-    // A failed dependent must still keep that record, so restore if the connect pruned it.
     if (!findMesh(mesh.space)) recordMesh(mesh);
     return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };
   }
@@ -298,10 +298,10 @@ async function listManagerSeats(context: LocalProcessContext): Promise<SeatList>
 async function reapListedSeats(context: LocalProcessContext, rows: DownSeatRow[]): Promise<void> {
   const mesh = meshForContext(context);
   if (!mesh) throw new Error("--with-agents could not stop every managed seat: this folder has no recorded mesh");
+  // Same class as listing: a broker that dies between ps and the reap must not `process.exit`
+  // before the stack stops. Failures join the per-seat list and still let down signal.
   let target;
   try {
-    // Same class as listing: a broker that dies between ps and the reap must not `process.exit`
-    // before the stack stops. Failures join the per-seat list and still let down signal.
     target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
   } catch (e) {
     if (!findMesh(mesh.space)) recordMesh(mesh);

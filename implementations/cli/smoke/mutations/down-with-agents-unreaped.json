@@ -13,7 +13,7 @@
     {
       "name": "the defect restored: --with-agents that cannot list still claims success",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "    } else if (withAgents) {\n      // Still stop the stack. Unreachability must never strand an operator. Do not claim the reap.\n      printWithAgentsUnreaped(listed.reason);\n      withAgentsUnreaped = true;\n    } else {",
+      "find": "    } else if (withAgents) {\n      printWithAgentsUnreaped(listed.reason);\n      withAgentsUnreaped = true;\n    } else {",
       "replace": "    } else if (withAgents) {\n      printCouldNotList(listed.reason);\n    } else {",
       "expectRed": "--with-agents against an unreachable manager still stops the stack AND exits non-zero naming that no seats were reaped",
       "cell": "--with-agents against an unreachable manager still stops the stack AND exits non-zero naming that no seats were reaped"
@@ -21,8 +21,8 @@
     {
       "name": "listing again process.exit on an unreachable broker",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "    // Catchable: the default `connectOrExit` would `process.exit(1)` and strand a live manager\n    // whose broker is down. Listing is honesty, never a refuse-to-signal.\n    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, \"control-caller-privileged\", undefined, { onRefusal: \"throw\" });",
-      "replace": "    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, \"control-caller-privileged\");",
+      "find": "    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, \"control-caller-privileged\", undefined, { onRefusal: \"throw\" });\n  } catch (e) {\n    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
+      "replace": "    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, \"control-caller-privileged\");\n  } catch (e) {\n    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
       "expectRed": "down manager against a recorded unreachable broker still stops the manager and does not process.exit",
       "cell": "down manager against a recorded unreachable broker still stops the manager and does not process.exit"
     }
