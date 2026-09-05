@@ -16,27 +16,33 @@ jobs:
     # Source intersection catches the #1217 shape at the changing commit. The daily full sweep
     # below catches cross-cutting changes a fixture did not name within a day.
     if: github.event_name != 'schedule'
-    # 150, raised from 60, and PROVISIONAL. A PR touching a high-fan-in guarded source selects a
-    # large fixture set: #1294 (which edits implementations/manager/src/manager.ts) selected 42
-    # fixtures / 181 mutations and was cancelled at the 60-minute cap five consecutive times, so
-    # it could not satisfy this gate by any action its author could take. `pr-head-gate.mjs`
-    # grades a non-success as failing and this workflow is in its expected set, so the gate fails
-    # closed on a job that cannot finish rather than on a defect.
+    # 150, raised from the previous 60-minute budget (150 = 2.5 x 60). A PR touching a high-fan-in
+    # guarded source selects a large fixture set, and #1294 could not satisfy this gate by any
+    # action its author could take: its `changed` job was cancelled at the 60-minute cap on five
+    # consecutive heads. `pr-head-gate.mjs` grades a non-success as failing and this workflow is in
+    # its expected set, so the gate failed closed on a job that could not finish rather than on a
+    # defect.
     #
-    # The number is not derived, because nothing here has ever been measured well enough to derive
-    # it, and that is the substance of #1299 rather than a detail of it. The two models available
-    # both UNDER-predict: at the fastest observed rate (9 fixtures / 39 mutations in 7m27s) 181
-    # mutations is ~42 minutes, and as a fraction of the corpus (181 of 1,714) against `full`'s
-    # 360-minute budget it is ~38 minutes. The real run exceeded 60. So per-mutation cost is
-    # dominated by WHICH suites a fixture guards, not by how many mutations it carries, and both
-    # models are wrong for exactly the sets that need the budget. 150 is 2.5x the larger estimate,
-    # which is the smallest headroom that survives models known to under-predict by over 1.5x, and
-    # it stays well under `full`'s 360.
+    # The selection differs per head, so each figure names its own sha:
+    #   647e21b5e (run 33973541717)  42 fixtures selected from 341
+    #   d1db29e23 (run 33978243970)  43 fixtures selected from 342, the extra one being
+    #                                self-update-handoff.json, which that head added
     #
-    # Re-derive this from the elapsed line the Report elapsed step now prints, once real sets have
-    # reported. Do
-    # not raise it again without that data: a limit raised past what anyone can measure trades a
-    # visible failure for an invisible one.
+    # The budget is derived from d1db29e23's own progress rather than from a model. That job spent
+    # 56s on setup, then ran the re-prove step 16:34:33Z -> 17:33:49Z (59.3 min) before the cap
+    # cancelled it, completing 109 of its 183 mutations, 60% of that set. That is 32.6 s/mutation
+    # ON THAT SET, projecting 99.5 min for the re-prove and ~100 min for the whole job. 150 leaves
+    # about 1.49x headroom over that projection and stays well under `full`'s 360.
+    #
+    # Models fitted from OTHER runs under-predict badly and should not be used to re-derive. The
+    # fastest observed successful run (9 fixtures / 39 mutations in 7m27s) puts d1db's 183
+    # mutations at ~35 min, and the corpus fraction (183 of 1,714) against `full`'s budget puts it
+    # at ~38. The real set needed ~100. Per-mutation cost is dominated by WHICH suites a fixture
+    # guards, not by how many mutations it carries, so a rate measured on a small set does not
+    # transfer to a large one.
+    #
+    # Re-derive from the elapsed line the Report elapsed step prints, on a real high-fan-in set,
+    # and name the sha you measured. Do not raise this again without that data.
     timeout-minutes: 150
     runs-on: ubuntu-latest
     steps:
@@ -68,6 +74,14 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Re-prove fixtures for changed guarded sources
+        # A STEP timeout, deliberately below the job's 150. This changes what a budget breach MEANS
+        # to the head gate and that is the point: a job timeout produces `cancelled`, a step timeout
+        # produces `failure`, and `pr-head-gate.mjs` grades them differently. A breach should read
+        # as a failure the author can see and act on, not as a cancellation that looks like
+        # unrelated CI churn. It also lets the Report elapsed step run normally instead of racing a
+        # cancellation grace period, so the one run whose duration matters most is the one that can
+        # now report it.
+        timeout-minutes: 145
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
@@ -89,12 +103,15 @@ jobs:
         # and the budget above could only ever be guessed.
         #
         # `always()` rather than `failure()` because the run whose duration matters most is the one
-        # the timer kills, and a timeout cancels the job rather than failing it. The start marker is
-        # a file for the same reason: $GITHUB_ENV is only processed when a step ENDS, so a step the
-        # timer kills contributes nothing and this step would take its else branch on exactly the
-        # run it was added for. Still best effort on that path — a cancelled job gives its remaining
-        # steps only a grace period, so this may not run at all — but when it does run it now has a
-        # start time to work from.
+        # the timer kills. The start marker is a file for the same reason: $GITHUB_ENV is processed
+        # by the runner only when a step ENDS (FileCommandManager.ProcessFiles runs in its finally),
+        # so a step the timer kills contributes nothing and this step would take its else branch on
+        # exactly the run it was added for. $RUNNER_TEMP is job-scoped, emptied at job start and end
+        # rather than per step, so the marker survives between steps.
+        #
+        # The step-level timeout below is what actually makes this reachable. A JOB timeout cancels,
+        # and a cancelled job gives its remaining steps only a grace period; a STEP timeout fails
+        # the step and the job continues to this one normally.
         if: always()
         run: |
           marker="$RUNNER_TEMP/mutation-started"
