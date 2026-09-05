@@ -645,7 +645,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
   // permission to replace it with a network answer.  Name that failed local control surface first.
   if (record.kind === "unattributable" || record.kind === "unknown") {
     facts.push(record.kind === "unattributable" ? "unattributable pidfile" : "pid liveness unestablishable");
-    facts.push("phase not reported by this manager build");
+    facts.push("static reconciliation not reported by this manager build");
     return { name: "manager", verdict: "refused", facts };
   }
   if (record.kind === "dead") facts.push("stale pidfile");
@@ -688,7 +688,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
     const reconcileFailed = reconcile?.state === "failed";
     return { name: "manager", verdict: lease && !reconcileFailed ? "serving" : "not-serving", facts };
   } catch (e) {
-    facts.push("phase not reported by this manager build");
+    facts.push("static reconciliation not reported by this manager build");
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
     // The lease and PID answer whether that missing service belongs to an extant component (not
     // serving) or an absent one; any other failed probe remains a refusal.
