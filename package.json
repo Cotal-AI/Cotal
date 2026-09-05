@@ -493,6 +493,7 @@
     "smoke:spawn-detach:live": "tsx bin/smoke/spawn-detach-live.smoke.ts",
     "smoke:goal-follow": "tsx bin/smoke/goal-follow.smoke.ts",
     "smoke:lang-spawn-live": "pnpm --filter cotal-ai... build && tsx bin/smoke/lang-spawn-live.smoke.ts",
+    "smoke:lang-supervise-live": "pnpm --filter cotal-ai... build && tsx bin/smoke/lang-supervise-live.smoke.ts",
     "smoke:spawn-lifecycle-state": "tsx bin/smoke/spawn-lifecycle-state.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
     "smoke:setup-pure:live": "pnpm --filter @cotal-ai/workspace... build && tsx bin/smoke/setup-pure-live.smoke.ts",
