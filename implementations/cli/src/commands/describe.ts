@@ -14,6 +14,7 @@ import {
   EpEnvelopeError,
   dialerFor,
   invokeCommand,
+  parsePrincipalKey,
   resolveService,
   standaloneConnectOpts,
   type CompletionResult,
@@ -160,10 +161,10 @@ async function resolveTarget(
     process.exit(1);
   }
   const row = inspected.reply.data as { id: string; lifecycleUid: string };
-  const dot = row.id.indexOf(".");
-  const [owner, actor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [service.caller.owner, row.id];
+  const principal = parsePrincipalKey(row.id);
+  const { owner, actor } = principal ?? { owner: service.caller.owner, actor: row.id };
   return {
-    mode: v.admin === true || owner !== service.caller.owner ? "any" : "owner",
+    mode: v.admin === true ? "any" : "owner",
     owner,
     actor,
     lifecycleUid: row.lifecycleUid,
