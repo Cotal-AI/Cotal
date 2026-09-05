@@ -22,6 +22,16 @@
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
+      "name": "inspect starts reading the live agent's durable slot before returning its local row",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);",
+      "replace": "        const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);\n        if (row && this.auth && !this.userMode && this.goalWriter?.ctx.kv) await observeStaticSlot(this.goalWriter.ctx.kv, DEV_OWNER, name, this.managerInstanceId);",
+      "expectRed": "inspect keeps live hits entirely local when the durable slot store is unavailable",
+      "cell": "inspect keeps live hits entirely local when the durable slot store is unavailable",
+      "note": "The fixture watches the exact mgrslot.local.w1 key. This mutant reads that live agent's slot while preserving the successful reply, so only the locality assertion should turn red.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
       "name": "the slot projection drops cleanupComplete while keeping phase and head facts",
       "file": "implementations/manager/src/static-lifecycle.ts",
       "find": "    ...(slot.row.cleanupComplete !== undefined ? { cleanupComplete: slot.row.cleanupComplete } : {}),",

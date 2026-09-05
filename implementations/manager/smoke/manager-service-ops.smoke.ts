@@ -411,11 +411,17 @@ try {
       kv.get = originalGet;
     }
 
-    let durableReadAttempted = false;
+    let liveSlotReadAttempted = false;
+    let outageSlotReadAttempted = false;
+    const liveSlotKey = staticSlotKey(DEV_OWNER, "w1");
     const outageSlotKey = staticSlotKey(DEV_OWNER, "store-outage");
     kv.get = async (key: string): Promise<unknown> => {
+      if (key === liveSlotKey) {
+        liveSlotReadAttempted = true;
+        return originalGet.call(kv, key);
+      }
       if (key === outageSlotKey) {
-        durableReadAttempted = true;
+        outageSlotReadAttempted = true;
         return new Promise<never>(() => {});
       }
       return originalGet.call(kv, key);
@@ -423,13 +429,13 @@ try {
     try {
       const liveDuringOutage = await A.call("inspect", { name: "w1" });
       check("inspect keeps live hits entirely local when the durable slot store is unavailable",
-        liveDuringOutage.reply.ok === true && (liveDuringOutage.reply.data as { id?: string }).id === w1.id && !durableReadAttempted,
+        liveDuringOutage.reply.ok === true && (liveDuringOutage.reply.data as { id?: string }).id === w1.id && !liveSlotReadAttempted,
         liveDuringOutage.reply);
       const missDuringOutage = await A.call("inspect", { name: "store-outage" });
       const outageDetail = missDuringOutage.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-read-failed") as Record<string, unknown> | undefined;
       check("inspect surfaces durable-store unavailability on a miss instead of lying not-found",
         missDuringOutage.reply.ok === false && missDuringOutage.reply.error?.code === "unavailable" &&
-        durableReadAttempted && outageDetail?.record === "slot" && outageDetail.name === "store-outage" &&
+        outageSlotReadAttempted && outageDetail?.record === "slot" && outageDetail.name === "store-outage" &&
         /timed out after 2000ms/.test(missDuringOutage.reply.error?.message ?? ""), missDuringOutage.reply);
     } finally {
       kv.get = originalGet;
