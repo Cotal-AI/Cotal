@@ -7,7 +7,6 @@
  *
  * Run: pnpm smoke:manager-supervise-restart
  */
-import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,10 +23,10 @@ import {
 } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 
-let checks = 0;
-const check = (condition: unknown, message: string, detail?: unknown): void => {
-  assert.ok(condition, `${message}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
-  checks++;
+let ok = 0, fail = 0;
+const c = (n: string, v: boolean, extra?: unknown): void => {
+  if (v) ok++;
+  else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); }
 };
 
 interface CrashHandle extends AgentHandle {
@@ -225,51 +224,68 @@ const pending: {
 };
 doors.pendingTurns.set("turn-1", pending);
 
-const waitFor = async (predicate: () => boolean, label: string): Promise<void> => {
-  const deadline = Date.now() + 5_000;
+const waitFor = async (predicate: () => boolean, label: string, ms = 5_000): Promise<boolean> => {
+  const deadline = Date.now() + ms;
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    if (Date.now() > deadline) {
+      c(`${label} settled in time`, false);
+      return false;
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return true;
+};
+const bounded = async (p: Promise<{ ok: boolean; error?: string }>, ms: number): Promise<{ ok: boolean; error?: string }> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p.catch((e) => ({ ok: false as const, error: (e as Error).message })),
+      new Promise<{ ok: false; error: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, error: `timed out after ${ms}ms` }), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 };
 
 handles.at(-1)!.crash();
 await waitFor(
   () => spawnedOpts.length === 1 || !agents.has(managed.name),
-  "first crash settles",
+  "first crash",
 );
-check(agents.get(managed.name) === managed, "a supervised crash keeps the same managed row");
+c("a supervised crash keeps the same managed row", agents.get(managed.name) === managed);
 if (agents.has(managed.name))
-  await waitFor(() => managed.restart?.recovering === false, "recovery settles");
-check(managed.id === "seatid" && managed.lifecycleUid === initialOpts.lifecycleUid, "a supervised crash keeps identity and lifecycle");
-check(spawnedOpts[0]?.continueSession === undefined, "a non-continuation connector is relaunched without a session id");
-check(spawnedOpts[0]?.resume === undefined && spawnedOpts[0]?.prompt === undefined, "a restart never replays fork source or initial prompt");
-check(pending.seatDiedAt === undefined, "a pending turn is not stamped dead across a restart");
+  await waitFor(() => managed.restart?.recovering === false, "first recovery");
+c("a supervised crash keeps identity and lifecycle", managed.id === "seatid" && managed.lifecycleUid === initialOpts.lifecycleUid);
+c("a non-continuation connector is relaunched without a session id", spawnedOpts[0]?.continueSession === undefined);
+c("a restart never replays fork source or initial prompt", spawnedOpts[0]?.resume === undefined && spawnedOpts[0]?.prompt === undefined);
+c("a pending turn is not stamped dead across a restart", pending.seatDiedAt === undefined);
 
 handles.at(-1)!.crash();
 await waitFor(
   () => managed.restart?.recovering === false || !agents.has(managed.name),
-  "second crash settles",
+  "second crash",
 );
-check(spawnedOpts.length === 1, "spending the restart budget starts no further replacement");
-check(!agents.has(managed.name), "a spent supervise budget retires the seat");
-check(typeof pending.seatDiedAt === "number", "retiring the seat stamps pending turns dead");
+c("spending the restart budget starts no further replacement", spawnedOpts.length === 1);
+c("a spent supervise budget retires the seat", !agents.has(managed.name));
+c("retiring the seat stamps pending turns dead", typeof pending.seatDiedAt === "number");
 
 const parse = await doors.opStart({ name: "seat", supervise: { restart: "always" } }, "caller");
-check(parse.ok === false && (parse.error ?? "").includes("unknown key"), "opStart refuses an unknown supervise key", parse);
+c("opStart refuses an unknown supervise key", parse.ok === false && (parse.error ?? "").includes("unknown key"), parse);
 
 const missing = await doors.opStart({ name: "seat", supervise: { restarts: 1 } }, "caller");
-check(missing.ok === false && (missing.error ?? "").includes("windowMs"), "opStart refuses a policy without windowMs", missing);
+c("opStart refuses a policy without windowMs", missing.ok === false && (missing.error ?? "").includes("windowMs"), missing);
 
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nagent: smoke-supervise-restart\n---\n");
 doors.userMode = true;
-const user = await doors.startAgentActive({ name: "seat", agent: connector.name, supervise: { restarts: 1, windowMs: 1_000 } });
-check(user.ok === false && (user.error ?? "").includes("user-mode"), "user-mode refuses supervise at accept", user);
+const user = await bounded(doors.startAgentActive({ name: "seat", agent: connector.name, supervise: { restarts: 1, windowMs: 1_000 } }), 2_000);
+c("user-mode refuses supervise at accept", user.ok === false && (user.error ?? "").includes("user-mode"), user);
 doors.userMode = false;
 
 doors.runtime.kind = "tmux";
-const ext = await doors.startAgentActive({ name: "seat", agent: connector.name, supervise: { restarts: 1, windowMs: 1_000 } });
-check(ext.ok === false && (ext.error ?? "").includes("runtime \"tmux\""), "a non-pty runtime refuses supervise at accept", ext);
+const ext = await bounded(doors.startAgentActive({ name: "seat", agent: connector.name, supervise: { restarts: 1, windowMs: 1_000 } }), 2_000);
+c("a non-pty runtime refuses supervise at accept", ext.ok === false && (ext.error ?? "").includes("runtime \"tmux\""), ext);
 doors.runtime.kind = "pty";
 
 const failedOpts: LaunchOpts = { ...initialOpts, name: "failed" };
@@ -287,7 +303,14 @@ agents.set(failed.name, failed);
 doors.readinessTimeoutMs = 50;
 doors.watchExit(failed);
 failedHandle.crash();
-await waitFor(() => !agents.has(failed.name), "supervise recovery failure");
-check(!agents.has(failed.name), "a failed supervised relaunch retires the seat");
+await waitFor(() => !agents.has(failed.name), "failed relaunch");
+c("a failed supervised relaunch retires the seat", !agents.has(failed.name));
 
-console.log(`supervise restart smoke: ${checks} checks passed`);
+const EXPECTED = 13;
+const ran = ok + fail;
+console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
+if (ran !== EXPECTED) {
+  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED} cells; a partial run is not a pass`);
+  process.exit(1);
+}
+process.exit(fail === 0 ? 0 : 1);

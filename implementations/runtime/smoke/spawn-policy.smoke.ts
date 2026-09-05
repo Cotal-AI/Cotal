@@ -5,18 +5,20 @@
  *
  * Run: pnpm smoke:runtime-spawn-policy
  */
-import assert from "node:assert/strict";
 import { readSupervise, spawnArgs } from "../src/index.js";
 
-let checks = 0;
-const check = (condition: unknown, message: string, detail?: unknown): void => {
-  assert.ok(condition, `${message}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
-  checks++;
+let ok = 0, fail = 0;
+const c = (n: string, v: boolean, extra?: unknown): void => {
+  if (v) ok++;
+  else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); }
 };
-
-const throws = (fn: () => unknown, re: RegExp, message: string): void => {
-  assert.throws(fn, re, message);
-  checks++;
+const throws = (fn: () => unknown, re: RegExp, n: string): void => {
+  try {
+    fn();
+    c(n, false, "did not throw");
+  } catch (e) {
+    c(n, re.test(String((e as Error).message)), (e as Error).message);
+  }
 };
 
 throws(
@@ -50,21 +52,30 @@ throws(
   "a missing restarts is refused",
 );
 
-const def = readSupervise({ restarts: 3 }, "builder");
-check(def.restarts === 3 && def.windowMs === 600_000, "an omitted window defaults to 10m", def);
+let def: { restarts: number; windowMs: number } | undefined;
+try { def = readSupervise({ restarts: 3 }, "builder"); } catch (e) { console.log("  ✗ FAIL: default window threw", (e as Error).message); fail++; }
+c("an omitted window defaults to 10m", def?.restarts === 3 && def?.windowMs === 600_000, def);
 
-const custom = readSupervise({ restarts: 2, window: "30s" }, "builder");
-check(custom.restarts === 2 && custom.windowMs === 30_000, "window parses as a duration", custom);
+let custom: { restarts: number; windowMs: number } | undefined;
+try { custom = readSupervise({ restarts: 2, window: "30s" }, "builder"); } catch (e) { console.log("  ✗ FAIL: custom window threw", (e as Error).message); fail++; }
+c("window parses as a duration", custom?.restarts === 2 && custom?.windowMs === 30_000, custom);
 
 const travelled = spawnArgs({ persona: "builder", supervise: { restarts: 2, window: "5m" } } as never);
-check(travelled.name === "builder", "spawnArgs names the persona as name");
-check(
-  JSON.stringify(travelled.supervise) === JSON.stringify({ restarts: 2, windowMs: 300_000 }),
+c("spawnArgs names the persona as name", travelled.name === "builder");
+c(
   "spawnArgs carries restarts and windowMs",
+  JSON.stringify(travelled.supervise) === JSON.stringify({ restarts: 2, windowMs: 300_000 }),
   travelled.supervise,
 );
 
 const bare = spawnArgs({ persona: "builder" } as never);
-check(!("supervise" in bare), "absent supervise does not travel", bare);
+c("absent supervise does not travel", !("supervise" in bare), bare);
 
-console.log(`spawn-policy.smoke: ${checks} checks passed`);
+const EXPECTED = 11;
+const ran = ok + fail;
+console.log(`spawn-policy.smoke: ${ok} passed, ${fail} failed`);
+if (ran !== EXPECTED) {
+  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED} cells; a partial run is not a pass`);
+  process.exit(1);
+}
+process.exit(fail === 0 ? 0 : 1);
