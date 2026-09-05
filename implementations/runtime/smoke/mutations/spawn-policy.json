@@ -18,6 +18,14 @@
       "cell": "an unknown supervise key is refused, never accepted and ignored"
     },
     {
+      "name": "a string restarts is coerced",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (typeof value !== \"number\" || !Number.isInteger(value) || value < 1)\n        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);\n      restarts = value;",
+      "replace": "      if (typeof value === \"string\" && /^[0-9]+$/.test(value)) restarts = Number(value);\n      else if (typeof value !== \"number\" || !Number.isInteger(value) || value < 1)\n        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);\n      else restarts = value;",
+      "expectRed": "a string restarts is refused",
+      "cell": "a string restarts is refused"
+    },
+    {
       "name": "an omitted window is not the 10m default",
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "  return { restarts, windowMs: windowMs ?? parseDuration(\"10m\") };",
