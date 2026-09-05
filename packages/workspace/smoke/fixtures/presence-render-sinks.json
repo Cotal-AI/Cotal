@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 310,
+    "total": 312,
     "honest-text": 32,
     "presence-only-glyph/count": 41,
     "command-ack": 10,
-    "non-render/control": 227
+    "non-render/control": 229
   },
   "renderers": [
     {
@@ -2318,6 +2318,20 @@
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
+      "class": "non-render/control",
+      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
+      "class": "non-render/control",
+      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
     }
   ]
 }
