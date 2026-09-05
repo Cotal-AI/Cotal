@@ -28,11 +28,20 @@ jobs:
     #   d1db29e23 (run 33978243970)  43 fixtures selected from 342, the extra one being
     #                                self-update-handoff.json, which that head added
     #
-    # The budget is derived from d1db29e23's own progress rather than from a model. That job spent
-    # 56s on setup, then ran the re-prove step 16:34:33Z -> 17:33:49Z (59.3 min) before the cap
-    # cancelled it, completing 109 of its 183 mutations, 60% of that set. That is 32.6 s/mutation
-    # ON THAT SET, projecting 99.5 min for the re-prove and ~100 min for the whole job. 150 leaves
-    # about 1.49x headroom over that projection and stays well under `full`'s 360.
+    # The budget is derived from cancelled runs' own progress rather than from a model. Count
+    # completed mutations by their VERDICT token (KILLED / SURVIVED / INCONCLUSIVE / UNGRADABLE /
+    # WRONG-RED / ERROR / PRE-RED, the vocabulary at scripts/mutation-reproof.mjs:217). Do not
+    # grep for KILLED alone: a prediction line reads "PREDICTED KILLED", so a line-count over that
+    # token overstates the total, which is how an earlier revision of this comment said 109.
+    #
+    #   d1db29e23  re-prove 16:34:33Z -> 17:33:49Z (59.3 min), 99 of 183 done   35.9 s/mutation
+    #   ec6f1f7b2  re-prove 18:35:56Z -> 19:35:15Z (59.3 min), 85 done          41.9 s/mutation
+    #
+    # Two independent high-fan-in manager.ts sets on different branches, both killed at the old
+    # 60-minute cap, rates within ~17%. At the faster rate a 183-mutation set projects ~110 min and
+    # 150 leaves about 1.37x headroom; at the slower it projects ~128 min and about 1.17x. The
+    # slower figure is the one to plan against, and 1.17x is thin. Widen only from an elapsed line
+    # on a real set, not from another estimate.
     #
     # Models fitted from OTHER runs under-predict badly and should not be used to re-derive. The
     # fastest observed successful run (9 fixtures / 39 mutations in 7m27s) puts d1db's 183
@@ -74,13 +83,18 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Re-prove fixtures for changed guarded sources
-        # A STEP timeout, deliberately below the job's 150. This changes what a budget breach MEANS
-        # to the head gate and that is the point: a job timeout produces `cancelled`, a step timeout
-        # produces `failure`, and `pr-head-gate.mjs` grades them differently. A breach should read
-        # as a failure the author can see and act on, not as a cancellation that looks like
-        # unrelated CI churn. It also lets the Report elapsed step run normally instead of racing a
-        # cancellation grace period, so the one run whose duration matters most is the one that can
-        # now report it.
+        # A STEP timeout, deliberately below the job's 150, so that a breach fails the STEP and the
+        # job continues to its remaining steps instead of being cancelled outright.
+        #
+        # The reason is Report elapsed, and only that. A cancelled job gives its remaining steps a
+        # grace period at best, so the run whose duration matters most was the least likely to
+        # report it. A failed step leaves the job running normally and that step executes.
+        #
+        # It is NOT a change to what the head gate sees, and an earlier draft of this comment
+        # claimed it was. `scripts/pr-head-gate.mjs:131` is the whole of its conclusion handling —
+        # `if (run.conclusion !== "success") failing.push(name)` — one comparison with no branch, so
+        # `cancelled`, `failure`, `timed_out` and `neutral` are identical to it. The gate's verdict
+        # is byte-identical either way.
         timeout-minutes: 145
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
