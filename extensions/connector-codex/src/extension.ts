@@ -115,6 +115,7 @@ async function listCodexModels(): Promise<ModelCatalog> {
 export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
+  supportsFreshStart: true,
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed

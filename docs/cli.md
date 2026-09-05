@@ -102,12 +102,13 @@ rather than choosing a catalog.
 ## update
 
 ```bash
-cotal update [--self]
+cotal update [--self] [--space <s>] [--server <url>] [--creds <path>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
+| `--space`, `--server`, `--creds` | resolved mesh | Select the running manager whose continuity state is reported |
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
 binary: it force-reconciles the four built-in connectors, then reinstalls other `@cotal-ai/*`
@@ -115,12 +116,21 @@ operator extensions at the binary's exact version. Each extension runs in an iso
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
 
-With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
-version it validated, resolves and verifies that package in npm's global root, then launches that
-binary to reconcile connectors and first-party extensions to the new generation. An npx or dev-clone
-invocation therefore installs and continues through a separate global copy; it never claims the
-already-running process changed. If the binary is current, `--self` performs the normal local
-reconcile without reinstalling it.
+After disk reconciliation, `update` reads the selected running manager. A manager without a
+custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
+command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
+for every seat. This report sends no stop, preservation-commit, or replacement command.
+It does not preserve a running PTY. Custody transfer is not available until the custody runtime is
+implemented. Even after compatible custody generations exist, an incompatible native
+`@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
+
+With `--self`, the selected running manager is reported before any global install. When a newer
+release exists, Cotal then installs the exact version it validated, resolves and verifies that
+package in npm's global root, then launches that binary with the same `--space` / `--server` /
+`--creds` selection to reconcile connectors and first-party extensions to the new generation. An npx
+or dev-clone invocation therefore installs and continues through a separate global copy; it never
+claims the already-running process changed. If the binary is current, `--self` performs the normal
+local reconcile without reinstalling it.
 
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are

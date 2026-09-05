@@ -8,11 +8,11 @@
  * needs no claude/mesh; tmux/cmux are skipped (logged) when not present on the machine.
  */
 import { execFileSync } from "node:child_process";
-import { createRuntime } from "../src/index.js";
+import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
+import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { detachKey } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
 import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
-import type { LaunchSpec } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean): void {
@@ -137,6 +137,19 @@ const cwd = process.cwd();
       h.stop({ graceful: false });
     }
   }
+}
+
+{
+  const unsupported: Runtime = { kind: "fixture", spawn: () => { throw new Error("unused"); } };
+  const err = attachError(() => requireRuntimeAdopt(unsupported, { kind: "fixture", id: "opaque" }));
+  check('absent adopt refuses by runtime name', err === 'runtime "fixture" does not support adopt');
+
+  const handle: AgentHandle = { name: "ok", kind: "capable", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error("unused"); } };
+  const capable: Runtime = { kind: "capable", spawn: () => handle, adopt: () => handle };
+  check("present adopt returns the runtime handle", requireRuntimeAdopt(capable, { kind: "capable", id: "opaque" }) === handle);
+
+  const ptyErr = attachError(() => requireRuntimeAdopt(createRuntime("pty", SESSION), { kind: "pty", id: "opaque" }));
+  check('pty runtime without adopt refuses by name', ptyErr === 'runtime "pty" does not support adopt');
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

@@ -1,0 +1,29 @@
+{
+  "suite": "implementations/cli/smoke/command-kernel.smoke.ts",
+  "guard": "self-update reports the selected manager before the global install and hands the selected target to the replacement child",
+  "command": "pnpm smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/self-update-handoff.json",
+  "why": [
+    "The newer-version --self path used to install globally without reportRunningManager, then launch the replacement as [entry, update] with no --space/--server/--creds. Both holes let an operator-named legacy manager go unchecked.",
+    "The first mutation puts the report after the install. The named cell observes report-before-install order. The second drops the target flags from the child argv. The named cell observes the selected-target handoff."
+  ],
+  "mutations": [
+    {
+      "name": "report the running manager only after the global install",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "  try {\n    if (await rt.reportRunningManager(target) === \"legacy\") return 1;\n  } catch (e) {\n    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));\n    return 1;\n  }\n\n  const rootResult = rt.npm([\"root\", \"-g\"]);",
+      "replace": "  const rootResult = rt.npm([\"root\", \"-g\"]);",
+      "expectRed": "self-update reports the running manager before the global install",
+      "cell": "self-update reports the running manager before the global install",
+      "note": "Deleting the pre-install report restores the hole: upgradeAndReconcile never calls reportRunningManager, so the order cell sees report missing (or, with a relocated call after install, report after installEvent)."
+    },
+    {
+      "name": "drop the selected target flags from the replacement child",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "const child = await rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\", ...targetArgv(target)], env, true);",
+      "replace": "const child = await rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, true);",
+      "expectRed": "self-update replacement child carries the selected target flags",
+      "cell": "self-update replacement child carries the selected target flags"
+    }
+  ]
+}
