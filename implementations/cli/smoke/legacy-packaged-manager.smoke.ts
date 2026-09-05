@@ -58,13 +58,47 @@ try {
   assert.equal(spawnSync("sh", ["-c", "command -v cotal"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), fixtureCotal, "the fixture PATH masks the operator cotal binary");
   assert.equal(run(npm, ["root"], current).stdout.trim(), join(realpathSync(current), "node_modules"), "current package install resolves into the isolated prefix before installation");
   assert.equal(run(npm, ["root"], old).stdout.trim(), join(realpathSync(old), "node_modules"), "old package install resolves into the isolated prefix before installation");
-  for (const dir of ["bin", "packages/core", "packages/workspace", "implementations/cli", "implementations/manager", "implementations/delivery", "implementations/auth", "extensions/connector-core"]) {
+  // The packed set is DERIVED, never hand-listed. A hand-listed set silently omits the next
+  // workspace package anyone adds to a dependency here, and the omission is invisible while the
+  // missing package happens to be published at the current version: npm fetches the registry copy
+  // and the install succeeds, so a cell named "installed current packaged closure" passes while one
+  // member came from npm rather than from this build. That is how `@cotal-ai/runtime` sat outside
+  // the set unnoticed, and it only surfaced on a release PR, where the version being packed is by
+  // definition not yet published.
+  const workspacePackages = new Map<string, string>();
+  for (const dir of readdirSync(repo, { withFileTypes: true }).filter((e) => e.isDirectory()).flatMap((e) =>
+    ["bin"].includes(e.name) ? [e.name] : readdirSync(join(repo, e.name), { withFileTypes: true })
+      .filter((c) => c.isDirectory()).map((c) => join(e.name, c.name)))) {
+    try {
+      const meta = JSON.parse(readFileSync(join(repo, dir, "package.json"), "utf8")) as { name?: string; private?: boolean };
+      if (meta.name && !meta.private) workspacePackages.set(meta.name, dir);
+    } catch { /* not a package */ }
+  }
+  // Start from the entry point and take the transitive closure of its workspace: deps.
+  const needed = new Set<string>();
+  const queue = ["cotal-ai"];
+  while (queue.length) {
+    const name = queue.shift()!;
+    const dir = workspacePackages.get(name);
+    if (dir === undefined || needed.has(name)) continue;
+    needed.add(name);
+    const meta = JSON.parse(readFileSync(join(repo, dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
+    for (const [dep, range] of Object.entries(meta.dependencies ?? {})) if (range.startsWith("workspace:")) queue.push(dep);
+  }
+  for (const name of needed) {
+    const dir = workspacePackages.get(name)!;
     const packed = run(pnpm, ["-C", join(repo, dir), "pack", "--pack-destination", packs], repo);
     assert.equal(packed.status, 0, `packed ${dir}: ${packed.stdout}\n${packed.stderr}`);
   }
   const tarballs = readdirSync(packs).filter((name) => name.endsWith(".tgz")).map((name) => join(packs, name));
+  assert.equal(tarballs.length, needed.size, `packed ${tarballs.length} tarball(s) for ${needed.size} closure member(s): ${[...needed].join(", ")}`);
   writeFileSync(join(current, "package.json"), JSON.stringify({ name: "current-fixture", private: true }));
-  assert.equal(run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], current).status, 0, "installed current packaged closure");
+  // `--offline` is the guard, and it is the half that generalises. Without it a member missing from
+  // the closure is fetched from the registry and the install succeeds by luck; with it, any attempt
+  // to reach npm fails loudly and names the package. Derivation fixes today's membership; this makes
+  // tomorrow's omission impossible to pass unnoticed.
+  const install = run(npm, ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], current);
+  assert.equal(install.status, 0, `installed current packaged closure entirely from local tarballs (no registry): ${install.stdout}\n${install.stderr}`);
   writeFileSync(join(old, "package.json"), JSON.stringify({ name: "old-fixture", private: true }));
   assert.equal(run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "cotal-ai@0.42.0"], old).status, 0, "installed published old package");
   const oldRuntime = readFileSync(join(old, "node_modules", "@cotal-ai", "core", "dist", "runtime.js"), "utf8");
