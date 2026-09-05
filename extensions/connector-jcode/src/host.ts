@@ -39,6 +39,20 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+/** Same three-minute window the connector declares to the manager (`readinessTimeoutMs`).
+ *  That wait used to be advisory: a long readiness turn stayed alive with no presence. The host
+ *  now uses this bound on the orientation proof itself (#1216). */
+const READINESS_TURN_TIMEOUT_MS = 180_000;
+
+function readinessTurnTimeoutMs(): number {
+  const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
+  if (!raw) return READINESS_TURN_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0)
+    throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
+  return parsed;
+}
+
 export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
   "handshake_failed",
   "invalid_instance_home",
@@ -256,6 +270,7 @@ export async function runJcodeHost(): Promise<void> {
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
+  const readinessBudgetMs = readinessTurnTimeoutMs();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
@@ -326,8 +341,10 @@ export async function runJcodeHost(): Promise<void> {
   // exit hook once the launch handle exists and own teardown here instead: every record is checked
   // against the immutable bridge identity captured at spawn, then the scan stays quiescent after
   // bridge exit so a late daemon record cannot land behind a single empty pass.
-  const stopPrivateJcode = async (): Promise<void> => {
-    await client?.close().catch(() => {});
+  const stopPrivateJcode = async (opts?: { skipClientClose?: boolean }): Promise<void> => {
+    if (!opts?.skipClientClose) await client?.close().catch(() => {});
+    else void client?.close().catch(() => {});
+    client = undefined;
     if (launchIdentity && launchIdentityValue)
       await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, launch: launchIdentity, identityValue: launchIdentityValue });
   };
@@ -820,11 +837,38 @@ export async function runJcodeHost(): Promise<void> {
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) =>
       run.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name));
+    writeJcodeDiagnostic(
+      `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
+    );
     let readiness;
-    try {
+    const proveReadiness = async (): Promise<void> => {
       readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
       if (!hasOrientation(readiness)) {
+        writeJcodeDiagnostic(
+          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\n`,
+        );
         readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      }
+    };
+    try {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timedOut = await Promise.race([
+          proveReadiness().then(() => "ready" as const),
+          new Promise<"timeout">((resolve) => {
+            timeout = setTimeout(() => resolve("timeout"), readinessBudgetMs);
+          }),
+        ]);
+        if (timedOut === "timeout") {
+          // Do not await the in-flight run() or client.close(): both wait for turn_done, which is
+          // the unbounded thing this bound exists to stop. Startup catch stops the private tree.
+          throw new JcodeConnectorError(
+            "readiness_timeout",
+            `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,
+          );
+        }
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
       }
     } catch (error) {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
@@ -873,7 +917,7 @@ export async function runJcodeHost(): Promise<void> {
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
     // hands the manager a retired seat while an unverified daemon would keep running (#839).
     try {
-      await stopPrivateJcode();
+      await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
     } catch (teardown) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(teardown as Error).message}\n`);
     }
