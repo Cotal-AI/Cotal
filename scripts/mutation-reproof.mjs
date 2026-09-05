@@ -206,11 +206,21 @@ console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).
 //                                       KILLED a false clearance, so it is its own reported state
 //                                       and does not fail the gate.
 // The classification reads mutation-proof's own verdict lines rather than re-deriving them, so the
-// two tools cannot drift on what a verdict means.
+// two tools cannot drift on what a verdict means. mutation-proof colours each verdict, so a line is
+// `\x1b[32mKILLED      \x1b[0m <label>`: strip ANSI before matching, or every verdict reads as
+// absent and a real SURVIVED would fall through to the unexplained-non-zero branch by luck rather
+// than by being recognised. The verdict is the padded word at the start of a line once the colour
+// is gone; the trailing space (from `padEnd`) is required so `KILLED` cannot match inside a label.
+// The vocabulary is the complete set mutation-proof can emit: any token outside it, or none at all,
+// is an unrecognised run and is treated as a finding, never as a pass.
+const ANSI = /\x1b\[[0-9;]*m/g;
+const VERDICTS = ["KILLED", "SURVIVED", "INCONCLUSIVE", "UNGRADABLE", "WRONG-RED", "ERROR"];
+const FATAL_VERDICTS = new Set(["SURVIVED", "UNGRADABLE", "WRONG-RED", "ERROR"]);
+const verdictRe = new RegExp(`^(${VERDICTS.join("|")}) `, "gm");
 const verdictsIn = (output) =>
-  [...output.matchAll(/^(KILLED|SURVIVED|INCONCLUSIVE|UNGRADABLE|ERROR) /gm)].map((m) => m[1]);
+  [...output.replace(ANSI, "").matchAll(verdictRe)].map((m) => m[1]);
 
-const fatal = [];       // SURVIVED / UNGRADABLE / ERROR — the gate's real findings
+const fatal = [];       // SURVIVED / UNGRADABLE / WRONG-RED / ERROR — the gate's real findings
 const preRed = [];      // exit 4 — the suite was red before mutation; not this diff's defect
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
 for (const { path } of selected) {
@@ -222,19 +232,27 @@ for (const { path } of selected) {
   process.stdout.write(run.stdout ?? "");
   process.stderr.write(run.stderr ?? "");
   if (run.status === 0) continue; // every mutation KILLED
-  if (run.status === 4 || /is red BEFORE any mutation/.test(output)) { preRed.push(path); continue; }
+  // Pre-red is keyed on exit 4 ALONE, the code mutation-proof sets only in its pre-mutation baseline
+  // refusal and nowhere a mutation actually ran. A genuine SURVIVED requires a green baseline and a
+  // completed mutation, so it can never carry exit 4 — the two states are exit-code-disjoint, not
+  // distinguished by prose that a suite could coincidentally print.
+  if (run.status === 4) { preRed.push(path); continue; }
   const verdicts = verdictsIn(output);
-  const hasFatal = verdicts.some((v) => v === "SURVIVED" || v === "UNGRADABLE" || v === "ERROR");
-  if (hasFatal) fatal.push(path);
-  else if (verdicts.includes("INCONCLUSIVE")) inconclusive.push(path);
-  else fatal.push(path); // exit 1 with no verdict line at all: an unexplained non-zero, treat as a finding
+  // A single adverse verdict anywhere in the fixture is a finding: SURVIVED does not become benign
+  // because another mutation in the same file was INCONCLUSIVE. INCONCLUSIVE is non-fatal ONLY when
+  // no verdict is adverse and at least one is INCONCLUSIVE, i.e. the run produced no evidence against
+  // the guard. Anything else — an empty parse, an exit-1 with only KILLED lines, a token this gate
+  // does not know — is an unexplained non-zero and is treated as a finding, never as a pass.
+  if (verdicts.some((v) => FATAL_VERDICTS.has(v))) fatal.push(path);
+  else if (verdicts.includes("INCONCLUSIVE") && verdicts.every((v) => v === "KILLED" || v === "INCONCLUSIVE")) inconclusive.push(path);
+  else fatal.push(path);
 }
 
 if (preRed.length) {
   console.log(`\nPRE-RED (${preRed.length} fixture(s)) — suite already red before mutation, not this diff's defect; sequence the suite's own fix: ${preRed.join(", ")}`);
 }
 if (inconclusive.length) {
-  console.log(`\nINCONCLUSIVE (${inconclusive.length} fixture(s)) — timed out or hung, no evidence either way, not treated as SURVIVED: ${inconclusive.join(", ")}`);
+  console.log(`\nINCONCLUSIVE (${inconclusive.length} fixture(s)) — a timeout, a teardown hang, or a swallowed exit code left no evidence either way; not treated as SURVIVED and not treated as KILLED: ${inconclusive.join(", ")}`);
 }
 if (fatal.length) {
   console.error(`\nMUTATION REPROOF FAILED (${fatal.length} fixture(s)): ${fatal.join(", ")}`);

@@ -36,6 +36,22 @@
       "replace": "{ fatal.push(path); continue; }",
       "expectRed": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
       "cell": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate"
+    },
+    {
+      "name": "verdict lines are matched without stripping ANSI colour, so every verdict reads as absent",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "[...output.replace(ANSI, \"\").matchAll(verdictRe)]",
+      "replace": "[...output.matchAll(verdictRe)]",
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
+    },
+    {
+      "name": "an INCONCLUSIVE run is collapsed into a fatal finding instead of its own non-fatal state",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "inconclusive.push(path);",
+      "replace": "fatal.push(path);",
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
     }
   ]
 }

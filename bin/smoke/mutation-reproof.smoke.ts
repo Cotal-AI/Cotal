@@ -48,6 +48,16 @@ const preRedPaths = (out: string): string[] => {
   const m = out.match(/^PRE-RED \(\d+ fixture\(s\)\)[^:]*: (.+)$/m);
   return m ? m[1].split(", ") : [];
 };
+/** Parse the inconclusive set: a selected fixture whose proof produced no evidence either way. */
+const inconclusivePaths = (out: string): string[] => {
+  const m = out.match(/^INCONCLUSIVE \(\d+ fixture\(s\)\)[^:]*: (.+)$/m);
+  return m ? m[1].split(", ") : [];
+};
+/** Parse the machine-readable outcome counts from the final OK summary. Null when the gate failed. */
+const okCounts = (out: string): { discriminated: number; preRed: number; inconclusive: number } | null => {
+  const m = out.match(/MUTATION REPROOF OK \(\d+ fixture\(s\) selected; (\d+) discriminated, (\d+) pre-red, (\d+) inconclusive\)/);
+  return m ? { discriminated: Number(m[1]), preRed: Number(m[2]), inconclusive: Number(m[3]) } : null;
+};
 
 const scan = (root: string, base: string, head: string): { status: number | null; out: string } => {
   const run = spawnSync(process.execPath, [SCAN, "--root", root, "--base", base, "--head", head], { encoding: "utf8" });
@@ -105,6 +115,32 @@ const build = (mutate: (root: string) => void): { root: string; base: string; he
   return r;
 };
 
+/**
+ * A one-fixture repo the caller populates by hand, for outcomes the two-cap shape cannot produce.
+ * `seed` writes the base tree (source, suite, fixture); `mutate` writes the head commit. The fixture
+ * lives at `smoke/mutations/<name>.mutations.json` so the corpus rule still recognises it.
+ */
+function makeSingle(
+  seed: (root: string) => void,
+  mutate: (root: string) => void,
+): { root: string; base: string; head: string } {
+  const root = mkdtempSync(join(tmpdir(), "mutation-reproof-smoke-"));
+  repos.push(root);
+  git(root, ["init", "--quiet"]);
+  git(root, ["config", "user.email", "smoke@example.test"]);
+  git(root, ["config", "user.name", "Smoke"]);
+  mkdirSync(join(root, "smoke", "mutations"), { recursive: true });
+  seed(root);
+  git(root, ["add", "."]);
+  git(root, ["commit", "--quiet", "-m", "base"]);
+  const base = git(root, ["rev-parse", "HEAD"]);
+  mutate(root);
+  git(root, ["add", "."]);
+  git(root, ["commit", "--quiet", "-m", "head"]);
+  const head = git(root, ["rev-parse", "HEAD"]);
+  return { root, base, head };
+}
+
 try {
   // 1. Known survivor: a.mjs gains an upstream cap so its anchored mutant no longer kills. The gate
   //    must re-prove a.mjs (and ONLY a.mjs), watch the survivor, and fail naming exactly a's fixture.
@@ -130,6 +166,14 @@ try {
       "the gate FAILS on the known survivor and names exactly that fixture",
       status === 1 && eq(offenderPaths(out), ["smoke/mutations/a.mutations.json"]),
       `status=${status} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+    check(
+      "a genuine non-killing mutant is classified as a finding, never misread as pre-red or inconclusive",
+      offenderPaths(out).includes("smoke/mutations/a.mutations.json")
+        && !preRedPaths(out).includes("smoke/mutations/a.mutations.json")
+        && !inconclusivePaths(out).includes("smoke/mutations/a.mutations.json")
+        && /^(SURVIVED|UNGRADABLE) /m.test(out.replace(/\x1b\[[0-9;]*m/g, "")),
+      `preRed=${JSON.stringify(preRedPaths(out))} inconclusive=${JSON.stringify(inconclusivePaths(out))}\n${out}`,
     );
   }
 
@@ -211,6 +255,99 @@ try {
       "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
       status === 0 && eq(preRedPaths(out), ["smoke/mutations/a.mutations.json"]) && offenderPaths(out).length === 0,
       `status=${status} preRed=${JSON.stringify(preRedPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+    check(
+      "an all-pre-red run is machine-distinguishable from a real all-clear in its summary counts",
+      JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 0, preRed: 1, inconclusive: 0 }),
+      `counts=${JSON.stringify(okCounts(out))}\n${out}`,
+    );
+  }
+
+  // 6. INCONCLUSIVE (not a timeout — deterministic): a mutation that leaves the suite exiting 0 but
+  //    never printing its named assertion. mutation-proof grades that INCONCLUSIVE, "a green status
+  //    is not a pass". The gate must report it as INCONCLUSIVE, not fail, and NOT collapse it into
+  //    SURVIVED (false blocker) or KILLED (false clearance). This is the outcome the reviewer flagged
+  //    as most likely to be lost, so it is proven with a real verdict rather than asserted.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "c.mjs"), "export const c = () => 1;\n");
+        writeFileSync(join(r, "c.suite.mjs"), [
+          "import { c } from './c.mjs';",
+          "const v = c();",
+          "if (v === 1) console.log('✓ c is one');",
+          "else console.log('c changed but the suite still exits zero');",
+          "",
+        ].join("\n"));
+        writeFileSync(join(r, "smoke", "mutations", "c.mutations.json"), JSON.stringify({
+          command: "node c.suite.mjs",
+          mutations: [{
+            name: "c returns two, so the named assertion never prints and the suite still exits 0",
+            file: "c.mjs",
+            find: "export const c = () => 1;",
+            replace: "export const c = () => 2;",
+            expectRed: "c is one",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "c.mjs"), "export const c = () => 1; // touched so c's fixture is selected\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
+      status === 0
+        && eq(inconclusivePaths(out), ["smoke/mutations/c.mutations.json"])
+        && offenderPaths(out).length === 0
+        && JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 0, preRed: 0, inconclusive: 1 }),
+      `status=${status} inconclusive=${JSON.stringify(inconclusivePaths(out))} offenders=${JSON.stringify(offenderPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
+    );
+  }
+
+  // 7. A real all-clear that reaches the OK summary (a fixture whose mutant is genuinely killed).
+  //    Its counts must read `discriminated > 0, pre-red 0, inconclusive 0` — the positive contrast to
+  //    cases 5 and 6, so "the gate worked and everything was clean" is not the same output as "every
+  //    selected fixture was pre-red or inconclusive".
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "d.mjs"), [
+          "export function capped_d(input) {",
+          "  return Math.min(input, 32);",
+          "}",
+          "",
+        ].join("\n"));
+        writeFileSync(join(r, "d.suite.mjs"), [
+          "import { capped_d } from './d.mjs';",
+          "if (capped_d(100) !== 32) { console.error('✗ FAIL: the d cap holds'); process.exit(1); }",
+          "console.log('✓ the d cap holds');",
+          "",
+        ].join("\n"));
+        writeFileSync(join(r, "smoke", "mutations", "d.mutations.json"), JSON.stringify({
+          command: "node d.suite.mjs",
+          mutations: [{
+            name: "the d cap is removed",
+            file: "d.mjs",
+            find: "  return Math.min(input, 32);",
+            replace: "  return input;",
+            expectRed: "the d cap holds",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "d.mjs"), [
+        "// touched so d's fixture is selected; the anchored line is untouched and its mutant still kills",
+        "export function capped_d(input) {",
+        "  return Math.min(input, 32);",
+        "}",
+        "",
+      ].join("\n")),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a genuinely discriminating fixture reaches the OK summary with counts distinct from pre-red/inconclusive",
+      status === 0
+        && offenderPaths(out).length === 0
+        && JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 1, preRed: 0, inconclusive: 0 }),
+      `status=${status} offenders=${JSON.stringify(offenderPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
     );
   }
 } finally {
