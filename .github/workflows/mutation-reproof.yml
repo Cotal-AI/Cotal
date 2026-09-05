@@ -64,6 +64,9 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -94,3 +97,23 @@ jobs:
         run: pnpm build
       - name: Re-prove every mutation fixture
         run: node scripts/mutation-reproof.mjs --all
+      - name: File a triage issue when the sweep fails
+        # The scheduled sweep runs on no pull request, so a red run is otherwise visible only to
+        # whoever opens the Actions tab. This turns a failed sweep into an assigned, deduplicated
+        # tracking issue, so "a maintainer owns triage" is enforced by the workflow rather than
+        # asserted in prose. One open issue at a time: a run that fails while the marker issue is
+        # still open comments on it instead of opening a second.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          marker="mutation-reproof: full sweep failing"
+          existing="$(gh issue list --state open --search "in:title \"$marker\"" --json number --jq '.[0].number' || true)"
+          body="The daily mutation-reproof full sweep failed. A fixture's guarded suite no longer kills its named mutant, or a fixture is dangling or malformed. Triage: open the run, read the SURVIVED / dangling / malformed lines, and repair the fixture or file the named finding. Run: $RUN_URL"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$marker" --body "$body"
+          fi
