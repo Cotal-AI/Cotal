@@ -130,13 +130,13 @@ try {
     }
   };
 
-  const unknown = await call("spawn", { name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restart: "always" } }).then((r) => r.reply, asValue);
+  const unknown = await call("spawn", { name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1000, extra: true } }).then((r) => r.reply, asValue);
   c("opStart refuses an unknown supervise key",
-    (unknown as { ok?: boolean }).ok === false || (unknown as { code?: string }).code !== undefined, unknown);
+    /unknown key|additional propert/i.test(JSON.stringify(unknown)), unknown);
 
   const missing = await call("spawn", { name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1 } }).then((r) => r.reply, asValue);
   c("opStart refuses a policy without windowMs",
-    (missing as { ok?: boolean }).ok === false || (missing as { code?: string }).code !== undefined, missing);
+    /windowMs/i.test(JSON.stringify(missing)), missing);
 
   const spawnGoal = "spawn-seat".padEnd(43, "s");
   const spawned = await call("spawn", {
@@ -256,7 +256,8 @@ try {
   userMgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot: userRoot });
   await userMgr.start();
   const user = await userMgr.startAgent({ name: "user", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1_000 } });
-  c("user-mode refuses supervise at accept", user.ok === false && (user.error ?? "").includes("user-mode"), user);
+  c("user-mode refuses supervise at accept",
+    user.ok === false && (user.error ?? "").includes("a user-mode seat has no static slot"), user);
   await userMgr.stop().catch(() => {});
   userMgr = undefined;
   removeMesh(space);
