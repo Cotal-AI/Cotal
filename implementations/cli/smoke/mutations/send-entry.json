@@ -29,8 +29,8 @@
     {
       "name": "one-shot sends again derive their display name from the command verb",
       "file": "implementations/cli/src/commands/send.ts",
-      "find": "  const caller = process.env.COTAL_NAME?.trim();\n  if (!caller) {\n    console.error(c.red(\"COTAL_NAME is required for `cotal send`; without a live-seat caller identity the message would be unattributable.\"));\n    console.error(c.dim(\"Set it to the invoking seat before sending: COTAL_NAME=<live-seat-name> cotal send ...\"));\n    process.exit(1);\n  }",
-      "replace": "  const caller = \"send\";",
+      "find": "  const caller = transientCaller();\n  if (!caller) {\n    console.error(c.red(\"`cotal send` requires a managed seat identity (COTAL_NAME plus COTAL_ID, or COTAL_OWNER plus COTAL_ACTOR).\"));\n    console.error(c.dim(\"Run it from that seat's shell, or use the in-session cotal_dm / cotal_send / cotal_anycast tool.\"));\n    process.exit(1);\n  }",
+      "replace": "  const caller = { name: \"send\", owner: \"local\", actor: \"send\" };",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:send",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "`cotal send dm` without COTAL_NAME exits non-zero",

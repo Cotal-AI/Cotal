@@ -109,7 +109,15 @@ function cotal(args: string[], timeout = 120_000): { code: number | null; out: s
     cwd: root,
     encoding: "utf8" as const,
     timeout,
-    env: { ...process.env, NO_COLOR: "1", COTAL_HOME: HOME, XDG_CONFIG_HOME: CONFIG, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    env: {
+      ...process.env,
+      NO_COLOR: "1",
+      COTAL_HOME: HOME,
+      XDG_CONFIG_HOME: CONFIG,
+      COTAL_SKIP_CONNECTOR_SEED: "1",
+      COTAL_NAME: "sysrot",
+      COTAL_ID: "sysrot_send",
+    },
   };
   assertSmokeSandboxDown(sandbox, args, options);
   const r = spawnSync(process.execPath, [cotalJs, ...args], options);

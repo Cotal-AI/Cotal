@@ -256,11 +256,7 @@ function exitOnRefusal(e: unknown): never {
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
-export async function connectOrThrow(
-  flags: ConnectFlags,
-  role: Profile,
-  opts: { instanceId?: string | string[]; principal?: { owner: string; actor: string } } = {},
-): Promise<Connection> {
+export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
   if (flags.creds) {
     const space = flags.space ?? DEFAULT_SPACE;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
@@ -348,7 +344,7 @@ export async function connectOrThrow(
       creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid, ...(pinned ? { endpointCapabilities: pinned } : {}) });
       epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
     } else {
-      creds = await mintCreds(target.auth, identity, role, opts.principal ? { principal: opts.principal } : {});
+      creds = await mintCreds(target.auth, identity, role);
     }
   }
   await preflightOrThrow(target, creds);
@@ -529,11 +525,7 @@ export async function preflightOrExit(target: MeshTarget, probeCreds?: string): 
  * {@link connectOrThrow} with the exiting disposition: the form nearly every command wants, where a
  * refusal is the end of the command and the operator gets one sentence rather than a stack trace.
  */
-export async function connectOrExit(
-  flags: ConnectFlags,
-  role: Profile,
-  opts: { instanceId?: string | string[]; principal?: { owner: string; actor: string } } = {},
-): Promise<Connection> {
+export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
   try {
     return await connectOrThrow(flags, role, opts);
   } catch (e) {

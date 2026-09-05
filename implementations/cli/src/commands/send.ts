@@ -8,7 +8,7 @@ import {
 import { loadMeshes, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { openTransient, transientCaller, type TransientCaller } from "../lib/transient.js";
+import { openTransient, transientCaller } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 
@@ -42,28 +42,9 @@ export async function send(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   const opened = await openTransient(values, caller);
-  await requireLiveCaller(opened.ep, caller, opened.space);
   if (mode === "dm") return dm(opened, rest);
   if (mode === "msg") return msg(opened, rest);
   return ask(opened, rest);
-}
-
-async function requireLiveCaller(ep: Awaited<ReturnType<typeof openTransient>>["ep"], caller: TransientCaller, space: string): Promise<void> {
-  for (let i = 0; i < 20; i++) {
-    const live = ep.getRoster().find((p) => p.card.id === `${caller.owner}.${caller.actor}` && p.status !== "offline");
-    if (live) {
-      if (live.card.name !== caller.name) {
-        console.error(c.red(`managed seat principal ${live.card.id} is live as "${live.card.name}", not COTAL_NAME="${caller.name}"`));
-        await ep.stop();
-        process.exit(1);
-      }
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  console.error(c.red(`managed seat ${caller.owner}.${caller.actor} is not live in space ${space}; refusing an unattributable send`));
-  await ep.stop();
-  process.exit(1);
 }
 
 /** `cotal send dm <agent> "<text>"` — one unicast to a peer by name, then exit. */

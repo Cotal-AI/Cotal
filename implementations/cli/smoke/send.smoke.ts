@@ -3,20 +3,24 @@
  * transient endpoint, and broker. The suite owns an OS-assigned open JetStream broker and passes
  * its address explicitly to every participant, so it cannot borrow or collide with an ambient mesh.
  *
+ * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
+ * inherited COTAL_* is stripped. COTAL_SKIP_CONNECTOR_SEED is a reconcile skip, not a store fence;
+ * the seed store follows XDG_CONFIG_HOME (via globalConfigDir()), not COTAL_HOME.
+ *
  * Run: pnpm smoke:send
  */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { CotalEndpoint, isReachable, type CotalMessage, type Delivery } from "@cotal-ai/core";
-import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 20;
+const EXPECTED = 22;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -38,15 +42,36 @@ const releaseBroker = teardownOnSignal(broker, storeDir);
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const cli = fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url));
 
+const home = mkdtempSync(join(tmpdir(), "cotal-send-home-"));
+const releaseHome = teardownPathOnSignal(home);
+mkdirSync(join(home, ".cotal"), { recursive: true });
+const xdg = join(home, "xdg");
+mkdirSync(xdg);
+const tmp = mkdtempSync(join(tmpdir(), "cotal-send-tmp-"));
+const releaseTmp = teardownPathOnSignal(tmp);
+
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
+const isolatedEnv: NodeJS.ProcessEnv = {
+  ...cleanEnv,
+  HOME: home,
+  USERPROFILE: home,
+  TMPDIR: tmp,
+  COTAL_HOME: join(home, ".cotal"),
+  XDG_CONFIG_HOME: xdg,
+  COTAL_SKIP_CONNECTOR_SEED: "1",
+  NO_COLOR: "1",
+};
+
 const run = (
   args: string[],
-  env: NodeJS.ProcessEnv = process.env,
+  extra: NodeJS.ProcessEnv = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
     execFile(
       process.execPath,
       ["--import", "tsx", cli, ...args],
-      { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" } },
+      { cwd: root, env: { ...isolatedEnv, ...extra } },
       (err, stdout, stderr) =>
         resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr }),
     );
@@ -87,14 +112,13 @@ try {
   const multicastText = `m-${randomUUID().slice(0, 6)}`;
   const anycastText = `a-${randomUUID().slice(0, 6)}`;
   const target = ["--space", space, "--server", servers];
-  const noIdentityEnv = { ...process.env, COTAL_NAME: "" };
 
   const noIdentityDmText = `noid-u-${randomUUID().slice(0, 6)}`;
   const noIdentityMsgText = `noid-m-${randomUUID().slice(0, 6)}`;
   const noIdentityAskText = `noid-a-${randomUUID().slice(0, 6)}`;
-  const noIdentityDm = await run(["send", "dm", "bob", noIdentityDmText, ...target], noIdentityEnv);
-  const noIdentityMsg = await run(["send", "msg", "general", noIdentityMsgText, ...target], noIdentityEnv);
-  const noIdentityAsk = await run(["send", "ask", "reviewer", noIdentityAskText, ...target], noIdentityEnv);
+  const noIdentityDm = await run(["send", "dm", "bob", noIdentityDmText, ...target]);
+  const noIdentityMsg = await run(["send", "msg", "general", noIdentityMsgText, ...target]);
+  const noIdentityAsk = await run(["send", "ask", "reviewer", noIdentityAskText, ...target]);
   await wait(700);
 
   check("`cotal send dm` without COTAL_NAME exits non-zero", noIdentityDm.code !== 0, noIdentityDm);
@@ -107,7 +131,10 @@ try {
   check("`cotal send ask` refusal names COTAL_NAME", /COTAL_NAME/.test(noIdentityAsk.stderr), noIdentityAsk.stderr);
   check("`cotal send ask` without COTAL_NAME delivers nothing", !got.some((m) => m.text === noIdentityAskText), got);
 
-  const callerEnv = { ...process.env, COTAL_NAME: "alice" };
+  const nameOnly = await run(["send", "dm", "bob", `nameonly-${randomUUID().slice(0, 6)}`, ...target], { COTAL_NAME: "alice" });
+  check("`cotal send dm` with COTAL_NAME but no COTAL_ID exits non-zero", nameOnly.code !== 0, nameOnly);
+
+  const callerEnv = { COTAL_NAME: "alice", COTAL_ID: "alice_send" };
   const dm = await run(["send", "dm", "bob", unicastText, ...target], callerEnv);
   const msg = await run(["send", "msg", "general", multicastText, ...target], callerEnv);
   const ask = await run(["send", "ask", "reviewer", anycastText, ...target], callerEnv);
@@ -129,7 +156,11 @@ try {
   await killAndAwaitExit(broker);
   check("the owned broker exits before its JetStream tree is removed", broker.exitCode !== null || broker.signalCode !== null);
   rmSync(storeDir, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
+  rmSync(tmp, { recursive: true, force: true });
   releaseBroker();
+  releaseHome();
+  releaseTmp();
 }
 
 check(`every scenario cell ran — ${EXPECTED} expected`, pass + fail === EXPECTED, { pass, fail, expected: EXPECTED });

@@ -1,6 +1,5 @@
 import { CotalEndpoint } from "@cotal-ai/core";
 import { endpointAuth, type Connection } from "@cotal-ai/workspace";
-import { readFileSync } from "node:fs";
 import { c } from "../ui.js";
 import { connectOrExit } from "./connect.js";
 
@@ -36,54 +35,19 @@ function callerFromEnv(env: NodeJS.ProcessEnv): TransientCaller | undefined {
   return undefined;
 }
 
-function linuxProcess(pid: number): { parentPid: number; env: NodeJS.ProcessEnv } | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.lastIndexOf(") ");
-    if (after < 0) return undefined;
-    const fields = stat.slice(after + 2).trim().split(/\s+/u);
-    const parentPid = Number(fields[1]);
-    if (!Number.isInteger(parentPid) || parentPid < 0) return undefined;
-    const env = Object.fromEntries(
-      readFileSync(`/proc/${pid}/environ`, "utf8")
-        .split("\0")
-        .filter(Boolean)
-        .map((entry) => {
-          const eq = entry.indexOf("=");
-          return eq < 0 ? [entry, ""] : [entry.slice(0, eq), entry.slice(eq + 1)];
-        }),
-    );
-    return { parentPid, env };
-  } catch {
-    return undefined;
-  }
-}
-
-/** The nearest complete seat identity in this process tree. One process must carry the whole tuple;
- * fields from different ancestors are never combined into a principal nobody launched. */
+/** Complete seat identity from THIS process's environment. A name without an id is not enough, and
+ * ancestor environments are not walked: inherited `/proc` identity would make a stripped child still
+ * send as its parent seat. */
 export function transientCaller(env: NodeJS.ProcessEnv = process.env): TransientCaller | undefined {
-  const direct = callerFromEnv(env);
-  if (direct) return direct;
-  if (process.platform !== "linux") return undefined;
-  let pid = process.ppid;
-  const seen = new Set<number>();
-  while (pid > 1 && !seen.has(pid)) {
-    seen.add(pid);
-    const processInfo = linuxProcess(pid);
-    if (!processInfo) return undefined;
-    const caller = callerFromEnv(processInfo.env);
-    if (caller) return caller;
-    pid = processInfo.parentPid;
-  }
-  return undefined;
+  return callerFromEnv(env);
 }
 
 /** Resolve where to connect + with what credentials (`--creds` → raw off-registry; user-auth mesh →
  *  login/bearer material; else the running mesh's minted least-privilege OPERATOR creds — self-scoped
  *  publish + presence/channel read, no broad manager). Fail-loud — an unresolved registry or an
  *  unreachable/auth-mismatched broker exits with one sentence, never degrades. */
-export async function resolveConnect(values: ConnectValues, caller?: TransientCaller): Promise<Connection> {
-  return connectOrExit(values, "operator", caller ? { principal: caller } : undefined);
+export async function resolveConnect(values: ConnectValues): Promise<Connection> {
+  return connectOrExit(values, "operator");
 }
 
 /** Open a transient endpoint: it watches presence (so name→id resolution and the live roster work)
@@ -92,8 +56,8 @@ export async function openTransient(
   values: ConnectValues,
   caller: string | TransientCaller,
 ): Promise<{ ep: CotalEndpoint; space: string }> {
-  const identity = typeof caller === "string" ? undefined : caller;
-  const conn = await resolveConnect(values, identity);
+  const name = typeof caller === "string" ? caller : caller.name;
+  const conn = await resolveConnect(values);
   const ep = new CotalEndpoint({
     space: conn.space,
     servers: conn.server,
@@ -102,11 +66,10 @@ export async function openTransient(
     consume: false,
     registerPresence: false,
     watchPresence: true,
-    card: {
-      name: typeof caller === "string" ? caller : caller.name,
-      kind: "endpoint",
-      ...(identity ? { owner: identity.owner, actor: identity.actor } : {}),
-    },
+    // Display name only. Owner+actor on this card would disagree with a user-mode bearer
+    // and with the operator cred mint, so admission stays in transientCaller and the wire
+    // principal stays the connection's.
+    card: { name, kind: "endpoint" },
   });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
