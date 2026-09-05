@@ -1,0 +1,32 @@
+{
+  "suite": "implementations/manager/smoke/manager-service-ops.smoke.ts",
+  "guard": "manifest cwd reaches the real child through the registered launch endpoint and relative paths resolve on the manager host",
+  "command": "pnpm smoke:manager-service-ops",
+  "progressPattern": "\u2713",
+  "minTicks": 4,
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/manifest-cwd.json",
+  "why": [
+    "Issue #963: the manifest resolver rejects cwd before it can reach a multi-repository fleet.",
+    "The CLI unit test drives resolve, prepare and launch-spec projection. This suite crosses the registered",
+    "manager launch endpoint with that field and reads process.cwd() written by an actual spawned child.",
+    "A manager row alone could repeat the requested path while the process runs elsewhere."
+  ],
+  "mutations": [
+    {
+      "name": "manifest launch drops cwd before startAgent",
+      "file": "implementations/manager/src/launch.ts",
+      "find": "    cwd: a.cwd,",
+      "replace": "    cwd: undefined,",
+      "expectRed": "manifest cwdrelative runs in the declared manager-host directory",
+      "cell": "manifest cwdrelative runs in the declared manager-host directory"
+    },
+    {
+      "name": "relative cwd resolves against the manager process cwd instead of its workspace",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const cwd = opts.cwd ? resolve(this.workspaceRoot, opts.cwd) : this.workspaceRoot;",
+      "replace": "const cwd = opts.cwd ? resolve(opts.cwd) : this.workspaceRoot;",
+      "expectRed": "manifest cwdrelative runs in the declared manager-host directory",
+      "cell": "manifest cwdrelative runs in the declared manager-host directory"
+    }
+  ]
+}
