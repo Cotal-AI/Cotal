@@ -736,6 +736,53 @@ try {
     });
     c("a slot held at a generation behind the live gate does NOT block deregistration",
       behind.removed === true && liveGen > 0, { behind, liveGen });
+    const DC_UNDEF = register({ urn: "ai.cotal.wundef", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const undefSpec: ServiceSpec = { endpoint: "wundef", owner: "u_op", clusterDigests: [DC_UNDEF], protocol: { v: 1 } };
+    let duringUndef: Awaited<ReturnType<typeof deregisterServiceInstance>> | undefined | "threw";
+    let undefErr: { code?: string; message?: string } | undefined;
+    const kvUndef = hookedKv({ beforeWrite: async (k) => {
+      if (k !== "govern.wundef" || duringUndef !== undefined) return;
+      const spec = await kv.get(`svc.wundef.${IID_A}.spec`);
+      if (!spec || spec.operation !== "PUT") return;
+      try {
+        duringUndef = await deregisterServiceInstance(kv, {
+          endpoint: "wundef", instanceId: IID_A, observeGeneration: () => undefined as unknown as number,
+        });
+      } catch (e) {
+        duringUndef = "threw";
+        undefErr = { code: (e as EpEnvelopeError).code, message: (e as Error).message };
+      }
+    } });
+    await regOn(kvUndef, undefSpec, IID_A);
+    c("an undefined observeGeneration with a held slot FAILS CLOSED (does not delete)",
+      duringUndef === "threw" && undefErr?.code === "unavailable" && /not an unsigned generation/.test(undefErr.message ?? ""), { duringUndef, undefErr });
+    {
+      const spec = await kv.get(`svc.wundef.${IID_A}.spec`);
+      c("the undefined observation left the spec in place", spec?.operation === "PUT", spec?.operation);
+    }
+    const DC_AHEAD = register({ urn: "ai.cotal.wahead", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const aheadSpec: ServiceSpec = { endpoint: "wahead", owner: "u_op", clusterDigests: [DC_AHEAD], protocol: { v: 1 } };
+    await regOn(kv, aheadSpec, IID_A);
+    const aheadLive = gateStates.get(`wahead/${IID_A}`)!.generation;
+    {
+      const head = await readHead("wahead");
+      head.provisional = { instanceId: IID_A, generation: aheadLive + 1, commands: { work: [TRAIT_GUARDED] } };
+      await kv.put("govern.wahead", new TextEncoder().encode(JSON.stringify(head)));
+    }
+    let aheadErr: { code?: string; message?: string } | undefined;
+    try {
+      await deregisterServiceInstance(kv, {
+        endpoint: "wahead", instanceId: IID_A, observeGeneration: () => aheadLive,
+      });
+    } catch (e) {
+      aheadErr = { code: (e as EpEnvelopeError).code, message: (e as Error).message };
+    }
+    c("a slot AHEAD of the observed live generation FAILS CLOSED (ahead is not a leftover)",
+      aheadErr?.code === "unavailable" && /ahead of the observed live gate generation/.test(aheadErr.message ?? "") && aheadLive >= 0, { aheadErr, aheadLive });
+    {
+      const spec = await kv.get(`svc.wahead.${IID_A}.spec`);
+      c("the ahead observation left the spec in place", spec?.operation === "PUT", spec?.operation);
+    }
   }
 
   // A definite slot-take CAS loss is a loud CONFLICT (finding: the record helpers wrap the

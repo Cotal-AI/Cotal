@@ -939,10 +939,13 @@ export type ServiceDeregistration =
  *
  * A LIVE GOVERNANCE SLOT AT THE CURRENT GATE GENERATION IS ALSO A REFUSAL. Registration holds that
  * slot from decision through reopen so a delete cannot invalidate the spec the freeze is completing.
- * `observeGeneration` is a READ of this instance's issuance-gate generation, never a freeze. Compare
- * against that observed number whether the gate is open or frozen: matching means in-flight (refuse);
- * a slot generation behind it is a leftover after a successful reopen whose release ack was lost
- * (orphaned, delete proceeds). An unreadable observation fails closed as in-flight.
+ * `observeGeneration` is a READ of this instance's issuance-gate generation, never a freeze. The
+ * observation is classified, not trusted as a typed number:
+ *   - throw, absent, or not a non-negative safe integer → fail closed (`unavailable`)
+ *   - equal to the slot generation → in-flight (refuse)
+ *   - strictly greater than the slot generation → leftover after reopen (delete proceeds)
+ *   - strictly less than the slot generation → ahead of the live gate (fail closed)
+ * Non-equal is not "behind". Only `slot.generation < liveGeneration` is the permissive proof.
  */
 export async function deregisterServiceInstance(
   kv: KV,
@@ -966,14 +969,19 @@ export async function deregisterServiceInstance(
   {
     const gov = await readEndpointGovernance(kv, args.endpoint);
     if (gov.provisional?.instanceId === iId) {
-      let liveGeneration: number;
+      let observed: unknown;
       try {
-        liveGeneration = await args.observeGeneration();
+        observed = await args.observeGeneration();
       } catch (e) {
         throw new EpEnvelopeError("unavailable", `could not observe the issuance-gate generation for "${args.endpoint}/${iId}" while its governance slot is held; refusing the delete rather than racing an in-flight registration (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
       }
+      if (!wireInt(observed))
+        throw new EpEnvelopeError("unavailable", `could not observe the issuance-gate generation for "${args.endpoint}/${iId}" while its governance slot is held; refusing the delete rather than racing an in-flight registration (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
+      const liveGeneration = observed;
       if (gov.provisional.generation === liveGeneration) return { removed: false, reason: "registration-in-flight" };
-      // else: slot.generation is behind the live gate — a leftover after reopen, not in-flight.
+      if (gov.provisional.generation > liveGeneration)
+        throw new EpEnvelopeError("unavailable", `the governance slot for "${args.endpoint}/${iId}" is held at generation ${gov.provisional.generation}, ahead of the observed live gate generation ${liveGeneration}; refusing the delete rather than treating an ahead or garbled observation as a leftover (SPEC 13.7)`);
+      // slot.generation < liveGeneration: leftover after a successful reopen whose release ack was lost.
     }
   }
   const statusEntry = await kv.get(statusKey);
