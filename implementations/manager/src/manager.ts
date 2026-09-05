@@ -913,8 +913,18 @@ export class Manager {
    * hear `not-found`, which a seat reads as "drop it": failure reported for work that committed.
    * The settled answer lives here for a bounded window instead, and the sweep drops it after,
    * which is also what keeps this map from being one entry per turn for the process lifetime.
+   *
+   * `ref` is the goal coordinates the durable terminal is published under. A late yield that
+   * arrives after pendingTurns is gone and before `settled` is remembered (or after a concurrent
+   * sweep dropped the settled field) still has to name that terminal, never `not-found`. The
+   * index entry is not that answer: it is cleared at commit, and the yield path never consults it.
+   *
+   * `leftoverSince` is when the pending latch dropped. An unsettled leftover ages off that stamp,
+   * never off `acceptance.deadlineAt`: a turn that expired after a long outage would otherwise be
+   * pruned on the first sweep tick, taking the GoalRef with it, and a late yield in the retry
+   * window would hear `not-found` again.
    */
-  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; settled?: { state: string; at: number } }>();
+  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>();
   /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
    *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
@@ -6067,7 +6077,7 @@ export class Manager {
     this.pendingTurns.set(goalId, pending);
     this.ensureTurnSweep();
     const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
-    this.turnAcceptances.set(goalId, { acceptance });
+    this.turnAcceptances.set(goalId, { acceptance, ref });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
     return acceptance;
   }
@@ -6122,11 +6132,21 @@ export class Manager {
       // reporting failure for work the run already has. The answer the first reply carried is
       // served again instead, to the addressee it was addressed to and nobody else.
       const settled = this.turnAcceptances.get(goalId);
-      if (settled?.settled !== undefined) {
+      if (settled !== undefined) {
         const a = settled.acceptance;
         if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)
           throw new EpEnvelopeError("permission-denied", `turn "${goalId}" was addressed to ${a.owner}.${a.actor}/${a.uid}; a yield is the addressee's own (SPEC 13.6)`);
-        return { goalId, state: settled.settled.state };
+        if (settled.settled !== undefined) return { goalId, state: settled.settled.state };
+        // The in-memory answer is not yet remembered (pending deleted before the terminal CAS,
+        // or a concurrent sweep dropped `settled` while the commit was still in flight). The
+        // durable terminal is the one the run already has; name it, never `not-found`.
+        if (settled.ref !== undefined) {
+          const ended = await readGoalResult(gw.ctx, settled.ref);
+          if (ended !== undefined) {
+            this.rememberSettledTurn(goalId, ended.state, ended.ts);
+            return { goalId, state: ended.state };
+          }
+        }
       }
       throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
     }
@@ -6162,6 +6182,7 @@ export class Manager {
     this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
     await clearGoalIndex(gw.ctx, p.ref);
     this.pendingTurns.delete(goalId);
+    this.markTurnLatchDropped(goalId, at);
     this.rememberSettledTurn(goalId, fact.state, at);
     this.maybeStopTurnSweep();
     return { goalId, state: fact.state };
@@ -6175,17 +6196,18 @@ export class Manager {
     const gw = this.goalWriter;
     if (!gw) return;
     if (!this.pendingTurns.delete(p.goalId)) return;
+    this.markTurnLatchDropped(p.goalId);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
       await this.assertGoalWriterEpochCurrent(epoch);
       const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
       this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
-      await clearGoalIndex(gw.ctx, p.ref);
-      // The SAME order the yield path keeps: remember, then ask whether the sweep may stop. Asked
-      // first, the stop saw no pending turn and no settled answer, cleared the acceptance map, and
-      // the remember below found nothing to write to; a yield whose reply was lost then heard
-      // `not-found` for the last expired turn, which the seat reads as "drop it".
+      // Remember BEFORE the index clear: a late yield that arrives after the pending latch
+      // (the delete at the top of this function) and after this CAS has to name this terminal.
+      // Clearing first, then remembering, left a window where maybeStopTurnSweep saw no pending
+      // turn and no settled answer, wiped the acceptance, and rememberSettledTurn no-op'd.
       this.rememberSettledTurn(p.goalId, fact.state, Date.now());
+      await clearGoalIndex(gw.ctx, p.ref);
     } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${(e as Error).message}`); }
     this.maybeStopTurnSweep();
   }
@@ -6230,13 +6252,25 @@ export class Manager {
     entry.settled = { state, at };
   }
 
+  /** Stamp when the pending latch dropped, so an unsettled leftover ages off that instant rather
+   *  than the original deadline. Idempotent: the first drop is the one the retry window starts at. */
+  private markTurnLatchDropped(goalId: string, at = Date.now()): void {
+    const entry = this.turnAcceptances.get(goalId);
+    if (entry === undefined || entry.leftoverSince !== undefined) return;
+    entry.leftoverSince = at;
+  }
+
   /** Stop the sweep only when it has nothing left to do. It drives elapsed turns to their deadline
    *  terminals AND drops settled answers once their retry window has passed, so a stop while the
    *  second is still owed would leave one entry per turn for the process lifetime. */
   private maybeStopTurnSweep(): void {
     if (this.pendingTurns.size > 0) return;
-    for (const e of this.turnAcceptances.values()) if (e.settled !== undefined) return;
-    this.turnAcceptances.clear();
+    // An acceptance with no `settled` yet is the in-flight deadline commit: pending was the
+    // latch and is already gone, the terminal CAS has not returned, and a concurrent sweep
+    // tick used to clear the map here, so rememberSettledTurn no-op'd and a late yield heard
+    // `not-found` for a deny the run already has. Prune is the only deleter; stop only when
+    // it has left nothing.
+    if (this.turnAcceptances.size > 0) return;
     this.stopTurnSweep();
   }
 
@@ -6251,8 +6285,15 @@ export class Manager {
   private async sweepTurnDeadlines(): Promise<void> {
     const now = Date.now();
     // A settled answer is kept only as long as a lost reply could still be retried under it.
-    for (const [goalId, e] of [...this.turnAcceptances.entries()])
-      if (e.settled !== undefined && now - e.settled.at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
+    // An UNSETTLED acceptance whose pending latch is already gone is the in-flight (or failed)
+    // deadline commit: keep it for the same window so a late yield can still read the durable
+    // terminal, then drop it so a commit that never remembered cannot pin the sweep forever.
+    for (const [goalId, e] of [...this.turnAcceptances.entries()]) {
+      if (this.pendingTurns.has(goalId)) continue;
+      // Unsettled leftovers age off the latch-drop stamp, never `deadlineAt`.
+      const at = e.settled?.at ?? e.leftoverSince;
+      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
+    }
     // The prune above is the one event after which the sweep may have nothing left to do, and
     // the settle-time callers cannot see it: they run when an answer has just been remembered.
     this.maybeStopTurnSweep();
@@ -6324,6 +6365,7 @@ export class Manager {
         fingerprint: spec.value.fingerprint, deadlineAt: p.deadlineAt,
         executor: { lifecycleUid: this.managerInstanceId, epoch: p.holdEpoch },
       },
+      ref: p.ref,
     });
     // NO LIVENESS VERDICT AT BOOT. The agents map is empty here: seats are re-registered later,
     // by the resume path, so `not in the map` at this moment means "not yet re-registered", never

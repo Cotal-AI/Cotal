@@ -26,12 +26,30 @@
     },
     {
       "name": "Jcode no longer declares its long bounded bootstrap window",
-      "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "  readinessTimeoutMs: 180_000,",
-      "replace": "  readinessTimeoutMs: 1_000,",
+      "file": "extensions/connector-jcode/src/readiness-bound.ts",
+      "find": "export const JCODE_READINESS_TIMEOUT_MS = 180_000;",
+      "replace": "export const JCODE_READINESS_TIMEOUT_MS = 1_000;",
       "command": "pnpm smoke:jcode-args",
       "completionMarker": "self-registers as connector jcode",
       "expectRed": "declares a bounded three-minute bootstrap window"
+    },
+    {
+      "name": "manager window is a second 180s literal again",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "  readinessTimeoutMs: JCODE_READINESS_TIMEOUT_MS,",
+      "replace": "  readinessTimeoutMs: 180_000,",
+      "command": "pnpm smoke:jcode-args",
+      "completionMarker": "self-registers as connector jcode",
+      "expectRed": "the manager window is the exported bound, not a second literal"
+    },
+    {
+      "name": "host default bound is a second 180s literal again",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "  if (!raw) return JCODE_READINESS_TIMEOUT_MS;",
+      "replace": "  if (!raw) return 180_000;",
+      "command": "pnpm smoke:jcode-args",
+      "completionMarker": "self-registers as connector jcode",
+      "expectRed": "the host default bound is that same export, not a second literal"
     }
   ]
 }

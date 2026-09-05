@@ -45,6 +45,7 @@ export function renderTopology(p: PreparedManifest): string {
       .filter(Boolean)
       .join(" · ");
     out.push(`  ${c.bold(a.name)}  ${c.dim(meta + " · " + src)}`);
+    if (a.cwd !== undefined) out.push(`      ${c.dim("cwd (manager host):")} ${JSON.stringify(a.cwd)}`);
     out.push(`      ${c.dim(LABEL.subscribe + ":")}      ${list(a.policy.subscribe)}`);
     out.push(`      ${c.dim(LABEL.allowSubscribe + ":")}    ${list(a.policy.allowSubscribe)}`);
     out.push(`      ${c.dim(LABEL.allowPublish + ":")}      ${list(a.policy.allowPublish)}`);
@@ -132,7 +133,10 @@ export function renderSpawnPlan(
   if (!channels.create.length && !channels.existsUnmanaged.length && !channels.owned.length) out.push(`  ${c.dim("(none)")}`);
 
   out.push("", c.bold("Agents:"));
-  for (const e of agents.willCreate) out.push(`  ${c.green("+")} ${c.bold(e.agent.name)} ${c.dim(`${e.agent.agentType} - will launch`)}`);
+  for (const e of agents.willCreate) {
+    out.push(`  ${c.green("+")} ${c.bold(e.agent.name)} ${c.dim(`${e.agent.agentType} - will launch`)}`);
+    if (e.agent.cwd !== undefined) out.push(`      ${c.dim("cwd (manager host):")} ${JSON.stringify(e.agent.cwd)}`);
+  }
   for (const e of agents.alreadyOwned) out.push(`  ${c.dim("=")} ${c.bold(e.agent.name)} ${c.dim(`(already running as ${e.prior?.name} - no-op)`)}`);
   for (const e of agents.stale)
     out.push(

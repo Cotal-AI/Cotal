@@ -18,6 +18,7 @@ import {
   jcodeEffortRefusal,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
+import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   MeshAgent,
@@ -39,6 +40,16 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+
+function readinessTurnTimeoutMs(): number {
+  const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
+  if (!raw) return JCODE_READINESS_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0)
+    throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
+  return parsed;
+}
+
 export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
   "handshake_failed",
   "invalid_instance_home",
@@ -256,6 +267,7 @@ export async function runJcodeHost(): Promise<void> {
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
+  const readinessBudgetMs = readinessTurnTimeoutMs();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
@@ -326,8 +338,10 @@ export async function runJcodeHost(): Promise<void> {
   // exit hook once the launch handle exists and own teardown here instead: every record is checked
   // against the immutable bridge identity captured at spawn, then the scan stays quiescent after
   // bridge exit so a late daemon record cannot land behind a single empty pass.
-  const stopPrivateJcode = async (): Promise<void> => {
-    await client?.close().catch(() => {});
+  const stopPrivateJcode = async (opts?: { skipClientClose?: boolean }): Promise<void> => {
+    if (!opts?.skipClientClose) await client?.close().catch(() => {});
+    else void client?.close().catch(() => {});
+    client = undefined;
     if (launchIdentity && launchIdentityValue)
       await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, launch: launchIdentity, identityValue: launchIdentityValue });
   };
@@ -820,22 +834,70 @@ export async function runJcodeHost(): Promise<void> {
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) =>
       run.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name));
-    let readiness;
-    try {
-      readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    writeJcodeDiagnostic(
+      `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
+    );
+    const readinessClient = client;
+    const readinessSessionId = sessionId;
+    if (!readinessClient || !readinessSessionId)
+      throw new Error("jcode connector: readiness proof reached without a live Harness session");
+    let readiness: Awaited<ReturnType<JcodeClient["run"]>> | undefined;
+    const proveReadiness = async (): Promise<void> => {
+      readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });
       if (!hasOrientation(readiness)) {
-        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+        writeJcodeDiagnostic(
+          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\n`,
+        );
+        readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });
+      }
+    };
+    try {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timedOut = await Promise.race([
+          proveReadiness().then(() => "ready" as const),
+          new Promise<"timeout">((resolve) => {
+            timeout = setTimeout(() => resolve("timeout"), readinessBudgetMs);
+          }),
+        ]);
+        if (timedOut === "timeout") {
+          writeJcodeDiagnostic(
+            `[cotal-jcode] pre-join readiness outcome: timeout after ${readinessBudgetMs}ms; killing the private Jcode tree and discarding that in-flight turn; never joined\n`,
+          );
+          throw new JcodeConnectorError(
+            "readiness_timeout",
+            `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,
+          );
+        }
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
       }
     } catch (error) {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
       // supplied an invalid-request code and a rejected model/effort value the connector can safely
       // classify. Preserve only those bounded fields; all other message bytes stay scrubbed (#828).
-      throw classifyReadinessProviderRefusal(error) ?? error;
+      const classified = classifyReadinessProviderRefusal(error);
+      if (classified) {
+        writeJcodeDiagnostic(
+          `[cotal-jcode] pre-join readiness outcome: provider refusal of ${classified.parameter} ${JSON.stringify(classified.value)} (${classified.providerCode}); never joined\n`,
+        );
+        throw classified;
+      }
+      throw error;
     }
-    if (!hasOrientation(readiness))
+    if (!readiness || !hasOrientation(readiness)) {
+      writeJcodeDiagnostic(
+        `[cotal-jcode] pre-join readiness outcome: cotal_orientation never became callable; never joined\n`,
+      );
       throw new Error(
         "jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface",
       );
+    }
+    writeJcodeDiagnostic(
+      bootPrompt
+        ? `[cotal-jcode] pre-join readiness outcome: orientation proved; joining, then submitting the spawn --prompt\n`
+        : `[cotal-jcode] pre-join readiness outcome: orientation proved; joining with no spawn --prompt\n`,
+    );
     watchClient(client);
     if (config.model) {
       const runtime = await client.getRuntimeInfo(sessionId);
@@ -873,7 +935,7 @@ export async function runJcodeHost(): Promise<void> {
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
     // hands the manager a retired seat while an unverified daemon would keep running (#839).
     try {
-      await stopPrivateJcode();
+      await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
     } catch (teardown) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(teardown as Error).message}\n`);
     }

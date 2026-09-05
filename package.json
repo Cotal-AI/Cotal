@@ -546,6 +546,7 @@
     "smoke:feed-agent": "pnpm --filter @cotal-ai/example-06-feed-agent test",
     "smoke:package-test-contract": "tsx bin/smoke/package-test-contract.smoke.ts",
     "smoke:ci-fragments": "tsx bin/smoke/ci-fragments.smoke.ts",
+    "smoke:ci-suites-freeze": "tsx bin/smoke/ci-suites-freeze.smoke.ts",
     "smoke:ci-declarations": "tsx bin/smoke/ci-declarations.smoke.ts",
     "smoke:shard-stability": "tsx bin/smoke/shard-stability.smoke.ts",
     "smoke:shard-never-ran": "tsx bin/smoke/shard-never-ran.smoke.ts",

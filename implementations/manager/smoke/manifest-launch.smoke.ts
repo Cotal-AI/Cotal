@@ -194,6 +194,12 @@ function writeSpec(name: string, body: unknown): string {
   throws("non-alphanumeric hash rejected", () => loadLaunchSpec(writeSpec("a4.json", agent1({ hash: "../../etc" }))));
   throws("empty variant rejected", () => loadLaunchSpec(writeSpec("a5.json", agent1({ variant: "" }))));
   throws("empty prompt rejected", () => loadLaunchSpec(writeSpec("a6.json", agent1({ prompt: "" }))));
+  for (const cwd of ["repos/api", join(root, "absolute repo")]) {
+    const loaded = loadLaunchSpec(writeSpec("cwd.json", agent1({ cwd }))).agents[0];
+    check("launch schema preserves cwd and forwards it to startAgent", loaded.cwd === cwd && launchAgentToStartOpts(loaded, personaPath).cwd === cwd, loaded.cwd);
+  }
+  for (const cwd of ["", "bad\0path", 42, null])
+    throws("invalid cwd rejected at the manager launch boundary", () => loadLaunchSpec(writeSpec("badcwd.json", agent1({ cwd }))));
   check("kickoff prompt loads through the strict schema", loadLaunchSpec(writeSpec("a7.json", agent1({ prompt: "go" }))).agents[0].prompt === "go");
   // Policy re-validation at the manager boundary — --launch must not be a looser manifest format.
   throws("wildcard scope in launch policy rejected", () => loadLaunchSpec(writeSpec("p1.json", agent1({ subscribe: ["team.>"], allowSubscribe: ["team.>"] }))));
