@@ -29,6 +29,7 @@ function updateRuntime(opts: {
   env?: NodeJS.ProcessEnv;
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
+  reportRunningManager?: () => Promise<"none" | "legacy">;
 }) {
   const events: string[] = [];
   const rt: UpdateRuntime = {
@@ -38,6 +39,10 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
+    reportRunningManager: async () => {
+      events.push("report-running-manager");
+      return await opts.reportRunningManager?.() ?? "none";
+    },
     extensions: () => opts.extensions ?? [],
     claimUpdatePass: () => {
       events.push("claim-mutation");
@@ -221,11 +226,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(attachName.trimEnd().endsWith(":nofiles"), "attach --name suppresses filename fallback");
 }
 
-// --- update grammar: registered in Setup, exactly one public flag --------------------------------
+// --- update grammar: registered in Setup with target selection -----------------------------------
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "space", "server", "creds"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.throws(
     () => parseCommandArgs(cmd!, ["--unknown"]),
@@ -256,7 +261,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     ],
     npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "" }),
   });
-  assert.equal(await executeUpdate(false, rt), 0);
+  assert.equal(await executeUpdate(false, rt), 0, "update replays first-party extensions at the current binary generation");
   const replay = events.find((event) => event.startsWith("spawn:"));
   assert.ok(replay?.includes("ext __update-add @cotal-ai/orca @cotal-ai/orca@0.13.1"));
   assert.equal(events.filter((event) => event.startsWith("spawn:")).length, 1, "seeded web + third-party extension are not operator-replayed");
@@ -266,6 +271,17 @@ async function completionOut(positionals: string[]): Promise<string> {
   );
   assert.ok(events.some((event) => event.includes("third-party-ext@1.2.3 - not auto-updated")));
   assert.ok(events.indexOf("reconcile") < events.findIndex((event) => event.startsWith("npm:view")), "default reconciles before npm check");
+}
+
+// --- a running legacy manager is reported, then blocks an update before replay --------------------
+{
+  const legacy = updateRuntime({ reportRunningManager: async () => "legacy" });
+  const code = await executeUpdate(false, legacy.rt);
+  assert.ok(legacy.events.includes("reconcile"), "disk reconciliation completes before the running-manager report");
+  assert.ok(legacy.events.includes("report-running-manager"), "the running manager is classified before refusal");
+  assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
+  assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
+  assert.equal(code, 1);
 }
 
 // --- malformed npm fails after local reconcile; extension failures continue and aggregate --------
@@ -354,6 +370,37 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(successful.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update")));
   assert.ok(successful.events.some((event) => event.includes("npm's global installation") && event.includes("process remains loaded")));
   assert.ok(!successful.events.includes("reconcile"), "old generation is not reconciled before self-upgrade");
+  const selfReport = successful.events.indexOf("report-running-manager");
+  assert.ok(selfReport !== -1 && selfReport < installEvent, "self-update reports the running manager before the global install");
+
+  const namedTarget = updateRuntime({
+    npm: (args) => {
+      if (args[0] === "view") return { status: 0, stdout: '"0.13.2"' };
+      if (args[0] === "root") return { status: 0, stdout: "/alternate/global/node_modules\n" };
+      return { status: 0 };
+    },
+  });
+  assert.equal(await executeUpdate(true, namedTarget.rt, {
+    space: "named-space",
+    server: "nats://example:4222",
+    creds: "/tmp/creds.creds",
+  }), 0);
+  assert.ok(
+    namedTarget.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update --space named-space --server nats://example:4222 --creds /tmp/creds.creds")),
+    "self-update replacement child carries the selected target flags",
+  );
+
+  const selfLegacy = updateRuntime({
+    reportRunningManager: async () => "legacy",
+    npm: (args) => {
+      if (args[0] === "view") return { status: 0, stdout: '"0.13.2"' };
+      if (args[0] === "root") return { status: 0, stdout: "/alternate/global/node_modules\n" };
+      return { status: 0 };
+    },
+  });
+  assert.equal(await executeUpdate(true, selfLegacy.rt, { space: "named-space" }), 1);
+  assert.ok(selfLegacy.events.includes("report-running-manager"), "self-update classifies the selected manager before install");
+  assert.ok(!selfLegacy.events.some((event) => event.startsWith("global:install")), "legacy report refuses the global install");
 
   const failedChild = updateRuntime({
     npm: (args) => args[0] === "view"

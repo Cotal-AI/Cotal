@@ -48,9 +48,10 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
+  requireRuntimeAdopt,
   type AgentHandle,
   type Runtime,
   type RuntimeMode,
@@ -336,6 +337,7 @@ export interface ManagerOptions {
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
+
 
 /** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
  *  is how the one caller that matters ends up unlabelled, and the whole point of recording a cause
@@ -1039,6 +1041,11 @@ export class Manager {
 
   get runtimeKind(): string {
     return this.runtime.kind;
+  }
+
+  /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
+  adoptRuntimeHandle(reference: RuntimeReference): AgentHandle {
+    return requireRuntimeAdopt(this.runtime, reference);
   }
 
   /** The console page URL (manager-hosted, loopback). */
@@ -4932,6 +4939,7 @@ export class Manager {
     return {
       instanceId: this.managerInstanceId,
       runtime: this.runtime.kind,
+      custody: "legacy",
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
