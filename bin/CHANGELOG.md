@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.44.0
+
+### Patch Changes
+
+- 2850a5a: Count a smoke suite as gated only when a CI job actually runs it. join-external live coverage now rides its own live-job step; a duplicate connect classifier that only `pnpm check` reached is gone. Backup live suites stay UNGATED as already-red (#643 / #1285).
+- Updated dependencies [2850a5a]
+- Updated dependencies [ba9af19]
+  - @cotal-ai/cli@0.44.0
+  - @cotal-ai/connector-core@0.44.0
+  - @cotal-ai/manager@0.44.0
+  - @cotal-ai/core@0.44.0
+  - @cotal-ai/workspace@0.44.0
+  - @cotal-ai/runtime@0.44.0
+  - @cotal-ai/delivery@0.44.0
+  - @cotal-ai/auth@0.44.0
+
 ## 0.43.0
 
 ### Patch Changes

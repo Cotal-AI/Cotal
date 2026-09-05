@@ -1,5 +1,12 @@
 # @cotal-ai/manager
 
+## 0.44.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.44.0
+- @cotal-ai/workspace@0.44.0
+
 ## 0.43.0
 
 ### Minor Changes
