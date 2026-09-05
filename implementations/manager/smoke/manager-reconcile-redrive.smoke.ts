@@ -97,6 +97,7 @@ writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" 
 const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 
 let manager: Manager | undefined;
+let shutdownManager: Manager | undefined;
 let observer: Awaited<ReturnType<typeof connect>> | undefined;
 let callerNc: Awaited<ReturnType<typeof connect>> | undefined;
 const logs: string[] = [];
@@ -125,18 +126,24 @@ const connector: Connector = {
 };
 registry.register(connector);
 
-async function writeOrphan(alias: string, foreignRetirementOp = false): Promise<void> {
+async function writeOrphan(
+  alias: string,
+  foreignRetirementOp = false,
+  ownerInstanceId = managerInstanceId,
+  workspaceRoot = root,
+): Promise<void> {
   const identity = newIdentity();
   const uid = mintLifecycleUid();
   const principal = principalKey(DEV_OWNER, identity.id).key;
   identities.set(alias, { actor: identity.id, uid, principal });
-  writeFileSync(join(root, ".cotal", "agents", `${alias}.md`), `---\nname: ${alias}\nrole: worker\n---\nbody\n`);
+  mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${alias}.md`), `---\nname: ${alias}\nrole: worker\n---\nbody\n`);
   const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor: identity.id, lifecycleUid: uid, alias } });
   const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kvm = new Kvm(nc);
     const transport = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
-    await activateStaticLifecycle(transport, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid: uid, managerInstance: "orphaned-process", ownerInstanceId: managerInstanceId });
+    await activateStaticLifecycle(transport, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid: uid, managerInstance: "orphaned-process", ownerInstanceId });
     const credentialId = `cred-${alias}`;
     await recordSlotCredential(transport, DEV_OWNER, alias, uid, credentialId);
     await appendStaticCredentialRow(transport, { lifecycleUid: uid, credentialId, holderPrincipal: principal, exp: Math.floor(Date.now() / 1000) + 3600 });
@@ -284,8 +291,52 @@ try {
   await internals.reconcileStaticLifecycles();
   const foreignRow = internals.managerStatusData().staticReconciliation.failures.find((row) => row.alias === "orphan-foreign");
   check("a foreign frozen retirement is refused literally and never reaches eviction", foreignRow?.disposition === "refused-foreign" && attempts.get("orphan-foreign") === undefined, { foreignRow, attempts: Object.fromEntries(attempts) });
+
+  // Shutdown control. A second logical manager can coexist in this space, which isolates its owned
+  // rows from the main redrive scenario above. Gate its first exact terminal, request stop, then
+  // release it. stop() must drain that accepted terminal, the serial sweep must not start the later
+  // row after the shutdown fence, and start() must not publish a service after stop has returned.
+  const shutdownRoot = join(root, "shutdown-manager");
+  const shutdownInstanceId = mintLifecycleUid();
+  mkdirSync(join(shutdownRoot, ".cotal", "agents"), { recursive: true });
+  saveSpaceAuth(authDir(shutdownRoot), auth);
+  saveManagerInstanceIdentity(shutdownRoot, space, { instanceId: shutdownInstanceId, serveIdentity: newIdentity() });
+  await writeOrphan("shutdown-first", false, shutdownInstanceId, shutdownRoot);
+  await writeOrphan("shutdown-last", false, shutdownInstanceId, shutdownRoot);
+  let shutdownFirstEntered = false;
+  let releaseShutdownFirst!: () => void;
+  const shutdownFirstRelease = new Promise<void>((resolve) => { releaseShutdownFirst = resolve; });
+  shutdownManager = new Manager({ space, servers, runtime: "pty", workspaceRoot: shutdownRoot });
+  const shutdownInternals = shutdownManager as unknown as {
+    staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
+    serviceServe?: unknown;
+    reconcileStaticLifecycles(): Promise<void>;
+  };
+  shutdownInternals.staticLifecycleEvict = async (principal): Promise<EvictionResult> => {
+    const alias = [...identities].find(([, row]) => row.principal === principal)?.[0] ?? principal;
+    attempts.set(alias, (attempts.get(alias) ?? 0) + 1);
+    if (alias === "shutdown-first") {
+      shutdownFirstEntered = true;
+      await shutdownFirstRelease;
+    }
+    return { principal, kicked: 1, remaining: 0, scanComplete: true, verifiedGone: true };
+  };
+  const shutdownStarting = shutdownManager.start();
+  check("shutdown control reached its first accepted exact terminal", await until(() => shutdownFirstEntered, 20_000));
+  let shutdownSettled = false;
+  const shutdownStopping = shutdownManager.stop().then(() => { shutdownSettled = true; });
+  await wait(150);
+  check("stop waits for an accepted startup reconciliation terminal", shutdownSettled === false);
+  releaseShutdownFirst();
+  await Promise.allSettled([shutdownStarting, shutdownStopping]);
+  check("the shutdown fence prevents the serial sweep from starting a later terminal", attempts.get("shutdown-first") === 1 && attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
+  check("startup cannot publish the manager service after stop completes", shutdownInternals.serviceServe === undefined, { registered: shutdownInternals.serviceServe !== undefined });
+  await shutdownInternals.reconcileStaticLifecycles();
+  check("shutdown refuses a new static reconciliation sweep", attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
+  shutdownManager = undefined;
 } finally {
   console.error = realError;
+  await shutdownManager?.stop().catch(() => {});
   await manager?.stop().catch(() => {});
   await callerNc?.drain().catch(() => callerNc?.close());
   await observer?.drain().catch(() => observer?.close());

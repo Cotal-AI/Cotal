@@ -72,6 +72,10 @@ phase and literal disposition. A failed exact terminal is retried in the same pr
 and 30 seconds. Each attempt re-reads the durable slot and re-enters the same deterministic terminal
 operation; the delays only schedule work and never release the lifecycle fence.
 
+On shutdown, the manager fences new reconciliation work and waits for an exact terminal that already
+started. The current serial sweep stops before its next alias, and startup cannot publish the manager
+service after `stop()` completes.
+
 The four-attempt budget is per manager process. An exhausted row stays held and reports
 `retry-exhausted` with the remedy to restart the manager. The next process derives a fresh budget
 from the still-authoritative durable row. A `recovered` row remains visible until the next static

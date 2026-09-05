@@ -4,4 +4,4 @@
 "@cotal-ai/connector-core": patch
 ---
 
-Report failed static lifecycle reconciliation and retry the same durable terminal in process with a bounded schedule.
+Report failed static lifecycle reconciliation, retry the same durable terminal with a bounded schedule, and drain accepted reconciliation work during shutdown.

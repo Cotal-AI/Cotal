@@ -6,7 +6,8 @@
   "why": [
     "The suite starts a real authenticated nats-server through serverConfig and an in-process Manager, then plants three durable orphan lifecycle rows.",
     "The first mutation changes only the failed aggregate branch. The earliest named cell observes the completed first sweep after all three shipped terminal paths ran, so it reddens because failure became success-shaped reporting rather than because an earlier row short-circuited.",
-    "The second mutation removes only the retry scheduling call after the real middle-row terminal failed. Earlier aggregate, durable hold, and status cells still run; the named re-drive cell is the first one that requires a second exact terminal entry."
+    "The second mutation removes only the retry scheduling call after the real middle-row terminal failed. Earlier aggregate, durable hold, and status cells still run; the named re-drive cell is the first one that requires a second exact terminal entry.",
+    "The shutdown mutations independently remove the accepted-sweep drain, the serial stop fence, and the start-task join. The real broker control gates the first terminal, calls stop, and names the first observable failure for each boundary."
   ],
   "mutations": [
     {
@@ -24,6 +25,30 @@
       "replace": "          item.disposition = \"retry-exhausted\";\n          item.remedy = \"restart this manager for a fresh per-process retry budget\";",
       "expectRed": "the same manager process re-drives the failed alias to retired",
       "cell": "the same manager process re-drives the failed alias to retired"
+    },
+    {
+      "name": "stop returns while accepted startup reconciliation work is still running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
+      "replace": "",
+      "expectRed": "stop waits for an accepted startup reconciliation terminal",
+      "cell": "stop waits for an accepted startup reconciliation terminal"
+    },
+    {
+      "name": "a shutdown sweep starts the next planned alias after the accepted terminal drains",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        for (const row of terminalRows) {\n          if (this.staticReconcileStopping) break;\n          sweep.attempted++;",
+      "replace": "        for (const row of terminalRows) {\n          sweep.attempted++;",
+      "expectRed": "the shutdown fence prevents the serial sweep from starting a later terminal",
+      "cell": "the shutdown fence prevents the serial sweep from starting a later terminal"
+    },
+    {
+      "name": "stop does not join startup after draining reconciliation",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
+      "replace": "    await this.awaitStaticReconcileDrain();",
+      "expectRed": "startup cannot publish the manager service after stop completes",
+      "cell": "startup cannot publish the manager service after stop completes"
     }
   ]
 }
