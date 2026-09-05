@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.44.0
+
+### Minor Changes
+
+- ba9af19: Refuse a source-checkout `cotal` from writing or GC'ing the operator-global seed store. A missing identity answer is a refusal, not a released install. The refusal names `$XDG_CONFIG_HOME` isolation, not the test-only `COTAL_ALLOW_CHECKOUT_SEED=1` override. An older CLI that meets a newer store is pointed at `cotal ext seed --force`, not `--reset`. `COTAL_HOME` does not relocate this store.
+
+### Patch Changes
+
+- 2850a5a: Count a smoke suite as gated only when a CI job actually runs it. join-external live coverage now rides its own live-job step; a duplicate connect classifier that only `pnpm check` reached is gone. Backup live suites stay UNGATED as already-red (#643 / #1285).
+  - @cotal-ai/core@0.44.0
+  - @cotal-ai/workspace@0.44.0
+
 ## 0.43.0
 
 ### Minor Changes
