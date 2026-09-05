@@ -760,6 +760,30 @@ try {
       const spec = await kv.get(`svc.wundef.${IID_A}.spec`);
       c("the undefined observation left the spec in place", spec?.operation === "PUT", spec?.operation);
     }
+    const DC_THROW = register({ urn: "ai.cotal.wthrow", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const throwSpec: ServiceSpec = { endpoint: "wthrow", owner: "u_op", clusterDigests: [DC_THROW], protocol: { v: 1 } };
+    let duringThrow: Awaited<ReturnType<typeof deregisterServiceInstance>> | undefined | "threw";
+    let throwErr: { code?: string; message?: string } | undefined;
+    const kvThrow = hookedKv({ beforeWrite: async (k) => {
+      if (k !== "govern.wthrow" || duringThrow !== undefined) return;
+      const spec = await kv.get(`svc.wthrow.${IID_A}.spec`);
+      if (!spec || spec.operation !== "PUT") return;
+      try {
+        duringThrow = await deregisterServiceInstance(kv, {
+          endpoint: "wthrow", instanceId: IID_A, observeGeneration: () => { throw new Error("no issuance gate at auth.wthrow"); },
+        });
+      } catch (e) {
+        duringThrow = "threw";
+        throwErr = { code: (e as EpEnvelopeError).code, message: (e as Error).message };
+      }
+    } });
+    await regOn(kvThrow, throwSpec, IID_A);
+    c("a thrown observeGeneration with a held slot FAILS CLOSED as unavailable",
+      duringThrow === "threw" && throwErr?.code === "unavailable" && /could not observe the issuance-gate generation/.test(throwErr.message ?? "") && /no issuance gate/.test(throwErr.message ?? ""), { duringThrow, throwErr });
+    {
+      const spec = await kv.get(`svc.wthrow.${IID_A}.spec`);
+      c("the thrown observation left the spec in place", spec?.operation === "PUT", spec?.operation);
+    }
     const DC_AHEAD = register({ urn: "ai.cotal.wahead", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
     const aheadSpec: ServiceSpec = { endpoint: "wahead", owner: "u_op", clusterDigests: [DC_AHEAD], protocol: { v: 1 } };
     await regOn(kv, aheadSpec, IID_A);
