@@ -1,9 +1,16 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { registry, type Runtime, type RuntimeKind, type RuntimeProvider } from "@cotal-ai/core";
+import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReference } from "@cotal-ai/core";
 import { PtyRuntime } from "./pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
+
+/** Adopt a durable handle, or refuse by name when this runtime has no adopt method. */
+export function requireRuntimeAdopt(runtime: Runtime, reference: RuntimeReference): AgentHandle {
+  if (typeof runtime.adopt !== "function")
+    throw new Error(`runtime "${runtime.kind}" does not support adopt`);
+  return runtime.adopt(reference);
+}
 
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External
  *  runtimes are never auto-selected; choose one explicitly, which resolves
