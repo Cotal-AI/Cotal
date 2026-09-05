@@ -9,22 +9,36 @@ on:
   workflow_dispatch:
 
 jobs:
-  changed_shard:
+  changed:
     # Anchors diagnose rot. This job executes fixtures whose guarded source changed, so a workload
     # or test-seam change that leaves every anchor present still has to kill at this head. The
     # corpus is 329 configs / 1,714 mutations, too expensive to multiply into every revision.
     # Source intersection catches the #1217 shape at the changing commit. The daily full sweep
-    # below catches cross-cutting changes a fixture did not name within a day. Shard by fixture:
-    # one manager source change selected 35 fixtures / 164 mutations and exhausted the serial
-    # job's 60-minute budget after 20 fixtures, while every completed fixture still discriminated.
+    # below catches cross-cutting changes a fixture did not name within a day.
     if: github.event_name != 'schedule'
-    timeout-minutes: 60
+    # 150, raised from 60, and PROVISIONAL. A PR touching a high-fan-in guarded source selects a
+    # large fixture set: #1294 (which edits implementations/manager/src/manager.ts) selected 42
+    # fixtures / 181 mutations and was cancelled at the 60-minute cap five consecutive times, so
+    # it could not satisfy this gate by any action its author could take. `pr-head-gate.mjs`
+    # grades a non-success as failing and this workflow is in its expected set, so the gate fails
+    # closed on a job that cannot finish rather than on a defect.
+    #
+    # The number is not derived, because nothing here has ever been measured well enough to derive
+    # it, and that is the substance of #1299 rather than a detail of it. The two models available
+    # both UNDER-predict: at the fastest observed rate (9 fixtures / 39 mutations in 7m27s) 181
+    # mutations is ~42 minutes, and as a fraction of the corpus (181 of 1,714) against `full`'s
+    # 360-minute budget it is ~38 minutes. The real run exceeded 60. So per-mutation cost is
+    # dominated by WHICH suites a fixture guards, not by how many mutations it carries, and both
+    # models are wrong for exactly the sets that need the budget. 150 is 2.5x the larger estimate,
+    # which is the smallest headroom that survives models known to under-predict by over 1.5x, and
+    # it stays well under `full`'s 360.
+    #
+    # Re-derive this from the elapsed line the Report elapsed step now prints, once real sets have
+    # reported. Do
+    # not raise it again without that data: a limit raised past what anyone can measure trades a
+    # visible failure for an invisible one.
+    timeout-minutes: 150
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    name: changed shard ${{ matrix.shard }}/12
     steps:
       - uses: actions/checkout@v6
         with:
@@ -63,18 +77,32 @@ jobs:
             base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
             echo "no base commit on this event; using first parent $base"
           fi
-          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --shard "${{ matrix.shard }}/12"
-
-  changed:
-    # Keep one stable required check while the fixture workload runs in bounded parallel shards.
-    if: github.event_name != 'schedule' && always()
-    needs: [changed_shard]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Gate
+          # A FILE, not $GITHUB_ENV. The runner processes a step's env file when the step ENDS, so a
+          # step killed by `timeout-minutes` never contributes its variables and the next step would
+          # see nothing — on precisely the timed-out run this measurement exists for. A file written
+          # by the shell exists the moment the redirect completes.
+          date +%s > "$RUNNER_TEMP/mutation-started"
+          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)"
+      - name: Report elapsed
+        # Until this step existed, no run of this job recorded how long it took, so a cancellation
+        # at the cap and a run finishing one second inside it were indistinguishable afterwards,
+        # and the budget above could only ever be guessed.
+        #
+        # `always()` rather than `failure()` because the run whose duration matters most is the one
+        # the timer kills, and a timeout cancels the job rather than failing it. The start marker is
+        # a file for the same reason: $GITHUB_ENV is only processed when a step ENDS, so a step the
+        # timer kills contributes nothing and this step would take its else branch on exactly the
+        # run it was added for. Still best effort on that path — a cancelled job gives its remaining
+        # steps only a grace period, so this may not run at all — but when it does run it now has a
+        # start time to work from.
+        if: always()
         run: |
-          echo "changed_shard=${{ needs.changed_shard.result }}"
-          [ "${{ needs.changed_shard.result }}" = "success" ]
+          marker="$RUNNER_TEMP/mutation-started"
+          if [ -s "$marker" ]; then
+            echo "mutation reproof: changed-set elapsed $(( $(date +%s) - $(cat "$marker") ))s (budget 150m)"
+          else
+            echo "mutation reproof: no start marker; the job ended before the re-prove step began"
+          fi
 
   full:
     # A daily sweep keeps the remaining ambient-drift window bounded without making every pull
