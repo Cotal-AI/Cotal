@@ -1886,14 +1886,26 @@ export class Manager {
    */
   private async deregisterServiceOnStop(): Promise<void> {
     const iid = this.managerInstanceId;
-    const dereg = ({ recordsKv }: { recordsKv: KV }): Promise<ServiceDeregistration> =>
-      deregisterServiceInstance(recordsKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const dereg = ({ recordsKv, authKv }: { recordsKv: KV; authKv: KV }): Promise<ServiceDeregistration> =>
+      deregisterServiceInstance(recordsKv, {
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: iid,
+        observeGeneration: async () => {
+          const key = epgateKey(MANAGER_ENDPOINT, iid);
+          const entry = await authKv.get(key);
+          if (!entry || entry.operation !== "PUT")
+            throw new Error(`no issuance gate at ${key}`);
+          return parseEndpointGate(entry.value, key).generation;
+        },
+      });
     try {
       const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
         console.error(`! manager instance ${iid} was not deregistered: its registration moved while this stop ran, so another incarnation owns it now - leaving it alone`);
+      else if (outcome.reason === "registration-in-flight")
+        console.error(`! manager instance ${iid} was not deregistered: a registration is still in flight (governance slot held at the live gate generation) - leaving it alone`);
       // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.
     } catch (e) {
       console.error(

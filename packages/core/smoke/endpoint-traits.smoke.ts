@@ -29,7 +29,7 @@ import { createUser } from "@nats-io/nkeys";
 import type { KV } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
-  openRecordsBucket, registerServiceInstance, authorizeServeGrant, serveEndpoint,
+  openRecordsBucket, registerServiceInstance, deregisterServiceInstance, authorizeServeGrant, serveEndpoint,
   compileContract, contractDigest,
   epRequestSubject, epCallerReplyFilter,
   signArtifact, signatureInput,
@@ -654,9 +654,9 @@ try {
   // ── the governance head is the ENDPOINT-WIDE registration serialization point (panel: the
   //    cross-instance changed=false reader race and the phantom obligation are duals of ONE
   //    missing linearization). EVERY registration CAS-takes the head's provisional slot under
-  //    its frozen gate, holds it through spec publication, and PROMOTES to binding only after
-  //    the publish commits. Real broker, real CAS — only the schedule is staged via a thin KV
-  //    wrapper with injectable per-key hooks. ──
+  //    its frozen gate, holds it through spec publication AND gate reopen, and PROMOTES to
+  //    binding after the publish commits (the slot is released only after reopen). Real broker,
+  //    real CAS — only the schedule is staged via a thin KV wrapper with injectable per-key hooks. ──
   const hookedKv = (hooks: { beforeWrite?: (key: string) => Promise<void> | void }): KV =>
     ({
       get: (k: string) => kv.get(k),
@@ -696,6 +696,46 @@ try {
     const head = await readHead("wpool");
     c("the settled head BINDS the imposition and holds no provisional slot",
       head.provisional === undefined && (head.commands["work"] ?? []).includes(TRAIT_GUARDED));
+  }
+
+  // Held-slot exclusion: shipped deregister during a live slot at the CURRENT gate
+  // generation returns registration-in-flight. A slot whose generation is BEHIND the
+  // live gate does not block (lost-release leftover after a successful reopen).
+  {
+    const DC_HOLD = register({ urn: "ai.cotal.whold", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const holdSpec: ServiceSpec = { endpoint: "whold", owner: "u_op", clusterDigests: [DC_HOLD], protocol: { v: 1 } };
+    let duringHold: Awaited<ReturnType<typeof deregisterServiceInstance>> | undefined;
+    const kvHold = hookedKv({ beforeWrite: async (k) => {
+      if (k !== "govern.whold" || duringHold !== undefined) return;
+      const spec = await kv.get(`svc.whold.${IID_A}.spec`);
+      if (!spec || spec.operation !== "PUT") return; // slot-take precedes the spec; wait for the promote
+      const g = gateStates.get(`whold/${IID_A}`)!;
+      duringHold = await deregisterServiceInstance(kv, {
+        endpoint: "whold", instanceId: IID_A, observeGeneration: () => g.generation,
+      });
+    } });
+    await regOn(kvHold, holdSpec, IID_A);
+    c("shipped deregister during a held slot at the live gate generation returns registration-in-flight",
+      duringHold?.removed === false && duringHold.reason === "registration-in-flight", duringHold);
+    {
+      const head = await readHead("whold");
+      c("the held-slot refuse leaves the registration to complete; the settled head is bound",
+        head.provisional === undefined && (head.commands["work"] ?? []).includes(TRAIT_GUARDED));
+    }
+    const DC_BEHIND = register({ urn: "ai.cotal.wbehind", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const behindSpec: ServiceSpec = { endpoint: "wbehind", owner: "u_op", clusterDigests: [DC_BEHIND], protocol: { v: 1 } };
+    await regOn(kv, behindSpec, IID_A);
+    {
+      const head = await readHead("wbehind");
+      head.provisional = { instanceId: IID_A, generation: 0, commands: { work: [TRAIT_GUARDED] } };
+      await kv.put("govern.wbehind", new TextEncoder().encode(JSON.stringify(head)));
+    }
+    const liveGen = gateStates.get(`wbehind/${IID_A}`)!.generation;
+    const behind = await deregisterServiceInstance(kv, {
+      endpoint: "wbehind", instanceId: IID_A, observeGeneration: () => liveGen,
+    });
+    c("a slot held at a generation behind the live gate does NOT block deregistration",
+      behind.removed === true && liveGen > 0, { behind, liveGen });
   }
 
   // A definite slot-take CAS loss is a loud CONFLICT (finding: the record helpers wrap the

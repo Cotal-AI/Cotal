@@ -670,11 +670,13 @@ try {
     c("#1243 next-boot analogue: completeFrozenRegistrationFromSpec finishes the same freeze after a later readable spec",
       finished.completed && g.coord().state === "open" && g.coord().registrationRevision === finished.registrationRevision && g.coord().processEpoch === EPOCH + 1, { finished, after: g.coord() });
   }
-  // Phase-3b: spec committed; governance promote commits then loses the ack. Read-back completes.
+  // Phase-3b: spec committed; governance promote commits then loses the ack. Read-back
+  // completes (the slot is retained through reopen; this cell is lost-promote-ack only).
   {
     const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
     let seq = 0;
     let losePromoteAck = false;
+    let governWritesAfterArm = 0;
     const kv = {
       get: async (k: string) => backing.get(k),
       put: async (k: string, v: Uint8Array) => {
@@ -686,8 +688,9 @@ try {
         if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
         backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
         if (losePromoteAck && k.startsWith("govern.")) {
-          const parsed = JSON.parse(new TextDecoder().decode(v)) as { provisional?: unknown };
-          if (!parsed.provisional) throw new Error("ack lost after the promote committed");
+          governWritesAfterArm++;
+          // Slot-take is the first govern write of the re-registration; the promote is the second.
+          if (governWritesAfterArm === 2) throw new Error("ack lost after the promote committed");
         }
         return seq;
       },
@@ -699,6 +702,41 @@ try {
     losePromoteAck = true;
     const r = await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
     c("#1243 Phase-3b: a committed-then-lost-ack governance promote read-back completes the same freeze",
+      r.registrationRevision > 0 && g.coord().state === "open" && g.coord().processEpoch === EPOCH + 1, g.coord());
+  }
+  // After retain-through-reopen, the slot-clear is the RELEASE (post Phase 4), not the promote.
+  // A committed-then-lost-ack release still completes: the gate is already open, and a leftover
+  // slot is behind the live generation (orphaned, not in-flight).
+  {
+    const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+    let seq = 0;
+    let loseReleaseAck = false;
+    let governWritesAfterArm = 0;
+    const kv = {
+      get: async (k: string) => backing.get(k),
+      put: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        if (loseReleaseAck && k.startsWith("govern.")) {
+          governWritesAfterArm++;
+          // Slot-take, then promote, then release: the third govern write of the re-registration.
+          if (governWritesAfterArm === 3) throw new Error("ack lost after the release committed");
+        }
+        return seq;
+      },
+    } as unknown as KV;
+    const authority: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
+    const spec = { endpoint: "regrel", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ endpoint: "regrel", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    loseReleaseAck = true;
+    const r = await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    c("#1243 lost-release-ack: a committed-then-lost-ack slot release still completes (gate already open)",
       r.registrationRevision > 0 && g.coord().state === "open" && g.coord().processEpoch === EPOCH + 1, g.coord());
   }
   // VERIFIED EVICTION is fail-closed: a re-registration whose cluster-wide eviction cannot be

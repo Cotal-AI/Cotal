@@ -517,8 +517,9 @@ async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
   const execNc = await connect({ servers, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(execNc).open(recordsBucket(space));
+    const authKv = await new Kvm(execNc).open(epAuthBucket(space));
     const report = await deregisterEndpointInstance({
-      kv, endpoint, instanceId, probeInstance, log: (l) => console.error(`  ${l}`),
+      kv, authKv, endpoint, instanceId, probeInstance, log: (l) => console.error(`  ${l}`),
     });
     console.log(
       c.green(`✓ ${endpoint}/${instanceId} deregistered`) +

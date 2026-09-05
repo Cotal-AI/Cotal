@@ -165,7 +165,10 @@ registration's own exit, and there are two explicit routes to it
 ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
 
 A manager that stops cleanly removes its own registration if it still owns the recorded revision,
-so an ordinary shutdown leaves no stale row. Lease trouble is not an exit path. A manager that
+so an ordinary shutdown leaves no stale row. It refuses that delete while this instance holds the
+endpoint governance slot at the live issuance-gate generation (a registration still completing
+its reopen). A leftover slot whose generation is behind that live generation is not in-flight and
+does not block the stop. Lease trouble is not an exit path. A manager that
 cannot renew or read its lease keeps serving, stays registered, and retries. If another process
 holds the same instance key, it logs the conflict and keeps serving until an operator stops one of
 them. The revision-pinned deregistration leaves a successor's registration alone.
@@ -182,8 +185,10 @@ For the instance that cannot cooperate, an operator names it:
 record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
 that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
 not run at all, and refuses if the instance is merely quiet, because a hung process still holds its
-subscriptions and is therefore not affirmed gone. Nothing sweeps the registry on an age threshold
-or on silence.
+subscriptions and is therefore not affirmed gone. It also refuses while that instance holds the
+endpoint governance slot at the live issuance-gate generation (a registration still completing);
+a leftover slot behind that generation is not in-flight and does not block. Nothing sweeps the
+registry on an age threshold or on silence.
 An instance that is deregistered while it is merely wedged re-registers over the tombstone on its
 next start, which is what makes the operator's decision a recoverable one.
 

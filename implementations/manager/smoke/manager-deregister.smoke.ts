@@ -57,7 +57,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
-  mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, recordsBucket,
+  mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, recordsBucket, epAuthBucket,
   freezeExpectedSet, resolveService, scatterCommand, epProbeInstanceInterest,
   instancePinnedInstrumentCapabilities, spacePrefix, endpointToken,
   type EpCaller,
@@ -224,7 +224,9 @@ try {
   let readerDenied: string | undefined;
   try {
     await deregisterEndpointInstance({
-      kv: await new Kvm(nc).open(recordsBucket(SPACE)), endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
+      kv: await new Kvm(nc).open(recordsBucket(SPACE)),
+      authKv: await new Kvm(nc).open(epAuthBucket(SPACE)),
+      endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
       probeInstance: async () => ({ state: "gone", detail: "fixture: the guard is not what is under test here" }),
       log: () => {},
     });
@@ -236,17 +238,20 @@ try {
   check("...and the record it could not delete is still there", (await frozenIds()).includes(IID_CORPSE));
 
   /** One §13.5 delete under the credential the operator verb mints: an executor pinned to the instance. */
-  const withExecutor = async <T>(instanceId: string, fn: (kv: KV) => Promise<T>): Promise<T> => {
+  const withExecutor = async <T>(instanceId: string, fn: (kv: KV, authKv: KV) => Promise<T>): Promise<T> => {
     const creds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId } });
     const enc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-    try { return await fn(await new Kvm(enc).open(recordsBucket(SPACE))); }
+    try {
+      const kvm = new Kvm(enc);
+      return await fn(await kvm.open(recordsBucket(SPACE)), await kvm.open(epAuthBucket(SPACE)));
+    }
     finally { await enc.drain().catch(() => enc.close()); }
   };
 
   let refusedLive: InstanceDeregisterRefused | undefined;
   try {
-    await withExecutor(IID_LIVE, (kv) => deregisterEndpointInstance({
-      kv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
+    await withExecutor(IID_LIVE, (kv, authKv) => deregisterEndpointInstance({
+      kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
       probeInstance: makeInstanceProbe(nc!, { space: SPACE, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE, caller }),
       log: () => {},
     }));
@@ -258,8 +263,8 @@ try {
   check("and the live manager's registration is untouched by the refusal", (await frozenIds()).includes(IID_LIVE));
 
   console.log("6. the corpse is removed, on evidence");
-  const report = await withExecutor(IID_CORPSE, (kv) => deregisterEndpointInstance({
-    kv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
+  const report = await withExecutor(IID_CORPSE, (kv, authKv) => deregisterEndpointInstance({
+    kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
     probeInstance: makeInstanceProbe(nc!, { space: SPACE, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE, caller, describeDeadlineMs: 2_000 }),
     log: () => {},
   }));
@@ -279,8 +284,8 @@ try {
   console.log("8. running it twice is not a second removal");
   let refusedAgain: InstanceDeregisterRefused | undefined;
   try {
-    await withExecutor(IID_CORPSE, (kv) => deregisterEndpointInstance({
-      kv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
+    await withExecutor(IID_CORPSE, (kv, authKv) => deregisterEndpointInstance({
+      kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
       probeInstance: makeInstanceProbe(nc!, { space: SPACE, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE, caller, describeDeadlineMs: 1_500 }),
       log: () => {},
     }));
@@ -292,8 +297,8 @@ try {
 
   console.log("9. the probe never infers death from a failure of its own");
   // A probe that could not run establishes nothing, and the guard must say so rather than proceed.
-  const broken = await withExecutor(IID_CORPSE, (kv) => deregisterEndpointInstance({
-    kv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
+  const broken = await withExecutor(IID_CORPSE, (kv, authKv) => deregisterEndpointInstance({
+    kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
     probeInstance: async () => ({ state: "unestablishable", detail: "the oracle was unreachable" }),
     log: () => {},
   })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefused);
@@ -344,7 +349,9 @@ try {
   await ((hung as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const hungCaller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
-  const hungKv = await new Kvm(hungNc).open(recordsBucket(openSpace));
+  const hungKvm = new Kvm(hungNc);
+  const hungKv = await hungKvm.open(recordsBucket(openSpace));
+  const hungAuthKv = await hungKvm.open(epAuthBucket(openSpace));
   const hungFrozen = async (): Promise<string[]> =>
     (await freezeExpectedSet(await jetstreamManager(hungNc, { checkAPI: false }), openSpace, MANAGER_ENDPOINT)).map((f) => f.instanceId);
   const hungProbe = (): (() => Promise<InstanceProbe>) => makeInstanceProbe(hungNc, {
@@ -358,7 +365,7 @@ try {
   check("a registration whose rail STILL HAS A SUBSCRIBER probes UNKNOWN, never gone", (await hungProbe()()).state === "unknown");
   let refusedHung: InstanceDeregisterRefused | undefined;
   try {
-    await deregisterEndpointInstance({ kv: hungKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
+    await deregisterEndpointInstance({ kv: hungKv, authKv: hungAuthKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
   } catch (e) {
     refusedHung = e as InstanceDeregisterRefused;
   }
@@ -372,7 +379,7 @@ try {
   // credential - and the corpse this whole change exists for still deletes.
   holding.unsubscribe();
   await wait(300);
-  const nowGone = await deregisterEndpointInstance({ kv: hungKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
+  const nowGone = await deregisterEndpointInstance({ kv: hungKv, authKv: hungAuthKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
   // This delete empties the open mesh's class, and the freeze REFUSES to represent an empty class
   // (§13.5: an empty registry is never an empty scatter success) - so "not a member" is read the
   // same way section 1 reads it, and the removal itself is asserted on the revisions it reports.
@@ -389,8 +396,8 @@ try {
   // assumed: a state from outside `InstanceProbe` reaches the guard - the shape a fourth probe
   // state, or a caller wiring its own probe, would produce - and the delete must not be reachable.
   // It is asked about the LIVE manager, so a fall-through is a live registration removed.
-  const foreign = await withExecutor(IID_LIVE, (kv) => deregisterEndpointInstance({
-    kv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
+  const foreign = await withExecutor(IID_LIVE, (kv, authKv) => deregisterEndpointInstance({
+    kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
     probeInstance: async () => ({ state: "silent", detail: "a verdict this command does not know" }) as unknown as InstanceProbe,
     log: () => {},
   })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefused);

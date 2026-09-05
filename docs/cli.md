@@ -1016,6 +1016,7 @@ no connection and therefore no subscription, so a real corpse is still removed.
 | `instance-not-affirmed-gone` | It did not answer, and the broker did not report its rail empty, which is what a held subscription looks like: slow or hung, not affirmed gone | Nothing was removed. Stop the process; its record goes on its own clean stop, or re-run this once it is down |
 | `liveness-unestablishable` | The probe itself failed, so nothing was learned | Fix the probe's path (credential, broker) and re-run. A probe that could not run is never read as death |
 | `not-registered` | No registration at that coordinate | Check `--instance` and `--endpoint`. This takes the whole id, never a prefix |
+| `registration-in-flight` | The instance holds the endpoint governance slot at the live issuance-gate generation, so a registration is still completing | Nothing was removed. Wait for that registration to finish, then re-run |
 | `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
 
 There is no `--force` and no sweep: silence is not death, and a rule that removed rows on silence
