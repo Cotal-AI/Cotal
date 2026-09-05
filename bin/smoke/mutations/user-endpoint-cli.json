@@ -7,7 +7,7 @@
   "why": [
     "The smoke drives the repository's real bin/cotal.ts composition root against an isolated native user-auth broker, auth service, manager, registry record, login state and ordinary spawn-scoped cli actor. The CLI resolves its built dist, so the mutation command builds workspace and CLI before every run.",
     "The mutation restores the old static-only guard. The named positive describe assertion then fails while the independently asserted manager.read and manager.admin denials remain part of the same real broker fixture.",
-    "The focused mode runs the same native setup and B1g assertions as the full user-spawn smoke, then tears down. The full suite remains the CI-registered coverage; focus exists solely to keep the mutation experiment bounded.",
+    "The focused mode runs the same native setup and B1g assertions as the full user-spawn smoke, then tears down. The full suite remains the CI-registered coverage; focus exists solely to keep the mutation experiment bounded."
   ],
   "mutations": [
     {
