@@ -7,6 +7,7 @@
 "@cotal-ai/tmux": minor
 "@cotal-ai/orca": minor
 "@cotal-ai/herdr": minor
+"@cotal-ai/connector-core": minor
 "@cotal-ai/connector-opencode": minor
 "@cotal-ai/connector-hermes": minor
 "@cotal-ai/connector-codex": minor
