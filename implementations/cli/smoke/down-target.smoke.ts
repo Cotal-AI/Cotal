@@ -250,7 +250,9 @@ try {
     const prevCode = process.exitCode;
     process.exitCode = 0;
     const realExit = process.exit;
+    let exitCalled: number | undefined;
     (process as { exit: (code?: number) => never }).exit = ((code?: number) => {
+      exitCalled = code ?? 0;
       throw new Error(`process.exit(${code ?? 0})`);
     }) as typeof process.exit;
     const prevDir = process.cwd();
@@ -264,14 +266,13 @@ try {
     for (let i = 0; i < 100 && alive(child.pid!); i++) await sleep(50);
     check(
       "down manager against a recorded unreachable broker still stops the manager and does not process.exit",
-      !alive(child.pid!) && !existsSync(pidPath) && (process.exitCode ?? 0) === 0,
-      { alive: alive(child.pid!), pidfile: existsSync(pidPath), exitCode: process.exitCode },
+      !alive(child.pid!) && !existsSync(pidPath) && (process.exitCode ?? 0) === 0 && exitCalled === undefined,
+      { alive: alive(child.pid!), pidfile: existsSync(pidPath), exitCode: process.exitCode, exitCalled },
     );
     process.exitCode = prevCode;
   }
-
-  console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {
+  console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
   process.chdir(prevCwd);
   // Only the ones that were actually created — a throw partway through leaves the rest undefined,
   // and `finally` has to cope with a half-built fixture rather than assume a complete one.
