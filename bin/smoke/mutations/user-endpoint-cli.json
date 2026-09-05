@@ -1,0 +1,23 @@
+{
+  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "guard": "the shipped generic describe/invoke CLI connects a registered user-auth mesh with the normal bearer plus sentinel pair and its caller triple, without requiring static credentials or weakening the selected mesh TLS policy",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:user-spawn:live",
+  "completionMarker": "USER-SPAWN SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/user-endpoint-cli.json",
+  "why": [
+    "The smoke drives the repository's real bin/cotal.ts composition root against an isolated native user-auth broker, auth service, manager, registry record, login state and ordinary spawn-scoped cli actor. The CLI resolves its built dist, so the mutation command builds workspace and CLI before every run.",
+    "The mutation restores the old static-only guard. The named positive describe assertion then fails while the independently asserted manager.read and manager.admin denials remain part of the same real broker fixture."
+  ],
+  "mutations": [
+    {
+      "name": "restore the old generic CLI static-auth-only guard",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "  if (!t.auth.epCaller || (!t.auth.creds && !(t.auth.bearer && t.auth.sentinelCreds))) {",
+      "replace": "  if (!t.auth.epCaller || !t.auth.creds) {",
+      "expectRed": "the shipped CLI describes manager through the normal user's bearer",
+      "cell": "the shipped CLI describes manager through the normal user's bearer",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "This reinstates the original rejection before the bearer connection can be opened."
+    }
+  ]
+}

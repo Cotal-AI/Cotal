@@ -92,6 +92,10 @@ const { join } = await import("node:path");
 const home = mkdtempSync(join(tmpdir(), "cotal-uspawn-home-"));
 process.env.COTAL_HOME = home;
 const root = mkdtempSync(join(tmpdir(), "cotal-uspawn-root-"));
+const cliHome = join(home, "cli-home");
+const cliConfig = join(home, "cli-config");
+mkdirSync(cliHome, { recursive: true });
+mkdirSync(cliConfig, { recursive: true });
 
 const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
@@ -160,6 +164,29 @@ const until = async (cond: () => boolean, ms = 8000): Promise<boolean> => {
 };
 
 const SELF = process.argv[1]; // this smoke file — the bearer/auth-service re-exec target (matches the manager's argv[1])
+const CLI_BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+// The real binary must see the fixture's registry and login state, but never the operator's home,
+// Cotal state, or seeded extension registry.
+const cliEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  HOME: cliHome,
+  COTAL_HOME: home,
+  XDG_CONFIG_HOME: cliConfig,
+  COTAL_SKIP_CONNECTOR_SEED: "1",
+};
+function cotal(args: string[], timeoutMs = 20_000): Promise<{ status: number | null; out: string; timedOut: boolean; launchError?: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: cliEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
+    child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
+    child.on("error", (error) => { clearTimeout(timer); resolve({ status: null, out, timedOut, launchError: error.message }); });
+    child.on("close", (status) => { clearTimeout(timer); resolve({ status, out, timedOut }); });
+  });
+}
 const { pickFreePort } = await import("./_free-port.js");
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -725,6 +752,33 @@ try {
       await epNc.drain().catch(() => epNc.close());
     }
   }
+
+  // ---------- B1g. the shipped generic endpoint CLI under a USER bearer ----------
+  // This uses the real composition-root binary and the same spawn-scoped login as B1e. The user
+  // holds `spawn`, not `manager.read` or `manager.admin`: describe and inspect must work over its
+  // bearer, while enumeration and admin maintenance remain broker-denied. The missing `--name`
+  // request proves the generic targeted resolver uses the authorized name-keyed inspect path, not
+  // manager-wide ps, without creating a session or changing a managed seat.
+  console.log("B1g) the shipped generic endpoint CLI rides the user bearer without widening it");
+  const cliResult = async (args: string[], timeoutMs?: number) => {
+    const result = await cotal(args, timeoutMs);
+    return { ...result, plain: result.out.replace(/\x1b\[[0-9;]*m/g, "") };
+  };
+  const described = await cliResult(["describe", "manager", "--space", SPACE]);
+  check("the shipped CLI describes manager through the normal user's bearer",
+    !described.timedOut && described.status === 0 && /\bmanager\b/.test(described.plain) && /\binspect\b/.test(described.plain), described);
+  const inspected = await cliResult(["invoke", "manager", "inspect", "--args", '{"name":"alpha"}', "--space", SPACE]);
+  check("the shipped CLI invokes the spawn-authorized manager inspect shape through the user's bearer",
+    !inspected.timedOut && inspected.status === 0 && /"name": "alpha"/.test(inspected.plain), inspected);
+  const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
+  check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
+    !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
+  const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE, "--timeout", "1000"]);
+  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer",
+    !deniedRead.timedOut && deniedRead.status !== 0 && /deadline-exceeded|unavailable/i.test(deniedRead.plain), deniedRead);
+  const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE, "--timeout", "1000"]);
+  check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer",
+    !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /deadline-exceeded|unavailable/i.test(deniedAdmin.plain), deniedAdmin);
 
   // ---------- B2. delegation attenuation (the ENVELOPE rule, end to end) ----------
   console.log("B2) a spawner-attributed spawn is attenuated to the spawner's own grant");
