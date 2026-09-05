@@ -4925,8 +4925,9 @@ export class Manager {
    *  `gone` into `unestablishable`). Live / unknown / unestablishable / wrong-op-kind stay loud
    *  refusals. No TTL: request-ingress has no process-epoch fence, so a clock would either let a
    *  superseded serve credential keep consuming ingress or just rename the freeze. An open gate
-   *  is a no-op (the successor's own freeze comes next). */
-  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth): Promise<void> {
+   *  is a no-op (the successor's own freeze comes next). A committed spec under that freeze is
+   *  finished at the committed registrationRevision; only a definite no-commit abort-reopens. */
+  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV): Promise<void> {
     const key = epgateKey(MANAGER_ENDPOINT, instanceId);
     const entry = await authKv.get(key);
     if (!entry || entry.operation !== "PUT") return;
@@ -4941,6 +4942,7 @@ export class Manager {
         probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
         evict: makeManagerEndpointEvictor({ space: this.space, servers, auth, log }),
         log,
+        recordsKv,
       });
     } catch (e) {
       // We observed frozen, then a concurrent reconciler finished first. If the gate is now open,
@@ -4957,7 +4959,7 @@ export class Manager {
     }
     console.error(
       `✓ boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} registration gate reopened at generation ${
-        report.reopenedAtGeneration} (processEpoch unchanged at ${report.before.processEpoch}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
+        report.reopenedAtGeneration} (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
     );
   }
 
@@ -5087,7 +5089,7 @@ export class Manager {
       // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
       // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
       // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);
+      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN

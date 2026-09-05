@@ -539,11 +539,12 @@ export async function registerServiceInstance(
     throw new EpEnvelopeError("unavailable", `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen for reconciliation, no new spec published (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
 
-  // PHASE 3 — publish the new spec. ANY write error stays FROZEN for reconciliation, never
-  // reopening the old coordinate: the KV may have committed while the ack was lost (an ambiguous
-  // outcome), and reopening old would release stale-surface credentials against a spec that
-  // advanced. Under the frozen gate THIS barrier is the sole spec-key writer, so a write error is
-  // genuinely infra/ambiguous — never a concurrent-CAS loss we could treat as a definite no-write.
+  // PHASE 3 — publish the new spec. A write error is infra/ambiguous under this freeze (this
+  // barrier is the sole spec-key writer), so we never reopen the OLD coordinate: that would
+  // release stale-surface credentials against a spec that may have advanced. A lost ack is
+  // recoverable to a fact by reading the spec key back. Matching proposed bytes at a successor
+  // revision means THIS write committed, and we continue Phase 3b/4 for the same freeze. A
+  // no-commit or unreadable read stays frozen (#1243).
   let newRev: number;
   try {
     // A DEREGISTRATION TOMBSTONE IS RE-REGISTRABLE, and it is the only record kind here that is.
@@ -564,7 +565,7 @@ export async function registerServiceInstance(
       ? await updateRecordEntry(kv, key, spec, current.revision)
       : await createRecordEntry(kv, key, spec);
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `the re-registration spec-write outcome is ambiguous (it may have committed); the gate is left frozen for reconciliation, never reopened at the old coordinate (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    newRev = await recoverCommittedSpecWrite(kv, key, spec, current, err);
   }
 
   // PHASE 3b — PROMOTE the governance slot to binding, now that the spec publish committed: the
@@ -580,7 +581,11 @@ export async function registerServiceInstance(
   try {
     await updateRecordEntry(kv, govKey, governPromote, governSlotRevision);
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${newRev} but the governance promote did not complete; the gate is left frozen for reconciliation (the promote is an idempotent re-CAS of the held slot to binding, SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}`);
+    try {
+      await promoteHeldGovernance(kv, spec.endpoint, args.instanceId);
+    } catch (promoteErr) {
+      throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${newRev} but the governance promote did not complete; the gate is left frozen for reconciliation (the promote is an idempotent re-CAS of the held slot to binding, SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}; ${(promoteErr as Error)?.message ?? String(promoteErr)}`);
+    }
   }
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
@@ -605,6 +610,108 @@ export async function registerServiceInstance(
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
   return { registrationRevision: newRev };
+}
+
+/** Classify a lost spec-write ack. Sole writer under the freeze: proposed bytes at a revision
+ *  past the pre-write snapshot means this write committed. Anything else stays frozen. */
+async function recoverCommittedSpecWrite(
+  kv: KV,
+  key: string,
+  proposed: unknown,
+  prior: Awaited<ReturnType<KV["get"]>>,
+  cause: unknown,
+): Promise<number> {
+  const fail = (extra: string): never => {
+    throw new EpEnvelopeError(
+      "unavailable",
+      `the re-registration spec-write outcome is ambiguous (it may have committed); the gate is left frozen for reconciliation, never reopened at the old coordinate (SPEC 13.1): ${(cause as Error)?.message ?? String(cause)}${extra}`,
+    );
+  };
+  let again: Awaited<ReturnType<KV["get"]>>;
+  try {
+    again = await kv.get(key);
+  } catch (e) {
+    return fail(`; spec read-back failed: ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (!again || again.operation !== "PUT") return fail("; spec read-back shows the write did not commit");
+  if (prior && again.revision === prior.revision) return fail("; spec read-back shows the write did not commit");
+  let got: unknown;
+  try {
+    got = decodeJson(again.value, key);
+  } catch (e) {
+    return fail(`; spec read-back is garbled: ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (JSON.stringify(got) !== JSON.stringify(proposed)) return fail("; spec read-back does not match the proposed registration");
+  return again.revision;
+}
+
+/** After holder-gone eviction, complete a frozen registration whose Phase-3 spec write committed
+ *  (gate.registrationRevision still names the pre-write spec). Returns `completed: false` when the
+ *  spec has not advanced, so the caller may abort-reopen. A failed spec/governance read stays frozen. */
+export async function completeFrozenRegistrationFromSpec(
+  recordsKv: KV,
+  args: {
+    endpoint: string;
+    instanceId: string;
+    barrier: EpIssuanceBarrier;
+    freezeToken: number;
+    gate: { generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number };
+  },
+): Promise<{ completed: false } | { completed: true; registrationRevision: number; processEpoch: number }> {
+  const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, assertLifecycleToken(args.instanceId, "instanceId")]);
+  let specEntry: Awaited<ReturnType<KV["get"]>>;
+  try {
+    specEntry = await recordsKv.get(specKey);
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `the frozen registration's spec read-back failed; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (!specEntry || specEntry.operation !== "PUT" || specEntry.revision <= args.gate.registrationRevision)
+    return { completed: false };
+  try {
+    parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `the frozen registration's spec is unreadable; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+  }
+  await promoteHeldGovernance(recordsKv, args.endpoint, args.instanceId);
+  const processEpoch = args.gate.registrationRevision === 0 ? args.gate.processEpoch : args.gate.processEpoch + 1;
+  const successor: EpGateSuccessor = {
+    generation: args.gate.generation + 1,
+    processEpoch,
+    registrationRevision: specEntry.revision,
+    nameAuthorityRevision: args.gate.nameAuthorityRevision,
+  };
+  try {
+    if (!(await args.barrier.reopen(args.freezeToken, successor)))
+      throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
+  } catch (err) {
+    throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${specEntry.revision} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+  }
+  return { completed: true, registrationRevision: specEntry.revision, processEpoch };
+}
+
+async function promoteHeldGovernance(kv: KV, endpoint: string, instanceId: string): Promise<void> {
+  const gov = await readEndpointGovernance(kv, endpoint);
+  if (!gov.provisional) return;
+  if (gov.provisional.instanceId !== instanceId)
+    throw new EpEnvelopeError("unavailable", `the governance slot for endpoint "${endpoint}" is held by instance "${gov.provisional.instanceId}", not "${instanceId}"; the gate stays frozen (SPEC 13.7)`);
+  if (gov.revision === null)
+    throw new EpEnvelopeError("internal", `the governance head for endpoint "${endpoint}" has a provisional slot but no store revision; garbled state never promotes (SPEC 13.7)`);
+  const governPromote: EndpointGovernance = {
+    commands: serializeGovernanceCommands(mergeEndpointGovernance(gov.commands, gov.provisional.commands)),
+  };
+  try {
+    await updateRecordEntry(kv, recordAtomicKey(GOVERN_HEAD, [endpoint]), governPromote, gov.revision);
+  } catch (err) {
+    let again: Awaited<ReturnType<typeof readEndpointGovernance>>;
+    try {
+      again = await readEndpointGovernance(kv, endpoint);
+    } catch (readErr) {
+      throw new EpEnvelopeError("unavailable", `the spec is published but the governance promote did not complete; the gate is left frozen for reconciliation (SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}; promote read-back failed: ${(readErr as Error)?.message ?? String(readErr)}`);
+    }
+    if (again.provisional) {
+      throw new EpEnvelopeError("unavailable", `the spec is published but the governance promote did not complete; the gate is left frozen for reconciliation (the promote is an idempotent re-CAS of the held slot to binding, SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}`);
+    }
+  }
 }
 
 /** Reopen a barrier-frozen gate (token-pinned) after a registration aborted before any spec write

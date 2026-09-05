@@ -944,8 +944,10 @@ incarnation finishes leaves the endpoint's issuance gate *frozen*, held by a
 process that no longer exists. The freeze is what stops two incarnations serving at once, which is
 correct. The successor manager now completes that dead registration itself on boot, using the same
 guard this command uses: it acts only when the freeze-holder is affirmatively gone under a complete
-CONNZ sweep (`gone` and `sweepComplete=true`), then abort-reopens the gate at generation+1 with
-processEpoch unchanged and continues the normal takeover. Live, unknown, unestablishable, and
+CONNZ sweep (`gone` and `sweepComplete=true`). If that registration's spec write already committed,
+it finishes the same freeze at the committed registration revision. If the spec did not advance, it
+abort-reopens the gate at generation+1 with processEpoch unchanged and continues the normal takeover.
+Live, unknown, unestablishable, and
 wrong-op-kind still refuse; there is no TTL.
 
 Use this command when the boot path cannot run: the delivery daemon is down, the repair targets a

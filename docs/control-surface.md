@@ -173,9 +173,9 @@ them. The revision-pinned deregistration leaves a successor's registration alone
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
 affirmatively gone under a complete CONNZ sweep (the same composition as
-[`cotal reconcile-gate`](cli.md#reconcile-gate)),
-then runs its normal takeover. It does not invent a TTL and it does not start a new freeze over a
-still-held one.
+[`cotal reconcile-gate`](cli.md#reconcile-gate)). A committed spec write is finished under that
+same freeze; only a definite no-commit abort-reopens and then runs the normal takeover.
+It does not invent a TTL and it does not start a new freeze over a still-held one.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
