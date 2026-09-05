@@ -290,7 +290,10 @@ const SEAMS: Seam[] = [
   // records KV the lost-ack same-op recovery needs. It stays under smoke/ with the suite's other
   // three sites: the call is harness residue, not product connect, and it already states tls: false.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 118, untypecheckedSites: 87 },
+  // 118/87 -> 119/88: static-lifecycle.smoke.ts's #1274 crash-resume cell (driveTerminalDirect) opens
+  // one more lifecycle-executor connection to plant a terminalizing slot and drive runStaticTerminal
+  // as a resume would. It is under smoke/, harness residue not product connect, and states tls: false.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 119, untypecheckedSites: 88 },
 ];
 
 /**
