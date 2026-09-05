@@ -73,7 +73,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:codex-tui-live": standing("needs a codex TUI session"),
   "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
-  "smoke:backup-usermode:live": untriagedExemption("BROKEN: red at section E restore (control plane degraded / shard-0 lease); #1285; already-red so it cannot enter CI"),
+  "smoke:backup-usermode:live": untriagedExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
   // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
   // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
   // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
