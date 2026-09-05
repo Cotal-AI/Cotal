@@ -6274,7 +6274,6 @@ export class Manager {
     // terminal, then drop it so a commit that never remembered cannot pin the sweep forever.
     for (const [goalId, e] of [...this.turnAcceptances.entries()]) {
       if (this.pendingTurns.has(goalId)) continue;
-      // Unsettled leftovers age off the latch-drop stamp, never `deadlineAt`.
       const at = e.settled?.at ?? e.leftoverSince;
       if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
     }
