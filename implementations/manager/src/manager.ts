@@ -3180,6 +3180,10 @@ export class Manager {
           ? { ...restart.opts, resume: undefined, prompt: undefined, continueSession }
           : { ...restart.opts, resume: undefined, prompt: undefined };
         const spec = connector.buildLaunch(opts);
+        const wanted = this.managedPrincipal(a);
+        const joinedAfter = this.ep.getRoster()
+          .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)
+          .reduce((max, p) => Math.max(max, p.ts), 0) + 1;
         const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
@@ -3191,7 +3195,10 @@ export class Manager {
           a.handle = handle;
           a.control = spec.control;
           try {
-            const readiness = await this.awaitReadiness(a, connector.readinessTimeoutMs ?? this.readinessTimeoutMs, { reapOnExit: false });
+            const readiness = await this.awaitReadiness(a, connector.readinessTimeoutMs ?? this.readinessTimeoutMs, {
+              reapOnExit: false,
+              joinedAfter,
+            });
             if (!readiness.ok) throw new Error(readiness.detail);
           } catch (error) {
             a.handle = previousHandle;
@@ -4735,7 +4742,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -4756,17 +4763,26 @@ export class Manager {
     // claims. The manager threads the uid into EVERY mode's launch (open included), so the child
     // adopts it over a self-mint and publishes it in presence; the uid is absent only from a peer
     // the manager never launched (a pure operator/daemon connection that never registers).
+    // A supervised restart keeps the same principal+uid, so a SIGKILL'd child's still-live
+    // presence row would otherwise satisfy this equality. `joinedAfter` is one millisecond
+    // past that row's last heartbeat: only a later heartbeat counts as THIS replacement joining.
     const joined = (): boolean =>
-      this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid);
+      this.ep.getRoster().some((p) =>
+        p.card.id === wanted
+        && p.status !== "offline"
+        && p.lifecycleUid === a.lifecycleUid
+        && (opts.joinedAfter === undefined || p.ts >= opts.joinedAfter));
 
     return await new Promise((resolve) => {
       let done = false;
       let timer: ReturnType<typeof setTimeout>;
       let unsubExit = (): void => {};
+      let joinedPoll: ReturnType<typeof setInterval> | undefined;
       const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        if (joinedPoll !== undefined) clearInterval(joinedPoll);
         this.ep.off("presence", onPresence);
         unsubExit();
         resolve(r);
@@ -4774,6 +4790,11 @@ export class Manager {
       const onPresence = (): void => {
         if (joined()) finish({ ok: true });
       };
+      if (opts.joinedAfter !== undefined) {
+        // Heartbeats bump roster.ts without emitting "presence" (same status/uid/activity).
+        // A supervised restart needs that bump, so poll joined() rather than waiting on the event.
+        joinedPoll = setInterval(onPresence, 50);
+      }
       // Process exit → failed. Clear the backstop FIRST (synchronously) so it can't resolve UNCERTAIN while
       // the backlog reads async — the process is known dead, that's a failure, not an unknown. Reap through
       // onAgentExit so a child the launcher spawned in the window is reaped too.

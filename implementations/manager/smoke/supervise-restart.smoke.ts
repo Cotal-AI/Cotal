@@ -221,29 +221,28 @@ try {
   c("a second supervised seat started so a failed relaunch can be observed",
     (failSpawned as { ok?: boolean }).ok === true && failReady?.state === "succeeded" && failRow !== undefined, { failSpawned, failReady });
   const failPid = failRow?.handle.pid;
-  // Stale presence of the killed stub still matches the same principal+uid, so an idle
-  // replacement would look ready. Throw from spawn instead: recoverManagedSession's catch
-  // is the supervise-recovery-failed retirement.
-  const doors = manager as unknown as { runtime: { kind: string; spawn: (...args: never[]) => unknown } };
-  const previousRuntime = doors.runtime;
-  doors.runtime = {
-    kind: previousRuntime.kind,
-    spawn: () => { throw new Error("forced relaunch failure"); },
-  };
-  const logs: string[] = [];
+  // The next recoverManagedSession calls the same connector.buildLaunch. Point it at a
+  // command that is not on PATH so the live PtyRuntime.spawn throws; that is the
+  // supervise-recovery-failed catch, without wrapping Manager.runtime.
+  const previousBuild = stubCon.buildLaunch;
   const origErr = console.error;
-  console.error = (...args: unknown[]) => {
-    logs.push(args.map(String).join(" "));
-    origErr.apply(console, args);
-  };
-  if (typeof failPid === "number") {
-    try { process.kill(failPid, "SIGKILL"); } catch (e) { c("SIGKILL the fail pid", false, e); }
+  const logs: string[] = [];
+  try {
+    stubCon.buildLaunch = (o) => ({ command: "cotal-supervise-missing-binary", args: [], env: envFor(o) });
+    console.error = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+      origErr.apply(console, args);
+    };
+    if (typeof failPid === "number") {
+      try { process.kill(failPid, "SIGKILL"); } catch (e) { c("SIGKILL the fail pid", false, e); }
+    }
+    await waitFor(() => !M.agents.has("fail"), "failed relaunch", 15_000);
+  } finally {
+    console.error = origErr;
+    stubCon.buildLaunch = previousBuild;
   }
-  await waitFor(() => !M.agents.has("fail"), "failed relaunch", 15_000);
-  console.error = origErr;
-  doors.runtime = previousRuntime;
   c("a failed supervised relaunch retires the seat",
-    !M.agents.has("fail") && logs.some((l) => l.includes("supervise-recovery-failed") || l.includes("supervised restart failed")),
+    !M.agents.has("fail") && logs.some((l) => l.includes("this manager retired it after a supervised restart failed")),
     logs.filter((l) => /fail|reap|restart/i.test(l)).slice(-6));
 
   const userRoot = mkdtempSync(join(tmpdir(), "cotal-supervise-user-"));
