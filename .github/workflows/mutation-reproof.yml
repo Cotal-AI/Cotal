@@ -9,15 +9,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  changed:
+  changed_shard:
     # Anchors diagnose rot. This job executes fixtures whose guarded source changed, so a workload
     # or test-seam change that leaves every anchor present still has to kill at this head. The
     # corpus is 329 configs / 1,714 mutations, too expensive to multiply into every revision.
     # Source intersection catches the #1217 shape at the changing commit. The daily full sweep
-    # below catches cross-cutting changes a fixture did not name within a day.
+    # below catches cross-cutting changes a fixture did not name within a day. Shard by fixture:
+    # one manager source change selected 35 fixtures / 164 mutations and exhausted the serial
+    # job's 60-minute budget after 20 fixtures, while every completed fixture still discriminated.
     if: github.event_name != 'schedule'
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    name: changed shard ${{ matrix.shard }}/12
     steps:
       - uses: actions/checkout@v6
         with:
@@ -56,7 +63,18 @@ jobs:
             base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
             echo "no base commit on this event; using first parent $base"
           fi
-          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)"
+          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --shard "${{ matrix.shard }}/12"
+
+  changed:
+    # Keep one stable required check while the fixture workload runs in bounded parallel shards.
+    if: github.event_name != 'schedule' && always()
+    needs: [changed_shard]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate
+        run: |
+          echo "changed_shard=${{ needs.changed_shard.result }}"
+          [ "${{ needs.changed_shard.result }}" = "success" ]
 
   full:
     # A daily sweep keeps the remaining ambient-drift window bounded without making every pull

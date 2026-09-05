@@ -16,7 +16,7 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,8 +59,10 @@ const okCounts = (out: string): { discriminated: number; preRed: number; inconcl
   return m ? { discriminated: Number(m[1]), preRed: Number(m[2]), inconclusive: Number(m[3]) } : null;
 };
 
-const scan = (root: string, base: string, head: string): { status: number | null; out: string } => {
-  const run = spawnSync(process.execPath, [SCAN, "--root", root, "--base", base, "--head", head], { encoding: "utf8" });
+const scan = (root: string, base: string, head: string, shard?: string): { status: number | null; out: string } => {
+  const argv = [SCAN, "--root", root, "--base", base, "--head", head];
+  if (shard) argv.push("--shard", shard);
+  const run = spawnSync(process.execPath, argv, { encoding: "utf8" });
   return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 };
 
@@ -142,6 +144,43 @@ function makeSingle(
 }
 
 try {
+  // The changed-source workload is intentionally sharded by FIXTURE, while `changed` remains the
+  // one stable aggregate status. A manager-wide change selected 35 fixtures / 164 mutations and
+  // exhausted the old serial 60-minute job after 20 fixtures, despite every completed fixture
+  // discriminating. Keep the topology and the runner's partition semantics tied together here.
+  {
+    const workflow = readFileSync(join(ROOT, ".github", "workflows", "mutation-reproof.yml"), "utf8");
+    check(
+      "the mutation workflow runs twelve changed-fixture shards and keeps one aggregate changed gate",
+      /changed_shard:\n[\s\S]*?shard: \[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11\][\s\S]*?--shard "\$\{\{ matrix\.shard \}\}\/12"[\s\S]*?\n  changed:\n[\s\S]*?needs: \[changed_shard\]/.test(workflow),
+      workflow,
+    );
+
+    const { root, base, head } = build((r) => {
+      for (const name of ["a", "b"]) {
+        writeFileSync(join(r, `${name}.mjs`), [
+          `// touched so ${name}'s fixture is selected`,
+          `export function capped_${name}(input) {`,
+          "  const normalized = input;",
+          "  return Math.min(normalized, 32);",
+          "}",
+          "",
+        ].join("\n"));
+      }
+      git(r, ["add", "a.mjs", "b.mjs"]);
+      git(r, ["commit", "--quiet", "-m", "touch both guarded sources"]);
+    });
+    const shard0 = scan(root, base, head, "0/2");
+    const shard1 = scan(root, base, head, "1/2");
+    check(
+      "fixture shards partition the selected set without omission or overlap",
+      shard0.status === 0 && shard1.status === 0
+        && eq(selectedPaths(shard0.out), ["smoke/mutations/a.mutations.json"])
+        && eq(selectedPaths(shard1.out), ["smoke/mutations/b.mutations.json"]),
+      `shard0=${JSON.stringify(selectedPaths(shard0.out))}\nshard1=${JSON.stringify(selectedPaths(shard1.out))}`,
+    );
+  }
+
   // 1. Known survivor: a.mjs gains an upstream cap so its anchored mutant no longer kills. The gate
   //    must re-prove a.mjs (and ONLY a.mjs), watch the survivor, and fail naming exactly a's fixture.
   {
