@@ -8,6 +8,7 @@ import {
   type AgentHandle,
   type LaunchSpec,
   type Runtime,
+  type RuntimeReference,
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import * as herdr from "./driver.js";
@@ -97,6 +98,10 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
  */
 export class HerdrRuntime implements Runtime {
   readonly kind = "herdr" as const;
+
+  adopt(reference: RuntimeReference): AgentHandle {
+    throw new Error(`herdr runtime cannot adopt durable handle ${reference.id}`);
+  }
 
   constructor(private readonly session: string) {}
 

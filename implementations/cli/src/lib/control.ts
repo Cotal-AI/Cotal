@@ -174,6 +174,7 @@ export async function resolveControlTarget(
  *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
  *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
 const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
+  managerStatus: { command: "status" },
   start: { command: "spawn" },
   stop: { command: "despawn", targeted: true },
   attach: { command: "attach", targeted: true },

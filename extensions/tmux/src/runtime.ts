@@ -3,6 +3,7 @@ import {
   type AgentHandle,
   type LaunchSpec,
   type Runtime,
+  type RuntimeReference,
   type RuntimeProvider,
   type Tab,
   type TerminalLayout,
@@ -35,6 +36,10 @@ function scheduleConfirm(target: string): void {
  */
 export class TmuxRuntime implements Runtime {
   readonly kind = "tmux" as const;
+
+  adopt(reference: RuntimeReference): AgentHandle {
+    throw new Error(`tmux runtime cannot adopt durable handle ${reference.id}`);
+  }
 
   constructor(private readonly session: string) {}
 

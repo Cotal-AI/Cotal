@@ -102,18 +102,24 @@ rather than choosing a catalog.
 ## update
 
 ```bash
-cotal update [--self]
+cotal update [--self] [--space <s>] [--server <url>] [--creds <path>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
+| `--space`, `--server`, `--creds` | resolved mesh | Select the running manager whose continuity state is reported |
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
 binary: it force-reconciles the four built-in connectors, then reinstalls other `@cotal-ai/*`
 operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
+
+After disk reconciliation, `update` reads the selected running manager. A manager without a
+custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
+command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
+for every seat. This report sends no stop, preservation-commit, or replacement command.
 
 With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
 version it validated, resolves and verifies that package in npm's global root, then launches that

@@ -337,6 +337,7 @@ export interface ManagerOptions {
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
+
 /** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
  *  is how the one caller that matters ends up unlabelled, and the whole point of recording a cause
  *  is that an unexplained death cannot masquerade as a routine one. A new free path must name
@@ -4915,6 +4916,7 @@ export class Manager {
     return {
       instanceId: this.managerInstanceId,
       runtime: this.runtime.kind,
+      custody: "legacy",
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),

@@ -55,12 +55,14 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "agentCount", "uptimeMs", "connectors"],
+  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
+    /** Whether this manager can hand running runtime handles to a successor. */
+    custody: { enum: ["legacy"] },
     /** How many agents this manager currently supervises. */
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
@@ -87,6 +89,7 @@ const STATUS_OUTPUT_SCHEMA = {
 export interface ManagerStatus {
   instanceId: string;
   runtime: string;
+  custody: "legacy";
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];

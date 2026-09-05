@@ -35,6 +35,7 @@ export const HERMES_PROVIDER_KEYS: readonly string[] = [
 export const hermesConnector: Connector = {
   kind: "connector",
   name: "hermes",
+  supportsFreshStart: true,
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],

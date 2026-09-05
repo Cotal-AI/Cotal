@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
-import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type AttachSession, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
+import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type AttachSession, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime, type RuntimeReference } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
@@ -18,6 +18,9 @@ registry.register({ kind: "connector", name: "orphan-repro", requires: ["node"],
 const session: AttachSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 class DetachedRuntime implements Runtime {
   readonly kind = "orphan-repro";
+  adopt(reference: RuntimeReference): AgentHandle {
+    throw new Error(`orphan-repro runtime cannot adopt durable handle ${reference.id}`);
+  }
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const child = spawn(spec.command, spec.args, { cwd, env: spec.env, detached: true, stdio: "ignore" });
     const pid = child.pid!; child.unref();

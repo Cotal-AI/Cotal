@@ -9,6 +9,7 @@ import {
   loadExtensionsManifest,
   SEEDED_EXTENSIONS,
   type InstalledExtension,
+  targetFlags,
 } from "@cotal-ai/workspace";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -16,12 +17,15 @@ import { selfArgv } from "../lib/self-exec.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
+import { askManager, resolveControlTarget } from "../lib/control.js";
+import { legacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
 
 export const updateFlags: readonly FlagSpec[] = [
   { name: "self", type: "boolean", description: "install the validated latest cotal-ai globally, then reconcile through it" },
+  ...targetFlags,
 ];
 
 interface CommandResult {
@@ -38,6 +42,7 @@ export interface UpdateRuntime {
   readonly nodePath: string;
   version(): string;
   reconcile(): Promise<void>;
+  reportRunningManager(target: Record<string, unknown>): Promise<void>;
   extensions(): readonly InstalledExtension[];
   claimUpdatePass(): () => void;
   claimGlobalUpdate(root: string): () => void;
@@ -67,6 +72,7 @@ const runtime: UpdateRuntime = {
   nodePath: process.execPath,
   version: cliVersion,
   reconcile: () => runSeed({ force: true }),
+  reportRunningManager,
   extensions: () => loadExtensionsManifest().extensions,
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
@@ -82,12 +88,12 @@ const runtime: UpdateRuntime = {
 };
 
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
-  const code = await executeUpdate(Boolean(args.values.self), rt);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime, target: Record<string, unknown> = {}): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -99,14 +105,14 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime):
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
     }
-    return reconcileCurrent(current, rt, (ok) => ok ? 0 : 1);
+    return reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
   }
 
   if (self) {
     const latest = latestVersion(rt);
     if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt);
 
-    return reconcileCurrent(current, rt, (reconciled) => {
+    return reconcileCurrent(current, rt, target, (reconciled) => {
       if (!latest.ok) {
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
         return 1;
@@ -116,7 +122,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime):
     });
   }
 
-  return reconcileCurrent(current, rt, (reconciled) => {
+  return reconcileCurrent(current, rt, target, (reconciled) => {
     const latest = latestVersion(rt);
     if (!latest.ok) {
       rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
@@ -130,6 +136,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime):
 async function reconcileCurrent(
   current: string,
   rt: UpdateRuntime,
+  target: Record<string, unknown>,
   finish: (reconciled: boolean) => number,
 ): Promise<number> {
   rt.out(c.bold("Built-in connectors"));
@@ -137,6 +144,13 @@ async function reconcileCurrent(
     await rt.reconcile();
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
+    return finish(false);
+  }
+
+  try {
+    await rt.reportRunningManager(target);
+  } catch (e) {
+    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
     return finish(false);
   }
 
@@ -203,6 +217,31 @@ async function reconcileCurrent(
     if (result.stderr) rt.stderr(result.stderr);
     if (result.stdout) rt.stdout(result.stdout);
   }
+}
+
+async function reportRunningManager(flags: Record<string, unknown>): Promise<void> {
+  const target = await resolveControlTarget({
+    ...(typeof flags.space === "string" ? { space: flags.space } : {}),
+    ...(typeof flags.server === "string" ? { server: flags.server } : {}),
+    ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
+  }, "control-caller-admin");
+  const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
+  if (!status.ok) {
+    if (status.unanswered && /no manager reachable/i.test(status.error ?? "")) return;
+    throw new Error(status.error ?? "manager status request failed");
+  }
+  const seats = await askManager(target.space, target.server, "ps", undefined, target.auth);
+  if (!seats.ok) throw new Error(seats.error ?? "manager seat inventory request failed");
+  const report = await legacyManagerReport(
+    (status.data ?? {}) as { custody?: unknown },
+    Array.isArray(seats.data)
+      ? seats.data.map((seat) => ({ name: String((seat as { name?: unknown }).name ?? ""), agent: String((seat as { agent?: unknown }).agent ?? "") }))
+      : [],
+  );
+  if (!report) return;
+  console.log(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
+  for (const seat of report.seats)
+    console.log(c.dim(`  ${seat.name}: ${seat.continuity}`));
 }
 
 function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {

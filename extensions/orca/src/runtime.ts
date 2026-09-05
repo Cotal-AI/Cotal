@@ -8,6 +8,7 @@ import {
   type AgentHandle,
   type LaunchSpec,
   type Runtime,
+  type RuntimeReference,
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import * as orca from "./driver.js";
@@ -83,6 +84,10 @@ function scheduleConfirm(handle: () => string): void {
 export class OrcaRuntime implements Runtime {
   readonly kind = "orca" as const;
   readonly #worktrees = new Map<string, orca.OrcaWorktree>();
+
+  adopt(reference: RuntimeReference): AgentHandle {
+    throw new Error(`orca runtime cannot adopt durable handle ${reference.id}`);
+  }
 
   #cacheWorktree(cwd: string, worktree: orca.OrcaWorktree): void {
     this.#worktrees.delete(cwd);

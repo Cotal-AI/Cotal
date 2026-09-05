@@ -38,6 +38,7 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
+    reportRunningManager: async () => void events.push("report-running-manager"),
     extensions: () => opts.extensions ?? [],
     claimUpdatePass: () => {
       events.push("claim-mutation");
@@ -221,11 +222,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(attachName.trimEnd().endsWith(":nofiles"), "attach --name suppresses filename fallback");
 }
 
-// --- update grammar: registered in Setup, exactly one public flag --------------------------------
+// --- update grammar: registered in Setup with target selection -----------------------------------
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "space", "server", "creds"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.throws(
     () => parseCommandArgs(cmd!, ["--unknown"]),
