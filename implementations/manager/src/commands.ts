@@ -316,8 +316,9 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       `\n  console: ${mgr.consoleUrl}` +
       c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
-  // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
-  // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
+  // Register shutdown handlers before any spawning. SIGTERM/SIGINT spare managed agents (#964);
+  // `cotal down --with-agents` is the reap. A Ctrl-C during boot therefore leaves already-started
+  // seats running rather than taking them with the supervisor.
   const shutdown = () => void mgr.stop()
     .then(() => {
       releasePidRecord();

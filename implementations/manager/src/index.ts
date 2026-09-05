@@ -13,6 +13,7 @@ export {
   type ManagerPreservationPlan,
   type ManagerPreserveOptions,
   type ManagerPreserveResult,
+  type ManagerStopOptions,
 } from "./manager.js";
 export {
   parseResumeControlArgs,

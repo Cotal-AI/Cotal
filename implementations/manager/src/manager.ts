@@ -446,6 +446,12 @@ export interface ManagerPreserveOptions {
   persistInventory(inventory: ManagerResumeInventory): Promise<void>;
 }
 
+/** Options for {@link Manager.stop}. Preservation still always stops retained children. */
+export interface ManagerStopOptions {
+  /** Reap every managed agent (hard-stop + deprovision). Default false leaves them running. */
+  withAgents?: boolean;
+}
+
 export interface ManagerResumeResult {
   ok: boolean;
   agents: Array<{ name: string; reply: ControlReply }>;
@@ -804,6 +810,9 @@ export class Manager {
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
+  /** Seats released by a sparing {@link stop} so their runtime handles are not GC'd while this
+   *  process is still exiting. Not listed by `ps`. Not stopped. Not deprovisioned. */
+  private readonly detached: ManagedAgent[] = [];
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
   private readonly reserved = new Set<string>();
@@ -1794,8 +1803,21 @@ export class Manager {
     };
   }
 
-  /** Tear down every managed agent's footprint on a graceful {@link stop} (#159 B2). A manager exit is
-   *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
+  /** Drop every managed seat from the table without stopping or deprovisioning it (#964). A later
+   *  `ps` is empty; the OS processes and their footprints stay. Handles are retained on
+   *  {@link detached} so a still-running manager process does not GC a PTY and kill the child.
+   *  When this process itself exits, a PTY master close may still SIGHUP those children. */
+  private detachManagedAgents(): void {
+    const managed = [...this.agents.values()];
+    for (const a of managed) {
+      a.suppressCleanup = true;
+      this.agents.delete(a.name);
+      this.detached.push(a);
+    }
+  }
+
+  /** Tear down every managed agent's footprint on {@link stop} with `withAgents: true` (#159 B2). A
+   *  manager exit is a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
@@ -1852,12 +1874,13 @@ export class Manager {
       throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
   }
 
-  async stop(): Promise<void> {
+  async stop(opts?: ManagerStopOptions): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     if (this.maintenanceState === "active" && !this.resumeRequired) {
-      await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)
+      if (opts?.withAgents === true) await this.teardownManagedAgents();
+      else this.detachManagedAgents();
     } else {
       // A signal after a partial preservation must never fall back into destructive teardown.
       await this.stopRetainedAgentsOnExit();

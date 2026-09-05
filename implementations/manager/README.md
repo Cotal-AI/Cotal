@@ -44,7 +44,8 @@ Library composition roots can call `Manager.preserveState({ attemptId, persistIn
 the first child launches. Static and open entries reuse and validate the exact retained principal.
 User-auth entries are validated internally through `resolveAuthProvider().validateRetainedAgent()`;
 the manager never calls `grantAgent` or provisions a replacement identity. Ordinary
-`Manager.stop()` remains destructive while the manager is active.
+`Manager.stop()` leaves managed agents running. Pass `{ withAgents: true }` to reap them.
+Preservation still always stops retained children.
 
 After restore, start the manager with `supervise --resume-attempt <id>`, wait for normal manager
 readiness, then send the admin control request:

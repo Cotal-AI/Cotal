@@ -1,55 +1,35 @@
 /**
- * HONEST REPRODUCTION of #964: a stack stop reaps every managed agent, and there is no way to
- * opt out - pnpm smoke:manager-stop-reap
+ * Regression for #964: a stack stop leaves managed agents running unless `--with-agents`.
+ * Run: pnpm smoke:manager-stop-reap
  *
- * The incident: one stop signal to the stack took six live seats with it, several holding
- * uncommitted work, and the logs read as a deliberate teardown. The mechanism is
- * `Manager.stop()`: its normal active path unconditionally calls `teardownManagedAgents()`
- * (implementations/manager/src/manager.ts, the `maintenanceState === "active"` arm), which
- * hard-stops every managed seat and deprovisions its footprint. Bare `cotal down` stops the
- * manager and therefore drives exactly this path. There is no flag, mode, or argument that
- * stops the stack and leaves the seats running.
+ * The incident: one stop signal to the stack took six live seats with it. `Manager.stop()` on
+ * the normal active path now detaches those seats (no handle.stop, no deprovision). The old
+ * reap is `stop({ withAgents: true })`, which `cotal down --with-agents` drives by stopping
+ * each seat and then signalling the manager.
  *
- * This suite drives the SHIPPED owner of that behavior - a real `Manager` over a real authed
- * broker with a real co-located delivery daemon (a direct `deliver` run, never `up`; on an auth
- * mesh the deprovision path verify-evicts through it), a real managed seat spawned through the
- * real CLI spawn command - and pins today's defective semantics as explicitly-labeled
- * "#964 unfixed:" expectations that are GREEN today.
- *
- * THE CONTRACT WITH THE FUTURE FIX (read this before touching the labeled cells): the accepted
- * direction for #964 is a three-mode `down` (bare = spare agents, `--with-agents` = today,
- * `--preserve-state` = capture-and-restore). When that lands, the "#964 unfixed:" cells below
- * MUST NOT stay silently green:
- *   - if `Manager.stop()` itself learns a sparing default, they go RED and the fix PR flips
- *     them into assertions that the seat SURVIVES a bare stack stop;
- *   - if instead `stop()` grows an explicit mode parameter and bare `down` passes the sparing
- *     choice, the fix PR must RELABEL these cells as the destructive mode's explicit spelling
- *     (`stop({withAgents: true})` or equivalent) and add the sparing path as new green cells.
- *   Either way this file changes in the fix PR; a fix that leaves it untouched is incomplete.
+ * This suite drives a real `Manager` over a real authed broker with a real co-located delivery
+ * daemon (a direct `deliver` run, never `up`), and a real managed seat spawned through the
+ * real CLI spawn command.
  *
  * What runs here:
- *   DEFECT phase: manager up, one live managed seat (its child process writes a pidfile, so
- *   liveness is measured, not inferred), then a plain `mgr.stop()`. The seat's process is dead
- *   and its minted creds file is gone, with no refusal and no warning.
- *   CONTROL phase: a fresh manager over the same root, a second seat, and a DELIBERATE per-seat
- *   stop through the real CLI (`cotal stop --name`). The terminal observables are the SAME
- *   (process dead, creds gone) - which is the issue's "indistinguishable from deliberate
- *   teardown" claim made concrete: on disk, a mass reap looks exactly like an operator despawn.
+ *   SPARE phase: manager up, one live managed seat (pidfile), then a plain `mgr.stop()`.
+ *   The seat's process stays alive and its minted creds file stays. The managed table is empty.
+ *   REAP phase: a fresh manager, a second seat, `mgr.stop({ withAgents: true })`. The process
+ *   is dead and the creds file is gone.
  *
  * NAMED GAPS (deliberate, not oversights):
  *   - The CLI `down` surface itself is not driven here: this host must never run `cotal down`
- *     (or `up`), including against a throwaway root - the #964 architecture review restricts
- *     local validation to shipped handlers and in-process manager seams, which is what this is.
- *   - The preservation arm (`stopRetainedAgentsOnExit`) is not driven: it is only reachable
- *     through preservation state no shipped public path sets in this rig, and hand-poking
- *     private state would prove nothing about the shipped owner.
+ *     (or `up`). Flag refusals for `--with-agents` live in the hermetic down-target smoke.
+ *   - The preservation arm (`stopRetainedAgentsOnExit`) is not driven.
  *   - The broker-side footprint (dm_/dlv_ durables, ACL row) is not asserted; the on-disk creds
  *     file is the asserted deprovision observable.
+ *   - A PTY child may still die when the manager *process* exits and the PTY master closes.
+ *     This suite keeps the Manager object after a sparing stop so that in-process GC is not
+ *     what is being measured.
  *
- * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space - each
- * space reserves a 4 GiB artifact store on the broker's tmpfs store dir), sandboxed COTAL_HOME,
- * scratch workspace root, kills only PIDs it spawned or that its own children wrote to pidfiles.
- * No live stack is touched, no `cotal up`/`down` anywhere. Needs nats-server on PATH.
+ * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space),
+ * sandboxed COTAL_HOME, scratch workspace root, kills only PIDs it spawned or that its own
+ * children wrote to pidfiles. No live stack is touched. Needs nats-server on PATH.
  * Run: pnpm smoke:manager-stop-reap
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
@@ -90,9 +70,9 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-/** Cells that ran, before the count cell itself: 6 must + 8 ok. A throw lands in the catch as a
+/** Cells that ran, before the count cell itself: 6 must + 10 ok. A throw lands in the catch as a
  *  counted failure, so a partial run can never print the OK banner. */
-const EXPECTED_CELLS = 15;
+const EXPECTED_CELLS = 17;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   const end = Date.now() + ms;
@@ -188,22 +168,6 @@ const spawnSeat = async (name: string): Promise<void> => {
   }
 };
 const kids: ChildProcess[] = [];
-/** The deliberate despawn control runs the REAL binary as a subprocess: the in-process `stop`
- *  command exits the whole process on failure, which would kill the suite. */
-const cliStop = (name: string): Promise<{ code: number | null; out: string }> =>
-  new Promise((resolve, reject) => {
-    const p = spawnProc(TSX, [BIN, "stop", "--name", name, "--space", SPACE], {
-      cwd: root,
-      env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    kids.push(p);
-    let out = "";
-    p.stdout?.on("data", (b: Buffer) => void (out += b.toString()));
-    p.stderr?.on("data", (b: Buffer) => void (out += b.toString()));
-    p.on("error", reject);
-    p.on("exit", (code) => resolve({ code, out }));
-  });
 
 let releaseBroker: (() => void) | undefined;
 let brokerProc: ChildProcess | undefined;
@@ -213,7 +177,7 @@ const daemonSink = { out: "", exited: false };
 let mgr1: InstanceType<typeof Manager> | undefined;
 let mgr2: InstanceType<typeof Manager> | undefined;
 
-console.log("\n── #964: a stack stop reaps every managed agent ─────────────\n");
+console.log("\n── #964: a stack stop leaves managed agents running ─────────────\n");
 try {
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
   const auth = await createSpaceAuth(SPACE);
@@ -267,7 +231,7 @@ try {
     daemonSink.out.slice(-500),
   );
 
-  // ── DEFECT phase: one live seat, then a plain stack stop ──────────────────────────────────────
+  // ── SPARE phase: one live seat, then a plain stack stop ──────────────────────────────────────
   mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await mgr1.start();
   await spawnSeat("seatA");
@@ -277,7 +241,7 @@ try {
   const credsA = optsByName.get("seatA")?.creds;
   ok("seat A's minted creds file exists on disk (the footprint a deprovision removes)", credsA !== undefined && existsSync(credsA), { credsA });
   await sleep(1500);
-  ok("instrument: seat A is still live after a settle window (its death below is stop-caused, not self-inflicted)", pidA !== undefined && alive(pidA));
+  ok("instrument: seat A is still live after a settle window (its death below would be stop-caused, not self-inflicted)", pidA !== undefined && alive(pidA));
 
   let stopError: string | undefined;
   try {
@@ -285,36 +249,33 @@ try {
   } catch (e) {
     stopError = (e as Error).message;
   }
-  mgr1 = undefined;
-  ok(
-    "#964 unfixed: a plain Manager.stop() - the stack-stop path bare `cotal down` drives - proceeds against a live managed seat with no refusal and no sparing mode",
-    stopError === undefined,
-    { stopError },
-  );
-  const deadA = pidA !== undefined && (await until(() => !alive(pidA), 10_000));
-  ok("#964 unfixed: the stack stop hard-stopped the live managed seat (its process is dead)", deadA, { pidA });
-  const credsAGone = credsA !== undefined && (await until(() => !existsSync(credsA), 10_000));
-  ok("#964 unfixed: the reaped seat was deprovisioned (its minted creds file is gone)", credsAGone, { credsA });
+  ok("a plain Manager.stop() proceeds against a live managed seat", stopError === undefined, { stopError });
+  ok("default stop empties the managed table", (mgr1 as unknown as { agents: Map<string, unknown> }).agents.size === 0);
+  ok("#964: a plain Manager.stop() leaves the live managed seat running", pidA !== undefined && alive(pidA), { pidA });
+  ok("#964: a spared seat is not deprovisioned (its minted creds file remains)", credsA !== undefined && existsSync(credsA), { credsA });
 
-  // ── CONTROL phase: a fresh manager, a second seat, a DELIBERATE despawn ───────────────────────
+  // ── REAP phase: a fresh manager, a second seat, stop({ withAgents: true }) ────────────────────
   mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await mgr2.start();
-  must("a fresh manager starts over the same root (control phase)", true);
+  must("a fresh manager starts over the same root (reap phase)", true);
   await spawnSeat("seatB");
   const pidB = await until(() => pidOf(join(pidDir, "seatB.pid")) !== undefined, 15_000) ? pidOf(join(pidDir, "seatB.pid"))! : undefined;
   must("seat B is live under the fresh manager", pidB !== undefined && alive(pidB) && optsByName.has("seatB"), { pidB });
   const credsB = optsByName.get("seatB")?.creds;
-  ok("seat B's creds file exists before the deliberate despawn", credsB !== undefined && existsSync(credsB), { credsB });
-  const stopped = await cliStop("seatB");
-  ok("control: a deliberate per-seat stop through the real CLI succeeds", stopped.code === 0, { code: stopped.code, out: stopped.out.slice(-400) });
+  ok("seat B's creds file exists before the explicit reap", credsB !== undefined && existsSync(credsB), { credsB });
+  let reapError: string | undefined;
+  try {
+    await mgr2.stop({ withAgents: true });
+  } catch (e) {
+    reapError = (e as Error).message;
+  }
+  mgr2 = undefined;
+  ok("stop({ withAgents: true }) proceeds", reapError === undefined, { reapError });
   const bReaped =
     pidB !== undefined && (await until(() => !alive(pidB), 10_000)) &&
     credsB !== undefined && (await until(() => !existsSync(credsB), 10_000));
-  ok(
-    "control: the deliberately-despawned seat shows the SAME terminal observables (process dead, creds gone) - on disk a mass reap is indistinguishable from an operator despawn",
-    bReaped,
-    { pidB, credsB },
-  );
+  ok("#964: stop({ withAgents: true }) reaps the seat (process dead, creds gone)", bReaped, { pidB, credsB });
+  ok("#964: the spared seat A is still live after the other manager's reap", pidA !== undefined && alive(pidA), { pidA });
 
   ok("every cell ran (silently skipped cells must not read as green)", pass + fail === EXPECTED_CELLS - 1, { pass, fail, expected: EXPECTED_CELLS - 1 });
 } catch (e) {

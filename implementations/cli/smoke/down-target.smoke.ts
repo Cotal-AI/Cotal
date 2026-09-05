@@ -148,6 +148,20 @@ try {
   await assert.rejects(run(["web"], { space: "nosuch" }), /no mesh named/);
   check("--space with an unknown mesh fails loud", true);
 
+  // Guardrails: --with-agents is bare whole-stack only and cannot mix with preserve-state.
+  await assert.rejects(run([], { "preserve-state": true, "with-agents": true }), /--preserve-state cannot be combined with --with-agents/);
+  check("--preserve-state with --with-agents is refused", true);
+  await assert.rejects(run(["web"], { "with-agents": true }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with a component is refused", true);
+  await assert.rejects(run([], { "with-agents": true, file: "cotal.yaml" }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --file is refused", true);
+  await assert.rejects(run([], { "with-agents": true, run: "abc" }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --run is refused", true);
+  await assert.rejects(run([], { "with-agents": true, space: "teamA" }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --space is refused", true);
+  await assert.rejects(run([], { "with-agents": true, "dry-run": true }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --dry-run is refused", true);
+
   console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {
   process.chdir(prevCwd);

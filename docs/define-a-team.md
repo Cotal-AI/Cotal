@@ -50,7 +50,7 @@ cotal topology view -f cotal.yaml      # validate + render the access graph (no 
 cotal up -f cotal.yaml                 # broker + channels + agents, all fresh
 cotal ps --space main                  # see the agents the manager booted
 cotal web --space main                 # ...or watch it in the browser
-cotal down                             # stop the whole mesh
+cotal down                             # stop the stack; managed agents stay running
 ```
 
 The manifest introduces no access model of its own; the three verbs are the same ones

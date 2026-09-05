@@ -1,11 +1,12 @@
 {
   "suite": "implementations/manager/smoke/start-model-preflight.smoke.ts",
-  "guard": "normal Manager.stop does not release manager authority until every managed AgentHandle has authoritatively exited",
+  "guard": "Manager.stop with withAgents true waits for every seat to exit; a plain stop leaves those seats running",
   "command": "pnpm smoke:start-model",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/shutdown-seat-exit.mutations.json",
   "why": [
     "The deterministic shutdown cell gives both target seats a runtime exit witness and asserts stop proves both exits before returning.",
-    "A second cell makes one runtime stop throw and its wait report still-running; shutdown must fail loud rather than release authority into an orphan window."
+    "A second cell makes one runtime stop throw and its wait report still-running; shutdown must fail loud rather than release authority into an orphan window.",
+    "A third cell is the #964 spare path: a plain stop must not call handle.stop. Restoring the old always-reap line reddens only that cell."
   ],
   "mutations": [
     {
@@ -15,6 +16,15 @@
       "replace": "    void failures;",
       "expectRed": "shutdown: stop() proves every managed child exited before releasing manager authority",
       "cell": "shutdown: stop() proves every managed child exited before releasing manager authority"
+    },
+    {
+      "name": "the defect restored: a plain stop still reaps every managed agent",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();\n      else this.detachManagedAgents();",
+      "replace": "      await this.teardownManagedAgents();",
+      "expectRed": "spare: a plain stop does not hard-stop the child",
+      "cell": "spare: a plain stop does not hard-stop the child",
+      "note": "Issue #964 restored: stop() on the active path always tears down children. The withAgents:true cells stay green; only the spare cell reddens."
     }
   ]
 }

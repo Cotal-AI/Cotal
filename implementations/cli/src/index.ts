@@ -112,7 +112,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "down",
     group: "Mesh",
-    summary: "stop the whole local stack, or name only the components to stop",
+    summary: "stop the whole local stack (managed agents stay running unless --with-agents), or name only the components to stop",
     positionals: "[<component> …]",
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
@@ -120,6 +120,7 @@ const baseCommands: Command[] = [
       { name: "space", type: "string", value: "<name>", description: "with components: the mesh whose target-addressed components (e.g. web) to stop" },
       { name: "dry-run", type: "boolean", description: "print what would stop, mutate nothing" },
       { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
+      { name: "with-agents", type: "boolean", description: "bare whole stack: also stop every managed agent (the previous default)" },
       { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },
     ],
     run: down,

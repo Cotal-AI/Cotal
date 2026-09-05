@@ -240,6 +240,7 @@ and the manager's log both name the credential and this repair.
 
 ```bash
 cotal down
+cotal down --with-agents
 cotal down --preserve-state [--store-dir <dir>]
 cotal down manager [delivery auth web nats ...]
 cotal down web [--space <name>]
@@ -253,10 +254,15 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--space <name>` | current mesh | With components: the mesh whose target-addressed components (e.g. `web`) to stop |
 | `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
+| `--with-agents` | off | Bare whole stack only: also stop every managed agent (the previous default) |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 
-Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
-only those self-registered local processes; for example, `cotal down manager` leaves delivery and
+Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents
+running as unmanaged OS processes. It prints their names, pids, and working directories, and
+points at `cotal down --with-agents` to take them with the stack. `--with-agents` cannot be
+combined with `--preserve-state`, component names, `--space`, `--file`, `--run`, or `--dry-run`.
+A live manager that cannot list its seats is refused, and the stack is not signalled. Positional
+component names stop only those self-registered local processes; for example, `cotal down manager` leaves delivery and
 the broker running, and `cotal down web` is available when the web extension is installed. A
 component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
 resolves the mesh the same way as `cotal web` (registry current mesh first, `--space` to name one), so

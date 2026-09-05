@@ -13,7 +13,7 @@
  *      KEPT (not deprovisioned — it may still be booting), distinct from both started and failed.
  *  3c. FAIL BEFORE PRESENCE — a launch missing the launcher uid, or lying a different one while
  *      consuming, dies with NO roster ghost (SPEC 13.1 fail-before-presence).
- *   4. SHUTDOWN teardown — Manager.stop() deprovisions every still-managed agent's footprint.
+ *   4. SHUTDOWN teardown — Manager.stop({ withAgents: true }) deprovisions every still-managed agent's footprint.
  *
  * Run: pnpm smoke:lifecycle-e2e   (needs nats-server + node on PATH)
  */
@@ -270,13 +270,13 @@ try {
   }
 
   // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
-  console.log("4. manager stop() → still-managed footprint torn down:");
+  console.log("4. manager stop({ withAgents: true }) → still-managed footprint torn down:");
   const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot });
   check("second agent started", r4.ok === true, r4);
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
   const uid2 = uidOf("w2"); // capture before stop() clears the managed set
   check("w2 footprint exists before stop", (await footprint(id2, uid2, "w2")).dm, await footprint(id2, uid2, "w2"));
-  await mgr.stop(); // awaits teardownManagedAgents → deprovision
+  await mgr.stop({ withAgents: true }); // awaits teardownManagedAgents → deprovision
   const fp2 = await footprint(id2, uid2, "w2");
   check("w2 dm_ durable gone after stop()", !fp2.dm, fp2);
   check("w2 dlv_ durable gone after stop()", !fp2.dlv, fp2);

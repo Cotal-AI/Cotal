@@ -18,8 +18,8 @@
  * per tick. `gone` must also put the key back.
  *
  * THE POSITIVE CONTROL IS NOT OPTIONAL. "stops === 0" is also what a broken counter reports. Cell 0
- * drives the ORDINARY shutdown path, which stays destructive, and requires the same counter to reach 1.
- * Without that, every zero below is unearned.
+ * drives `stop({ withAgents: true })`, the explicit reap, and requires the same counter to reach 1.
+ * Without that, every zero below is unearned. Ordinary `stop()` leaves agents running (#964).
  *
  * NOT GRADED: the wire. Whether the broker actually answers `gone` after an expiry, and whether a real
  * manager survives a real blackout, is `smoke:lease-renew` (a real broker behind a relay that can stall
@@ -167,14 +167,14 @@ const timeout = async (): Promise<never> => { throw new Error("timeout"); };
 const other: ManagerLeaseInfo = { holder: "local.other", instanceId: "smoke-instance", runtime: "pty", root, pid: process.pid + 1, since: 0 };
 
 // ── Cell 0 — POSITIVE CONTROL ────────────────────────────────────────────────────────────────
-// The ordinary shutdown path is deliberately destructive and must stay so: `cotal down` and Ctrl-C
-// mean shut the mesh down. If this cell does not see a stop, the counter is broken and every zero
+// The explicit reap (`stop({ withAgents: true })`) must still stop children. Ordinary `stop()`
+// leaves them (#964). If this cell does not see a stop, the counter is broken and every zero
 // below is worthless rather than reassuring.
 {
   const h = fakeHandle("worker");
   const { manager } = managerWith([h], { renew: timeout, read: timeout });
-  await manager.stop();
-  check("CONTROL: the ordinary stop path stops the child (instrument fires)", h.stops === 1, `stops=${h.stops}`);
+  await manager.stop({ withAgents: true });
+  check("CONTROL: the explicit reap path stops the child (instrument fires)", h.stops === 1, `stops=${h.stops}`);
 }
 
 // ── Cell 1 — unknown: the broker cannot be asked, for as long as that lasts ──────────────────

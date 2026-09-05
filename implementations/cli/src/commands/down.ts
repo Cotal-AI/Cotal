@@ -77,8 +77,12 @@ export function downComplete(argv: string[]): CompletionResult {
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
 export async function down(args: ParsedArgs): Promise<void> {
-  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string; space?: string };
+  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; space?: string };
   const requested = [...new Set(args.positionals)];
+  if (values["preserve-state"] && values["with-agents"])
+    throw new Error("--preserve-state cannot be combined with --with-agents");
+  if (values["with-agents"] && (requested.length || values.file || values.run || values["dry-run"] || values.space))
+    throw new Error("--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
   if (values["preserve-state"]) {
     if (requested.length || values.file || values.run || values["dry-run"] || values.space)
       throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
@@ -161,6 +165,12 @@ export async function down(args: ParsedArgs): Promise<void> {
     return;
   }
 
+  let leftover: DownSeatRow[] | undefined;
+  const managerComp = selected.find((component) => component.name === "manager");
+  if (managerComp && mayBeRunning(managerComp, contextFor(managerComp))) {
+    leftover = await acknowledgeManagerSeats(contextFor(managerComp), Boolean(values["with-agents"]));
+  }
+
   let any = false;
   let allStopped = true;
   for (const component of selected) {
@@ -197,6 +207,7 @@ export async function down(args: ParsedArgs): Promise<void> {
     console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
     process.exit(1);
   }
+  if (leftover?.length && !values["with-agents"]) printLeftRunning(leftover);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -206,6 +217,57 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
 // stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
 export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
+
+type DownSeatRow = {
+  name: string;
+  mode?: string;
+  pid?: number;
+  agent?: string;
+  cwd?: string;
+  status?: string;
+};
+
+function meshForContext(context: LocalProcessContext) {
+  const matching = loadMeshes().filter((mesh) => mesh.root === context.root && mesh.space === context.space);
+  return matching[0] ?? loadMeshes().find((mesh) => mesh.root === context.root);
+}
+
+/** Read the manager's `ps` table. A live manager that cannot answer is a refuse, not a signal. */
+async function acknowledgeManagerSeats(context: LocalProcessContext, withAgents: boolean): Promise<DownSeatRow[]> {
+  const mesh = meshForContext(context);
+  if (!mesh)
+    throw new Error("manager is running but this folder has no recorded mesh, so leftover seats cannot be listed; refusing to signal it. Retry after `cotal up`, or pass `cotal down --with-agents` to reap");
+  let target;
+  try {
+    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged");
+  } catch (e) {
+    throw new Error(`manager is running but its control plane could not be reached (${(e as Error).message}); refusing to signal it. Retry, or pass \`cotal down --with-agents\` to reap`);
+  }
+  const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
+  if (!reply.ok)
+    throw new Error(`manager is running but its seat list could not be read (${reply.error ?? "ps failed"}); refusing to signal it. Retry, or pass \`cotal down --with-agents\` to reap`);
+  const rows = Array.isArray(reply.data) ? (reply.data as DownSeatRow[]) : [];
+  if (withAgents && rows.length) {
+    const failures: string[] = [];
+    for (const row of rows) {
+      const stopped = await askManager(target.space, target.server, "stop", { name: row.name, graceful: false }, target.auth, "any");
+      if (!stopped.ok) failures.push(`${row.name}: ${stopped.error ?? "stop failed"}`);
+    }
+    if (failures.length)
+      throw new Error(`--with-agents could not stop every managed seat: ${failures.join("; ")}`);
+  }
+  return rows;
+}
+
+function printLeftRunning(rows: DownSeatRow[]): void {
+  console.log(c.dim(`left ${rows.length} managed agent${rows.length === 1 ? "" : "s"} running (no longer managed):`));
+  for (const row of rows) {
+    const bits = [row.name, row.mode, row.pid !== undefined ? `pid ${row.pid}` : undefined, row.agent, row.cwd, row.status].filter(Boolean);
+    console.log(`  ${bits.join("  ·  ")}`);
+  }
+  console.log(c.dim("these are unmanaged OS processes. `cotal stop --name <n>` needs a manager."));
+  console.log(c.dim("to stop them with the stack: cotal down --with-agents"));
+}
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
   return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
