@@ -171,9 +171,10 @@ replay durable, its `run`, `program`, `notice` and `migration` records, the time
 own instance and epoch, and the manager's lifecycle commands as the run's own caller. Wider than
 the run, and named as the profile's residual: the checkpoint records and settle facts of the whole
 endpoint (a pause is keyed by a token that does not exist at mint), the point reads of the records,
-fact and timer stores (a KV read is one verb on the whole backing stream), a wait's own durable on
-the chat stream (named per step, so the consumer rows are stream-scoped), and the channel and
-membership registries a conclave writes. It holds no consumer on the records store, so it lists its
+fact, timer and chat stores (a KV read is one verb on the whole backing stream, and a matched
+message is re-read by sequence the same way), a wait's own durable on the chat stream (named per
+step, so the consumer rows are stream-scoped), and the channel and membership registries a
+conclave writes. It holds no consumer on the records store, so it lists its
 notices and migrations by walking the store one message at a time, and it cannot speak on a
 channel, read another run's journal, or file an answer. A served read rides a one-shot
 `run-operator` credential minted for that one call, holding the records walk and the named run's
