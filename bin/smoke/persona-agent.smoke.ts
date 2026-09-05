@@ -41,6 +41,7 @@ for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete pro
 
 const home = mkdtempSync(join(tmpdir(), "cotal-869-home-"));
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
 
 const { parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
@@ -196,7 +197,7 @@ try {
   const child = await captureProcess(
     "pnpm",
     ["exec", "tsx", "bin/cotal.ts", "spawn", "unpinned", "--detach", "--space", SPACE],
-    { ...process.env, COTAL_HOME: home, COTAL_DEFAULT_AGENT: "other", COTAL_SKIP_CONNECTOR_SEED: "1" },
+    { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_DEFAULT_AGENT: "other", COTAL_SKIP_CONNECTOR_SEED: "1" },
   );
   ok("C: detached child spawn with a caller-only default succeeded", child.code === 0 && /spawned .*unpinned/.test(child.out), child);
   ok("C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona", builds.other.length === 1 && builds.pin.length === 0, { pin: builds.pin.length, other: builds.other.length, out: child.out });
