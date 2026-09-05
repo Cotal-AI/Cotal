@@ -45,7 +45,7 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-downf-root-"));
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 const { establishIdpSession } = await import("../src/index.js");
 const { agentCredsDir } = await import("@cotal-ai/workspace");
@@ -63,6 +63,7 @@ const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `downf-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connector-claude-code");
 
 function cotal(args: string[], opts: { timeoutMs?: number } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
@@ -123,6 +124,11 @@ try {
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "repro human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out.slice(-400));
+  // Isolated XDG + skip-seed: this suite is not a first-run seeder. `spawn -f`
+  // still boots a `claude` child, so install THIS WORKTREE's connector into the
+  // sandbox prefix, never the operator store.
+  const extAdd = await cotal(["ext", "add", CLAUDE]);
+  check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
 
   console.log("3) user-mode manifest deploy (spawn -f)");
   const manifest = join(root, "mesh.yaml");

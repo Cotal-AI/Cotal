@@ -361,7 +361,7 @@ const started: Attached[] = [];
 function attachUnderPty(root: string): Attached {
   const child = pty.spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } as Record<string, string>,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1" } as Record<string, string>,
   });
   let buf = "";
   let exited: { code: number; signal: number } | undefined;
@@ -396,7 +396,7 @@ const pipedChildren: Piped[] = [];
 function attachPiped(root: string, extra: readonly string[] = []): Piped {
   const child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buf = "";
@@ -435,7 +435,7 @@ function attachFromFile(root: string, contents: string, extra: readonly string[]
   const fd = openSync(path, "r");
   const child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: [fd, "pipe", "pipe"],
   });
   let buf = "";

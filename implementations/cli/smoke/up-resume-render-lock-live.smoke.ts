@@ -89,7 +89,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sandboxEnv = (() => {
   const copy = { ...process.env };
   for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
-  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 })();
 
 const output = new WeakMap<ChildProcess, () => string>();

@@ -27,7 +27,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-singleton-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-singleton-root-"));
 const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
