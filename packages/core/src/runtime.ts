@@ -87,10 +87,11 @@ export interface Runtime {
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
   /**
    * Reattach this runtime to a handle it created previously. This is a local runtime operation,
-   * not a mesh operation. Runtimes that do not provide durable custody leave it unimplemented and
-   * must refuse an adoption request rather than creating a replacement process.
+   * not a mesh operation. OPTIONAL, and absent means REFUSE, never spawn a replacement: a runtime
+   * without durable custody omits it, and the caller must throw naming that runtime. A silent skip
+   * here would drop custody on the floor.
    */
-  adopt(reference: RuntimeReference): AgentHandle;
+  adopt?(reference: RuntimeReference): AgentHandle;
 }
 
 /**

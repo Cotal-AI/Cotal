@@ -7,7 +7,6 @@ import {
   type LaunchSpec,
   type Pane,
   type Runtime,
-  type RuntimeReference,
   type RuntimeProvider,
   type Tab,
   type TerminalLayout,
@@ -76,10 +75,6 @@ function cmuxLayout(label: string, tab: Tab): string {
  */
 export class CmuxRuntime implements Runtime {
   readonly kind = "cmux";
-
-  adopt(reference: RuntimeReference): AgentHandle {
-    throw new Error(`cmux runtime cannot adopt durable handle ${reference.id}`);
-  }
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
