@@ -29,11 +29,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import { firstFreeName } from "@cotal-ai/core";
 import {
@@ -109,6 +109,18 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
 });
 const stubCon: Connector = { kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 registry.register(stubCon);
+// The child writes its own cwd before joining. A manager row alone could repeat the requested
+// path even if runtime.spawn used the wrong one, so the observation comes from the real process.
+const cwdCon: Connector = {
+  ...stubCon,
+  name: "cwd-stub",
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: "node",
+    args: ["--input-type=module", "-e", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(dir, "child-cwd.txt"))}, process.cwd()); await import(${JSON.stringify(pathToFileURL(STUB).href)});`],
+    env: envFor(o),
+  }),
+};
+registry.register(cwdCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
@@ -303,6 +315,35 @@ try {
     check("the agent's OWN baseline cred invokes self-mode `stop` and halts itself",
       rSelf.reply.ok === true && (rSelf.reply.data as { name: string; stopped: boolean }).name === "w2" && (rSelf.reply.data as { stopped: boolean }).stopped === true, rSelf.reply);
     await w2Nc.drain().catch(() => w2Nc.close());
+  }
+
+  console.log("manifest cwd through the real launch door (#963)");
+  for (const [name, cwd] of [["cwdrelative", "repos/worker"], ["cwdabsolute", join(dir, "external repo")], ["cwddefault", undefined]] as const) {
+    const expected = cwd === undefined ? workspaceRoot : resolve(workspaceRoot, cwd);
+    mkdirSync(expected, { recursive: true });
+    rmSync(join(dir, "child-cwd.txt"), { force: true });
+    const runId = `run${name}`;
+    const spec = {
+      apiVersion: "cotal-launch/v1", space, runId,
+      agents: [{ name, agent: "cwd-stub", ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
+    };
+    const launched = await A.call("launch", { runId, name, spec });
+    check(`manifest ${name} is accepted through the registered launch door`, launched.reply.ok === true, launched.reply);
+    let row: { name: string; id: string; lifecycleUid: string; cwd?: string } | undefined;
+    // Launch acknowledges the action before the child is live. Wait for the child observation,
+    // as spawnLive does for ordinary spawns, rather than grading the acceptance as completion.
+    for (let attempt = 0; launched.reply.ok && attempt < 80; attempt++) {
+      const ps = await A.call("ps");
+      row = (ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string; cwd?: string }>).find((r) => r.name === name);
+      if (row && existsSync(join(dir, "child-cwd.txt"))) break;
+      await wait(250);
+    }
+    const observed = existsSync(join(dir, "child-cwd.txt")) ? readFileSync(join(dir, "child-cwd.txt"), "utf8") : undefined;
+    check(`manifest ${name} runs in the declared manager-host directory`, observed === realpathSync(expected) && row?.cwd === expected, { observed, recorded: row?.cwd, expected });
+    if (row) {
+      const stopped = await A.call("despawn", { graceful: true }, { actor: row.id, lifecycleUid: row.lifecycleUid });
+      check(`manifest ${name} child is cleaned up`, stopped.reply.ok === true, stopped.reply);
+    }
   }
 
   console.log("5. definePersona / models / purge / attach / launch + resume negatives");
