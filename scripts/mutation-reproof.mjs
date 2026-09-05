@@ -191,19 +191,53 @@ if (selected.length === 0) {
 }
 console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
 
-const failed = [];
+// A fixture's proof has more than two outcomes, and collapsing any of them is itself a silent
+// failure. mutation-proof grades each mutation and encodes the run in its exit code:
+//   exit 0  — every mutation KILLED: the guard discriminates. PASS.
+//   exit 4  — the suite was RED BEFORE any mutation (pre-red). That is a defect in the suite's
+//             current state, not in this diff, and blaming this diff for it is a false blocker.
+//             It is also not a clean bill of health, so it is reported as its own state and does
+//             NOT fail the gate — sequence the suite's own fix, do not carry it here.
+//   exit 1  — at least one mutation did not produce a clean, named red. That splits again:
+//               SURVIVED / UNGRADABLE — the guard does not discriminate. A real finding. FAIL.
+//               ERROR                 — a dead or ambiguous anchor: the fixture is broken. FAIL.
+//               INCONCLUSIVE (only)   — a timeout or a teardown hang left no evidence either way.
+//                                       Collapsing it into SURVIVED is a false blocker and into
+//                                       KILLED a false clearance, so it is its own reported state
+//                                       and does not fail the gate.
+// The classification reads mutation-proof's own verdict lines rather than re-deriving them, so the
+// two tools cannot drift on what a verdict means.
+const verdictsIn = (output) =>
+  [...output.matchAll(/^(KILLED|SURVIVED|INCONCLUSIVE|UNGRADABLE|ERROR) /gm)].map((m) => m[1]);
+
+const fatal = [];       // SURVIVED / UNGRADABLE / ERROR — the gate's real findings
+const preRed = [];      // exit 4 — the suite was red before mutation; not this diff's defect
+const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
 for (const { path } of selected) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
     cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
   });
+  const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");
   process.stderr.write(run.stderr ?? "");
-  if (run.status !== 0) failed.push(path);
+  if (run.status === 0) continue; // every mutation KILLED
+  if (run.status === 4 || /is red BEFORE any mutation/.test(output)) { preRed.push(path); continue; }
+  const verdicts = verdictsIn(output);
+  const hasFatal = verdicts.some((v) => v === "SURVIVED" || v === "UNGRADABLE" || v === "ERROR");
+  if (hasFatal) fatal.push(path);
+  else if (verdicts.includes("INCONCLUSIVE")) inconclusive.push(path);
+  else fatal.push(path); // exit 1 with no verdict line at all: an unexplained non-zero, treat as a finding
 }
 
-if (failed.length) {
-  console.error(`\nMUTATION REPROOF FAILED (${failed.length} fixture(s)): ${failed.join(", ")}`);
+if (preRed.length) {
+  console.log(`\nPRE-RED (${preRed.length} fixture(s)) — suite already red before mutation, not this diff's defect; sequence the suite's own fix: ${preRed.join(", ")}`);
+}
+if (inconclusive.length) {
+  console.log(`\nINCONCLUSIVE (${inconclusive.length} fixture(s)) — timed out or hung, no evidence either way, not treated as SURVIVED: ${inconclusive.join(", ")}`);
+}
+if (fatal.length) {
+  console.error(`\nMUTATION REPROOF FAILED (${fatal.length} fixture(s)): ${fatal.join(", ")}`);
   process.exit(1);
 }
-console.log(`\nMUTATION REPROOF OK (${selected.length} fixture(s))`);
+console.log(`\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive)`);

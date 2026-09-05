@@ -43,6 +43,11 @@ const danglingPaths = (out: string): string[] =>
 /** Parse the offender set when a re-proven fixture's mutant survives. */
 const offenderPaths = (out: string): string[] =>
   [...out.matchAll(/MUTATION REPROOF FAILED \(\d+ fixture\(s\)\): (.+)/g)].flatMap((m) => m[1].split(", "));
+/** Parse the pre-red set: a selected fixture whose suite was already red before mutation. */
+const preRedPaths = (out: string): string[] => {
+  const m = out.match(/^PRE-RED \(\d+ fixture\(s\)\)[^:]*: (.+)$/m);
+  return m ? m[1].split(", ") : [];
+};
 
 const scan = (root: string, base: string, head: string): { status: number | null; out: string } => {
   const run = spawnSync(process.execPath, [SCAN, "--root", root, "--base", base, "--head", head], { encoding: "utf8" });
@@ -176,6 +181,36 @@ try {
         && selectedPaths(out).length === 0
         && /diff 1 record\(s\), 1 changed path\(s\), corpus 2/.test(out),
       `status=${status}\n${out}`,
+    );
+  }
+
+  // 5. A selected fixture whose suite is ALREADY RED before any mutation. a.mjs changes (so a's
+  //    fixture is selected) but a's suite fails unconditionally, so mutation-proof refuses at its
+  //    baseline (exit 4). That is the suite's own defect, not this diff's — the #1279/sandbox-guard
+  //    shape the reviewer reproduced. The gate must report it as PRE-RED, name exactly that fixture,
+  //    and NOT fail: collapsing pre-red into a blocker is a false blocker.
+  {
+    const { root, base, head } = build((r) => {
+      writeFileSync(join(r, "a.suite.mjs"), [
+        "console.error('✗ FAIL: the a cap holds');",
+        "process.exit(1);",
+        "",
+      ].join("\n"));
+      writeFileSync(join(r, "a.mjs"), [
+        "export function capped_a(input) {",
+        "  const normalized = input; // touched so a's fixture is selected",
+        "  return Math.min(normalized, 32);",
+        "}",
+        "",
+      ].join("\n"));
+      git(r, ["add", "a.mjs", "a.suite.mjs"]);
+      git(r, ["commit", "--quiet", "-m", "a's suite goes red before mutation"]);
+    });
+    const { status, out } = scan(root, base, head);
+    check(
+      "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
+      status === 0 && eq(preRedPaths(out), ["smoke/mutations/a.mutations.json"]) && offenderPaths(out).length === 0,
+      `status=${status} preRed=${JSON.stringify(preRedPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
     );
   }
 } finally {

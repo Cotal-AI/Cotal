@@ -28,6 +28,14 @@
       "replace": "if (false && dangling.length) {",
       "expectRed": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture",
       "cell": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a pre-red suite is blamed as a fatal finding instead of reported as its own state",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "{ preRed.push(path); continue; }",
+      "replace": "{ fatal.push(path); continue; }",
+      "expectRed": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
+      "cell": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate"
     }
   ]
 }
