@@ -13,19 +13,20 @@
  * pumps on a live mesh; `start` on a bare broker still runs and still resolves, it just cannot
  * expire a pause.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
-  DEV_OWNER,
   newTakeoverId,
   openRecordsBucket,
+  readRunProgram,
   readRunRecord,
   replayRunJournal,
+  runDriverCaller,
   standaloneConnectOpts,
-  type EpCaller,
+  walkKvEntries,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
@@ -35,7 +36,7 @@ import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
 import { resolveCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--file <program>] | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -98,25 +99,37 @@ function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
 }
 
-/**
- * The RUN-STABLE caller triple the run's durable actions ride, derived from the run id and nothing
- * else: goal facts key on the submitting triple, so a resume — any host, any invocation — must
- * re-derive the same one or it polls terminals its own submissions never wrote. The holder above is
- * deliberately fresh per invocation (the activation barrier needs that); this is deliberately not.
- * Grammar: actor is `[A-Za-z0-9_]+` and uid `[a-z0-9]{26,32}`, both satisfied by hex slices.
- */
-function runCaller(runId: string): EpCaller {
-  const h = createHash("sha256").update(runId, "utf8").digest("hex");
-  return { owner: DEV_OWNER, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };
-}
-
 function readProgram(values: RunValues): string {
   if (values.file === undefined) {
     console.error(USAGE);
-    console.error("run: --file <program> is required; the record stores no source, so the caller supplies it");
+    console.error("run start: --file <program> is required");
     process.exit(1);
   }
   return readFileSync(values.file, "utf8");
+}
+
+/**
+ * The source a resume runs: the recorded program, or the file when one is given.
+ *
+ * A file that disagrees with the record is refused: a resume onto different source is a fork or a
+ * migration, each of which files its own record, and driving the edited source under the old run id
+ * would replay steps whose input hashes the new program does not produce (L5002).
+ */
+async function resumeSource(values: RunValues, planes: Planes, endpoint: string, runId: string): Promise<string> {
+  const recorded = await readRunProgram(planes.kv, endpoint, runId);
+  if (values.file === undefined) {
+    if (recorded === undefined) {
+      console.error(`run ${runId}: no program is recorded for it (it was started before programs were recorded); pass --file <program> with the source it was started from`);
+      process.exit(1);
+    }
+    return recorded.source;
+  }
+  const source = readFileSync(values.file, "utf8");
+  if (recorded !== undefined && recorded.source !== source) {
+    console.error(`run ${runId}: ${values.file} is not the program this run was started from; a resume takes the recorded source (omit --file), and an edited program is a migration or a fork`);
+    process.exit(1);
+  }
+  return source;
 }
 
 function reportOutcome(runId: string, out: DriveOutcome): void {
@@ -151,13 +164,13 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
       space: planes.space,
       endpoint,
       runId,
-      caller: runCaller(runId),
+      caller: runDriverCaller(runId),
       instanceId: who.instanceId,
       epoch: 1,
       holder: { id: who.id, lifecycleUid: who.lifecycleUid },
       defaultCheckpointTimeout: values.timeout ?? "1h",
     },
-    new EpfSettleWatcher(planes.js, planes.jsm, planes.space),
+    new EpfSettleWatcher(planes.jsm, planes.space),
     () => Date.now(),
   );
   console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
@@ -180,13 +193,13 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
     console.error(USAGE);
     process.exit(1);
   }
-  const source = readProgram(values);
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
   if (record === undefined) {
     console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
     process.exit(1);
   }
+  const source = await resumeSource(values, planes, endpoint, runId);
   const status = record.status?.value;
   const who = cliHolder();
   const epoch = (status?.epoch ?? 0) + 1;
@@ -199,13 +212,13 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
       space: planes.space,
       endpoint,
       runId,
-      caller: runCaller(runId),
+      caller: runDriverCaller(runId),
       instanceId: who.instanceId,
       epoch,
       holder: { id: who.id, lifecycleUid: who.lifecycleUid },
       defaultCheckpointTimeout: values.timeout ?? "1h",
     },
-    new EpfSettleWatcher(planes.js, planes.jsm, planes.space),
+    new EpfSettleWatcher(planes.jsm, planes.space),
     () => Date.now(),
   );
   const out = await driveRun(planes.js, planes.jsm, {
@@ -229,12 +242,12 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
 
 async function ps(values: RunValues, planes: Planes): Promise<void> {
   // Run record keys are `run.<endpoint>.<runId>.<spec|status>` in the records bucket; the scan is
-  // over the spec half, which every run has exactly once.
+  // over the spec half, which every run has exactly once. A consumer-free walk: the records bucket
+  // is an authority stream whose consumer surface is an exact audited list (SPEC 13.9).
   const seen = new Set<string>();
   const rows: string[][] = [];
-  const iter = await planes.kv.keys("run.>");
-  for await (const key of iter) {
-    const parts = key.split(".");
+  for (const e of await walkKvEntries(planes.kv, "run.*.*.spec")) {
+    const parts = e.key.split(".");
     if (parts.length !== 4 || parts[3] !== "spec") continue;
     const endpoint = parts[1] as string;
     const runId = parts[2] as string;

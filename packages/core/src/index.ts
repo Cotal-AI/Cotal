@@ -76,3 +76,5 @@ export * from "./run-record.js";
 export * from "./checkpoint-answer.js";
 export * from "./run-notice.js";
 export * from "./run-migration.js";
+export * from "./run-program.js";
+export * from "./run-driver-grants.js";

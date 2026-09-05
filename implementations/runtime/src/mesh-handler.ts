@@ -27,8 +27,6 @@ import {
   readCheckpointSpec,
   reconcileCheckpointSchedule,
   handleCheckpointFire,
-  checkpointSettleSubject,
-  epfStreamName,
   eptStreamName,
   eptSubject,
   chatStream,
@@ -2497,50 +2495,31 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
 /**
  * The settle watcher over EPF, which is where the one-use settle fact lives.
  *
- * An EPHEMERAL consumer filtered to this token's settle subject, created for one wait and removed
- * after it: the fact is written once and read once, so a durable would be a name to collide on and
- * a thing to clean up, for a subscription that outlives nothing. `deliver_policy: all` because the
- * fact may already be there — a settle is a record, not a notification, and a watcher that only saw
- * new messages would wait forever for one that already happened.
+ * It POLLS the fact's subject through the plane's own leader-served read rather than binding a
+ * consumer to it. The earlier shape created an ephemeral consumer per wait, and an ephemeral create
+ * rides the bare `CONSUMER.CREATE.<stream>` form, whose request body is not subject-ACL confinable
+ * and which no minted profile may hold (SPEC 13.9). The run driver's credential holds the
+ * `STREAM.MSG.GET` read on EPF already, for the same fact, so the watcher reads what the driver can
+ * read and nothing more. A settle is a record, not a notification: the fact may already be there
+ * when the wait begins, and the first read answers at once.
+ *
+ * The cadence is the same one the handler already takes its fires on: the deadline is durable and
+ * authoritative, and a poll only bounds how late its observation can be.
  */
 export class EpfSettleWatcher implements SettleWatcher {
   constructor(
-    private readonly js: JetStreamClient,
     private readonly jsm: JetStreamManager,
     private readonly space: string,
-    private readonly pollMs = 30_000,
+    private readonly pollMs = FIRE_POLL_MS,
   ) {}
 
   async awaitSettle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
-    const stream = epfStreamName(this.space);
-    const filter = checkpointSettleSubject(this.space, ref);
-    const created = await this.jsm.consumers.add(stream, {
-      filter_subject: filter,
-      ack_policy: "explicit" as never,
-      deliver_policy: "all" as never,
-      inactive_threshold: 300_000 * 1_000_000,
-    });
-    const name = created.name;
-    try {
-      const consumer = await this.js.consumers.get(stream, name);
-      for (;;) {
-        const batch = await consumer.fetch({ max_messages: 1, expires: this.pollMs });
-        for await (const m of batch) {
-          m.ack();
-          const settled = await readCheckpointSettle(this.jsm, this.space, ref);
-          // Read the fact back through the plane's own parser rather than trusting these bytes: the
-          // subject is one-use, so whatever is on it IS the answer, and the parser is what says the
-          // answer is well formed.
-          if (settled !== undefined) return settled;
-        }
-      }
-    } finally {
-      try {
-        await this.jsm.consumers.delete(stream, name);
-      } catch {
-        // The consumer carries its own inactivity threshold, so a failed delete is reaped rather
-        // than leaked — the case `run-journal` had to learn the hard way.
-      }
+    for (;;) {
+      const settled = await readCheckpointSettle(this.jsm, this.space, ref);
+      if (settled !== undefined) return settled;
+      // Unrefed: a wait that loses its race to a cancellation or a fire must not hold the process
+      // open for one more poll on its way out.
+      await new Promise((r) => setTimeout(r, this.pollMs).unref());
     }
   }
 }

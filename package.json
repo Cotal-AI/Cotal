@@ -61,6 +61,7 @@
     "smoke:runtime-mesh-worktree": "tsx implementations/runtime/smoke/mesh-worktree.smoke.ts",
     "smoke:runtime-mesh-seam": "tsx implementations/runtime/smoke/mesh-seam.smoke.ts",
     "smoke:runtime-fork": "tsx implementations/runtime/smoke/fork-run.smoke.ts",
+    "smoke:runtime-run-driver-auth": "tsx implementations/runtime/smoke/run-driver-auth.smoke.ts",
     "smoke:runtime-run-command": "tsx implementations/runtime/smoke/run-command.smoke.ts",
     "smoke:runtime-run-command-usage": "tsx implementations/runtime/smoke/run-command-usage.smoke.ts",
     "smoke:lang-pins": "tsx packages/lang/smoke/pins.smoke.ts",

@@ -120,12 +120,13 @@ resolved mesh target (the usual `--space` / `--server` / `--creds` flags). `star
 cotal run start --file build.cotal.js                   # drive a new run; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
 cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
-cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1 --file build.cotal.js # take the run over and continue it
+cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # take the run over and continue it
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --by dana --value '"yes"'
 ```
 
-`start` and `resume` need `--file`: the record stores no source, so the caller supplies the same
-program (handing an edited one is a migration decision, and the resume stops on the divergence).
+`start` needs `--file`. The driver records the program beside the run, so `resume` takes the run
+id alone and reads the source back; a `--file` given to `resume` must match the record, and an
+edited program is refused with a pointer at `migrate` and `fork`.
 A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
 perform the step performs it live and continues from there. `answer` resolves an open checkpoint,
 or an open `ask` attempt, through the run driver, presenting as the arming holder, with the
@@ -141,13 +142,18 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | Thing | Where | What it is |
 | --- | --- | --- |
 | the run | `run.<endpoint>.<runId>` record | the resolved **pins** (seed, logical epoch, budgets, language version) on the immutable half; holder, lease and `journalHigh` on the status half |
+| the program | `program.<endpoint>.<runId>` record | the source the run was started from, verbatim, written once by the driver that pinned the run; what a resume reads and what a migration is measured against |
 | the step journal | `WFJ_<space>` stream, one subject per run | append-only, no age eviction, no Direct Get; every append fenced by the run subject's own sequence; takeover is replay-then-activate |
 | a checkpoint answer | `answer.<endpoint>.<token>.<answerId>` | the payload beside the one-use settle fact; the settle names the answer it accepted |
 | a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |
 | a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
 
-A run's **driver** holds publish on only its own run's subject and its own replay durable, never
-a space-wide grant.
+A run's **driver** connects on a credential of its own, the `run-driver` profile, minted for one
+run and one takeover attempt. It holds publish on its own run's journal subject and its own replay
+durable, the run's records, the checkpoint plane at its own timer coordinates, the channel and
+presence reads a wait needs, and the manager's lifecycle commands as the run's own caller. It
+holds no consumer on the records store, so it lists its notices and migrations by walking the
+store one message at a time, and it cannot speak on a channel or read another run's journal.
 
 ## What ships today
 
@@ -157,7 +163,7 @@ then `run(src, { runId, handler })`, and `resume(src, journal, { runId, pins, ha
 run up from its journal (the package README has the snippet, with `SimHandler` as the handler). That
 is the in-process route, yours to drive with your own handler; a run the driver starts executes on
 the compiled engine, as the engine paragraph below says. The wire
-substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
+substrate of §14 (the `WFJ_<space>` stream, the five record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,

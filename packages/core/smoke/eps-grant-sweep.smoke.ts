@@ -116,6 +116,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "session-caller": via("session-caller", { sessionCaller: { endpoint: EP, sessionId: MINE, epoch: EPOCH } }),
   "session-ledger": via("session-ledger"),
   "session-serving": via("session-serving", { sessionServing: { endpoint: EP, sessionId: MINE, epoch: EPOCH } }),
+  "run-driver": via("run-driver", { runDriver: { endpoint: EP, runId: "run-sweep", takeoverId: "tk000001", instanceId: IID, epoch: EPOCH } }),
   "endpoint-evictor": via("endpoint-evictor"),
 };
 

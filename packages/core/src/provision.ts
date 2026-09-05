@@ -79,6 +79,7 @@ import {
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
+import { runDriverGrants, type RunDriverGrantArgs } from "./run-driver-grants.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -139,6 +140,13 @@ export type Profile =
   // serving endpoint". Holds NO session rail of any shape; the rails are `session-serving`'s and
   // `session-caller`'s. Standing + re-minted for the SAME nkey on renewal (the goal-writer precedent).
   | "session-ledger"
+  // The WORKFLOW RUN DRIVER (SPEC 14.6): minted per run and per takeover attempt, for the ONE
+  // process holding that run — its journal subject and per-takeover replay durable, its own run
+  // records, the checkpoint plane it pauses on, the channels it waits on, the registries a conclave
+  // writes, and the manager's lifecycle commands as the run's own derived caller
+  // ({@link runDriverGrants}). Standing: a run outlives any one-shot window and the hosting manager
+  // re-mints on renewal and on takeover (new takeover id, new epoch).
+  | "run-driver"
   // v0.4 endpoint-registration eviction (P2 item 3, slice 3a): the SCOPED delivery-admin caller a
   // registration barrier mints PER re-registration to verify-evict the SUPERSEDED serve family
   // before the epoch advances (SPEC 13.1 "old authority dies before new authority is visible").
@@ -217,6 +225,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred (P2 item 6): rails-only for ONE §13.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
   "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred (P2 item 6): rails-only for ONE §13.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
   "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER (P2 item 6): the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
+  "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
@@ -598,6 +607,11 @@ export interface MintOpts {
    *  REQUIRED for that profile; ignored by every other. The `session-ledger` profile takes no pin
    *  at all: it holds no rail, so it has nothing to pin. */
   sessionServing?: { endpoint: string; sessionId: string; epoch: number };
+  /** `run-driver` profile only (SPEC 14.6): the ONE run this credential drives, the takeover attempt
+   *  it is minted for (names the replay durable), and the driving instance's id and epoch (the
+   *  coordinates its timer schedules are addressed by). REQUIRED for that profile; ignored by every
+   *  other. The ep caller triple is DERIVED from the run id ({@link runDriverCaller}), never supplied. */
+  runDriver?: RunDriverGrantArgs;
   /** `remote-manager` profile only: the server-derived owner, fixed server-selected actor, and the
    * ONE locally-selected manager instance id this credential may supervise. REQUIRED for that profile. The builder pins its
    * manager lease/presence and same-owner provisioning resources; no caller-supplied subject rows
@@ -1035,6 +1049,12 @@ export function permissionsFor(
   if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails (P2 item 6)
   if (profile === "session-serving") return sessionServingPermissions(space, pr, opts.sessionServing); // one §13.6 session's SERVING rails (P2 item 6)
   if (profile === "session-ledger") return sessionLedgerPermissions(space, pr); // the dedicated session ledger, no rails (P2 item 6)
+  if (profile === "run-driver") {
+    if (!opts.runDriver)
+      throw new Error("permissionsFor: run-driver requires opts.runDriver ({endpoint, runId, takeoverId, instanceId, epoch} of the ONE run and attempt it drives)");
+    const g = runDriverGrants(space, opts.runDriver, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+  }
   if (profile === "endpoint-serve")
     // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
     // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
