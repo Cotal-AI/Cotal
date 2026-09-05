@@ -17,7 +17,7 @@
  *    a block's behaviour is held by the cells above and by the differential suite, this holds only
  *    that no example uses syntax or names the language refuses).
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 import { validate } from "../src/grammar.js";
@@ -616,6 +616,35 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md", "docs/lang-card.md
     .filter(([c, t]) => (CATALOG as Record<string, string>)[c] !== t)
     .map(([c, t]) => `${c}: appendix "${t}" vs catalog "${(CATALOG as Record<string, string>)[c] ?? "(absent)"}"`);
   ok(`and every one of those ${rows.length} rows carries the title the code raises`, drift.length === 0, drift);
+
+  // THE OTHER DIRECTION, which the two cells above cannot see: they compare the catalog against
+  // the reference, and agree perfectly about a code the SOURCE throws that is in neither. `L1000`
+  // was thrown at eight sites for years — "unsupported expression", "not implemented in this
+  // interpreter" — and no reader could look it up, because the `L` space is the language's errors
+  // and that one was the implementation's own defect wearing a language code.
+  // EVERY FILE THE PACKAGE SHIPS, subdirectories included. The scan read `src/*.ts` and called the
+  // package clean while `src/engine/` still threw the very code the walker had just stopped
+  // throwing: a scan scoped to one directory grades that directory, and reports the package.
+  const srcDir = new URL("../src/", import.meta.url);
+  const thrown = new Map<string, string[]>();
+  for (const file of readdirSync(srcDir, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"))) {
+    const text = readFileSync(new URL(file, srcDir), "utf8");
+    // Over the WHOLE file, not line by line: the multi-line spelling `new RuntimeFault(\n "L1000",`
+    // puts the code on the line after the constructor, and a per-line match read seven of the
+    // engine's eleven sites as clean. Comments quote codes to explain them; only a THROW mints one,
+    // and a constructor call is never inside a comment in this package.
+    for (const m of text.matchAll(/new (?:RuntimeFault|EffectError)\(\s*"(L\d{4})"/g)) {
+      const code = m[1] as string;
+      const line = text.slice(0, m.index).split("\n").length;
+      thrown.set(code, [...(thrown.get(code) ?? []), `${file}:${line}`]);
+    }
+  }
+  const uncataloged = [...thrown.entries()].filter(([code]) => !(code in CATALOG));
+  ok(
+    `every code this package THROWS is one the catalog carries: ${thrown.size} distinct codes at ${[...thrown.values()].flat().length} sites`,
+    thrown.size >= 8 && uncataloged.length === 0,
+    uncataloged.map(([code, at]) => `${code} at ${at.join(", ")}`),
+  );
 }
 
 console.log(`surface.smoke: ${pass} checks passed`);

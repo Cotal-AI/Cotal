@@ -12,6 +12,8 @@
 
 export {
   CATALOG,
+  EngineUnavailable,
+  InterpreterDefect,
   LangError,
   LangErrors,
   codeFrame,

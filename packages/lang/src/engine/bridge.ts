@@ -37,7 +37,7 @@
 
 import type { MessagePort } from "node:worker_threads";
 import type { EffectContext, EffectHandler } from "../effects.js";
-import { EffectError, EffectRefused } from "../effects.js";
+import { Cancelled, EffectError, EffectRefused } from "../effects.js";
 import type { JournalEntry, JournalStore } from "../journal.js";
 import type { StepKey } from "../keys.js";
 
@@ -71,6 +71,11 @@ interface WireError {
   readonly indeterminate?: boolean;
   /** A capability refusal (`EffectRefused`): the thread must rebuild the class, not a plain Error. */
   readonly refused?: true;
+  /** A branch cancellation (`Cancelled`): graded on class by perform.ts, which settles the entry
+   *  `cancelled` — flattened to a plain Error it would settle `failed` for a branch that lost a
+   *  race, which is the journal recording a failure the program never had. The reason crosses so
+   *  the rebuilt class says the same thing the thrown one did. */
+  readonly cancelled?: string;
 }
 
 /** The plain-data half of an {@link EffectContext}; `signal` and `bind` are rebuilt per side. */
@@ -110,6 +115,11 @@ function flatten(e: unknown): WireError {
   if (e instanceof EffectRefused) {
     return { domain: "host", name: e.name, message: e.message, code: e.code, refused: true };
   }
+  // A cancellation is graded on class the same way (perform.ts settles it `cancelled`), and a
+  // handler that observes its signal throws one from the host side of this port (#532).
+  if (e instanceof Cancelled) {
+    return { domain: "host", name: e.name, message: e.message, cancelled: e.reason };
+  }
   const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
   return {
     domain: "host",
@@ -131,6 +141,7 @@ function flatten(e: unknown): WireError {
 function rehydrate(w: WireError): Error {
   if (w.domain === "effect") return new EffectError(w.code ?? "L4000", w.kind ?? "handler-fault", w.message, w.detail);
   if (w.refused === true) return new EffectRefused(w.code ?? "L5016", w.message);
+  if (w.cancelled !== undefined) return new Cancelled(w.cancelled);
   const e = new Error(w.message);
   e.name = w.name;
   if (w.code !== undefined) (e as Error & { code?: string }).code = w.code;

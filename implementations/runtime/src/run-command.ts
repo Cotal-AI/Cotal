@@ -4,7 +4,8 @@
  * Five verbs over the exports this package already ships: `start` drives a new run on the mesh
  * handler, `resume` takes an existing run over and drives it to quiescence, `ps` lists the run
  * records of an endpoint, `journal` prints a run's durable step journal, and `answer` resolves an
- * open checkpoint through the run driver, which is the only door an answer has (§14).
+ * open checkpoint, or an open `ask` attempt, through the run driver, which is the only door an
+ * answer has (§14).
  *
  * The composition is the run-driver suite's, against a resolved mesh instead of a scratch broker:
  * one raw NATS connection, JetStream + the records bucket over it, the mesh handler bound to this
@@ -12,25 +13,26 @@
  * pumps on a live mesh; `start` on a bare broker still runs and still resolves, it just cannot
  * expire a pause.
  */
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
+  DEV_OWNER,
   newTakeoverId,
   openRecordsBucket,
-  readCheckpointSpec,
   readRunRecord,
   replayRunJournal,
   standaloneConnectOpts,
+  type EpCaller,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { connectOrExit, endpointAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
-import { openCheckpointToken, resolveCheckpoint } from "./resolve-checkpoint.js";
+import { resolveCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
   'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
@@ -48,6 +50,7 @@ interface RunValues {
 }
 
 interface Planes {
+  nc: NatsConnection;
   js: JetStreamClient;
   jsm: JetStreamManager;
   kv: KV;
@@ -68,6 +71,7 @@ async function openPlanes(values: RunValues): Promise<Planes> {
   const kv = await openRecordsBucket(nc, conn.space);
   const max = nc.info?.max_payload;
   return {
+    nc,
     js,
     jsm,
     kv,
@@ -92,6 +96,18 @@ async function openPlanes(values: RunValues): Promise<Planes> {
 function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   const uid = randomUUID().replaceAll("-", "");
   return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
+}
+
+/**
+ * The RUN-STABLE caller triple the run's durable actions ride, derived from the run id and nothing
+ * else: goal facts key on the submitting triple, so a resume — any host, any invocation — must
+ * re-derive the same one or it polls terminals its own submissions never wrote. The holder above is
+ * deliberately fresh per invocation (the activation barrier needs that); this is deliberately not.
+ * Grammar: actor is `[A-Za-z0-9_]+` and uid `[a-z0-9]{26,32}`, both satisfied by hex slices.
+ */
+function runCaller(runId: string): EpCaller {
+  const h = createHash("sha256").update(runId, "utf8").digest("hex");
+  return { owner: DEV_OWNER, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };
 }
 
 function readProgram(values: RunValues): string {
@@ -127,6 +143,7 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
   const runId = `run-${randomBytes(16).toString("hex")}`;
   const who = cliHolder();
   const handler = new MeshHandler(
+    planes.nc,
     planes.kv,
     planes.js,
     planes.jsm,
@@ -134,6 +151,7 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
       space: planes.space,
       endpoint,
       runId,
+      caller: runCaller(runId),
       instanceId: who.instanceId,
       epoch: 1,
       holder: { id: who.id, lifecycleUid: who.lifecycleUid },
@@ -173,6 +191,7 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
   const who = cliHolder();
   const epoch = (status?.epoch ?? 0) + 1;
   const handler = new MeshHandler(
+    planes.nc,
     planes.kv,
     planes.js,
     planes.jsm,
@@ -180,6 +199,7 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
       space: planes.space,
       endpoint,
       runId,
+      caller: runCaller(runId),
       instanceId: who.instanceId,
       epoch,
       holder: { id: who.id, lifecycleUid: who.lifecycleUid },
@@ -267,6 +287,16 @@ async function journal(planes: Planes, runId: string | undefined): Promise<void>
     const step = journalEntryKeyString(e);
     const outcome = e.state === "pending" ? "pending" : `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
     console.log(`#${record.n}  step        ${step}  ${outcome}`);
+    // WHAT AN OPEN PAUSE ASKS, under the step an answer is addressed by. `answer <run> <stepKey>`
+    // is the whole interface to a checkpoint, and without this the operator on the other end of it
+    // had the address and not the question: everything durable held the input HASH, so learning
+    // what "approve" meant took a trip back to the source. Only while it is open, because a
+    // settled pause is answered and the render is a worklist rather than a transcript.
+    const asks = e.state === "pending" ? (e.external as { asks?: unknown } | undefined)?.asks : undefined;
+    if (typeof asks === "string") {
+      const addressee = (e.external as { addressee?: unknown } | undefined)?.addressee;
+      console.log(`            asks        ${asks}${typeof addressee === "string" ? `  (escalates to ${addressee})` : ""}`);
+    }
   }
 }
 
@@ -277,13 +307,6 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
     process.exit(1);
   }
   const endpoint = values.endpoint ?? "manager";
-  // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver, so the presenter is the
-  // ARMING holder read back from the checkpoint's own record — the same principal the driver
-  // presented as when it minted the pause. The answerer's name rides `by`, never the presenter.
-  const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, newTakeoverId());
-  const entries = replay.records
-    .filter((r) => r.record.kind === "step")
-    .map((r) => (r.record as { entry: unknown }).entry as JournalEntry);
   let parsedValue: unknown;
   if (values.value !== undefined) {
     try {
@@ -294,14 +317,11 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
       process.exit(1);
     }
   }
-  const token = openCheckpointToken(entries, runId, stepKey);
-  const spec = await readCheckpointSpec(planes.kv, { endpoint, token });
-  if (spec === undefined) {
-    console.error(`checkpoint ${token} has a journal entry but no record on endpoint ${endpoint}; refusing to guess a presenter`);
-    process.exit(1);
-  }
+  // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
+  // the ARMING holder it reads off the checkpoint's own record, so a fresh invocation answers
+  // exactly as the minter would have. The answerer's name rides `by`, never the presenter.
   const result = await resolveCheckpoint(
-    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: spec.holder },
+    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint },
     {
       runId,
       stepKey,

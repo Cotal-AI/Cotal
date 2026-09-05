@@ -1,0 +1,148 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-spawn.smoke.ts",
+  "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, and a cancelled loser's seat is released by the discharge",
+  "command": "pnpm smoke:runtime-mesh-spawn",
+  "completionMarker": "mesh-spawn.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-spawn.json",
+  "why": [
+    "Lane F durable-actions step 2 (2026-09-02): `spawn` leaves the not-yet-durable seam and performs",
+    "as the manager's spawn action. Recovery rests on derived identity, and each half has a mutant:",
+    "core honoring the pinned envelope id (M1), the resume short-circuit (M2), the acceptance bind",
+    "(M3), the discharge that releases loser seats (M4), the two catchable-failure mappings (M5, M6),",
+    "and the terminal poll's cancellation observation (M7).",
+    "",
+    "M1 mutates CORE, which the suite resolves from dist: its command builds core first, and its",
+    "afterRestore rebuilds so the tree never keeps a dist compiled from the mutant. The runtime-side",
+    "mutants (M2-M7) are imported as source through ../src and need no build."
+  ],
+  "mutations": [
+    {
+      "name": "core mints a nonce instead of honoring the pinned envelope id",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "  const requestId = op.id !== undefined ? assertIdToken(op.id, \"pinned envelope id\") : nonce();",
+      "replace": "  const requestId = nonce();",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "the goal was bound under the step's own request id: the envelope id IS the goalId",
+      "cell": "the goal was bound under the step's own request id: the envelope id IS the goalId",
+      "note": "The id seam ignored: the far side binds its goal under a fresh nonce, so nothing the run derives ever addresses it. Measured 2026-09-02: the handler's own acceptance-mismatch guard catches it, block 1 reds on 'the run completes' and the named id cell, and every recovery block downstream reds with it; 12 passed, 21 failed, the suite reaching its own exit line."
+    },
+    {
+      "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (ext === undefined) {\n        let reply: EpAttributedReply | undefined;\n        try {\n          const service = await this.manager();",
+      "replace": "      if (true) {\n        let reply: EpAttributedReply | undefined;\n        try {\n          const service = await this.manager();",
+      "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
+      "cell": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
+      "note": "Measured 2026-09-03: KILLED. mesh-spawn.smoke: 32 passed, 1 failed Named cell red: the resume sent NOTHING to the endpoint: the recorded acceptance is the submission"
+    },
+    {
+      "name": "the acceptance is never bound as the entry's external state",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          ...(req.permits !== undefined ? { permits: req.permits } : {}),\n          spawnedAt: this.now(),\n        };\n        await ctx.bind(ext);",
+      "replace": "          ...(req.permits !== undefined ? { permits: req.permits } : {}),\n          spawnedAt: this.now(),\n        };",
+      "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
+      "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
+      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor \u2014 the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
+    },
+    {
+      "name": "the discharge skips spawn entries",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (e.kind === \"spawn\") {\n        await this.dischargeSpawn(e);\n        continue;\n      }",
+      "replace": "      if (e.kind === \"spawn\") {\n        continue;\n      }",
+      "expectRed": "the discharge despawned exactly the allocated incarnation",
+      "cell": "the discharge despawned exactly the allocated incarnation",
+      "note": "Design 8.6.4 removed: a cancelled loser's seat lives on with nobody addressing it. Measured 2026-09-02: five reds \u2014 both handler-level discharge blocks, the floor-less and uncertain variants, and the driver-integration cell 'and the driver's completion sweep despawned its seat'; 27 passed, 5 failed."
+    },
+    {
+      "name": "a refuse-at-accept loses its catchable class",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          const err = reply.reply.error;\n          throw new EffectError(err?.code === \"resource-exhausted\" ? \"L4001\" : \"L4000\", \"spawn\",\n            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`,\n            err?.code !== undefined ? { code: err.code } : undefined);",
+      "replace": "          const err = reply.reply.error;\n          throw new Error(\n            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`);",
+      "expectRed": "the entry settles as the host declining the request: the catchable L4000, kind spawn (no agent existed to be down)",
+      "cell": "the entry settles as the host declining the request: the catchable L4000, kind spawn (no agent existed to be down)",
+      "note": "The refusal thrown raw: the journal records a generic L4000 handler fault, so a program acting on e.code reads 'the handler broke' where the manager said 'this spawn is refused'. Measured 2026-09-02: exactly one red with the recorded L4000 in the transcript, 31 passed."
+    },
+    {
+      "name": "a capacity refusal is classed like any other refusal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          throw new EffectError(err?.code === \"resource-exhausted\" ? \"L4001\" : \"L4000\", \"spawn\",",
+      "replace": "          throw new EffectError(\"L4000\", \"spawn\",",
+      "expectRed": "a seat-capacity refusal is the permit the run does not hold: L4001, kind spawn",
+      "cell": "a seat-capacity refusal is the permit the run does not hold: L4001, kind spawn",
+      "note": "A seat budget the endpoint will not extend is the permit the run does not hold (L4001); flattened, the program cannot tell it from a persona it misspelled. Measured 2026-09-03: exactly one named red (the cell reads L4000); 32 passed, 1 failed."
+    },
+    {
+      "name": "every terminal is read as succeeded",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (fact.state !== \"succeeded\") {",
+      "replace": "function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (false) {",
+      "expectRed": "the failure is the catchable L4002",
+      "cell": "the failure is the catchable L4002",
+      "note": "The state gate inverted: a failed or uncertain terminal is mined for a handle it does not carry, and the garbled-terminal guard turns it into an L4000 fault instead of the effect's own L4002. Measured 2026-09-02: two reds \u2014 block 5's failed terminal and block 8b's uncertain one; 30 passed."
+    },
+    {
+      "name": "the terminal await stops observing cancellation",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const actx = await this.actionCtx();\n    for (;;) {\n      if (signal.cancelled) throw new Cancelled(signal.reason ?? \"cancelled\");\n      const fact = await readGoalResult(actx, ref);",
+      "replace": "    const actx = await this.actionCtx();\n    for (;;) {\n      void signal;\n      const fact = await readGoalResult(actx, ref);",
+      "expectRed": "the await ends Cancelled within one poll",
+      "cell": "the await ends Cancelled within one poll",
+      "note": "The per-poll observation removed: a race-lost branch keeps parking on its terminal and then RESOLVES with a handle the run must never see (section 7.6 \u2014 a cancelled branch performs no new work). Measured 2026-09-02: exactly one red, the cancelled await resolving instead of throwing; 31 passed."
+    },
+    {
+      "name": "an adopted seat is never handed to the migrated program's spawn",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const adopted = ext === undefined ? this.adoptable.get(req.persona)?.shift() : undefined;",
+      "replace": "    const adopted = undefined;",
+      "expectRed": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "cell": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "note": "With the hand-over ignored the migrated program's spawn submits and mints a second seat: a --adopt recorded as honoured over a leak."
+    },
+    {
+      "name": "the adopted spawn binds no hand-over on its entry",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        adoptedFrom: journalEntryKeyString(adopted),\n",
+      "replace": "",
+      "expectRed": "and bound the hand-over on its own entry: the seat's floor plus the step it was adopted from",
+      "cell": "and bound the hand-over on its own entry: the seat's floor plus the step it was adopted from",
+      "note": "Without `adoptedFrom` a later resume cannot tell the seat was already handed out and hands it to the next spawn of the persona again."
+    },
+    {
+      "name": "the driver never reads the applied migrations at adoption",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "        const kept = await migratedSeats(req, resumed);\n        if (kept.size > 0) seats.adoptMigratedSeats(kept);",
+      "replace": "        void resumed;",
+      "expectRed": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "cell": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "note": "The handler can adopt, but nobody tells it what: the migration record is the only durable statement of the hand-over."
+    },
+    {
+      "name": "a --release commit files the migration and tears nothing down",
+      "file": "implementations/runtime/src/migrate.ts",
+      "find": "  if (release.length > 0) await seats!.handler.discharge(release);",
+      "replace": "  void release;",
+      "expectRed": "committing a --release migration despawns the orphaned seat through the run's discharge, gracefully",
+      "cell": "committing a --release migration despawns the orphaned seat through the run's discharge, gracefully",
+      "note": "The fake success the spec row exists to refuse: a record that says released over a seat still up."
+    },
+    {
+      "name": "a resume of an adopted spawn keys its short-circuit on the request id alone",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      typeof recorded?.goalId === \"string\" && (recorded.goalId === goalId || typeof recorded.adoptedFrom === \"string\")",
+      "replace": "      typeof recorded?.goalId === \"string\" && recorded.goalId === goalId",
+      "expectRed": "a resume of the adopted spawn after its bind re-reads the adopted goal and submits nothing",
+      "cell": "a resume of the adopted spawn after its bind re-reads the adopted goal and submits nothing",
+      "note": "The bound goal of an adopted spawn is the orphaned spawn's, never this step's request id. Keyed on the request id, a crash after the bind re-enters with no recorded acceptance and no hand-over left (the bound adoptedFrom spent it), so the step submits a second seat for a persona it already holds one for."
+    },
+    {
+      "name": "the discharge despawns by the request id, never by the goal the entry bound",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const goalId = typeof e.external?.goalId === \"string\" ? e.external.goalId : e.requestId as string;",
+      "replace": "    const goalId = e.requestId as string;",
+      "expectRed": "a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
+      "cell": "a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
+      "note": "An adopted spawn's request id names no goal (nothing was submitted under it), so a discharge reading only the request id finds no goal and returns without despawning; the seat leaks with no entry left to release it."
+    }
+  ]
+}

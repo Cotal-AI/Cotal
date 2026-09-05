@@ -193,7 +193,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  the same mis-ack this file exists to prevent, just with a new cause. The event identity is the
    *  only thing that correlates a verdict to the reply that carried the batch. A WeakMap so an
    *  event whose verdict never arrives is collected rather than leaked. */
-  const inFlight = new WeakMap<HookEvent, { ids: string[]; agent: MeshAgent }>();
+  const inFlight = new WeakMap<HookEvent, { ids: string[]; agent: MeshAgent; turnIds?: string[] }>();
   /** Ids whose delivery could not be confirmed, so they are being surfaced again. Advisory only —
    *  it labels a possible repeat for the model. Bounded; on overflow the label is dropped (never
    *  the message), because the label is a courtesy and the message is the product. */
@@ -237,6 +237,18 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     return ids.some((id) => unconfirmed.has(id)) ? `${REPEAT_NOTE}\n${body}` : body;
   };
 
+  /** Peek this seat's pending run turns for injection, riding THIS frame's delivery verdict: the
+   *  goal ids commit as surfaced (arming the automatic `done`) only when the reply reached the
+   *  runtime — a lost frame re-surfaces them instead of yielding for work the model never saw. */
+  const surfaceTurns = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+    const peek = agent.peekPendingTurns();
+    if (!peek) return undefined;
+    const rec = inFlight.get(ev);
+    if (rec) rec.turnIds = peek.goalIds;
+    else inFlight.set(ev, { ids: [], agent, turnIds: peek.goalIds });
+    return peek.text;
+  };
+
   const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
     const withContext = (text: string | undefined): Record<string, unknown> =>
@@ -254,7 +266,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
           // next (re)start — acceptable for a display-only discovery field. setModel keeps the pin wins.
           if (typeof ev.model === "string") await agent.setModel(ev.model).catch(() => {});
-          await safeStatus(agent, "idle");
+          // NOT a turn ending. `SessionStart` fires on compact, clear and resume, and a compaction
+          // lands mid-turn: routed through the boundary this published `done` for a run turn the
+          // model was still working on.
+          try { await agent.resetStatus("idle"); } catch { /* best-effort */ }
           // Reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently
           // deaf. Advisory: the local default is already "open", so a failed write changes nothing.
           try {
@@ -264,14 +279,21 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           }
           // Boot push: a one-line note per subscribed channel (if the registry has loaded),
           // plus any messages waiting. Both are advisory context.
-          const parts = [agent.channelBriefing(), surfaceAutomatic(agent, ev)].filter(Boolean);
+          // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
+          // extends it (or creates a message-less one), so it must evaluate second.
+          const parts = [agent.channelBriefing(), surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
-        case "UserPromptSubmit":
+        case "UserPromptSubmit": {
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           flushEvents(ev.transcript_path);
           await safeStatus(agent, "working");
-          return withContext(surfaceAutomatic(agent, ev));
+          // Run turns ride the same frame as peer messages: this is an injectable boundary, and
+          // the frame's delivery verdict is what commits them as surfaced (arming the automatic
+          // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
+          const parts = [surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          return withContext(parts.length ? parts.join("\n\n") : undefined);
+        }
         case "PreToolUse":
           // Remember what Claude is about to do; if it needs permission, the Notification
           // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
@@ -340,9 +362,13 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    */
   const onReply = (ev: HookEvent, delivered: boolean): void => {
     const batch = inFlight.get(ev);
-    if (!batch) return; // this frame carried no peer messages (PreToolUse, Notification, Stop, …)
+    if (!batch) return; // this frame carried no peer messages or turns (PreToolUse, Notification, Stop, …)
     inFlight.delete(ev);
-    const { ids, agent } = batch;
+    const { ids, agent, turnIds } = batch;
+    // Run turns commit only on a delivered frame; an undelivered one leaves them unsurfaced, so
+    // they re-inject on a later frame instead of auto-yielding `done` for unseen work.
+    if (delivered && turnIds?.length) agent.commitSurfacedTurns(turnIds);
+    if (!ids.length) return; // a turn-only frame holds no inbox batch to release or ack
     agent.releaseInFlight(ids); // verdict is in, either way — ordinary backlog again
     if (!delivered) {
       markUnconfirmed(ids);

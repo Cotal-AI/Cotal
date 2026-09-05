@@ -74,6 +74,12 @@ holder's lease has not expired yet. `up` says so and exits non-zero instead of p
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)).
 
+The daemon also hosts the space's **checkpoint timer writer** ([SPEC §13.9](../SPEC.md#139-authority-boundary)):
+the standing pump that turns workflow `.schedule` requests into armed broker schedules, on its own
+connection under the same delivery credential. Without a running writer no workflow pause on the
+space ever expires. The writer restarts itself with backoff and logs while it is down; a fault
+there never takes delivery down.
+
 **Open dev mode has no delivery daemon.** Open mode is deliberately **live-only**: there is no
 trusted reader, so there is no durable backstop. Run an auth mesh if you need durable channels.
 

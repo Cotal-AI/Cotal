@@ -10,6 +10,13 @@
  * §13.10 is not weakened by a millimetre. The cost is that the driver must be reachable to answer a
  * checkpoint, which is the same condition under which the run advances at all.
  *
+ * **The presenter is the ARMING holder, read off the pause's own record,** never supplied by the
+ * caller. The holder is immutable at mint, and the principal answering is not necessarily the one
+ * that minted: the CLI mints a fresh holder per invocation, and a run adopted by another host is a
+ * different principal by definition (#533). Reading it here is what keeps "resolvable from
+ * anywhere" true across takeovers, with the run's own ACL — not the presenting identity — as the
+ * authorization.
+ *
  * **The answer is written BEFORE the token is presented,** and the two are separate facts on
  * purpose. The record is the payload; the settle is the one-use arbiter that releases the run. In
  * that order a crash in between leaves an answer nobody accepted — orphaned, read by nothing, and
@@ -26,6 +33,7 @@ import {
   newTakeoverId,
   recordCheckpointAnswer,
   checkpointAnswerId,
+  readCheckpointSpec,
   resumeCheckpoint,
   type CheckpointSettleFact,
 } from "@cotal-ai/core";
@@ -33,7 +41,7 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 
-/** No open checkpoint answers to this address in this run. */
+/** No open checkpoint (or ask) answers to this address in this run. */
 export class CheckpointNotOpen extends Error {
   constructor(
     readonly runId: string,
@@ -45,7 +53,7 @@ export class CheckpointNotOpen extends Error {
         {
           unknown: "no step is recorded under that key",
           settled: "that step has already settled",
-          "not-a-checkpoint": "that step is not a checkpoint",
+          "not-a-checkpoint": "that step is neither a checkpoint nor an ask",
           "no-identity": "that step is pending but carries no request id, so the checkpoint it is waiting on cannot be named",
         }[why]
       }`,
@@ -77,9 +85,9 @@ export interface ResolveCheckpointDeps {
   readonly js: JetStreamClient;
   readonly jsm: JetStreamManager;
   readonly space: string;
-  /** The endpoint hosting the driver, and the holder it presents as. */
+  /** The endpoint hosting the driver. The presenter is never supplied: it is the arming holder,
+   *  read off the checkpoint's own record. */
   readonly endpoint: string;
-  readonly holder: { readonly id: string; readonly lifecycleUid: string };
 }
 
 /**
@@ -97,6 +105,13 @@ export async function resolveCheckpoint(
 ): Promise<ResolveCheckpointResult> {
   const entries = await replayRunEntries(deps, req.runId);
   const token = openCheckpointToken(entries, req.runId, req.stepKey);
+  const spec = await readCheckpointSpec(deps.kv, { endpoint: deps.endpoint, token });
+  if (spec === undefined) {
+    throw new Error(
+      `checkpoint "${token}" has a journal entry but no record on endpoint ${deps.endpoint}; `
+      + `refusing to guess a presenter — reconcile the store before answering`,
+    );
+  }
 
   const answerId = checkpointAnswerId({
     token,
@@ -116,14 +131,17 @@ export async function resolveCheckpoint(
 
   const settle = await resumeCheckpoint(deps.kv, deps.js, deps.jsm, deps.space, {
     ref: { endpoint: deps.endpoint, token },
-    presenter: deps.holder,
+    presenter: spec.holder,
     now: req.now,
     answerId,
   });
   return { token, answerId, settle };
 }
 
-/** The token of the open checkpoint at this address, or a loud refusal naming which it is not. */
+/** The token of the open checkpoint (or ask attempt) at this address, or a loud refusal naming
+ *  which it is not. An `ask` parks on the checkpoint plane too — one pause per attempt — and the
+ *  CURRENT attempt's token rides the entry's external state as `askToken` (attempt 1 is the
+ *  request id itself), so an answer always lands on the pause that is actually open. */
 export function openCheckpointToken(
   entries: readonly JournalEntry[],
   runId: string,
@@ -134,9 +152,10 @@ export function openCheckpointToken(
   let entry: JournalEntry | undefined;
   for (const e of entries) if (journalEntryKeyString(e) === stepKey) entry = e;
   if (entry === undefined) throw new CheckpointNotOpen(runId, stepKey, "unknown");
-  if (entry.kind !== "checkpoint") throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
+  if (entry.kind !== "checkpoint" && entry.kind !== "ask") throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
   if (entry.state !== "pending") throw new CheckpointNotOpen(runId, stepKey, "settled");
   if (entry.requestId === undefined) throw new CheckpointNotOpen(runId, stepKey, "no-identity");
+  if (entry.kind === "ask" && typeof entry.external?.askToken === "string") return entry.external.askToken;
   return entry.requestId;
 }
 

@@ -1,0 +1,2 @@
+# A Hermes lifecycle idle (session or gateway start) is written through resetStatus, never the turn boundary. Appended.
+smoke:hermes-lifecycle-idle

@@ -23,6 +23,15 @@
       "completionMarker": "ok two concurrent turns on ONE handle never overlap: the dispatch serializes them",
       "cell": "while turns on two DIFFERENT handles still overlap: the queue is per agent, not global",
       "note": "A global line serializes the two unrelated agents too, so the control probe's high-water mark reads 1 instead of 2; the same-handle cell above it stays green, which is what makes the pair discriminating."
+    },
+    {
+      "name": "an ask is dispatched outside the agent's turn queue",
+      "file": "packages/lang/src/perform.ts",
+      "find": "          serializeTurn(host, agent.agent, () =>\n            handler.ask(",
+      "replace": "          ((_h: unknown, _a: unknown, d: () => Promise<unknown>) => d())(host, agent.agent, () =>\n            handler.ask(",
+      "expectRed": "an ask and a turn on ONE handle never overlap either: one queue covers both dispatch sites",
+      "cell": "an ask and a turn on ONE handle never overlap either: one queue covers both dispatch sites",
+      "note": "A host relays an ask to the seat as a turn, so an unqueued ask beside a queued turn on one handle hands that agent two turns at once, which 6.5 forbids by name."
     }
   ]
 }

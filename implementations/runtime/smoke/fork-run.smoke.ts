@@ -409,8 +409,8 @@ const plan = async (
   const wt = await plan({ entries, source: FLAT, fromStepKey: "/sleep:three#0", worktreeBranches: true });
   c("asking for the fork's own worktree branches is refused rather than silently skipped",
     code(wt, "L5019"), wt.refusals);
-  c("and the refusal says there is no plane to cut one from",
-    wt.refusals.some((r) => r.why.includes("worktree plane")), wt.refusals);
+  c("and the refusal says a worktree here is a logical id, never a branch this host could cut",
+    wt.refusals.some((r) => r.why.includes("logical id")), wt.refusals);
 
   // A scope the walk cannot ENTER, which is L5014 rather than L5018. Added because a mutation that
   // deleted the whole L5014 branch SURVIVED: `L5014` and `UnwalkableScope` appeared zero times in
@@ -501,6 +501,16 @@ const plan = async (
     withSpawn.admissible === false && code(withSpawn, "L5019"), withSpawn.refusals);
   c("and the refusal names the spawn, not just the fork",
     withSpawn.refusals.some((r) => r.step === "/spawn:dev#0"), withSpawn.refusals);
+  // `onFork: "adopt"` rides the spawn's bound external state (the mesh handler binds it; graded
+  // in the worktree suite), and a fork reads it there: the settled spawn is copied verbatim and
+  // the child shares the parent's agent.
+  const adopted = spawned.map((e) => e.kind === "spawn" ? { ...e, external: { ...(e.external ?? {}), onFork: "adopt" } } : e);
+  const withAdopt = await plan({
+    parent: "r-spawn", entries: adopted, fromStepKey: "/sleep:later#0",
+    source: `const d = await spawn("dev", { name: "dev" });\nawait sleep("1m", { name: "after" });\nawait sleep("2m", { name: "later" });`,
+  });
+  c("a spawn that said onFork: \"adopt\" is copied and the fork is admissible: the child shares the parent's agent",
+    withAdopt.admissible === true && withAdopt.cut.some((e) => e.kind === "spawn"), withAdopt.refusals);
   c("a fork BEFORE the spawn is admissible, so the refusal is about the cut and not about the run",
     (await plan({
       parent: "r-spawn", entries: spawned, fromStepKey: "/spawn:dev#0",

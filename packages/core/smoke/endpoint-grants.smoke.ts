@@ -69,12 +69,16 @@ c("empty capability set mints nothing", JSON.stringify(epCallerGrantRows("demo",
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
   baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
-c("baseline: delivery join/leave/list untargeted + manager stop self-mode + the ONE epc-subject-scoped store fetch, nothing else",
-  baseline.pub.length === 6
+c("baseline: delivery join/leave/list untargeted + manager stop/turn-pending/turn-yield self-mode + the ONE epc-subject-scoped store fetch, nothing else",
+  baseline.pub.length === 8
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`)
+  // The turn relay's seat half rides self mode too: a seat that cannot pull its own turns has no
+  // relay at all, and the manager pushes nothing.
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`)
   // §13.7 store fetch rides the baseline (describe answers digests; a caller that may describe
   // may fetch the schemas those digests name) — EXACTLY the epc-subject-scoped Direct Get form,
   // never the bare/stream-wide row, and no epc PUBLISH row.
@@ -102,17 +106,18 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // The operator INSTRUMENT rollups (the 1c grant-migration table's admin row): the privileged
 // instrument is read + create + persona only (structurally barred from cross-agent reach, like its
 // ctl row); the admin instrument adds ANY-mode despawn/attach (tOwner "*": operator-policy-mintable
-// only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` (granted nowhere
-// else), and the untargeted `manager.admin` family.
+// only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
+// seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
+// the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + define-persona, NOTHING targeted",
   operatorInstrumentCapabilities("privileged").length === 8
   && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
   && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,spawn,define-persona");
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
-c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input + the manager.admin family",
-  adminCaps.length === 20
-  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input"
-  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input"
+c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
+  adminCaps.length === 22
+  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
+  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
   && adminCaps.filter((cap) => cap.target?.mode === "any").every((cap) => (cap.target as { tOwner?: string }).tOwner === "*")
   && ["purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((cmd) => adminCaps.some((cap) => cap.command === cmd && cap.target === undefined)));
@@ -169,8 +174,10 @@ const BASELINE_PUB = [
   `cotal.epg.ep.one.delivery.leave.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.delivery.list.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
 ];
-c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop), nothing wider",
+c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-pending/turn-yield), nothing wider",
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
   === JSON.stringify([...BASELINE_PUB].sort()),
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));

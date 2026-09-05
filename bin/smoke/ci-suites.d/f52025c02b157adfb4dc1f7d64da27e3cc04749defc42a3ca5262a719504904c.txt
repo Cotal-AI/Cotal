@@ -1,0 +1,5 @@
+# `spawn` on the real planes: the pinned envelope id is the goalId, a resubmission is served from
+# the recorded acceptance, a resume never re-invokes, a lost reply attaches through the durable
+# goal trace, and a cancelled loser's seat is released by the discharge — the driver's own sweep
+# included.
+smoke:runtime-mesh-spawn

@@ -108,10 +108,28 @@ function assertCleanTree(cwd, allowDirty) {
 
 /** Run a command, capture combined output, never let a pipe eat the status. */
 function run(command, cwd, timeoutMs) {
-  const r = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  // A HUNG SUITE MUST COST ITS BUDGET AND NOTHING MORE. `spawnSync` with `shell: true` runs
+  // `/bin/sh -c <command>`, and every suite here is a `pnpm` script that forks `node`, which forks
+  // `tsx`, which forks the suite. Measured on that tree (2026-09-03, a suite that never exits, a 4s
+  // budget): with the default SIGTERM the shell ignored it and `spawnSync` never returned inside a
+  // 60s cap; with `killSignal: "SIGKILL"` it returned at 4.0s, because the leader dying is what
+  // closes the pipe `spawnSync` reads, and three grandchildren were still alive afterwards; the
+  // `process.kill(-pid)` below then took those three to zero. So the two halves do different jobs:
+  // SIGKILL on the leader is what unblocks the RETURN, and the group kill after the return is what
+  // removes the orphans (`detached` is what makes the shell a group leader the second half can
+  // address). Before either, a mutant that hung its suite sat for three hours behind a 15-minute
+  // budget, one mutation into a sweep, with the tree mutated the whole time.
+  const r = spawnSync(command, {
+    cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+    detached: process.platform !== "win32",
+    killSignal: "SIGKILL",
+  });
+  if (r.error?.code === "ETIMEDOUT" && r.pid !== undefined && process.platform !== "win32") {
+    try { process.kill(-r.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+  }
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
-  return { status: r.status, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGTERM", output };
+  return { status: r.status, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
 /**

@@ -38,8 +38,8 @@ log("outcome", outcome.index)
 
 Read it as the flowchart it is. `spawn` brings agents in; `ask` is the narrow case where the
 program itself needs a value (`schema` is a record the program hands the handler unchanged; the
-language hashes it and gives it no meaning, and the reference simulator enforces the shorthand
-contract on it);
+language hashes it and gives it no meaning, and the handlers in this repository enforce it as the
+shorthand of the language reference §6.5);
 `checkpoint` is a durable pause a human resolves from anywhere, raced against a durable timer; `turn`
 wakes an agent for one turn and returns how it yielded; `race` runs two branches and keeps the one
 whose recorded clock is earliest. Agents talk to each other in channels as they always do; the
@@ -93,12 +93,21 @@ finds every recorded step the edit changed (a divergence) and every one it no lo
 orphan), and the orphan table says what each means: a removed `sleep` is nothing, a removed `turn`
 already happened, a removed `spawn` is a live agent you must adopt or release, a removed resolved
 `checkpoint` is a human decision you must explicitly discard. The decision is filed as a
-`migration` record with the actor's name on it.
+`migration` record with the actor's name on it. An adopted seat (`--adopt <name>#<uid>`) goes to
+the edited program's next `spawn` of that persona, which returns the recorded handle and mints
+nothing, so the agent keeps its identity, its worktree and its turn history across the edit. A
+released seat (`--release <name>#<uid>`) is despawned when the migration commits, through the same
+discharge a cancelled branch's seat leaves by, so the record never claims a release nothing did.
+The spawn that adopts a seat binds the orphaned spawn's goal as its own, so a resume of that step
+reads the same seat back and a cancellation of it despawns the seat it holds.
 
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
 pins (seed included, so the copied history's pure draws are the same draws). The child is a new run
 under a new id whose record names the parent and the cut step (`forkedFrom`); the parent is
-untouched.
+untouched. A spawn inside the copied prefix is honoured by its `onFork`: `"adopt"` copies it, and
+the child shares the parent's agent (the manager shows that seat one turn at a time across both
+runs); `"respawn"`, the default, would mint a fresh identity the copied turns do not address, so
+this host refuses that cut (L5019) rather than rewriting the parent's history.
 
 ## Operating a run
 
@@ -118,8 +127,10 @@ cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --
 `start` and `resume` need `--file`: the record stores no source, so the caller supplies the same
 program (handing an edited one is a migration decision, and the resume stops on the divergence).
 A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
-perform the step performs it live and continues from there. `answer` resolves an open checkpoint
-through the run driver, presenting as the arming holder, with the answerer's name on the record.
+perform the step performs it live and continues from there. `answer` resolves an open checkpoint,
+or an open `ask` attempt, through the run driver, presenting as the arming holder, with the
+answerer's name on the record. `journal` prints what an open pause asks beneath its step key, which
+is the address `answer` takes back.
 Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live mesh;
 on a bare broker a pause still resolves, it just cannot expire.
 
@@ -149,13 +160,98 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))` and `notify` are durable; `spawn`, `turn`, `ask`,
-`monitor`, `wait(replied(...))`, `wait(down(...))` and `conclave` refuse with **L5016 (effect not
-durable on this host)** until the durable action machinery they ride lands. That refusal holds the
-run rather than ending it: the entry is settled `refused` (never `failed`, since nothing was
-attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a resume on
-a host that can perform the step performs it live. A run started today heals the day those effects
-land. The operator surface over the driver is `cotal run`; the section above has the verbs.
+`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
+`spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
+`spawn` is
+the manager's spawn action submitted under the step's own identity: the goal binds under the step's
+request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
+failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
+race branch that loses is despawned by the run's own cancellation sweep. `permits` are the budgets
+this host meters: `turns`, how many turns the run may dispatch to the agent, and `wallClock`, a
+duration from the spawn after which no turn is admitted. The turn that would exceed one is the
+catchable L4001 (kind `permit-turns` or `permit-wall-clock`; a deadline the remaining wall clock
+cannot hold counts as exceeding it), an adopted run counts the turns its journal recorded, and a
+budget the host has no meter for, such as `tokens` or `spend`, is refused at the spawn rather than
+accepted and ignored. `conclave` joins its
+members to a real channel as durable membership rows: the channel derives from the step's own
+request id when the program names none (a program-named channel is borrowed, never torn down, and
+a membership that predates the conclave survives its close), each member handle resolves to its
+principal through the seat's own presence row (an absent member is catchable as L4002), and a
+conclave cancelled on a losing branch is released by the same cancellation sweep. `ask` parks one
+checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
+tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
+token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
+seat's connector renders as the record wanted and the command that answers it. An ask addresses
+an agent the run spawned (anything else refuses before an attempt opens), a resumed attempt tells
+the seat nothing twice, and a seat gone at the relay is L4002. On the pause itself:
+the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
+non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
+answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
+absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
+`checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
+the step key an answer is addressed by while the pause is open: the address alone left whoever was
+asked reading the source to find out what "approve" meant. An `escalate` addressed to an agent this
+run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
+and the token to answer under; a `to` naming anyone else is a person, and their pause stays the
+one anybody can answer, with the addressee recorded and rendered beside the question.
+`monitor` registers interest in an agent, and the
+registration is the journal entry itself, carrying the handle it registered: monitoring an agent
+that is already dead succeeds, and the death is the wait's to observe. `wait(down(...))` observes
+a monitored agent, and refuses one the run never performed `monitor` on. It reads the death off presence liveness, the
+same witness a conclave join resolves members through: the value carries the handle, the reason
+(`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
+a different incarnation) and the time of observation, a wait that begins after the death resolves
+at once, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
+`turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run
+submits the turn under the step's own identity, the manager holds it as a goal pinned to the
+seat's incarnation, and the seat pulls it under its own reach ahead of its next host turn, so
+nothing is pushed into a session mid-thought. The payload the seat reads names the run and the
+step and carries the rendered run context, plus any pending notices addressed to it, which the
+turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
+addressee), and ending its host turn yields `done` for every turn it was shown. A `handoff` names
+another seat the same run spawned: the next `turn` in the same scope to that seat records the
+link, a handoff to a name the run never spawned is the catchable L4005, and one to a seat bound
+to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
+the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its
+own pause on that same instant, so either side outliving the other still converges on the same
+answer. A seat that dies mid-turn is read off its own presence row by the run itself and is the
+catchable L4002, and a death the manager marked on the deadline terminal reads the same way. Two
+turns on one seat, from two branches or from two runs, reach it one at a time: the language
+dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
+turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
+credential carries its own pull and yield rows, the run driver's operator instrument carries the
+turn request, and the manager arms the deadline hold over its own serve grant and expires it
+itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
+it bound, and a retry of that submission is refused naming the terminal rather than accepted a
+second time.
+`wait(replied(...))` observes those turns from another branch: a completed turn is a reply, and
+the wait resolves with the observation record (the handle, the yield's status and note, the
+yield's own stamp). It reads as a level, the way `wait(down)` does: a reply that already exists
+resolves the wait at once, and two replies resolve to the latest by the yield's stamp. A denied
+or cancelled turn is never a reply, so an unanswered wait rides its own mediated timeout to
+`null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
+are observable. A turn the run itself ended without an accepted yield (its deadline, a
+cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
+A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
+the handle carries the id, and the run enforces the one rule the language states about it: two
+agents never share a worktree concurrently. The validator rejects the literal case up front
+(L3022: two branches of one concurrent scope spawning into one literal worktree, named branch
+functions included), and the runtime guards the rest, computed ids included: a spawn claims its
+tree before it submits, so a second spawn into a tree held by a live seat or by a spawn still
+bringing one up is the catchable L4008, a spawn that ends without a handle gives the tree back,
+and the tree is reusable the moment a holder's presence row is gone, so a discharged race loser
+or a crashed seat releases its tree with no bookkeeping. A spawn the endpoint refuses at accept
+is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity), and one whose
+seat never came up is L4002. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
+recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
+loser a crash left alive does not keep its seat or its tree while the resumed run works on. The
+same sweep withdraws a cancelled branch's undelivered notices: a notice waits on the run for its
+addressee's next turn, so a decision the run cancelled would otherwise arrive at an agent with
+nothing to distinguish it from one that stood.
+
+Every effect the language defines performs on the mesh handler; nothing is refused as
+not-yet-durable any more. The operator surface over the driver is `cotal run`; the section above has the verbs.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`
@@ -169,7 +265,7 @@ by name (**L5023**) with the run left untouched, instead of being replayed by wh
 happens to be present. Records do not cross between versions in either direction; the repair is to
 resume on the recorded version, or to fork.
 
-**The engine needs node 22 or newer** and refuses below it with **L1000**, which is an
-implementation limit and not a language error, so you will not find it in the catalog. It is a floor
-rather than a warning because the engine's frame plumbing rests on `AsyncLocalStorage`, and 22 is
-the lowest node it has been measured on. The walker has no such floor.
+**The engine needs node 22 or newer** and refuses below it as `EngineUnavailable`, which is an
+implementation limit and not a language error: it carries no `L` code, so there is nothing to look
+up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
+`AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.

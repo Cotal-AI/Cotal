@@ -279,8 +279,15 @@ const SEAMS: Seam[] = [
   // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
   // 109/80 -> 110/80: `cotal run`'s command connection (implementations/runtime/src/run-command.ts)
   // adds one typechecked call carrying the endpoint auth and the resolved tls decision.
+  // 110/80 -> 114/83: the delivery daemon's checkpoint timer writer (implementations/delivery/src/
+  // delivery.ts) adds one typechecked call, and its suite (delivery-timer-writer.smoke.ts) three
+  // smoke-side calls.
+  // 114/83 -> 117/86: the manager's auth-mesh turn relay suite (turn-relay-auth.smoke.ts, landed at
+  // 301a6cf6e) adds three smoke-side calls. The pin was not moved when that suite landed, so this
+  // cell was red from 301a6cf6e until 24b3d9281 corrected it: a whole-repo exact count goes red
+  // without the file that holds it being touched, which is the reason it is exact.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 110, untypecheckedSites: 80 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 117, untypecheckedSites: 86 },
 ];
 
 /**

@@ -244,6 +244,14 @@ const refuses = (what: string, f: () => unknown): string | null => {
     refuses("branch", () => root.branch("parallel", "outer", 0, "a#b")) === "L3025");
   ok("a step NAME forges structure too, and is refused on the same grammar",
     refuses("name", () => root.nextEffect("sleep", "z#0/b:x/sleep:y")) === "L3025");
+  // A SCOPE name is the third input and it forges the most, because everything under the scope
+  // inherits the forged frame. `parallel` and `race` do not require a literal name, so this one is
+  // reachable from outside data with no suspicious literal anywhere in the program.
+  ok("a computed SCOPE name is refused at the same mint",
+    refuses("scope", () => root.nextScope("parallel", "x/race:evil#9/b:z")) === "L3025");
+  ok("and an anonymous scope still mints, because most of them have no name at all",
+    refuses("scope", () => root.nextScope("race", null)) === null);
+  ok("as does an ordinary named one", refuses("scope", () => root.nextScope("parallel", "fan-out")) === null);
 
   // The narrowness twin. The guard rejects exactly the three characters the key grammar reserves;
   // anything else a program legitimately writes must still mint. Without this the cells above are

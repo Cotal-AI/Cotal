@@ -531,19 +531,19 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "    if (name !== \"parallel\" && name !== \"race\") return first;",
       "replace": "    return first;",
-      "expectRed": "parallel: the journals are IDENTICAL, entry for entry",
-      "completionMarker": "ok and its journal is the first run's, entry for entry",
-      "cell": "parallel: the journals are IDENTICAL, entry for entry",
-      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. The value is right and the journal is a different run's."
+      "expectRed": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+      "completionMarker": "ok and its log lines reached the host",
+      "cell": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. Re-aimed 2026-09-03: this suite is fail-fast, and the FIRST cell the mutant reds is the bridged race's in-flight cancellation (an arm outside its frame is never a branch the cut can cancel: the loser returns on its own and the order is enter/enter/return/return). The journal-parity cell it used to name sits later and is never reached, so that aim graded WRONG-RED over a mutant that is killed every time. The marker is a line printed well before this cell, which every run reaches."
     },
     {
       "name": "a scope body handed over already evaluated is accepted",
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "    if (typeof thunk !== \"function\") {",
       "replace": "    if (false) {",
-      "expectRed": "a scope body handed over already evaluated is refused",
+      "expectRed": "a scope body handed over already evaluated is refused as the emitter breaking the seam's contract",
       "completionMarker": "ok and the ambient frame is what a framed call reads",
-      "cell": "a scope body handed over already evaluated is refused",
+      "cell": "a scope body handed over already evaluated is refused as the emitter breaking the seam's contract",
       "note": "The refusal is what stops a wrong emission from becoming a wrong journal quietly. Without it the seam calls whatever it was handed, and what a reader gets is a host TypeError from inside the scope machinery rather than a sentence saying which argument arrived in the wrong shape."
     },
     {
@@ -756,20 +756,20 @@
       "note": "Refuses with the same code and the same words, so every cell about the refusal stays green - and leaves the key behind. A caught early write would then have initialised the binding from a line that never ran, and the `let` that follows would look like a redeclaration to the cell test rather than the initialisation it is."
     },
     {
-      "name": "the sub-floor refusal carries no language code",
+      "name": "the sub-floor refusal grows a language code again",
       "file": "packages/lang/src/engine/host.ts",
-      "find": "      \"L1000\",",
-      "replace": "      \"L9999\",",
-      "expectRed": "and it carries the language code, not a bare Error",
+      "find": "    throw new EngineUnavailable(\n      `it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "replace": "    throw new RuntimeFault(\n      \"L1000\",\n      `it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "expectRed": "a node below the floor is refused by major version",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
-      "cell": "and it carries the language code, not a bare Error",
-      "note": "A refusal that throws is not yet a refusal a caller can branch on. `instanceof RuntimeFault` stays true under this mutant, which is the point: the cell above it does not notice, and the code is what a host reads."
+      "cell": "a node below the floor is refused by major version",
+      "note": "A node below the floor is nothing a program did. Handing it a code the catalog does not carry sends a reader to Appendix A for a row that is not there, which is the defect the audit removed from the walker and the cold reader then found alive in the engine. RuntimeFault stays imported in host.ts for its real language refusals (L5021, L5011), so the mutant compiles. Fail-fast suite: the FIRST cell this mutant reds is the class check (`instanceof EngineUnavailable`), measured 2026-09-03; the no-code cell two lines later is never reached, so the aim names the one that is."
     },
     {
       "name": "the sub-floor refusal reads as a module-resolution failure",
       "file": "packages/lang/src/engine/host.ts",
-      "find": "`the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}.",
-      "replace": "`Cannot find module: the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "find": "`it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "replace": "`Cannot find module: it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
       "expectRed": "and it never presents as a module-resolution failure",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "and it never presents as a module-resolution failure",
@@ -1014,6 +1014,16 @@
       "completionMarker": "ok a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
       "cell": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
       "note": "Promoted from unkillable 2026-08-20: the recorded dead-code probe was FALSE - its fixture never parked the loser during the win, so the zero was the fixture's. With a real park (the graded cell holds the slow arm open until its own cancellation arrives), perform.ts's onSettle fires the in-flight frame's signal on BOTH engines, and this swallow survived every suite until the cell existed. The mutant keeps the wire kind and the branch intact on purpose, so the BRIDGE_KINDS source-text audit cannot see it and only behavior can."
+    },
+    {
+      "name": "a stated breach is given the wrapped ReferenceError's diagnosis",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        ? `the engine broke its own contract: ${breach}. It is not the program's error and is not converted into one.`",
+      "replace": "        ? `the engine broke its own contract: ${breach}. The emitted module has zero free identifiers, so this can only be a binding the transform did not classify as a cell, or an emitter temporary read before it was bound. It is not the program's error and is not converted into one.`",
+      "expectRed": "a stated breach carries no ReferenceError diagnosis and wraps no cause",
+      "completionMarker": "ok and the refusal says what the order costs",
+      "cell": "a stated breach carries no ReferenceError diagnosis and wraps no cause",
+      "note": "The constructor once appended the ReferenceError sentence to every cause it was handed, and four seam-detected breaches then told the maintainer to look at the transform's TDZ classifier for a scope body handed over evaluated. The diagnosis rides the wrapping path only."
     }
   ],
   "unkillable": []

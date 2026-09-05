@@ -1,0 +1,24 @@
+{
+  "suite": "bin/smoke/lang-spawn-live.smoke.ts",
+  "guard": "The turn relay on the REAL manager serializes two turns on one seat at the dispatch (cotal-lang 6.5): the seat is shown the oldest unsettled turn alone, and the next one only once it yields.",
+  "command": "pnpm smoke:lang-spawn-live",
+  "completionMarker": "lang-spawn-live.smoke:",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/lang-spawn-live.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "The suite runs the manager from its built package (the script builds `cotal-ai...` first), so",
+    "a mutation on manager `src` is seen through that build and `afterRestore` rebuilds so the",
+    "restored source is the artifact again. One mutant, aimed at the one line the serialization is."
+  ],
+  "mutations": [
+    {
+      "name": "every pending turn on a seat is served at once",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      .slice(0, 1)\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the seat is shown exactly one of them",
+      "cell": "the seat is shown exactly one of them",
+      "note": "The manager shows a seat one turn at a time (cotal-lang 6.5 at the dispatch, mirrored at the pull). Served all at once, a seat is asked for two turns together. Measured 2026-09-03 against the rebuilt manager (afterRestore builds before and after): exactly one named red (both turns shown); 32 passed, 1 failed."
+    }
+  ]
+}

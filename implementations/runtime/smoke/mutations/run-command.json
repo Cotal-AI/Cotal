@@ -6,13 +6,13 @@
   "mutations": [
     {
       "name": "the answer presents as a fresh principal instead of the arming holder",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: spec.holder },",
-      "replace": "    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: { id: \"cli-run\", lifecycleUid: \"u_mutant0000000000000000\" } },",
+      "file": "implementations/runtime/src/resolve-checkpoint.ts",
+      "find": "    presenter: spec.holder,",
+      "replace": "    presenter: { id: \"cli-run\", lifecycleUid: \"u_mutant0000000000000000\" },",
       "expectRed": "answer presents as the arming holder and is accepted",
       "completionMarker": "run-command:",
       "cell": "answer presents as the arming holder and is accepted",
-      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The substituted holder differs from the arming one in BOTH components now that cliHolder mints a fresh id per invocation: the arming id is cli-run-<hex> while the mutant presents the bare literal, and the lifecycleUid never matches, so the refusal is on holder identity, not on one lucky field."
+      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The anchor moved with the strand fix: the presenter is no longer supplied at the CLI call site, it is bound inside resolveCheckpoint off the checkpoint's own record, so the substitution now lives there. The substituted holder differs from the arming one in BOTH components (the arming id is cli-run-<hex> per invocation and the lifecycleUid never matches), so the refusal is on holder identity, not on one lucky field. Re-measured 2026-09-02 at the new anchor: the named cell reds FIRST with the SPEC 13.10 refusal, 18 ok 6 failed, and the suite EXITS red on its own \u2014 the re-measure also caught an unbounded `await orphan` in block 6b that HUNG the suite under this mutant class and is now raced against the same 15s bound as the completions beside it."
     },
     {
       "name": "a constant holder id lets concurrent drives co-activate through the exact-tuple relaxation",
@@ -23,6 +23,16 @@
       "completionMarker": "run-command:",
       "cell": "concurrent drives never co-activate: every activation token is held exactly once",
       "note": "The defect measured at 753e82f8a: two concurrent resumes derive the same fencing token and epoch from one record read, and with the constant id the tuple is exact, so both activate and the journal records two activations sharing a token. The cell asserts the journal invariant across five concurrent pairs rather than which promise lost, because a lost race is a legitimate higher-token takeover while a shared token is impossible by design."
+    },
+    {
+      "name": "the journal render drops an open pause's question",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    const asks = e.state === \"pending\" ? (e.external as { asks?: unknown } | undefined)?.asks : undefined;",
+      "replace": "    const asks = undefined as unknown;",
+      "expectRed": "the journal render shows an open pause's question under the step an answer is addressed by",
+      "completionMarker": "run-command:",
+      "cell": "the journal render shows an open pause's question under the step an answer is addressed by",
+      "note": "An open checkpoint is answered by step key, and the only place a person can read WHAT it asks is this render. Without it the journal shows a pending row and no question, and the answerer has to guess what they are approving."
     }
   ]
 }

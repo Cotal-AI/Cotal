@@ -499,16 +499,26 @@ export async function runJcodeHost(): Promise<void> {
     wakeQueued = false;
     const parts: string[] = [];
     let ids: string[] = [];
+    let turnIds: string[] = [];
+    // Run turns ride the same composed injection; their ids commit as surfaced only after the
+    // turn verifiably ran (two-phase — a failed or severed turn re-surfaces them, never a lie).
+    const turnPeek = agent.peekPendingTurns();
     if (override) parts.push(override);
     else {
       const inbox = agent.peekInbox("automatic");
       const injection = formatInjection(inbox);
-      if (!injection) {
+      if (!injection && !turnPeek) {
         driving = false;
         return;
       }
-      ids = inbox.map((item) => item.recvKey);
-      parts.push(injection);
+      if (injection) {
+        ids = inbox.map((item) => item.recvKey);
+        parts.push(injection);
+      }
+    }
+    if (turnPeek) {
+      turnIds = turnPeek.goalIds;
+      parts.push(turnPeek.text);
     }
     if (!briefed) {
       briefed = true;
@@ -527,6 +537,9 @@ export async function runJcodeHost(): Promise<void> {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (reconnecting || client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
+      // The turn ran to completion with the injection in its prompt — the run turns are surfaced.
+      // Committed before the finally's idle write, whose boundary auto-yields them `done`.
+      if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
       // active. Wait for that request to settle before reading the exact containing-turn ledger.
       await steerSettled;
@@ -697,6 +710,12 @@ export async function runJcodeHost(): Promise<void> {
       }
     });
   };
+
+  // A run turn arriving on a quiet seat has no "incoming" item to ride — the intake poll asks
+  // for a wake instead. drive()'s own head guards re-entry and a busy session.
+  agent.on("wake", () => {
+    if (!sessionBusy() && !reconnecting && !stopping) void drive();
+  });
 
   agent.on("incoming", (item: InboxItem) => {
     const automatic = agent.inboxScope(item.recvKey) === "automatic";

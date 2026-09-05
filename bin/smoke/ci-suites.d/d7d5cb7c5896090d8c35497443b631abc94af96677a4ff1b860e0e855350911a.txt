@@ -1,0 +1,5 @@
+# cotal-lang durable actions against the REAL manager: a driven program spawns a real seat
+# (live on ps), a losing race branch's real seat is released by the driver's own discharge sweep,
+# a conclave resolves the real seat off its own presence row, joins it, and releases it, and a
+# down-wait observes a real seat's death when the manager tears it down mid-run.
+smoke:lang-spawn-live

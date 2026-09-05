@@ -25,8 +25,12 @@
  * as an outcome would be writing down a conclusion about work it can no longer see.
  */
 import {
+  wfjStreamName,
+  wfjSubject,
+  EpEnvelopeError,
   activateRun,
   readRunRecord,
+  listRunMigrations,
   createRunSpec,
   writeRunStatus,
   assertJournalTailIntact,
@@ -54,6 +58,7 @@ import {
   ENGINE_LANGUAGE_VERSION,
   WALKER_LANGUAGE_VERSION,
   PIN_DEFAULTS,
+  journalEntryKeyString,
   type EffectHandler,
   type JournalEntry,
   type RunPins,
@@ -61,6 +66,7 @@ import {
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
 import { RunJournalStore } from "./journal-store.js";
+import { migrationSeats } from "./migrate.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
@@ -158,6 +164,40 @@ class RunRecordMalformed extends Error {
     );
     this.name = "RunRecordMalformed";
   }
+}
+
+/**
+ * A resume found no run RECORD. That is two states, and they are repaired differently.
+ *
+ * NO RECORD IS NOT NO JOURNAL. `RunNotResumable` says the journal was retired or lost, and for a
+ * run that never existed that is exactly right. But a fresh run is ACTIVATED before it is pinned —
+ * deliberately, because a driver that pinned before winning would pin a run for the winner — so a
+ * crash in that window leaves a journal holding an activation and no step, and no spec anywhere.
+ * The old message sent an operator looking for a lost journal that is sitting right there, and the
+ * repair is the opposite one: nothing was performed, so the program is started again under a NEW
+ * id rather than hunted for.
+ *
+ * Read through the SUBJECT rather than a replay: this is the refusal path, and a replay would
+ * create and delete a consumer to answer a question one `getMessage` answers.
+ */
+async function noRecordToResume(jsm: JetStreamManager, req: DriveRequest): Promise<Error> {
+  let journalled = false;
+  try {
+    const last = await jsm.streams.getMessage(wfjStreamName(req.space), { last_by_subj: wfjSubject(req.space, req.runId) });
+    journalled = last !== null && last !== undefined;
+  } catch (e) {
+    // 10037 is the stream saying there is no message on that subject: no journal, which is the
+    // first state. Any other error is the broker, and guessing on its behalf would put a
+    // fabricated diagnosis in front of an operator.
+    if ((e as { code?: unknown })?.code !== 10037) throw e;
+  }
+  if (!journalled) return new RunNotResumable(req.runId, wfjSubject(req.space, req.runId));
+  return new Error(
+    `run ${req.runId} has a journal but no record: it was activated and then never pinned, which is the `
+    + `window between a driver winning the run and writing its spec. Nothing was performed under it — the `
+    + `journal holds the activation and no step — and the pins a resume would need were never recorded, so `
+    + `there is nothing here to resume and nothing to recover. Start the program again under a new run id.`,
+  );
 }
 
 function unservedLanguage(version: string | undefined): RuntimeFault {
@@ -301,6 +341,96 @@ const adoptionOf = (handler: unknown): AdoptingHandler | undefined =>
     ? (handler as AdoptingHandler)
     : undefined;
 
+/** A handler that can receive the seats a committed migration kept for the program under
+ *  `--adopt` (spec §11.2): the next `spawn` of each persona returns the recorded seat. */
+export interface SeatAdoptingHandler {
+  adoptMigratedSeats(seats: ReadonlyMap<string, readonly JournalEntry[]>): void;
+}
+
+const seatAdoptionOf = (handler: unknown): SeatAdoptingHandler | undefined =>
+  typeof (handler as SeatAdoptingHandler | undefined)?.adoptMigratedSeats === "function"
+    ? (handler as SeatAdoptingHandler)
+    : undefined;
+
+/**
+ * The seats every APPLIED migration of this run handed to its program and that no spawn has
+ * received yet, keyed by persona. Read off the migration records and the replayed journal, so a
+ * resume on any host hands out the same seats in the same order; a migration filed but never
+ * applied moved nothing and hands over nothing.
+ */
+async function migratedSeats(req: DriveRequest, entries: readonly JournalEntry[]): Promise<ReadonlyMap<string, readonly JournalEntry[]>> {
+  const out = new Map<string, JournalEntry[]>();
+  for (const m of await listRunMigrations(req.kv, req.endpoint, req.runId)) {
+    if (m.applied === undefined) continue;
+    for (const [persona, seats] of migrationSeats(entries, m.spec).adopt)
+      out.set(persona, [...(out.get(persona) ?? []), ...seats]);
+  }
+  return out;
+}
+
+/**
+ * A handler that can end the external state a cancelled branch left behind (§7.6): timers still
+ * armed, a wait's durable consumer still holding a position. Declared here for the same reason as
+ * {@link AdoptingHandler} — the language records the cancellation, and acting on the record is the
+ * driver's concern. A handler with no external state (the simulator) declares nothing and the
+ * discharge is the flip alone.
+ */
+export interface DischargingHandler {
+  discharge(entries: readonly JournalEntry[]): Promise<unknown>;
+}
+
+const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
+  typeof (handler as DischargingHandler | undefined)?.discharge === "function"
+    ? (handler as DischargingHandler)
+    : undefined;
+
+/**
+ * Discharge every recorded cancellation whose flip is still owed: the second half of the design
+ * `cancel.issued` stages (#532). A scope that cancels its losers writes the INTENT with its
+ * outcome — `cancel: { losers, issued: false }` — because a journal write cancels nothing by
+ * itself; this is the runtime acting on that record. For each such scope entry the losers'
+ * subtree entries are handed to the handler to end their external state (idempotently — the live
+ * path usually cleaned up after itself, and this is the durable backstop for a process that died
+ * first), and only then is the entry re-appended with `issued: true`, so a flip in the journal is
+ * always DOWNSTREAM of the world being quiet.
+ *
+ * Two callers, and the premise each brings. At the run's COMPLETION every branch has settled, so
+ * the loser subtrees it hands the handler are final. At ADOPTION the prefix is a resumed journal:
+ * a recorded cancellation is still a cancellation (the losers' entries are what the crash left,
+ * and nothing inside a cancelled arm runs again), so the same walk is sound there, and it is what
+ * keeps recovery from waiting on a completion that may be hours away. A released run is not swept
+ * by either (this driver no longer holds it, and its appends would be refused), and a crash before
+ * either sweep is repaired by whichever comes next reading `issued: false` off the replayed prefix.
+ */
+export async function dischargeCancellations(
+  entries: readonly JournalEntry[],
+  store: { append(entry: JournalEntry): Promise<void> },
+  handler: unknown,
+): Promise<string[]> {
+  const flipped: string[] = [];
+  const discharger = dischargeOf(handler);
+  for (const e of entries) {
+    if (e.state !== "settled" || e.cancel === undefined || e.cancel.issued) continue;
+    const scopeKey = journalEntryKeyString(e);
+    if (discharger !== undefined) {
+      const prefixes = e.cancel.losers.map((b) => `${scopeKey}/b:${b}/`);
+      const losers = entries.filter((x) =>
+        x !== e && prefixes.some((p) => journalEntryKeyString(x).startsWith(p)));
+      await discharger.discharge(losers);
+    }
+    try {
+      await store.append({ ...e, cancel: { losers: e.cancel.losers, issued: true } });
+    } catch (err) {
+      // The same wrap `Journal.persist` gives every refused append: a flip the store would not
+      // take means this driver no longer holds the run, and that travels as L5010 — the caller
+      // grades it `released` — never as the completed program having failed.
+      throw new JournalAppendRejected(scopeKey, e.state, err as Error);
+    }
+    flipped.push(scopeKey);
+  }
+  return flipped;
+}
+
 /**
  * What a drive attempt did, as a two-exit answer rather than a value plus exceptions.
  *
@@ -369,7 +499,7 @@ async function drive(
       engine.version,
     );
   } else {
-    if (record === undefined) return { status: "released", reason: new RunNotResumable(req.runId, req.runId) };
+    if (record === undefined) return { status: "released", reason: await noRecordToResume(jsm, req) };
     // READ BACK, never re-derived. A default is a property of the interpreter, and the interpreter
     // is the thing that may have changed between attempts.
     pins = record.spec.value.pins as RunPins;
@@ -396,7 +526,6 @@ async function drive(
     // same kind of statement: not here, not this attempt.
     if (served === undefined) return { status: "released", reason: unservedLanguage(pins.languageVersion) };
     engine = served;
-    statusRevision = record.status?.revision;
   }
 
   let appender;
@@ -427,17 +556,53 @@ async function drive(
   }
 
   const resumed = appender.steps() as readonly JournalEntry[];
-  // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
-  // The default is the point: the hook was optional AND unwired, which is indistinguishable at
-  // runtime from a driver that has nothing to repair.
-  const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);
-  if (adopt !== undefined) await adopt(resumed);
-
   const store = new RunJournalStore(appender);
+  let flipped: ReadonlySet<string>;
+  try {
+    // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
+    // The default is the point: the hook was optional AND unwired, which is indistinguishable at
+    // runtime from a driver that has nothing to repair.
+    const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);
+    if (adopt !== undefined) await adopt(resumed);
+    // The seats a committed migration kept for this program (`--adopt`), handed to the handler
+    // before the program runs so its next spawn of that persona receives one. Only on a resume: a
+    // fresh run has no migration behind it.
+    if (expect === "existing") {
+      const seats = seatAdoptionOf(req.handler);
+      if (seats !== undefined) {
+        const kept = await migratedSeats(req, resumed);
+        if (kept.size > 0) seats.adoptMigratedSeats(kept);
+      }
+    }
+
+    // ADOPTION-TIME discharge, the recovery half of the `cancel.issued` stages: a crash between a
+    // scope's cancel record and its discharge leaves the losers' external state live — a seat still
+    // up in its worktree, a pause still armed — for as long as the resumed run keeps running. The
+    // completion sweep alone would wait until the END of a run that may hold the lease for hours,
+    // so recovery re-issues the owed cancellations before the engine performs any new step.
+    // Idempotent by the plane, exactly as the completion sweep is; an empty or fully-issued prefix
+    // is a no-op, so a fresh run pays nothing.
+    flipped = new Set(await dischargeCancellations(resumed, store, req.handler));
+  } catch (e) {
+    // The same grading the engine's own failures get below, because these two run on the far side
+    // of the activation and can lose the run the same way: a flip the store refused (L5010) is a
+    // successor holding the journal, and a re-arm the plane refused is that successor holding the
+    // pause. Both used to escape `drive()` raw, out of a function whose whole contract is that
+    // losing a run is an answer; a takeover between the activation and the first note was a crash.
+    if (e instanceof JournalAppendRejected || isNotOurs(e)) return { status: "released", reason: e as Error };
+    throw e;
+  }
+  // The prefix the barrier validated and activated on, not a second read of the subject — with
+  // the flips the sweep just appended applied in place, so the engine's picture of `issued` never
+  // lags the store it writes to and the completion sweep finds nothing left to re-issue. Both
+  // seeds below take THIS view: the journal, and the engine request that folds its own.
+  const seeded: readonly JournalEntry[] = resumed.map((e) =>
+    flipped.has(journalEntryKeyString(e)) && e.cancel !== undefined
+      ? { ...e, cancel: { losers: e.cancel.losers, issued: true } }
+      : e);
   const journal = new Journal({
     run: req.runId,
-    // The prefix the barrier validated and activated on, not a second read of the subject.
-    entries: resumed,
+    entries: seeded,
     store,
     ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
   });
@@ -473,15 +638,40 @@ async function drive(
       createdAt: pins.startedAt,
     });
   }
-  const specRevision = expect === "new"
-    ? (await readRunRecord(req.kv, req.endpoint, req.runId))!.spec.revision
-    : record!.spec.revision;
-  statusRevision = await note(req, "running", appender.journalHigh, specRevision, statusRevision);
+  // READ ON THE FAR SIDE OF THE FENCE, both revisions, from one read. The activation is what makes
+  // this driver the run's; a revision read BEFORE it is a number the loser was still free to move,
+  // and it did: a driver that discovers it lost writes its own `released` on the way out, which
+  // bumps the status revision the taker-over pinned, and the taker-over's first CAS then failed —
+  // out of the try below, past the outcome contract, as a raw throw from a legitimate takeover.
+  const activated = await readRunRecord(req.kv, req.endpoint, req.runId);
+  if (activated === undefined) {
+    // The spec is written above for a fresh run and existed already for a resume, so its absence
+    // here is the store disagreeing with a fact this driver established one line ago.
+    return { status: "released", reason: new RunNotResumable(req.runId, req.runId) };
+  }
+  const specRevision = activated.spec.revision;
+  statusRevision = activated.status?.revision;
 
   try {
-    const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: resumed, options };
+    statusRevision = await note(req, "running", appender.journalHigh, specRevision, statusRevision);
+  } catch (e) {
+    // A LOST CAS HERE IS A FACT, not a store hiccup: the only principal entitled to write this
+    // run's status is a driver that holds it, so someone moved the revision between this
+    // driver's activation and its first note and this driver is not the one running it. It has
+    // appended nothing and observed nothing, which is what `released` says. Every other failure
+    // is the store's and propagates untranslated.
+    if (!isStatusConflict(e)) throw e;
+    return { status: "released", reason: e as Error };
+  }
+
+  try {
+    const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: seeded, options };
     const result = expect === "new" ? await engine.run(engineReq) : await engine.resume(engineReq);
-    await note(req, "completed", appender.journalHigh, specRevision, statusRevision);
+    // The discharge BEFORE the completed note: `result.journal` is the final folded record on both
+    // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
+    // rather than a completed run whose discharge silently never happened.
+    await dischargeCancellations(result.journal.entries(), store, req.handler);
+    await noteFinal(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {
     // L5010 is the journal saying it could not record — the run is not this driver's any more. It
@@ -490,26 +680,26 @@ async function drive(
       // Recorded on a BEST-EFFORT basis and never allowed to mask the real answer: the record is a
       // projection, and a driver that could not append to the journal may not be able to write here
       // either. What it must not do is turn a lost run into a different-looking failure.
-      await noteQuietly(req, "released", appender.journalHigh, specRevision, statusRevision);
+      await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
     if (e instanceof RunReleased) {
-      await note(req, "released", appender.journalHigh, specRevision, statusRevision);
+      await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
     // A HELD run is released with its refusal already recorded: this host could not perform the
     // next step (the entry is settled `refused`, L5025), the program has neither failed nor
     // finished, and a capable host's resume performs the step live.
     if (e instanceof RunHeld) {
-      await note(req, "released", appender.journalHigh, specRevision, statusRevision);
+      await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
     // A program that FAILED is a fact about the program, and the run record is where a reader looks
     // for it. Recorded, then re-raised: swallowing it here would leave the caller believing the
     // driver finished normally.
-    await note(req, "failed", appender.journalHigh, specRevision, statusRevision);
+    await noteFinal(req, "failed", appender.journalHigh, specRevision, statusRevision);
     throw e;
   }
 }
@@ -556,8 +746,23 @@ async function note(
   );
 }
 
-/** The same write, where failing to make it must not replace the answer the caller is owed. */
-async function noteQuietly(
+/** A CAS this driver lost: the status record moved under it, and the only principal entitled to
+ *  move it is a driver that holds the run. Every other broker failure is left untranslated. */
+function isStatusConflict(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && e.code === "conflict";
+}
+
+/**
+ * The TERMINAL status write, where failing to make it must not replace the answer the caller
+ * is owed.
+ *
+ * By the time one of these runs the engine has already produced the run's outcome and the journal
+ * already holds it. The record is a projection of that journal; a driver that could not write the
+ * projection has still observed what it observed, and throwing here would replace a real answer
+ * (a completion, a release, the program's own failure) with a store error about a derived record.
+ * Loud on the way past, because a projection silently lagging its journal is worth knowing about.
+ */
+async function noteFinal(
   req: DriveRequest,
   state: RunStatusValue["state"],
   journalHigh: number,
@@ -566,7 +771,10 @@ async function noteQuietly(
 ): Promise<void> {
   try {
     await note(req, state, journalHigh, observedSpecRevision, expectedRevision);
-  } catch {
-    /* the record is a projection; the journal is the authority and it has already spoken */
+  } catch (e) {
+    console.error(
+      `run ${req.runId}: the "${state}" status write did not land (${(e as Error).message}); `
+      + "the journal is the authority and already holds the outcome",
+    );
   }
 }

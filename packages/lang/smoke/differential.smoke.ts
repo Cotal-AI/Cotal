@@ -129,7 +129,28 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
   }
 };
 
-const j = (v: unknown) => JSON.stringify(v);
+// CYCLE-SAFE, because the grader must outlive the graded. No value a CORRECT run produces is
+// cyclic once it reaches a log (the corpus never logs one whole), so the plain spelling serves every
+// green comparison byte-for-byte — but the one time a cycle DOES arrive is under a mutant that
+// broke that refusal, and a comparator that throws right there kills the suite before the cell
+// that would have named the defect. The fallback runs only when the plain spelling has already
+// thrown, so an acyclic value that merely SHARES a reference is never mislabelled, and two
+// distinct cycles rendering alike costs nothing: a run carrying any cycle has already failed its
+// declared code.
+const j = (v: unknown): string => {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    const seen = new WeakSet<object>();
+    return JSON.stringify(v, (_k, x: unknown) => {
+      if (typeof x === "object" && x !== null) {
+        if (seen.has(x)) return "[Circular]";
+        seen.add(x);
+      }
+      return x;
+    });
+  }
+};
 
 /** Which language each engine speaks: the pin every cross-engine refusal below is named for. */
 const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION };
@@ -321,6 +342,10 @@ log("rounds", rounds, r.status);`,
   ],
   ["sleep and the run clock", 'await sleep("1m", { name: "s" }); log(now() > 0);', {}],
   ["closures over a for-loop counter", "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);", {}],
+  // A per-iteration head can bind a PATTERN. The validator and the walker both accept it; the
+  // compiled engine used to throw a raw uncoded Error out of the transform instead of running it.
+  ["a per-iteration head binding an array pattern", "const fs = []; for (let [i, j] = [0, 10]; i < 3; i = i + 1) { fs.push(() => i + j); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);", {}],
+  ["a per-iteration head binding an object pattern", "let out = []; for (let { a } = { a: 0 }; a < 3; a = a + 1) { out.push(a); } log(out);", {}],
   ["a builtin read as a value", "const f = map; log(f([1, 2], (x) => x), map === map, json === json);", {}],
   ["refusals: a non-function callee", "const f = 1; log(f());", {}, "L4011"],
   // STEP KEYS ARE (scope path, kind, name, occurrence), and the corpus has to reach each component
@@ -584,6 +609,19 @@ log("rounds", rounds, r.status);`,
   ["len of a free builtin", "log(len(map), len(len));", {}, "L4016"],
   ["len of a program function", "log(len((x) => x));", {}, "L4016"],
   ["len of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, "L4016"],
+  // THE SAME LEAK, IN THE OTHER DIRECTION. The free string spellings cast their arguments where
+  // the method table gates them, so `split(s, 5)` coerced the separator to "5" while `s.split(5)`
+  // was L4016: one operation, two answers, decided by spelling.
+  ["a free string builtin's separator is a string, not a coerced one", 'log(split("a5b", 5));', {}, "L4016"],
+  ["a free string builtin's pattern is a string too", 'log(startsWith("abc", 5));', {}, "L4016"],
+  ["and its receiver is a string", "log(upper(5));", {}, "L4016"],
+  // §5.3: `sort` never answers "equal" for two distinct values. A value with no canonical form
+  // used to fall to a stand-in built from `String(v)`, which is "[object Object]" for every
+  // record, so two distinct cyclic records compared EQUAL and the order stopped being one.
+  // §5.3 gives the order a third rung, ORIGINAL POSITION, which no two distinct entries share; a
+  // value with no canonical form ties on the canonical rung and falls through to it, so the sort
+  // is still a function of its input and still never answers "equal" for two distinct values.
+  ["sort places a value with no canonical form by its original position", 'const a = { n: 1 }; a.self = a;\nconst b = { n: 2 }; b.self = b;\nconst s = sort([b, a]);\nlog(s[0] === b, s[1] === a, len(s));', {}],
   [
     "the event constructors",
     'const a = await spawn("one"); const c = channel("t"); log(message(c), idle(a), down(a), replied(a));',
@@ -994,11 +1032,16 @@ const SURVIVED: readonly (readonly [string, string])[] = [
     const entry = CORPUS.find(([n]) => n === row);
     ok(`the survival check names a corpus row that still exists, so the two cannot drift apart: ${name}`, entry !== undefined, { names: row });
     const source = entry === undefined ? "" : entry[1];
-    const run = spawnSync(process.execPath, ["--import", "tsx", child, source], { encoding: "utf8" });
+    // BOUNDED, because the failure this section guards is a program that NEVER SETTLES. The child
+    // is what keeps such a program from hanging the suite, and a child awaited without a deadline
+    // moves the hang one process out rather than removing it: the parent blocks in spawnSync and
+    // the gate reads as running forever instead of red.
+    const run = spawnSync(process.execPath, ["--import", "tsx", child, source],
+      { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
     const out = `${run.stdout}${run.stderr}`;
     ok(`the oracle's own process survives it, and hands the refusal back to its caller: ${name}`,
-      run.status === 0 && out.includes("REFUSED L4021"),
-      { status: run.status, out: out.slice(0, 160) });
+      run.status === 0 && run.signal === null && out.includes("REFUSED L4021"),
+      { status: run.status, signal: run.signal, out: out.slice(0, 160) });
   }
   console.log(`  (${SURVIVED.length} program(s) the oracle used to die on, checked in a child because a regression HANGS this suite rather than reding it)`);
 }
@@ -1560,8 +1603,15 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   ];
   const open: string[] = [];
   for (const [name, source] of RAN) {
-    const free = unbound(parseModule(transform(source).module));
-    if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
+    // A program the transform REFUSES emits no module at all. Every row here transforms cleanly
+    // when the emitter is right, so a refusal is a defect in the emitter — and it must land in
+    // this cell as a row, not kill the suite between the corpus cells and their summary line.
+    try {
+      const free = unbound(parseModule(transform(source).module));
+      if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
+    } catch (e) {
+      open.push(`${name}: did not transform (${(e as Error).message.slice(0, 80)})`);
+    }
   }
   ok("every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
   console.log(`  (${RAN.length} emitted modules resolved across the corpus, the divergences, the holds and the crossings, ${open.length} with a free identifier)`);

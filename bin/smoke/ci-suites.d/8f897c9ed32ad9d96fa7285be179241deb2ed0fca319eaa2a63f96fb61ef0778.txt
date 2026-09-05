@@ -1,0 +1,5 @@
+# `conclave` on the real planes: the channel derives from the step's own request id, the plan is
+# bound as external state before a row is written, a re-entered open converges from the recorded
+# plan with presence gone, the close releases exactly what the open created, and a cancelled
+# conclave's membership is released by the driver's own sweep.
+smoke:runtime-mesh-conclave

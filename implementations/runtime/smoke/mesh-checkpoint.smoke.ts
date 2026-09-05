@@ -35,6 +35,7 @@ import {
   readCheckpointSettle,
   readCheckpointAnswer,
   readCheckpointStatus,
+  readCheckpointSpec,
   resumeCheckpoint,
   mintCheckpoint,
   activateRun,
@@ -61,6 +62,7 @@ const EP = "manager";
 const IID = "i".repeat(26);
 const EPOCH = 4;
 const HOLDER = { id: "manager", lifecycleUid: "u_meshcp" };
+const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "a".repeat(26) };
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -125,11 +127,11 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
 
 const NOW = Date.now(); // real schedules need real wall-clock deadlines
 const binding = {
-  space: SPACE, endpoint: EP, runId: "r-cp", instanceId: IID, epoch: EPOCH, holder: HOLDER,
+  space: SPACE, endpoint: EP, runId: "r-cp", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER,
   defaultCheckpointTimeout: "1h",
 };
-const handler = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
-const deps = { kv, js, jsm, space: SPACE, endpoint: EP, holder: HOLDER };
+const handler = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+const deps = { kv, js, jsm, space: SPACE, endpoint: EP };
 
 const PROGRAM = `
 const a = await checkpoint("approve", "Ship it?", { timeout: "1h", onExpiry: "proceed" });
@@ -241,7 +243,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   // Its OWN handler, on a clock that MOVES. Everywhere else here the clock is pinned so a deadline
   // is a value the cells can name; this block's subject is a deadline actually passing, and a clock
   // frozen before its own deadline judges every real fire premature and re-arms instead of expiring.
-  const expiring = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => Date.now());
+  const expiring = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => Date.now());
   const driven = startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "cp-3", source, lease: lease("m1", 1, takeovers + 1), handler: expiring,
   });
@@ -433,10 +435,90 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
       outstandingPauseTokens(settledWait).length === 0, outstandingPauseTokens(settledWait).join(","));
     c("and the other kinds are unchanged by the addition",
       open.includes("tok-sleep") && open.includes("tok-cp"), open.join(","));
+    // A pending `turn` arms one too, under its goal id, and that pause is the run's OWN L4003
+    // authority for a manager that dies. Omitting it left the authority dark from the takeover
+    // until the replay reached the turn again, which is the window a takeover exists to cover.
+    const turnTok = "req-turn-token-7";
+    const pendingTurn = [{
+      v: 1, seq: 0, run: "cp-7w", scope: "", kind: "turn", name: "drive", occurrence: 0, inputHash: "h",
+      requestId: turnTok, state: "pending", startedAt: 0,
+      external: { goalId: turnTok, name: "b", uid: "u", deadlineAt: 1 },
+    }] as never;
+    c("a pending `turn` is an outstanding pause too: its deadline authority is re-armed",
+      outstandingPauseTokens(pendingTurn).join() === turnTok, outstandingPauseTokens(pendingTurn).join(","));
   }
 
   await resolveCheckpoint(deps, { runId: "cp-7", stepKey: STEP, by: "david", value: "done", now: NOW + 1_000 });
   await driven;
+}
+
+// ── 7b) a takeover ATTACHES to a predecessor's pause, and the answer still lands ──────────────
+//
+// A checkpoint's holder is immutable at mint — a token is minted once (SPEC 13.6) — and a resumed
+// run does not necessarily arrive under the holder that minted its pause: the CLI mints a fresh
+// holder per invocation, and a cross-host adoption is a different principal by definition. The
+// successor's step must ATTACH to the recorded pause, and the answer path must keep working with
+// no holder supplied, because the resolver reads the ARMING holder off the record. Measured
+// before the repair: the successor re-minted under its own holder, the plane refused ("a token is
+// minted once"), and the refusal was journalled as the step's own failure (L4000) — one resume
+// stranded the run.
+{
+  const { driven, token } = await startPaused("cp-7b");
+  await armPending(4);
+  const successor = {
+    ...binding, runId: "cp-7b", instanceId: "j".repeat(26), epoch: EPOCH + 1,
+    holder: { id: "cli-run-successor", lifecycleUid: "u_meshcp_b" },
+  };
+  const h2 = new MeshHandler(nc, kv, js, jsm, successor, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+  // The rejection shim is part of the cell: an attach that REFUSES (the pre-repair behaviour)
+  // must fail the cell that names it, never kill the suite as an unhandled rejection.
+  const attached = h2.checkpoint({ prompt: "Ship it?", timeout: "1h" } as never, { requestId: token, attempt: 0, bind: async () => { /* the successor's own bind; nothing here reads it back */ }, signal: { cancelled: false, onCancel() { /* never fires here */ } } } as never)
+    .then((v) => ({ v: v as { outcome?: string; by?: string } }), (e: unknown) => ({ e: e as Error }));
+  await wait(300);
+  const spec = await readCheckpointSpec(kv, { endpoint: EP, token });
+  c("the successor leaves the recorded pause exactly as its minter wrote it: attached, never re-minted or re-bound",
+    spec?.holder.id === HOLDER.id && spec?.holder.lifecycleUid === HOLDER.lifecycleUid, JSON.stringify(spec?.holder));
+  const r = await resolveCheckpoint(deps, { runId: "cp-7b", stepKey: STEP, by: "eve", value: "go", now: NOW + 1_000 });
+  c("the answer is accepted with no holder supplied anywhere", r.settle.settle === "resumed", r.settle.settle);
+  const got = await withDeadline(attached, 20_000, "the successor's attached checkpoint");
+  const val = got as { v?: { outcome?: string; by?: string }; e?: Error } | undefined;
+  c("the SUCCESSOR's step reads the accepted answer through its attach — it was not refused",
+    val?.v?.outcome === "resolved" && val?.v?.by === "eve", val?.e?.message?.slice(0, 70) ?? JSON.stringify(val?.v));
+  const out = await withDeadline(driven, 20_000, "the original driver");
+  c("and the original driver, watching the same settle, completes as well", out?.status === "completed", out?.status);
+}
+
+// ── 7c) an attempt's deadline is decided once, bound, and read back on a resume ──────────────
+//
+// `checkpoint` recomputed `now + timeout` on every entry. `arm` attaches to the recorded pause and
+// keeps the deadline that pause was minted with, so a resumed attempt handed its relay a fresh
+// instant the pause did not have: the seat's hold and the checkpoint plane then denied at
+// different times. `ask` binds its deadline and restores it; the checkpoint now does the same.
+{
+  const k = { requestId: "cp7cxxxxxxxxxxxxxxxxxxxxxx".slice(0, 20).padEnd(43, "0").slice(0, 43), attempt: 0 };
+  const bound: Record<string, unknown>[] = [];
+  const first = handler.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed" } as never,
+    { requestId: k.requestId, attempt: 0, bind: async (v: Record<string, unknown>) => { bound.push(v); }, signal: { cancelled: false, onCancel() { /* never */ } } } as never)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  await wait(300);
+  const deadlineAt = bound[0]?.deadlineAt;
+  c("the attempt binds the deadline it decided, beside what it asks",
+    typeof deadlineAt === "number" && deadlineAt === NOW + 3_600_000 && bound[0]?.asks === "Ship it?", JSON.stringify(bound[0]));
+  // A successor re-entering the same attempt is handed the bound state and a clock that has
+  // moved on. What it arms and relays must be the RECORDED instant, never a fresh one.
+  const later = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW + 600_000);
+  const rebound: Record<string, unknown>[] = [];
+  const again = later.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed" } as never,
+    { requestId: k.requestId, attempt: 0, resume: bound[0], bind: async (v: Record<string, unknown>) => { rebound.push(v); }, signal: { cancelled: false, onCancel() { /* never */ } } } as never)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  await wait(300);
+  const status = await readCheckpointStatus(kv, { endpoint: EP, token: k.requestId });
+  c("a resumed attempt binds nothing new and its pause still runs to the RECORDED deadline",
+    rebound.length === 0 && status?.value.deadline === deadlineAt, JSON.stringify({ rebound, deadline: status?.value.deadline, deadlineAt }));
+  await resolveCheckpoint(deps, { runId: "r-cp", stepKey: STEP, by: "eve", value: "go", now: NOW + 1_000 }).catch(() => undefined);
+  // The two pauses share a token, so one answer ends both; neither is left parked.
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: k.requestId }, presenter: HOLDER, now: NOW + 1_000 }).catch(() => undefined);
+  await withDeadline(Promise.all([first, again]), 15_000, "the two entries of one attempt");
 }
 
 // ── 8) a checkpoint with no timeout of its own gets the driver's PINNED one ───────────────────

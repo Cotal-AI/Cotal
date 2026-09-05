@@ -69,10 +69,10 @@ const wf = (positionals: string[], values: Record<string, string | boolean | und
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
-const REFUSING = join(sd, "refusing.cotal.js");
-writeFileSync(REFUSING, 'await spawn("builder");\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
 writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+const ASKING = join(sd, "asking.cotal.js");
+writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = await ask(a, { name: "size", schema: { estimate: "number" } });\nlog("estimate", v.estimate);\n');
 
 // ── 1) start: a pure program completes through the command, under a minted id ────────────────
 let P = "";
@@ -109,20 +109,10 @@ let P = "";
   c("resume replays a completed run to completed", captured().includes(`run ${P}: completed`), captured());
 }
 
-// ── 5) a refused effect holds the run, and the command says so ───────────────────────────────
-let H = "";
-{
-  reset();
-  await wf(["start"], { file: REFUSING });
-  H = startedId() ?? "";
-  c("a refused effect reports released", H !== "" && captured().includes(`run ${H}: released`), captured());
-  c("names RunHeld", captured().includes("RunHeld"), captured());
-  c("and tells the operator what a hold means", captured().includes("held"), captured());
-  c("a held start exits nonzero", process.exitCode === 2, process.exitCode);
-  reset();
-  await wf(["journal", H]);
-  c("its journal shows the step settled refused with the crossing code", captured().includes("refused (L5016)"), captured());
-}
+// The refusal block that once sat here (a `worktree` spawn held on the not-yet-durable seam) went
+// with the seam: every effect the language defines performs on this host now, so no program can
+// drive a hold on a manager-less broker. The hold rendering itself is graded where the halt is
+// raised, in the lang engine suites.
 
 // ── 6) answer: an open checkpoint is resolved through the command ────────────────────────────
 {
@@ -143,6 +133,14 @@ let H = "";
     }
   }
   c("the checkpoint opens durably", open);
+  // WHAT IT ASKS, at the surface an operator answers from. `answer <run> <stepKey>` is the whole
+  // interface to a checkpoint, and the render used to give the address without the question:
+  // everything durable held the input HASH, so learning what "approve" meant took a trip back to
+  // the source. Read while the pause is OPEN, because that is when the question is a worklist.
+  await wf(["journal", cid]);
+  c("the journal render shows an open pause's question under the step an answer is addressed by",
+    captured().includes("/checkpoint:approve#0  pending") && captured().includes("asks        Ship it?"),
+    captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("asks")).join(" | "));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
   const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' })
@@ -153,6 +151,81 @@ let H = "";
   // unconditionally HANGS on that defect instead of failing on it. A hang is not a red.
   const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
   c("and the held start completes", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
+}
+
+// ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
+//
+// The fixture used to hand the program a HAND-BUILT handle (`{ agent: "dev#u", persona: "dev" }`)
+// so the ask could open a pause with no manager standing. That is a forged identity: a relay is
+// submitted to a seat this run never spawned, exactly the class `parallel`/`race` name forgery
+// belongs to. The handler now refuses it before any wire work, and this is the command layer's
+// half of that: the refusal reaches an operator as the run's recorded failure and its sentence.
+//
+// The ANSWER verb reaching an open ask attempt is proven where an ask can actually open: over the
+// real relay in `bin/smoke/lang-spawn-live.smoke.ts` (a spawned seat, a real manager, the attempt's
+// own token), and against the door itself in `implementations/runtime/smoke/mesh-ask.smoke.ts`.
+{
+  reset();
+  // A failing program leaves `start` REJECTING, which is how the verb reports it: the dispatcher
+  // above prints what comes out. Caught here so the sentence is the thing under assertion.
+  const refused = await wf(["start"], { file: ASKING }).then(() => undefined, (e: Error) => e);
+  const aid = startedId() ?? "";
+  c("the asking run starts and is named", aid !== "", captured());
+  const rec = await readRunRecord(kv, EP, aid);
+  c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat",
+    rec?.status?.value.state === "failed", rec?.status?.value.state);
+  c("and the reason names the handle and the rule, so an operator knows what to write instead",
+    refused !== undefined && refused.message.includes("is not in this run's roster") && refused.message.includes("dev#u"),
+    refused?.message?.slice(0, 200));
+}
+
+// ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─
+//
+// The strand measured through the real binary before the repair: every invocation mints its own
+// holder, so a resume of a checkpoint-parked run re-minted the pause under it, the plane refused
+// ("a token is minted once"), and the interpreter journalled the refusal as the step's own
+// failure — ONE resume stranded the run with `failed (L4000)` and a record blaming the program.
+// Here the start's driver is simply abandoned (in the real repro the process died), a second
+// invocation resumes under its own fresh holder, and the answer arrives after that.
+{
+  reset();
+  // The abandoned driver: superseded by the resume below, its settle append is refused and it
+  // reports released — the in-process crash shape, and not this section's claim.
+  const orphan = wf(["start"], { file: CHECKPOINT }).catch(() => undefined);
+  let C2: string | undefined;
+  for (let i = 0; i < 100 && C2 === undefined; i += 1) { await wait(50); C2 = startedId(); }
+  const cid = C2 ?? "";
+  let open = false;
+  for (let i = 0; i < 100 && !open; i += 1) {
+    await wait(200);
+    const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`).catch(() => undefined);
+    for (const r of back?.records ?? []) {
+      if (r.record.kind !== "step") continue;
+      const e = r.record.entry as JournalEntry;
+      if (e.kind === "checkpoint" && e.state === "pending") open = true;
+    }
+  }
+  reset();
+  const resumed = wf(["resume", cid], { file: CHECKPOINT });
+  // Give the attach time to reach the plane, then grade what it did NOT do: no step settled
+  // failed, and the recorded pause still open under its original mint.
+  await wait(1_500);
+  const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`);
+  const failedSteps = back.records.filter((r) => r.record.kind === "step"
+    && (r.record.entry as JournalEntry).state !== "pending"
+    && (r.record.entry as JournalEntry).status === "failed");
+  c("a fresh holder's resume of a parked run strands nothing: no step settles failed", open && failedSteps.length === 0, failedSteps.length);
+  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"go"' })
+    .then(() => true, (e: Error) => e);
+  c("the answer is accepted with no holder supplied: the resolver reads the arming holder off the record", answered === true, answered);
+  const outcome = await Promise.race([resumed.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("and the RESUME completes the run under its own holder", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
+  // Bounded like the raced completions above: when every answer is refused, the abandoned driver
+  // never resolves, and a suite that awaits it unconditionally HANGS on that defect. On the green
+  // path it has already settled (its superseded append reports released).
+  await Promise.race([orphan, wait(15_000)]);
+  const rec = await readRunRecord(kv, EP, cid);
+  c("the record ends completed, never failed", rec?.status?.value.state === "completed", rec?.status?.value.state);
 }
 
 // ── 7) the takeover barrier through the command ──────────────────────────────────────────────
@@ -182,7 +255,7 @@ let H = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 20;
+const DECLARED = 23;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

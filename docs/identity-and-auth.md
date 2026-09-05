@@ -83,7 +83,7 @@ agent cannot create a consumer filtered to someone else's inbox
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
 plus stop/despawn of its *own* children, plus persona definition. Without it, an agent can
-only self-despawn. The tool surface mirrors the grant: `cotal_spawn` / `cotal_persona` / `cotal_personas` are
+only self-despawn and pull or yield the run turns addressed to it. The tool surface mirrors the grant: `cotal_spawn` / `cotal_persona` / `cotal_personas` are
 injected only where they can actually succeed ([agent files](agent-files.md)). Destructive
 operator ops (history purge, cross-agent stop) live on a third tier no agent credential
 reaches. Persona redefinition separates content from policy; the write path takes only

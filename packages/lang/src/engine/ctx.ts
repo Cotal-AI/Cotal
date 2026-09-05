@@ -18,7 +18,7 @@
  * identical journals (entry sequences and step keys, not merely output).
  */
 
-import { RuntimeFault } from "../errors.js";
+import { InterpreterDefect, RuntimeFault } from "../errors.js";
 import { Cancelled, EffectError, type EffectHandler } from "../effects.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "../library.js";
 import type { Journal } from "../journal.js";
@@ -456,12 +456,11 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    */
   const deferredBody = (name: string, args: unknown[]): (() => Promise<unknown>) => async () => {
     if (name === "parallel" || name === "race") {
-      throw new RuntimeFault("L1000", `\`${name}\` has no deferred argument; asking for one is an engine fault`);
+      throw new EngineFault(`\`${name}\` has no deferred argument; asking for one is an emitter mistake`);
     }
     const thunk = args[1];
     if (typeof thunk !== "function") {
-      throw new RuntimeFault(
-        "L1000",
+      throw new EngineFault(
         `\`${name}\` takes its body UNEVALUATED, as a thunk: the walker evaluates it AFTER the scope's entry has begun (measured: an effect in that position journals inside the scope, one in the options bag journals before it), so a body handed over already evaluated has journalled its effects in the wrong place.`,
       );
     }
@@ -780,11 +779,10 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // A continuation without a short-circuit to guard is an emitter mistake: an ordinary call's
       // chain is written natively, because nothing in it depends on a decision only the host made.
       if (chain !== undefined && optional !== true) {
-        throw new RuntimeFault("L1000", "a call continuation belongs to an OPTIONAL call: there is nothing else for it to be skipped by");
+        throw new EngineFault("a call continuation belongs to an OPTIONAL call: there is nothing else for it to be skipped by");
       }
       if (optional === true && typeof args !== "function") {
-        throw new RuntimeFault(
-          "L1000",
+        throw new EngineFault(
           "an optional call must be handed its arguments as a thunk: it may not evaluate them at all, and an array is a list that has already been evaluated",
         );
       }
@@ -908,7 +906,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         case ">>>":
           return a >>> b;
         default:
-          throw new RuntimeFault("L1000", `unsupported operator ${op}`);
+          throw new InterpreterDefect(`the operator ${op}`);
       }
     },
 
@@ -942,7 +940,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           }
           return v;
         default:
-          throw new RuntimeFault("L1000", `unsupported unary operator ${String(op)}`);
+          throw new InterpreterDefect(`the unary operator ${String(op)}`);
       }
     },
 
@@ -996,19 +994,29 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 /**
  * The engine broke its own contract, and no program may catch that.
  *
- * The one thing that reaches this today is a native `ReferenceError`. The emitted module is a closed
+ * Two things reach it. A native `ReferenceError` is WRAPPED: the emitted module is a closed
  * expression with zero free identifiers, so nothing the program wrote can name a binding that is not
- * there; a ReferenceError therefore means a TDZ read the transform's classifier missed or an emitter
- * temporary read before it was bound. It is not the program's error, it is not converted to one, and
- * it is never mapped to L2004 by reading its message - that mapping would make a compiler bug
- * indistinguishable from the language rule it imitates.
+ * there, and a ReferenceError therefore means a TDZ read the transform's classifier missed or an
+ * emitter temporary read before it was bound. That diagnosis rides along with the wrapped error and
+ * with nothing else. A breach the seam detects itself (a scope body handed over already evaluated,
+ * a continuation on a call that is not optional) is STATED, in the seam's own words, because the
+ * transform's classifier has nothing to do with it and a message that sent the reader there would
+ * point at the wrong half of the compiler. Neither is the program's error, neither is converted to
+ * one, and neither is mapped to L2004 by reading a message - that mapping would make a compiler
+ * bug indistinguishable from the language rule it imitates.
  */
 export class EngineFault extends Error {
-  constructor(readonly cause: unknown) {
+  /** The wrapped native error, when this fault wraps one; absent for a stated breach. */
+  readonly cause: unknown;
+  constructor(breach: string | ReferenceError) {
+    const stated = typeof breach === "string";
     super(
-      `the engine broke its own contract: ${(cause as Error)?.message ?? String(cause)}. The emitted module has zero free identifiers, so this can only be a binding the transform did not classify as a cell, or an emitter temporary read before it was bound. It is not the program's error and is not converted into one.`,
+      stated
+        ? `the engine broke its own contract: ${breach}. It is not the program's error and is not converted into one.`
+        : `the engine broke its own contract: ${breach.message}. The emitted module has zero free identifiers, so this can only be a binding the transform did not classify as a cell, or an emitter temporary read before it was bound. It is not the program's error and is not converted into one.`,
     );
     this.name = "EngineFault";
+    this.cause = stated ? undefined : breach;
   }
 }
 

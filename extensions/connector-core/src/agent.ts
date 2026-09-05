@@ -163,6 +163,22 @@ const PROTECTED_DISPOSITION_CAP = 4096;
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
  * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
 const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
+/** Cadence of the turn-pending pull while connected. The relay is PULL-shaped by design (the
+ *  manager holds no DM machinery and a pushed relay could not authenticate its sender), so this
+ *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
+ *  Deadlines are minutes-scale; fifteen seconds of intake lag is invisible to a run. */
+const TURN_POLL_MS = 15_000;
+
+/** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
+ *  payload has been handed to the host session as context — only a surfaced turn auto-yields
+ *  `done` at the turn boundary (an unseen payload was never worked on). */
+interface ActiveTurn {
+  goalId: string;
+  payload: string;
+  acceptedAt: number;
+  deadlineAt: number;
+  surfaced: boolean;
+}
 
 export type InboxScope = "all" | "automatic" | "pull-only";
 
@@ -211,6 +227,39 @@ function ingestDedupKey(id: string): string | undefined {
  * is not a fault at all.
  */
 export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnected" | "stopped";
+
+/** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
+ *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
+ *  a checkpoint is answered through). Empty when the payload carries no ask. */
+function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }, seatName: string): string {
+  const escalation = renderEscalation(p, seatName);
+  if (escalation !== "") return escalation;
+  const ask = p.ask;
+  if (ask === null || typeof ask !== "object") return "";
+  const a = ask as { schema?: unknown; attempt?: unknown; attempts?: unknown; deadlineAt?: unknown; refused?: unknown };
+  const entries = a.schema !== null && typeof a.schema === "object" ? Object.entries(a.schema as Record<string, unknown>) : [];
+  const fields = entries.length === 0 ? "any record" : entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ");
+  const by = typeof a.deadlineAt === "number" ? `, by ${new Date(a.deadlineAt).toISOString()}` : "";
+  const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
+  return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
+    + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json record>'`;
+}
+
+/** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
+ *  carries a schema, and the same answer command an ask uses. The runtime submitted this shape from
+ *  the day escalations were relayed, and the seat read `ask` alone: the addressee was woken with a
+ *  context block and no question, auto-yielded `done`, and the pause ran to its own expiry. */
+function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }, seatName: string): string {
+  const cp = p.checkpoint;
+  if (cp === null || typeof cp !== "object") return "";
+  const c = cp as { prompt?: unknown; schema?: unknown; deadlineAt?: unknown };
+  const entries = c.schema !== null && typeof c.schema === "object" ? Object.entries(c.schema as Record<string, unknown>) : [];
+  const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
+  const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
+  return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json>'`;
+}
 
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
@@ -266,6 +315,16 @@ export class MeshAgent extends EventEmitter {
    *  to presence for peers. An absent key ⇒ that channel follows the global {@link _attention}. Reset
    *  on restart (rebuilt from config; presence sweep clears the mirror). */
   private channelModes = new Map<string, ChannelMode>();
+  /** The turn relay's seat-side intake: every pulled-and-unyielded run turn, by goal id. Fed by
+   *  {@link pollTurns}; surfaced into host context by {@link surfacePendingTurns}; drained by
+   *  {@link yieldTurn} (explicit) and the working→idle boundary in {@link setStatus} (automatic
+   *  `done`). The poll is also the reconciler: a turn settled elsewhere (deadline, another yield
+   *  path) vanishes from `turn-pending` and is dropped here on the next pull. */
+  private activeTurns = new Map<string, ActiveTurn>();
+  private turnPollTimer?: ReturnType<typeof setInterval>;
+  /** The last pull failure this seat reported, so one that keeps failing is said once. */
+  private pullTrouble?: string;
+  private turnPollBusy = false;
   private _contextId: string | undefined;
   /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
    *  published after it ("since you entered focus"). Undefined unless in focus. */
@@ -441,6 +500,7 @@ export class MeshAgent extends EventEmitter {
         this.log(
           `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
         );
+        this.ensureTurnPoll();
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
         // stop() can win while the initial endpoint start is still pending. A rejection arriving
@@ -456,6 +516,10 @@ export class MeshAgent extends EventEmitter {
 
   async stop(): Promise<void> {
     this._stopping = true;
+    if (this.turnPollTimer !== undefined) {
+      clearInterval(this.turnPollTimer);
+      this.turnPollTimer = undefined;
+    }
     // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
     // its own stopped close, or leave a cleanly stopped session reporting either state as live.
     this._connected = false;
@@ -998,7 +1062,10 @@ export class MeshAgent extends EventEmitter {
    *  Subsumes {@link directedPendingCount}: in `dnd`/`focus` (no override) the open term is false, so it
    *  equals the directed count; in `open` it adds normal ambient but excludes quiet-channel ambient. */
   pendingWake(): number {
-    return this.inbox.filter((p) => {
+    // An unsurfaced run turn is directed-strength: it wakes regardless of attention, exactly like
+    // a DM — a run is waiting on this seat, and holding it costs the run its deadline.
+    const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced).length;
+    return turns + this.inbox.filter((p) => {
       const it = p.item;
       if (p.pullOnly) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
@@ -1341,6 +1408,120 @@ export class MeshAgent extends EventEmitter {
     return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
   }
 
+  // ---- the turn relay (seat side) ------------------------------------------------------------
+
+  private ensureTurnPoll(): void {
+    if (this.turnPollTimer !== undefined) return;
+    const t = setInterval(() => {
+      void this.pollTurns().catch((e: unknown) => this.notePullTrouble((e as Error).message));
+    }, TURN_POLL_MS);
+    (t as { unref?: () => void }).unref?.();
+    this.turnPollTimer = t;
+  }
+
+  /** Pull this seat's pending run turns from the manager (`turn-pending`, self-mode). New turns
+   *  request a wake so the payload surfaces on the next injectable frame; turns gone from the
+   *  reply were settled elsewhere (deadline, agent-down, a competing yield path) and are dropped.
+   *  A seat with no manager in its space, or no self-service reach, gets a refused invoke and
+   *  simply has no relay — silence, not an error, because most joined sessions are exactly that. */
+  private async pollTurns(): Promise<void> {
+    if (!this._connected || this._stopping || this.turnPollBusy) return;
+    this.turnPollBusy = true;
+    try {
+      const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
+      if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
+      this.pullTrouble = undefined;
+      const turns = (r.data as { turns?: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } | undefined)?.turns ?? [];
+      const live = new Set(turns.map((t) => t.goalId));
+      for (const id of [...this.activeTurns.keys()]) if (!live.has(id)) this.activeTurns.delete(id);
+      let fresh = 0;
+      for (const t of turns) {
+        if (this.activeTurns.has(t.goalId)) continue;
+        this.activeTurns.set(t.goalId, { goalId: t.goalId, payload: t.payload, acceptedAt: t.acceptedAt, deadlineAt: t.deadlineAt, surfaced: false });
+        fresh += 1;
+      }
+      if (fresh > 0) this.requestWake();
+    } finally {
+      this.turnPollBusy = false;
+    }
+  }
+
+  /**
+   * A pull that did not come back, said ONCE.
+   *
+   * The poll runs every few seconds for the life of the session, so a line per failure would be a
+   * torrent and there was none at all instead: a seat whose relay had gone quiet looked exactly
+   * like a seat with no relay, and neither the operator nor the agent could tell which. The
+   * ordinary shapes stay silent, because most joined sessions genuinely have no manager to pull
+   * from and that is not trouble. Everything else is said once per distinct reason, and saying it
+   * again waits for the reason to change or for a pull to succeed.
+   */
+  private notePullTrouble(reason: string): void {
+    // "Nobody answered" is the no-relay case this poll expects, and the boot window is a manager
+    // telling the seat to come back — both resolve themselves and neither is worth a line.
+    if (/no responder answered|still reconciling/i.test(reason)) return;
+    if (this.pullTrouble === reason) return;
+    this.pullTrouble = reason;
+    this.log(`the run-turn pull is not answering (${reason}); retrying every ${TURN_POLL_MS}ms`);
+  }
+
+  /** Format every not-yet-surfaced turn as an injectable context block, WITHOUT marking anything
+   *  (undefined when none wait). Two-phase on purpose, like the inbox's format-then-verdict rail:
+   *  marking at format time would let a lost frame auto-yield `done` for work the model never
+   *  saw. A caller commits with {@link commitSurfacedTurns} only once the injection verifiably
+   *  reached the host. The payload is opaque relay bytes; when it parses as JSON with a string
+   *  `context`, that rendered context is what the model reads, else the raw payload is shown. */
+  peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
+    const waiting = [...this.activeTurns.values()].filter((t) => !t.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt);
+    if (!waiting.length) return undefined;
+    const blocks = waiting.map((t) => {
+      let context = t.payload;
+      let ask = "";
+      try {
+        const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown; checkpoint?: unknown };
+        if (typeof p.context === "string" && p.context.length > 0) context = p.context;
+        ask = renderAskRequest(p, this.config.name);
+      } catch { /* opaque payload — surface it as it came */ }
+      return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}${ask}`;
+    });
+    const text =
+      `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
+      `${blocks.join("\n")}\n` +
+      `(Do the work now with your own tools. Ending your turn yields "done" back to the run automatically; ` +
+      `call cotal_yield only when you are blocked or handing the turn to another agent.)`;
+    return { text, goalIds: waiting.map((t) => t.goalId) };
+  }
+
+  /** Mark peeked turns as surfaced — the second phase, called once their injection verifiably
+   *  reached the host. Surfacing is what arms the automatic `done` at the next turn boundary; a
+   *  turn never committed re-surfaces on a later frame instead of yielding a lie. */
+  commitSurfacedTurns(goalIds: readonly string[]): void {
+    for (const id of goalIds) {
+      const t = this.activeTurns.get(id);
+      if (t) t.surfaced = true;
+    }
+  }
+
+  /** Yield one active turn back to the run (`turn-yield`, self-mode). Without `turn` it targets
+   *  the OLDEST surfaced turn — the one the current session turn is working on. The entry is
+   *  dropped locally only on a confirmed yield; a refused one stays for the poll to reconcile
+   *  (the manager's answer, not a local guess, decides whether it is settled). */
+  async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> {
+    await this.requireConnected();
+    const t = opts.turn !== undefined
+      ? this.activeTurns.get(opts.turn)
+      : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
+    if (!t) return { ok: false, error: opts.turn !== undefined ? `no active turn "${opts.turn}" on this seat` : "no turn is active — nothing to yield" };
+    // The surfaced gate holds for an explicit id too: a yield for a payload the session has not
+    // been shown would record work nobody did.
+    if (!t.surfaced) return { ok: false, error: `turn "${t.goalId}" has not been surfaced into this session yet; nothing was seen, so nothing can be yielded for it` };
+    if (status === "handoff" && (opts.to === undefined || opts.to.length === 0))
+      return { ok: false, error: "a handoff yield names its addressee (to)" };
+    const r = await this.managerInvoke("turn-yield", { goalId: t.goalId, status, to: opts.to, note: opts.note }, { target: { mode: "self" } });
+    if (r.ok) this.activeTurns.delete(t.goalId);
+    return r;
+  }
+
   /** Ask the manager to purge the space's retained chat backlog (its `purge` op). Cleanup only —
    *  it doesn't touch live agents or the anycast work queue. `includeDms` also clears DM history. */
   async purgeHistory(opts?: { includeDms?: boolean }): Promise<ControlReply> {
@@ -1463,9 +1644,58 @@ export class MeshAgent extends EventEmitter {
 
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
     await this.requireConnected();
-    this._status = status;
+    const prev = this._status;
+    try {
+      await this.publishStatus(status, activity);
+    } finally {
+      // The transition is a fact about the SEAT, not about whether its presence row was written:
+      // assigning before the writes meant one failed publish (which every adapter swallows) left
+      // `_status` idle with no boundary run, and the next real turn end saw no transition at all.
+      this._status = status;
+      // The turn relay's boundary: an adapter funnels its turn-end through this transition (Stop
+      // hooks set idle), so the automatic `done` yield and the immediate re-poll live here once
+      // instead of per connector. `waiting` is not a boundary — a seat blocked on a permission has
+      // not finished, and its deadline is what bounds a stuck one.
+      if (prev === "working" && status === "idle") this.onTurnBoundary();
+    }
+  }
+
+  /**
+   * Publish presence for something that is NOT a turn ending.
+   *
+   * The boundary above reads working→idle as "the seat finished its turn", and that reading holds
+   * only at a real turn terminal. A session (re)start writes idle too: Claude Code fires
+   * `SessionStart` on compact, clear and resume, and an auto-compaction lands in the MIDDLE of a
+   * long turn. Routed through `setStatus` it yielded `done` for work the model had not finished,
+   * and the run moved on. An adapter uses this for every idle that is a lifecycle event rather
+   * than an ending.
+   */
+  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    await this.requireConnected();
+    try {
+      await this.publishStatus(status, activity);
+    } finally {
+      this._status = status;
+    }
+  }
+
+  private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
+  }
+
+  /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the
+   *  context of the turn that just ended; ending without an explicit yield IS the done signal),
+   *  then re-poll immediately so a queued turn wakes the seat without waiting out the cadence.
+   *  Fire-and-forget from the presence path — a yield must never block a status write. */
+  private onTurnBoundary(): void {
+    for (const t of [...this.activeTurns.values()]) {
+      if (!t.surfaced) continue;
+      void this.yieldTurn("done", { turn: t.goalId })
+        .then((r) => { if (!r.ok) this.log(`turn ${t.goalId} auto-yield: ${r.error ?? "refused"}`); })
+        .catch((e) => this.log(`turn ${t.goalId} auto-yield: ${(e as Error).message}`));
+    }
+    void this.pollTurns().catch(() => { /* the interval retries */ });
   }
 
   /** Record the host's actual model and optional variant learned after launch, so peers see the

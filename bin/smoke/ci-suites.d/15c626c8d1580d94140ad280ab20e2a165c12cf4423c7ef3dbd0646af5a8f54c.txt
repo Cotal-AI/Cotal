@@ -1,0 +1,3 @@
+# The delivery daemon hosts the space's checkpoint timer writer: a parked .schedule is armed and
+# broker-fired end to end with no manual pump, poison requests are terminated, shutdown stays prompt.
+smoke:delivery-timer-writer

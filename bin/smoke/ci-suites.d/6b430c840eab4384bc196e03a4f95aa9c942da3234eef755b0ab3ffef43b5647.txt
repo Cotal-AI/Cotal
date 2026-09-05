@@ -1,0 +1,2 @@
+# The turn relay on an AUTH mesh: the hold schedule rides the serve grant, the seat pulls under its baseline. Appended.
+smoke:turn-relay-auth

@@ -22,11 +22,13 @@
  * derivation begins at the frontier, which is what "fork" means.
  *
  * What this file does NOT do, named rather than implied:
- *   - It does not respawn agents. `onFork` is specified to mint a fresh agent at the frontier, and
- *     `spawn` rides the durable-action machinery this host does not have, so a cut containing a
- *     spawn is REFUSED (L5019) rather than copied and hoped about.
- *   - It does not cut worktree branches. There is no worktree plane in this tree; a caller that
- *     asks for one is refused rather than told a branch exists.
+ *   - It does not respawn agents. `onFork: "respawn"` is specified to mint a fresh agent at the
+ *     frontier, and the copied turns address the parent's identity, so a cut containing such a
+ *     spawn is REFUSED (L5019) rather than rewritten. A spawn that said `onFork: "adopt"` is
+ *     copied verbatim, and the child shares that agent with the parent.
+ *   - It does not cut worktree branches. A worktree here is a logical id the run guards
+ *     exclusivity over, never a git branch this host could cut; a caller that asks for branches
+ *     is refused rather than told one exists.
  *   - It does not record LINEAGE. The child's run record cannot say it is a fork of anything: a
  *     run's spec has no such field, and inventing one changes the run record's shape — the kind of
  *     change the `migration` record was raised for a decision on rather than made here.
@@ -176,7 +178,7 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   if (req.worktreeBranches === true) {
     refusals.push({
       code: "L5019",
-      why: "a fork is specified to get its own worktree branches cut from the parent's branch head, and there is no worktree plane in this tree to cut one from",
+      why: "a fork is specified to get its own worktree branches cut from the parent's branch head, and a worktree on this host is a logical id the run guards, never a git branch it could cut",
     });
   }
 
@@ -324,17 +326,19 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
         })
       : [];
 
-  // The respawn decision, at plan time rather than at commit time. `onFork: "respawn"` mints a
-  // fresh agent at the frontier and `"adopt"` shares the parent's; both name a durable agent
-  // handle, and `spawn` rides the durable-action machinery this host does not have. Copying the
-  // prefix anyway would produce a child that owns turns taken by an agent it can neither address
-  // nor replace.
+  // The `onFork` decision, at plan time rather than at commit time. `"adopt"` shares the parent's
+  // agent: the settled spawn is copied verbatim, the child's adoption seeds its roster and worktree
+  // holder from it, and the manager serializes both runs' turns on that one seat. `"respawn"`
+  // (the default) would mint a fresh identity at the frontier that the copied turns do not
+  // address, and a prefix rewritten to address it would no longer be the parent's history: this
+  // host refuses that cut rather than copying and hoping.
   for (const e of cut) {
     if (e.kind !== "spawn") continue;
+    if ((e.external as { onFork?: unknown } | undefined)?.onFork === "adopt") continue;
     refusals.push({
       code: "L5019",
       step: journalEntryKeyString(e),
-      why: "the cut contains a spawn, and a fork must respawn or adopt that agent at the frontier; both ride the durable-action machinery an agent handle comes from, which has not landed on this host. Fork at a step before the spawn, or wait for it.",
+      why: "the cut contains a spawn that said onFork: \"respawn\" (the default), and a fresh seat would carry a new identity the copied turns do not address, so honouring it would rewrite the parent's history. Mark the spawn onFork: \"adopt\" to share the seat, or fork at a step before it.",
     });
   }
 

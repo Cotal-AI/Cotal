@@ -42,7 +42,7 @@ import { canonicalJson } from "./canonical.js";
 import { epfSubject, eptSubject, parseEpSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
-import { eptStreamName } from "./endpoint-binding.js";
+import { eptReqStreamName, eptStreamName, timerWriterConsumerConfig, timerWriterDurable } from "./endpoint-binding.js";
 
 /** A checkpoint's coordinates: the owning endpoint + the minted token. */
 export interface CheckpointRef {
@@ -663,6 +663,86 @@ function timerResources(ctx: TimerWriterContext): TimerWriterResources {
   if (r === undefined)
     throw new EpEnvelopeError("permission-denied", `the timer-writer context was not constructed by timerWriterContext(); a hand-assembled context never attests its resources (SPEC 13.2)`);
   return r;
+}
+
+/** A running timer-writer pump. `stop()` ends the loop and waits it out; `done` rejects if the
+ *  pump dies of a fault that is not one message's own (a lost connection, a refused bind), so a
+ *  host can log WHY its space stopped expiring pauses instead of discovering it by silence. */
+export interface TimerWriterHandle {
+  stop(): Promise<void>;
+  readonly done: Promise<void>;
+}
+
+/**
+ * Host the timer writer: the one standing consumer that turns `.schedule` requests into the
+ * authoritative `.armed` publishes (SPEC 13.2). Everything it serves already lives here —
+ * {@link armCheckpointTimer} carries the fence, the fresh-check, and the self-heal — so this is
+ * only the pump: ensure the `timerw_<space>` durable on EPT_REQ, fetch, arm, ack.
+ *
+ * WITHOUT A RUNNING WRITER NO PAUSE ON THE SPACE EVER EXPIRES: a mint or reconcile emits the
+ * schedule request and nothing turns it into an armed broker schedule. The delivery daemon hosts
+ * this pump on a live mesh; the suites pump {@link armCheckpointTimer} by hand because grading
+ * WHEN a timer is armed is their subject.
+ *
+ * THE ERROR SPLIT IS THE ACK DECISION. A request the writer refuses by its own rules — malformed,
+ * foreign-space, carrying a client scheduling header — answers identically on every redelivery,
+ * so it is TERMINATED (poison, logged, never redelivered). Anything else (an `unavailable` status
+ * authority, a broker hiccup) is NAKed with a delay and retried: the request is fine, the moment
+ * was not. A fault outside a message's own handling ends the pump through `done`, because a
+ * writer that swallowed its own death would leave the space silently unable to expire anything.
+ */
+export async function startTimerWriter(
+  nc: NatsConnection,
+  space_: string,
+  opts: { ackWaitMs?: number; pollMs?: number } = {},
+): Promise<TimerWriterHandle> {
+  const jsm = await jetstreamManager(nc);
+  const js = jetstream(nc);
+  const stream = eptReqStreamName(space_);
+  await jsm.consumers.add(stream, timerWriterConsumerConfig(space_, opts.ackWaitMs !== undefined ? { ackWaitMs: opts.ackWaitMs } : {}));
+  const consumer = await js.consumers.get(stream, timerWriterDurable(space_));
+  const ctx = await timerWriterContext(nc, space_);
+  const pollMs = opts.pollMs ?? 5_000;
+  let stopped = false;
+  // The in-flight fetch, so stop() can close it instead of waiting out its poll window — a host
+  // shutting down under a force-exit deadline must not lose the teardown steps queued behind us.
+  let inFlight: Awaited<ReturnType<typeof consumer.fetch>> | undefined;
+  const done = (async () => {
+    for (;;) {
+      let batch;
+      try {
+        batch = await consumer.fetch({ max_messages: 16, expires: pollMs });
+      } catch (e) {
+        if (stopped) return;
+        throw e;
+      }
+      inFlight = batch;
+      for await (const m of batch) {
+        try {
+          await armCheckpointTimer(ctx, { subject: m.subject, ...(m.headers !== undefined ? { headers: m.headers } : {}), data: m.data });
+          m.ack();
+        } catch (e) {
+          if (e instanceof EpEnvelopeError && (e.code === "failed-precondition" || e.code === "permission-denied")) {
+            console.error(`! timer writer: refused a .schedule request permanently (${e.message}) — terminated, not redelivered`);
+            m.term();
+          } else {
+            console.error(`! timer writer: could not arm ${m.subject} this time (${(e as Error).message}) — will retry`);
+            m.nak(pollMs);
+          }
+        }
+      }
+      inFlight = undefined;
+      if (stopped) return;
+    }
+  })();
+  return {
+    stop: async () => {
+      stopped = true;
+      await inFlight?.close().catch(() => undefined);
+      await done.catch(() => undefined);
+    },
+    done,
+  };
 }
 
 /** Race the fresh-check against the writer's budget: a stuck status authority is a bounded

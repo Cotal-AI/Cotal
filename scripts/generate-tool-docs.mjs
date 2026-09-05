@@ -107,6 +107,12 @@ const ANNOTATIONS = {
     availability:
       "self-despawn (no name) is granted to all; stopping a *named* peer rides the spawn capability's owner-mode reach (your own owner's agents only)",
   },
+  cotal_yield: {
+    effect: "settles one run turn via the manager (done / blocked / handoff)",
+    availability: "always; only meaningful while a run turn is pending on you",
+    notes:
+      "Ending your session turn already yields `done` for every turn you were shown; call this only when blocked or handing off.",
+  },
   cotal_persona: {
     effect: "writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`",
     availability: "capability-gated like cotal_spawn",

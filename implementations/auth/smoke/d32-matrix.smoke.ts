@@ -667,14 +667,17 @@ for (const [profile, rows] of Object.entries(untrusted)) {
   c(`${profile}: no records/auth KV write rows`, kvWrites.length === 0, kvWrites);
 }
 // The agent's ep reach = its minted caller rows PLUS the normative Appendix-B baseline
-// (wildcard describe + delivery join/leave/list + self-mode stop), pinned EXACTLY here so a
-// widened baseline (or a stray extra row) fails this audit, not just the grants smoke.
+// (wildcard describe + delivery join/leave/list + the self-mode lifecycle set: stop and the two
+// seat halves of the turn relay), pinned EXACTLY here so a widened baseline (or a stray extra
+// row) fails this audit, not just the grants smoke.
 const BASELINE_PUB = [
   `cotal.${S}.ep.one.*.describe.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.delivery.join.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.delivery.leave.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.delivery.list.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
 ];
 c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
   untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r) || BASELINE_PUB.includes(r))
