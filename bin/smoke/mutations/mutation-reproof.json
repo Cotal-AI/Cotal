@@ -1,0 +1,17 @@
+{
+  "suite": "bin/smoke/mutation-reproof.smoke.ts",
+  "guard": "changed guarded source re-proves its fixture and reports the exact fixture set whose mutants no longer kill",
+  "command": "pnpm smoke:mutation-reproof",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
+  "mutations": [
+    {
+      "name": "a changed guarded source is ignored unless its fixture JSON also changed",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "let selected = fixtures.filter(({ path, mutations }) => a.all || changed.has(path)\n  || mutations.some((mutation) => typeof mutation?.file === \"string\" && changed.has(mutation.file)));",
+      "replace": "let selected = fixtures.filter(({ path }) => a.all || changed.has(path));",
+      "expectRed": "the shipped scan reports the known survivor set after its guarded source changes",
+      "cell": "the shipped scan reports the known survivor set after its guarded source changes"
+    }
+  ]
+}

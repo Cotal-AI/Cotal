@@ -1,0 +1,96 @@
+name: Mutation reproof
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  changed:
+    # Anchors diagnose rot. This job executes fixtures whose guarded source changed, so a workload
+    # or test-seam change that leaves every anchor present still has to kill at this head. The
+    # corpus is 329 configs / 1,714 mutations, too expensive to multiply into every revision.
+    # Source intersection catches the #1217 shape at the changing commit. The daily full sweep
+    # below catches cross-cutting changes a fixture did not name within a day.
+    if: github.event_name != 'schedule'
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps: &setup
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Cache nats-server
+        id: nats
+        uses: actions/cache@v4
+        with:
+          path: ~/nats-bin
+          key: nats-server-v2.12.12-${{ runner.os }}
+      - name: Install nats-server
+        if: steps.nats.outputs.cache-hit != 'true'
+        run: |
+          NATS_VERSION=v2.12.12
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
+          tar -xzf /tmp/nats-server.tar.gz -C /tmp
+          mkdir -p ~/nats-bin
+          install "/tmp/nats-server-${NATS_VERSION}-linux-amd64/nats-server" ~/nats-bin/nats-server
+      - name: nats-server on PATH
+        run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: pnpm build
+      - name: Re-prove fixtures for changed guarded sources
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          base="$BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
+            echo "no base commit on this event; using first parent $base"
+          fi
+          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)"
+
+  full:
+    # A daily sweep keeps the remaining ambient-drift window bounded without making every pull
+    # request pay for all 1,714 mutations. It is manually runnable after an infrastructure repair.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 360
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Cache nats-server
+        id: nats
+        uses: actions/cache@v4
+        with:
+          path: ~/nats-bin
+          key: nats-server-v2.12.12-${{ runner.os }}
+      - name: Install nats-server
+        if: steps.nats.outputs.cache-hit != 'true'
+        run: |
+          NATS_VERSION=v2.12.12
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
+          tar -xzf /tmp/nats-server.tar.gz -C /tmp
+          mkdir -p ~/nats-bin
+          install "/tmp/nats-server-${NATS_VERSION}-linux-amd64/nats-server" ~/nats-bin/nats-server
+      - name: nats-server on PATH
+        run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: pnpm build
+      - name: Re-prove every mutation fixture
+        run: node scripts/mutation-reproof.mjs --all
