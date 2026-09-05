@@ -8,7 +8,7 @@ import {
 import { loadMeshes, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { openTransient } from "../lib/transient.js";
+import { openTransient, transientCaller, type TransientCaller } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 
@@ -35,25 +35,45 @@ export async function send(args: ParsedArgs): Promise<void> {
     );
     process.exit(1);
   }
-  const caller = process.env.COTAL_NAME?.trim();
+  const caller = transientCaller();
   if (!caller) {
-    console.error(c.red("COTAL_NAME is required for `cotal send`; without a live-seat caller identity the message would be unattributable."));
-    console.error(c.dim("Set it to the invoking seat before sending: COTAL_NAME=<live-seat-name> cotal send ..."));
+    console.error(c.red("`cotal send` requires a managed seat identity (COTAL_NAME plus COTAL_ID, or COTAL_OWNER plus COTAL_ACTOR)."));
+    console.error(c.dim("Run it from that seat's shell, or use the in-session cotal_dm / cotal_send / cotal_anycast tool."));
     process.exit(1);
   }
-  if (mode === "dm") return dm(values, rest, caller);
-  if (mode === "msg") return msg(values, rest, caller);
-  return ask(values, rest, caller);
+  const opened = await openTransient(values, caller);
+  await requireLiveCaller(opened.ep, caller, opened.space);
+  if (mode === "dm") return dm(opened, rest);
+  if (mode === "msg") return msg(opened, rest);
+  return ask(opened, rest);
+}
+
+async function requireLiveCaller(ep: Awaited<ReturnType<typeof openTransient>>["ep"], caller: TransientCaller, space: string): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    const live = ep.getRoster().find((p) => p.card.id === `${caller.owner}.${caller.actor}` && p.status !== "offline");
+    if (live) {
+      if (live.card.name !== caller.name) {
+        console.error(c.red(`managed seat principal ${live.card.id} is live as "${live.card.name}", not COTAL_NAME="${caller.name}"`));
+        await ep.stop();
+        process.exit(1);
+      }
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  console.error(c.red(`managed seat ${caller.owner}.${caller.actor} is not live in space ${space}; refusing an unattributable send`));
+  await ep.stop();
+  process.exit(1);
 }
 
 /** `cotal send dm <agent> "<text>"` — one unicast to a peer by name, then exit. */
-async function dm(values: ParsedArgs["values"], positionals: string[], caller: string): Promise<void> {
+async function dm(opened: Awaited<ReturnType<typeof openTransient>>, positionals: string[]): Promise<void> {
   const { target, text } = targetAndText(positionals, /^@/);
   if (!target || !text) {
     console.error('usage: cotal send dm <agent> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
     process.exit(1);
   }
-  const { ep, space } = await openTransient(values, caller);
+  const { ep, space } = opened;
   // Presence arrives asynchronously after connect; poll briefly (≤2s) for the target to appear.
   // resolvePeer is fail-loud: an exact id or a unique name resolves, a same-name collision throws.
   let peer: Presence | undefined;
@@ -81,26 +101,26 @@ async function dm(values: ParsedArgs["values"], positionals: string[], caller: s
 }
 
 /** `cotal send msg <channel> "<text>"` — one broadcast to a channel, then exit. */
-async function msg(values: ParsedArgs["values"], positionals: string[], caller: string): Promise<void> {
+async function msg(opened: Awaited<ReturnType<typeof openTransient>>, positionals: string[]): Promise<void> {
   const { target: channel, text } = targetAndText(positionals, /^#/);
   if (!channel || !text) {
     console.error('usage: cotal send msg <channel> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
     process.exit(1);
   }
-  const { ep } = await openTransient(values, caller);
+  const { ep } = opened;
   await ep.multicast(text, { channel, mentions: mentionsIn(text) });
   console.log(c.green(`→ #${channel}`) + c.dim(`  ${text}`));
   await ep.stop();
 }
 
 /** `cotal send ask <role> "<text>"` — one anycast to a role/service (exactly one instance), exit. */
-async function ask(values: ParsedArgs["values"], positionals: string[], caller: string): Promise<void> {
+async function ask(opened: Awaited<ReturnType<typeof openTransient>>, positionals: string[]): Promise<void> {
   const { target: role, text } = targetAndText(positionals, /^@/);
   if (!role || !text) {
     console.error('usage: cotal send ask <role> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
     process.exit(1);
   }
-  const { ep } = await openTransient(values, caller);
+  const { ep } = opened;
   await ep.anycast(role, text);
   console.log(c.green(`→ @${role}`) + c.dim(`  ${text}`));
   await ep.stop();
