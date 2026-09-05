@@ -37,7 +37,7 @@ export async function send(args: ParsedArgs): Promise<void> {
   }
   const caller = transientCaller();
   if (!caller) {
-    console.error(c.red("`cotal send` requires a managed seat identity (COTAL_NAME plus COTAL_ID, or COTAL_OWNER plus COTAL_ACTOR)."));
+    console.error(c.red("`cotal send` requires COTAL_NAME plus either COTAL_ID or both COTAL_OWNER and COTAL_ACTOR."));
     console.error(c.dim("Run it from that seat's shell, or use the in-session cotal_dm / cotal_send / cotal_anycast tool."));
     process.exit(1);
   }
