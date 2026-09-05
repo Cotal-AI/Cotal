@@ -40,6 +40,7 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join, resolve as resolvePath } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 
 const freePort = (): Promise<number> =>
@@ -55,6 +56,8 @@ const freePort = (): Promise<number> =>
 const scratch = makeScratch("cotal-up-resume-lock-");
 const home = mkdtempSync(join(scratch, "home-"));
 const root = mkdtempSync(join(scratch, "root-"));
+const configDir = join(home, "xdg");
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 process.env.COTAL_HOME = home;
 
 const { acquireMaintenanceLock, authDir, maintenancePaths, readMaintenanceJournal, releaseMaintenanceLock } =
@@ -86,18 +89,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sandboxEnv = (() => {
   const copy = { ...process.env };
   for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
-  return { ...copy, COTAL_HOME: home };
+  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 })();
 
 const output = new WeakMap<ChildProcess, () => string>();
 const logOf = (cp: ChildProcess) => output.get(cp)?.() ?? "";
 
 function run(args: string[]): ChildProcess {
-  const cp = spawn(TSX, [CLI, ...args], {
+  const options = {
     cwd: root,
     env: sandboxEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+  };
+  assertSmokeSandboxDown(sandbox, args, options);
+  const cp = spawn(TSX, [CLI, ...args], options);
   kids.push(cp);
   let log = "";
   cp.stdout?.on("data", (b: Buffer) => { log += b.toString(); });
