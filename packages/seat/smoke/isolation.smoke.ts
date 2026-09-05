@@ -69,6 +69,7 @@ check("beta received a write before the adversarial kill", buf.includes("echo:ke
 process.kill(a.custodianPid, "SIGKILL");
 await wait(300);
 check("alpha custodian is gone after SIGKILL", state(a.custodianPid) === "gone" || state(a.custodianPid) === "Z", state(a.custodianPid));
+ha.close();
 
 buf = "";
 hb.write("still\n");
@@ -77,6 +78,7 @@ check("beta still reads and writes after alpha custodian death", buf.includes("e
 
 hb.stop({ graceful: false });
 await hb.waitForExit();
+hb.close();
 try {
   process.kill(b.custodianPid, "SIGKILL");
 } catch {
