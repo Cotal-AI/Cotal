@@ -111,29 +111,37 @@ this host refuses that cut (L5019) rather than rewriting the parent's history.
 
 ## Operating a run
 
-`cotal run` is the operator surface over the driver. Every verb opens one connection to the
-resolved mesh target (the usual `--space` / `--server` / `--creds` flags). `start`, `resume` and
-`answer` drive and exit when the drive settles; `ps` and `journal` inspect and exit at once.
-`start` mints the run id and prints it, and the record never takes a caller-supplied one.
+The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh
+(the usual `--space` / `--server` / `--creds` flags), which validates it, mints the run id, drives
+it in its own process, and answers with the id once the run is recorded. The terminal is free the
+moment the id prints; the run continues on the manager through every pause, and a manager restart
+takes back every run it had recorded running, from the journal, under the next epoch. `resume`
+names a run the manager recorded and is refused while the manager is already driving it. `ps` and
+`journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
+or agent that holds the `run` capability.
 
 ```bash
-cotal run start --file build.cotal.js                   # drive a new run; the minted id is printed
+cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
 cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
-cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # take the run over and continue it
+cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --by dana --value '"yes"'
 ```
 
-`start` needs `--file`. The driver records the program beside the run, so `resume` takes the run
-id alone and reads the source back; a `--file` given to `resume` must match the record, and an
-edited program is refused with a pointer at `migrate` and `fork`.
-A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
-perform the step performs it live and continues from there. `answer` resolves an open checkpoint,
-or an open `ask` attempt, through the run driver, presenting as the arming holder, with the
-answerer's name on the record. `journal` prints what an open pause asks beneath its step key, which
-is the address `answer` takes back.
-Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live mesh;
-on a bare broker a pause still resolves, it just cannot expire.
+A program that does not validate is refused before anything is recorded, with every problem in the
+answer as the validator would print it. The driver records the program beside the run, so `resume`
+takes the run id alone and the manager reads the source back; an edited program is a `migrate` or a
+`fork`, never a resume. An agent with `capabilities: [run]` has the same five verbs as the
+`cotal_run` tool ([MCP tools](mcp-tools.md)), so a program can be written and started from inside
+a session.
+
+`--local` drives the run in this process instead: `start`, `resume` and `answer` exit when the
+drive settles, and `resume --local --file <program>` is how a run with no recorded program, or a
+run on a bare broker with no manager, is continued. A run whose step was refused (L5016) stays
+held; a resume on a host that can perform the step performs it live and continues from there.
+`journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
+back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
+mesh; on a bare broker a pause still resolves, it just cannot expire.
 
 ## What is on the wire
 

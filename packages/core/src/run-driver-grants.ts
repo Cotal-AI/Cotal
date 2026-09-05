@@ -44,6 +44,7 @@ import { endpointToken, assertIdToken, assertLifecycleToken, epCallerReplyFilter
 import { recordsBucket } from "./endpoint-records.js";
 import {
   runDriverJournalGrants,
+  runJournalReplayGrants,
   recordsKvStreamName,
   epfStreamName,
   eptStreamName,
@@ -135,4 +136,48 @@ export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId:
     "$JS.API.INFO",
   ];
   return { publish, subscribe: [epCallerReplyFilter(space, caller), `_INBOX_${assertInboxConnId(connId)}.>`] };
+}
+
+/** One served run-surface call's coordinates (SPEC 14.3). */
+export interface RunOperatorGrantArgs {
+  /** The endpoint hosting the runs: the manager daemon. Leads every record key. */
+  endpoint: string;
+  /** The ONE run this call reads or answers. Absent for `run-ps`, which walks records and replays
+   *  no journal. A replay durable's name is one token, so no pattern spans runs: the run is pinned
+   *  at mint or there is no journal row at all. */
+  runId?: string;
+  /** The takeover id this call's journal replay durable is named by, one per call. */
+  takeoverId: string;
+}
+
+/**
+ * The RUN OPERATOR's rows (SPEC 14.3): what the hosting manager needs to SERVE a run's reads and
+ * answers without driving it. Minted per served call on its own connection so the serve rails
+ * never carry a run's journal or records reach.
+ *
+ * `run-ps` walks the run records consumer-free; `run-status` also replays the named run's journal
+ * through a per-call durable; `run-answer` replays it to find the open pause, files the answer
+ * record and settles the checkpoint through the checkpoint plane. Every row is the endpoint's own;
+ * the checkpoint rows are keyed by token and so span the endpoint's runs, the same named residual
+ * the driver profile carries on the same rows. No publish on any journal subject, no run or
+ * program record write, no consumer verb on the records store.
+ */
+export function runOperatorGrants(space: string, args: RunOperatorGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
+  const e = endpointToken(args.endpoint);
+  const records = recordsBucket(space);
+  const publish = [
+    // The run and program records of the endpoint, read through the leader-served point read and
+    // the consumer-free walk; the answer record (create-only) and the checkpoint status a settle
+    // moves.
+    `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
+    `$KV.${records}.answer.${e}.>`,
+    `$KV.${records}.cp.${e}.>`,
+    // The named run's journal replay, read-only, under this call's own takeover id.
+    ...(args.runId === undefined ? [] : runJournalReplayGrants(space, args.runId, args.takeoverId)),
+    // The checkpoint plane: the settle fact publish and the fact read a resume performs.
+    `${spacePrefix(space)}.epf.${e}.cp.>`,
+    `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`,
+    "$JS.API.INFO",
+  ];
+  return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }

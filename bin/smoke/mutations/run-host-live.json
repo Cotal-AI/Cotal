@@ -1,0 +1,44 @@
+{
+  "suite": "bin/smoke/run-host-live.smoke.ts",
+  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside; a manager restart takes a run recorded running back under the next epoch.",
+  "command": "pnpm smoke:run-host-live",
+  "completionMarker": "run-host-live.smoke:",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-host-live.json",
+  "why": [
+    "The suite runs the manager from its built package, so a mutation on manager src is seen through",
+    "that build and afterRestore rebuilds so the restored source is the artifact again. Each mutant",
+    "aims at one guarantee the family makes: validation before any record, the answer-after-record",
+    "wait, and the boot reconcile filter that decides which runs a successor takes back."
+  ],
+  "mutations": [
+    {
+      "name": "run-start skips validation",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "    if (!verdict.ok) {",
+      "replace": "    if (!verdict.ok && verdict.errors.length < 0) {",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "run-start refuses an invalid program as bad-request",
+      "cell": "run-start refuses an invalid program as bad-request",
+      "note": "Keeps `verdict` narrowed inside the block: a bare `&& false` fails tsc (the block reads `verdict.errors`) and grades WRONG-RED about the build, not the guard."
+    },
+    {
+      "name": "run-start answers before the record lands",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "    await activation;\n",
+      "replace": "    void activation.catch(() => undefined);\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the run's record exists by the time run-start has answered",
+      "cell": "the run's record exists by the time run-start has answered"
+    },
+    {
+      "name": "the boot reconcile takes back every run except the running ones",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "          if (status === undefined || status.state !== \"running\") continue;",
+      "replace": "          if (status === undefined || status.state === \"running\") continue;",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the successor takes the parked run back",
+      "cell": "the successor takes the parked run back: still running, now under epoch 2, the pause still open",
+      "note": "The flipped filter keeps `status` narrowed for the rows below (an `|| true` narrows it to never and fails tsc). It resumes the completed runs, which replay to completion again, and leaves the parked one at epoch 1, which the takeback cell reads."
+    }
+  ]
+}

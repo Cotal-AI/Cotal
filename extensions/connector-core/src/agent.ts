@@ -1408,6 +1408,16 @@ export class MeshAgent extends EventEmitter {
     return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
   }
 
+  // ---- workflow runs (SPEC 14.3) -------------------------------------------------------------
+
+  /** One `run-*` command to the hosting manager. The five verbs are untargeted and ride the `run`
+   *  capability's rows (open mode: anyone). `start` and `resume` return the run id as soon as the
+   *  manager has the drive; the run continues there. */
+  async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke(`run-${verb}`, args, { deadlineMs: 20_000 });
+  }
+
   // ---- the turn relay (seat side) ------------------------------------------------------------
 
   private ensureTurnPoll(): void {

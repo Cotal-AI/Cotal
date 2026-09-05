@@ -62,6 +62,7 @@ import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
+import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
@@ -879,6 +880,10 @@ export class Manager {
    *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
    *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
   private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
+  /** The workflow-run host (SPEC 14.3): the drives this incarnation holds, each on its own
+   *  per-run credential and connection. Absent under a remote authority, which mints no driver
+   *  credentials, so the `run-*` family refuses there rather than connecting on a weaker identity. */
+  private runHosting?: RunHosting;
   /** P2 item 2 must-5 (b): the STABLE goal-writer identity (auth mode) — minted once at
    *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
@@ -1260,6 +1265,21 @@ export class Manager {
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
     await this.reconcileGoalIndex();
+    // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
+    // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh
+    // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
+    if (!this.remoteAuthority) {
+      this.runHosting = new RunHosting({
+        space: this.space,
+        servers: this.servers,
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: this.managerInstanceId,
+        holder: { id: this.ep.ref().id, lifecycleUid: this.managerLifecycleUid },
+        auth: this.auth,
+        log: (line) => console.error(line),
+      });
+      await this.runHosting.reconcile();
+    }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -1387,6 +1407,9 @@ export class Manager {
       // scoped executor. Without this the standing session-ledger connection dies at its TTL and
       // `attach` stops establishing sessions until a restart. The connection's authenticator presents
       // the refreshed credential on its next (re)connect.
+      // SPEC 14.6: every hosted drive's per-run `run-driver` credential is the manager's to renew
+      // for the same nkey; a run parked in a pause for days must not die at the credential's TTL.
+      await this.runHosting?.renew();
       if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
         const sw = this.sessionLedgerConn;
         try {
@@ -1878,6 +1901,10 @@ export class Manager {
     // in-flight command can write a status back onto the record it just removed.
     const registered = this.serviceServe !== undefined;
     await this.stopServiceServe();
+    // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
+    // released run's status write is the last thing this incarnation says about it.
+    await this.runHosting?.stop();
+    this.runHosting = undefined;
     if (registered) await this.deregisterServiceOnStop();
     await this.stopGoalWriter();
     await this.stopSessionPlane();
@@ -2271,6 +2298,15 @@ export class Manager {
    *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
    *  Both are least-privilege reductions, never widenings. */
+  /** The run host, or the refusal a remote-authority manager owes: it holds no space signer, so it
+   *  cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
+   *  identity would be the fallback this tree does not take. */
+  private runHost(): RunHosting {
+    if (!this.runHosting)
+      throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run --local`");
+    return this.runHosting;
+  }
+
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -2377,6 +2413,13 @@ export class Manager {
       resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
       commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
+      // The workflow-run family (SPEC 14.3): the manager hosts the driver. Reach is the broker's
+      // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
+      runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(args(ctx) as { source: string; file?: string; timeout?: string })),
+      runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
+      runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; by: string; value?: unknown; artifact?: string })),
+      runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),
+      runPs: (ctx) => this.serveGated(ctx, () => this.runHost().list(args(ctx) as { endpoint?: string })),
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
@@ -2622,7 +2665,7 @@ export class Manager {
     // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
-    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
     // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
     // user-mode spawn reads the callout material from it — the same store the auth-store kinds
     // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.

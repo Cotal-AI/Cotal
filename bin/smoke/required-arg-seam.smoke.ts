@@ -286,8 +286,12 @@ const SEAMS: Seam[] = [
   // 301a6cf6e) adds three smoke-side calls. The pin was not moved when that suite landed, so this
   // cell was red from 301a6cf6e until 24b3d9281 corrected it: a whole-repo exact count goes red
   // without the file that holds it being touched, which is the reason it is exact.
+  // 117/86 -> 123/90: manager-hosted workflow runs. The manager's per-call run-operator
+  // connection (implementations/manager/src/run-hosting.ts) and `cotal run`'s hosted-client
+  // connection (implementations/runtime/src/run-command.ts) add two typechecked calls; the
+  // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 117, untypecheckedSites: 86 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 123, untypecheckedSites: 90 },
 ];
 
 /**

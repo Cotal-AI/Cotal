@@ -4,7 +4,7 @@
 
 The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).
 
-`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).
+`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]`, and `cotal_run` only for `capabilities: [run]` ([identity & auth](identity-and-auth.md)).
 
 **Arguments are closed.** Every tool accepts only the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. An unlisted key is an error. A call that supplies an identity (`owner`, `actor`, `caller`) is turned away before anything runs. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.
 
@@ -28,6 +28,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
 | [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
 | [`cotal_yield`](#cotalyield) | yield a run turn | settles one run turn via the manager (done / blocked / handoff) |
+| [`cotal_run`](#cotalrun) | run a workflow program | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only |
 | [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_personas`](#cotalpersonas) | list or show personas | read-only |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
@@ -302,6 +303,28 @@ Yield the run turn you were handed (the 🎯 context block) back to its workflow
 | `to` | string | no | handoff only: the agent name the turn should pass to. |
 | `note` | string | no | Short free-text for the run: what blocked you, or what the next agent should know. |
 | `turn` | string | no | The turn's goal id, from the 🎯 block. Omit when you hold only one. |
+
+## `cotal_run`
+
+*run a workflow program*
+
+Write a cotal-lang program and run it durably on the mesh's manager. `start` takes the program SOURCE inline: the manager validates it (a refusal lists every problem with its line, cause and fix), mints a run id, and drives it from its own process, so the run outlives your session, survives a manager restart, and can be answered from anywhere. It returns the run id at once; the run keeps going. Use it for coordination that must survive restarts: multi-step plans, human checkpoints, timed waits, fan-out over agents. Read the `workflows` and `lang-card` docs (cotal_docs) before writing a program. `status` returns a run's record and its step journal (an open pause shows what it asks under the step key an answer takes back); `ps` lists the runs; `answer` resolves an open checkpoint or ask by its step key; `resume` takes a released or held run over from its recorded program.
+
+- **Side-effect:** starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only.
+- **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive.
+- `start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you (your agent name) as the answerer.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `verb` | `start` \| `status` \| `ps` \| `answer` \| `resume` | yes | start = validate and drive a new program; status = one run's record + journal; ps = list runs; answer = resolve an open checkpoint/ask; resume = take a released or held run over. |
+| `source` | string | no | start only: the cotal-lang program source, inline. Required for start. |
+| `file` | string | no | start only: a file name to attribute the source to in error messages. Diagnostic only; nothing is read from disk. |
+| `timeout` | string | no | start/resume: the default checkpoint timeout for the drive, as a duration (e.g. `1h`, `30m`). Default 1h. |
+| `runId` | string | no | status/answer/resume: the run id (`run-<32 hex>`), as `start` or `ps` returned it. |
+| `stepKey` | string | no | answer only: the open step's key as `status` prints it, e.g. `/checkpoint:approve#0`. |
+| `value` | unknown | no | answer only: the answer payload; its shape is the program's (a checkpoint takes what its schema says). |
+| `artifact` | string | no | answer only: a reference to what you reviewed before answering, recorded beside the answer. |
+| `endpoint` | string | no | status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts. |
 
 ## `cotal_persona`
 

@@ -1390,19 +1390,24 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 Operate durable workflow runs (cotal-lang programs) from the terminal.
 
 ```bash
-cotal run start --file <program> [--timeout <dur>] [--endpoint <ep>]
-cotal run resume <runId> --file <program>
-cotal run ps
-cotal run journal <runId>
-cotal run answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]
+cotal run start --file <program> [--timeout <dur>] [--local]
+cotal run resume <runId> [--local --file <program>]
+cotal run ps [--endpoint <ep>]
+cotal run journal <runId> [--endpoint <ep>]
+cotal run answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>] [--endpoint <ep>]
 ```
 
-`start` mints the run id (the record never takes a caller-supplied one), prints it, and drives the
-run to quiescence. `resume` takes an existing run over and continues it from its step journal.
-`ps` lists the run records on the endpoint and `journal` renders one run's durable records; both
-only inspect, driving nothing. `answer` resolves an open checkpoint, presenting as the holder that
-armed it, with `--by` naming the answerer inside the resolution. `--timeout` sets the default
-checkpoint timeout for a drive (default 1h). The guide is [workflows](workflows.md).
+`start` hands the program to the mesh's manager, which validates it, mints the run id (the record
+never takes a caller-supplied one), drives it in its own process, and answers with the id once the
+run is recorded; a program that does not validate is refused with every problem listed. `resume`
+asks the manager to take an existing run back and continue it from its step journal; the source is
+the recorded program, so no `--file` is taken. `ps` lists the run records and `journal` renders one
+run's durable records; both only inspect. `answer` resolves an open checkpoint through the manager,
+presenting as the holder that armed it, with `--by` naming the answerer inside the resolution.
+`--timeout` sets the default checkpoint timeout for a drive (default 1h). `--local` drives in this
+process instead, over one connection per invocation, and is the path on a bare broker with no
+manager or for a run with no recorded program (`resume --local --file <program>`). The guide is
+[workflows](workflows.md).
 
 ## Server daemons
 

@@ -251,7 +251,7 @@ try {
   writeFileSync(join(userRoot, ".cotal", "agents", "user.md"), "---\nname: user\nrole: worker\n---\n");
   mkdirSync(userAuthStateDir(userRoot, space), { recursive: true });
   writeFileSync(join(userAuthStateDir(userRoot, space), "idp.json"), "{}\n");
-  recordMesh({ space, server: broker.servers, root: userRoot, mode: "user" });
+  recordMesh({ space, server: broker.servers, root: userRoot, mode: "user", ts: new Date().toISOString() });
   userMgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot: userRoot });
   await userMgr.start();
   const user = await userMgr.startAgent({ name: "user", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1_000 } });

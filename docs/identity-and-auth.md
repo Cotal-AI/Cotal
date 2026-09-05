@@ -79,13 +79,17 @@ inbox prefixes, and the DM/task consumers are provisioner-pre-created and bind-o
 agent cannot create a consumer filtered to someone else's inbox
 ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) items 1–5).
 
-## Spawn capability
+## Declared capabilities
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
 plus stop/despawn of its *own* children, plus persona definition. Without it, an agent can
-only self-despawn and pull or yield the run turns addressed to it. The tool surface mirrors the grant: `cotal_spawn` / `cotal_persona` / `cotal_personas` are
-injected only where they can actually succeed ([agent files](agent-files.md)). Destructive
+only self-despawn and pull or yield the run turns addressed to it. `capabilities: [run]` mints
+the manager's workflow-run commands (start, resume, answer, status, list) together with the spawn
+set, since a program the agent starts may spawn; the manager drives the run under a per-run
+`run-driver` credential of its own, never the caller's. The tool surface mirrors the grant:
+`cotal_spawn` / `cotal_persona` / `cotal_personas` are injected only for `spawn`, and `cotal_run`
+only for `run` ([agent files](agent-files.md)). Destructive
 operator ops (history purge, cross-agent stop) live on a third tier no agent credential
 reaches. Persona redefinition separates content from policy; the write path takes only
 `model`/`persona`, so a peer cannot grant itself a capability by redefining a file.

@@ -72,6 +72,12 @@ export interface ResolveCheckpointRequest {
   /** The digest of what the answerer actually saw — an approval as evidence, not as a claim. */
   readonly artifact?: string;
   readonly now: number;
+  /**
+   * The takeover id the journal replay rides. A caller whose credential pins its replay durable
+   * (the hosting manager's per-call `run-operator`, SPEC 14.3) passes the id its rows were minted
+   * for; a caller on a standing credential omits it and a fresh one is minted, as before.
+   */
+  readonly takeoverId?: string;
 }
 
 export interface ResolveCheckpointResult {
@@ -103,7 +109,7 @@ export async function resolveCheckpoint(
   deps: ResolveCheckpointDeps,
   req: ResolveCheckpointRequest,
 ): Promise<ResolveCheckpointResult> {
-  const entries = await replayRunEntries(deps, req.runId);
+  const entries = await replayRunEntries(deps, req.runId, req.takeoverId ?? newTakeoverId());
   const token = openCheckpointToken(entries, req.runId, req.stepKey);
   const spec = await readCheckpointSpec(deps.kv, { endpoint: deps.endpoint, token });
   if (spec === undefined) {
@@ -161,8 +167,8 @@ export function openCheckpointToken(
 
 /** The run's step entries, in append order. Read-only: this replays under its own consumer name and
  *  activates nothing, so it never contends with the driver actually holding the run. */
-async function replayRunEntries(deps: ResolveCheckpointDeps, runId: string): Promise<JournalEntry[]> {
-  const replay = await replayRunJournal(deps.js, deps.jsm, deps.space, runId, newTakeoverId());
+async function replayRunEntries(deps: ResolveCheckpointDeps, runId: string, takeoverId: string): Promise<JournalEntry[]> {
+  const replay = await replayRunJournal(deps.js, deps.jsm, deps.space, runId, takeoverId);
   const entries: JournalEntry[] = [];
   for (const stored of replay.records) {
     if (stored.record.kind === "step") entries.push(stored.record.entry as JournalEntry);

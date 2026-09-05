@@ -4,7 +4,9 @@
 
 One page to write a correct workflow program. The normative reference is
 [spec/cotal-lang.md](../spec/cotal-lang.md); this card compresses the parts programs get wrong
-first. A program is one module of restricted JavaScript: no imports, no `class`, no `Promise`, no
+first. A finished program is started with `cotal run start --file <program>` from a terminal or
+with the `cotal_run` tool from a session ([workflows](workflows.md)); the manager validates it
+and answers with every problem before anything runs. A program is one module of restricted JavaScript: no imports, no `class`, no `Promise`, no
 host globals. Every effect is journalled under a step key, so a run can stop on any host and
 resume on another with the recorded steps returning instantly.
 

@@ -72,14 +72,14 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import {
-  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, epRequestGrantRows,
+  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
   operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
-import { runDriverGrants, type RunDriverGrantArgs } from "./run-driver-grants.js";
+import { runDriverGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -147,6 +147,12 @@ export type Profile =
   // ({@link runDriverGrants}). Standing: a run outlives any one-shot window and the hosting manager
   // re-mints on renewal and on takeover (new takeover id, new epoch).
   | "run-driver"
+  // The RUN OPERATOR (SPEC 14.3): the hosting manager's per-call credential for the run surface it
+  // serves without driving: the `run-status` / `run-ps` reads (records walk, journal replay) and a
+  // `run-answer` (the answer record, the checkpoint settle). Pinned to one endpoint; one-shot, and
+  // never a standing connection, so the serve rails never hold a run's journal or records reach
+  // ({@link runOperatorGrants}).
+  | "run-operator"
   // v0.4 endpoint-registration eviction (P2 item 3, slice 3a): the SCOPED delivery-admin caller a
   // registration barrier mints PER re-registration to verify-evict the SUPERSEDED serve family
   // before the epoch advances (SPEC 13.1 "old authority dies before new authority is visible").
@@ -226,6 +232,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred (P2 item 6): rails-only for ONE §13.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
   "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER (P2 item 6): the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
   "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
+  "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
@@ -612,6 +619,10 @@ export interface MintOpts {
    *  coordinates its timer schedules are addressed by). REQUIRED for that profile; ignored by every
    *  other. The ep caller triple is DERIVED from the run id ({@link runDriverCaller}), never supplied. */
   runDriver?: RunDriverGrantArgs;
+  /** `run-operator` profile only (SPEC 14.3): the ONE endpoint whose runs this credential may read
+   *  and answer, and the takeover id its journal replays are named by. REQUIRED for that profile;
+   *  ignored by every other. */
+  runOperator?: RunOperatorGrantArgs;
   /** `remote-manager` profile only: the server-derived owner, fixed server-selected actor, and the
    * ONE locally-selected manager instance id this credential may supervise. REQUIRED for that profile. The builder pins its
    * manager lease/presence and same-owner provisioning resources; no caller-supplied subject rows
@@ -1055,6 +1066,12 @@ export function permissionsFor(
     const g = runDriverGrants(space, opts.runDriver, pr.connId);
     return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
   }
+  if (profile === "run-operator") {
+    if (!opts.runOperator)
+      throw new Error("permissionsFor: run-operator requires opts.runOperator ({endpoint, takeoverId} of the ONE endpoint whose runs it reads and answers)");
+    const g = runOperatorGrants(space, opts.runOperator, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+  }
   if (profile === "endpoint-serve")
     // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
     // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
@@ -1293,6 +1310,15 @@ export function permissionsFor(
   if (opts.capabilities?.includes("spawn")) {
     const rows = epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller);
     pubAllow.push(...rows.pub);
+    for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
+  }
+  // The `run` capability (SPEC 14.3): the manager-hosted workflow-run rows PLUS the spawn set a
+  // program's own spawns need. Rows already minted by `spawn` above are exact duplicates and the
+  // dedupe below folds them; the `sub` half carries the same goal-follow row for the same reason
+  // the spawn branch keeps it.
+  if (opts.capabilities?.includes("run")) {
+    const rows = epCallerGrantRows(space, runCallerCapabilities(pr.owner), epCaller);
+    for (const p of rows.pub) if (!pubAllow.includes(p)) pubAllow.push(p);
     for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
   }
   if (opts.capabilities?.includes("admin"))
