@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 310,
+    "total": 313,
     "honest-text": 32,
     "presence-only-glyph/count": 41,
     "command-ack": 10,
-    "non-render/control": 227
+    "non-render/control": 230
   },
   "renderers": [
     {
@@ -361,6 +361,27 @@
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
       "anchor": "`  resume inventory: ${join(root, \".cotal\", \"maintenance\", \"v1\", resume.file)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the manager seat list could not be read (${reply.error ?? \"ps failed\"})`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`${row.name}: ${stopped.error ?? \"stop failed\"}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`  ${bits.join(\"  ·  \")}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
