@@ -276,11 +276,12 @@ async function completionOut(positionals: string[]): Promise<string> {
 // --- a running legacy manager is reported, then blocks an update before replay --------------------
 {
   const legacy = updateRuntime({ reportRunningManager: async () => "legacy" });
-  assert.equal(await executeUpdate(false, legacy.rt), 1);
+  const code = await executeUpdate(false, legacy.rt);
   assert.ok(legacy.events.includes("reconcile"), "disk reconciliation completes before the running-manager report");
   assert.ok(legacy.events.includes("report-running-manager"), "the running manager is classified before refusal");
   assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
   assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
+  assert.equal(code, 1);
 }
 
 // --- malformed npm fails after local reconcile; extension failures continue and aggregate --------
