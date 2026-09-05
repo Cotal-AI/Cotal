@@ -45,7 +45,7 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-downf-root-"));
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 const { establishIdpSession } = await import("../src/index.js");
 const { agentCredsDir } = await import("@cotal-ai/workspace");

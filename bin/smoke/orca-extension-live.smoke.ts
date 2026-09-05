@@ -65,7 +65,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-orca-e2e-home-"));
 const config = mkdtempSync(join(tmpdir(), "cotal-orca-e2e-config-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown): void => {

@@ -62,6 +62,8 @@ const root = mkdtempSync(join(scratch, "root-"));
 // inherited keys; the one the children need (COTAL_HOME) is set explicitly right after.
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(scratch, "xdg");
+process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
 const { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceMaterialDir } = await import("@cotal-ai/workspace");
@@ -84,7 +86,7 @@ const logOf = (cp: ChildProcess) => output.get(cp)?.() ?? "";
 function startUp(port: number, space: string): ChildProcess {
   const cp = spawn(TSX, [CLI, "up", "--space", space, "--server", `nats://127.0.0.1:${port}`], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(cp);
