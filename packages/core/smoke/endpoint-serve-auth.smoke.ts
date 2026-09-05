@@ -37,6 +37,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError,
   serveEndpoint, compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
+  completeFrozenRegistrationFromSpec,
   finalizeServeIssuance,
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
@@ -509,8 +510,8 @@ try {
     c("reopen is token-pinned: the completing reopen wins, a STALE reopen with the same token loses and leaves the newer gate intact",
       first === true && stale === false && g.coord().registrationRevision === 6);
   }
-  // AMBIGUOUS spec write (committed then ack lost): the gate is left FROZEN for reconciliation,
-  // never reopened at the old coordinate (which would permit a stale-surface release).
+  // AMBIGUOUS spec write (committed then ack lost): read-back classifies the commit and completes
+  // THIS freeze (never reopens the old coordinate while the spec may have advanced).
   {
     const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
     let seq = 0;
@@ -521,14 +522,222 @@ try {
         if (k.startsWith("govern.")) return seq; // the governance slot-take commits cleanly first
         throw new Error("ack lost after the write committed"); // the SPEC write is the ambiguous one
       },
-      update: async () => { throw new Error("unreached"); },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
     } as unknown as KV;
     const auth4: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
     const spec4 = { endpoint: "reg4", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg4", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
-    await rejects("an AMBIGUOUS spec-write (committed then ack lost) is unavailable, never a definite no-write",
-      () => regSvc(flakyKv, { space, spec: spec4, instanceId: IID, registrant: { owner: "u_op" }, authority: auth4, barrier: g.barrier }), "unavailable");
-    c("…and the gate is left FROZEN for reconciliation (never reopened at the old coordinate → no stale-surface release)", g.coord().state === "frozen");
+    let recovered4: { registrationRevision: number } | Error | undefined;
+    try {
+      recovered4 = await regSvc(flakyKv, { space, spec: spec4, instanceId: IID, registrant: { owner: "u_op" }, authority: auth4, barrier: g.barrier });
+    } catch (e) {
+      recovered4 = e as Error;
+    }
+    c("an AMBIGUOUS first spec-write (committed then ack lost) read-back completes the same freeze rather than leaving a stuck gate",
+      !(recovered4 instanceof Error) && recovered4.registrationRevision > 0 && g.coord().state === "open" && g.coord().registrationRevision === recovered4.registrationRevision && g.coord().processEpoch === EPOCH,
+      recovered4 instanceof Error ? recovered4.message : g.coord());
+  }
+  // #1243: after a completed first registration, a RE-registration spec UPDATE can commit and then
+  // lose the ack. Leaving the gate frozen exits the manager; boot self-heal abort-reopens; the next
+  // registration freezes a NEW coordinate. Recovery must complete THIS op from the committed spec
+  // so takeover converges without `cotal reconcile-gate`. CONTROL: the same KV without the lost
+  // ack still completes (the existing happy re-registration cell above).
+  {
+    const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+    let seq = 0;
+    let loseSpecAck = false;
+    const kv1243 = {
+      get: async (k: string) => backing.get(k),
+      put: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        if (loseSpecAck && k.endsWith(".spec")) throw new Error("ack lost after the write committed");
+        return seq;
+      },
+    } as unknown as KV;
+    const auth1243: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
+    const spec1243 = { endpoint: "reg1243", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ endpoint: "reg1243", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    const first = await regSvc(kv1243, { space, spec: spec1243, instanceId: IID, registrant: { owner: "u_op" }, authority: auth1243, barrier: g.barrier });
+    const openAfterFirst = g.coord();
+    c("#1243 CONTROL: first registration without a lost ack leaves the gate open",
+      openAfterFirst.state === "open" && first.registrationRevision > 0, openAfterFirst);
+    loseSpecAck = true;
+    const genBefore = g.coord().generation;
+    let recovered: { registrationRevision: number } | Error | undefined;
+    try {
+      recovered = await regSvc(kv1243, { space, spec: spec1243, instanceId: IID, registrant: { owner: "u_op" }, authority: auth1243, barrier: g.barrier });
+    } catch (e) {
+      recovered = e as Error;
+    }
+    const after = g.coord();
+    const specRow = [...backing.entries()].find(([k]) => k.endsWith(".spec") && k.startsWith("svc.reg1243."));
+    c("#1243: a committed-then-lost-ack re-registration spec-write is still in the store",
+      specRow !== undefined && specRow[1].revision > first.registrationRevision, specRow?.[1].revision);
+    c("#1243: that same attempt completes the freeze (gate open, epoch advanced, spec revision adopted) rather than exiting 1 with a new frozen coordinate",
+      !(recovered instanceof Error)
+      && after.state === "open"
+      && after.processEpoch === EPOCH + 1
+      && after.registrationRevision === specRow?.[1].revision
+      && after.generation === genBefore + 1,
+      { recovered: recovered instanceof Error ? recovered.message : recovered, after, genBefore });
+  }
+  // Phase-3 no-commit: the spec UPDATE throws BEFORE storing. Read-back shows the prior revision.
+  {
+    const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+    let seq = 0;
+    let failSpec = false;
+    const kv = {
+      get: async (k: string) => backing.get(k),
+      put: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        if (failSpec && k.endsWith(".spec")) throw new Error("broker refused the spec write");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+    } as unknown as KV;
+    const authority: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
+    const spec = { endpoint: "regnc", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ endpoint: "regnc", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    const first = await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    failSpec = true;
+    await rejects("#1243 no-commit: a spec UPDATE that never stored stays unavailable",
+      () => regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier }), "unavailable");
+    c("#1243 no-commit: the gate stays frozen at the pre-write registrationRevision",
+      g.coord().state === "frozen" && g.coord().registrationRevision === first.registrationRevision, g.coord());
+  }
+  // Recovery-read failure after a committed write: stay frozen (never treat unread as no-commit).
+  {
+    const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+    let seq = 0;
+    let loseSpecAck = false;
+    let failSpecGet = false;
+    let baselineRev = 0;
+    const kv = {
+      get: async (k: string) => {
+        const cur = backing.get(k);
+        if (failSpecGet && k.endsWith(".spec") && cur && cur.revision > baselineRev)
+          throw new Error("spec read-back unavailable");
+        return cur;
+      },
+      put: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        if (loseSpecAck && k.endsWith(".spec")) throw new Error("ack lost after the write committed");
+        return seq;
+      },
+    } as unknown as KV;
+    const authority: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
+    const spec = { endpoint: "regrf", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ endpoint: "regrf", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    const first = await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    baselineRev = first.registrationRevision;
+    loseSpecAck = true;
+    failSpecGet = true;
+    await rejects("#1243 recovery-read failure: a committed spec whose read-back throws stays unavailable",
+      () => regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier }), "unavailable");
+    const frozen = g.coord();
+    c("#1243 recovery-read failure: the gate stays frozen (unread is not no-commit)",
+      frozen.state === "frozen" && frozen.registrationRevision === first.registrationRevision, frozen);
+    failSpecGet = false;
+    const finished = await completeFrozenRegistrationFromSpec(kv, {
+      endpoint: "regrf", instanceId: IID, barrier: g.barrier, freezeToken: frozen.revision,
+      gate: {
+        generation: frozen.generation, processEpoch: frozen.processEpoch,
+        registrationRevision: frozen.registrationRevision, nameAuthorityRevision: frozen.nameAuthorityRevision,
+      },
+    });
+    c("#1243 next-boot analogue: completeFrozenRegistrationFromSpec finishes the same freeze after a later readable spec",
+      finished.completed && g.coord().state === "open" && g.coord().registrationRevision === finished.registrationRevision && g.coord().processEpoch === EPOCH + 1, { finished, after: g.coord() });
+  }
+  // Phase-3b: spec committed; governance promote commits then loses the ack. Read-back
+  // completes (the slot is retained through reopen; this cell is lost-promote-ack only).
+  {
+    const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+    let seq = 0;
+    let losePromoteAck = false;
+    let governWritesAfterArm = 0;
+    const kv = {
+      get: async (k: string) => backing.get(k),
+      put: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        if (losePromoteAck && k.startsWith("govern.")) {
+          governWritesAfterArm++;
+          // Slot-take is the first govern write of the re-registration; the promote is the second.
+          if (governWritesAfterArm === 2) throw new Error("ack lost after the promote committed");
+        }
+        return seq;
+      },
+    } as unknown as KV;
+    const authority: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
+    const spec = { endpoint: "regp3b", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ endpoint: "regp3b", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    losePromoteAck = true;
+    const r = await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    c("#1243 Phase-3b: a committed-then-lost-ack governance promote read-back completes the same freeze",
+      r.registrationRevision > 0 && g.coord().state === "open" && g.coord().processEpoch === EPOCH + 1, g.coord());
+  }
+  // After retain-through-reopen, the slot-clear is the RELEASE (post Phase 4), not the promote.
+  // A committed-then-lost-ack release still completes: the gate is already open, and a leftover
+  // slot is behind the live generation (orphaned, not in-flight).
+  {
+    const backing = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+    let seq = 0;
+    let loseReleaseAck = false;
+    let governWritesAfterArm = 0;
+    const kv = {
+      get: async (k: string) => backing.get(k),
+      put: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        return seq;
+      },
+      update: async (k: string, v: Uint8Array, expected: number) => {
+        const cur = backing.get(k);
+        if (!cur || cur.revision !== expected) throw new Error("wrong last sequence");
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        if (loseReleaseAck && k.startsWith("govern.")) {
+          governWritesAfterArm++;
+          // Slot-take, then promote, then release: the third govern write of the re-registration.
+          if (governWritesAfterArm === 3) throw new Error("ack lost after the release committed");
+        }
+        return seq;
+      },
+    } as unknown as KV;
+    const authority: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
+    const spec = { endpoint: "regrel", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ endpoint: "regrel", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    loseReleaseAck = true;
+    const r = await regSvc(kv, { space, spec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: g.barrier });
+    c("#1243 lost-release-ack: a committed-then-lost-ack slot release still completes (gate already open)",
+      r.registrationRevision > 0 && g.coord().state === "open" && g.coord().processEpoch === EPOCH + 1, g.coord());
   }
   // VERIFIED EVICTION is fail-closed: a re-registration whose cluster-wide eviction cannot be
   // verified leaves the gate frozen, no new spec published (old authority never published-over).

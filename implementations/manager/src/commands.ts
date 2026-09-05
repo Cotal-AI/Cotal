@@ -432,15 +432,17 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
   const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(epAuthBucket(space));
+    const recordsKv = await new Kvm(nc).open(recordsBucket(space));
     const report = await reconcileEndpointGate({
       kv, space, endpoint, instanceId,
       probeHolder: makeManagerHolderLivenessProbe({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
       evict: makeManagerEndpointEvictor({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
       log: (l) => console.error(`  ${l}`),
+      recordsKv,
     });
     console.log(
       c.green(`✓ ${endpoint}/${instanceId}: gate reopened at generation ${report.reopenedAtGeneration}`) +
-        ` (processEpoch unchanged at ${report.before.processEpoch}; ${report.revoked.length} credential(s) revoked this attempt, ${report.holdersVerifiedThisAttempt.length} holder(s) verify-evicted this attempt, ${report.holdersVerifiedBeforeAttempt.length} already verified, ${report.holdersRemaining.length} remaining; repair cursor ${report.repairCursorCleanup}). Start the manager to let its normal takeover run.`,
+        ` (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; ${report.revoked.length} credential(s) revoked this attempt, ${report.holdersVerifiedThisAttempt.length} holder(s) verify-evicted this attempt, ${report.holdersVerifiedBeforeAttempt.length} already verified, ${report.holdersRemaining.length} remaining; repair cursor ${report.repairCursorCleanup}). Start the manager to let its normal takeover run.`,
     );
   } catch (e) {
     // A refusal is the DESIGNED outcome for every state this does not repair, so it prints the
@@ -515,8 +517,9 @@ async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
   const execNc = await connect({ servers, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(execNc).open(recordsBucket(space));
+    const authKv = await new Kvm(execNc).open(epAuthBucket(space));
     const report = await deregisterEndpointInstance({
-      kv, endpoint, instanceId, probeInstance, log: (l) => console.error(`  ${l}`),
+      kv, authKv, endpoint, instanceId, probeInstance, log: (l) => console.error(`  ${l}`),
     });
     console.log(
       c.green(`✓ ${endpoint}/${instanceId} deregistered`) +

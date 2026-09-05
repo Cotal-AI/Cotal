@@ -44,7 +44,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
-  principalKey, standaloneConnectOpts, epAuthBucket, DEV_OWNER,
+  principalKey, standaloneConnectOpts, epAuthBucket, recordsBucket, DEV_OWNER,
   provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
   epgateKey, parseEndpointGate, evictDeniedPrincipal, observePrincipalLiveness, mintLifecycleUid,
   MEMBERSHIP_INBOX_PREFIX,
@@ -134,6 +134,9 @@ try {
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`the ephemeral broker did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const recNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
+  execConns.push(recNc);
+  const recordsKv = await new Kvm(recNc).open(recordsBucket(space));
 
   // The `endpoint-serve-executor` cred is KEY-PINNED to one (endpoint, instanceId) — its KV write
   // grants name that instance's gate key and credential-family prefix and nothing else. So each
@@ -230,7 +233,7 @@ try {
     const before = parseEndpointGate((await kv.get(epgateKey(ENDPOINT, instanceId)))!.value, epgateKey(ENDPOINT, instanceId));
     const r = await attempt({
       kv, space, endpoint: ENDPOINT, instanceId,
-      probeHolder: realProbe(observerNc), evict: realEvict, log: () => {},
+      recordsKv, probeHolder: realProbe(observerNc), evict: realEvict, log: () => {},
     });
     check("INVERSE CONTROL (dead holder): the reconciliation SUCCEEDS", r.ok === true, r.ok ? undefined : r);
     if (r.ok) {
@@ -253,7 +256,7 @@ try {
     const { instanceId, principal, kv } = await buildResidue({ holderLive: true }); // connection stays OPEN
     const r = await attempt({
       kv, space, endpoint: ENDPOINT, instanceId,
-      probeHolder: realProbe(observerNc), evict: realEvict, log: () => {},
+      recordsKv, probeHolder: realProbe(observerNc), evict: realEvict, log: () => {},
     });
     check("REFUSAL 1 (live holder): refuses with condition `holder-alive`", r.ok === false && r.condition === "holder-alive", r);
     check("REFUSAL 1: the refusal NAMES liveness and the live principal",
@@ -276,7 +279,7 @@ try {
     await wait(300);
     const r = await attempt({
       kv, space, endpoint: ENDPOINT, instanceId,
-      probeHolder: realProbe(evictorNc!), // blind: kick-only cred, no CONNZ read grant
+      recordsKv, probeHolder: realProbe(evictorNc!), // blind: kick-only cred, no CONNZ read grant
       evict: realEvict, log: () => {},
     });
     check("REFUSAL 2 (unknown holder): refuses with condition `holder-unknown`", r.ok === false && r.condition === "holder-unknown", r);
@@ -298,7 +301,7 @@ try {
     const { instanceId, kv } = await buildResidue({ holderLive: false });
     const r = await attempt({
       kv, space, endpoint: ENDPOINT, instanceId,
-      probeHolder: async () => ({ state: "unestablishable", detail: "the delivery daemon is not reachable on the ctl.delivery-admin rail (connect ECONNREFUSED)" }),
+      recordsKv, probeHolder: async () => ({ state: "unestablishable", detail: "the delivery daemon is not reachable on the ctl.delivery-admin rail (connect ECONNREFUSED)" }),
       evict: realEvict, log: () => {},
     });
     check("REFUSAL 3 (no oracle): refuses with condition `liveness-unestablishable`", r.ok === false && r.condition === "liveness-unestablishable", r);
@@ -402,7 +405,7 @@ try {
     await provisionEndpointGateOpen(openKv, { endpoint: ENDPOINT, instanceId: openInstance, principal: principalKey(DEV_OWNER, "opengate").key });
     const r1 = await attempt({
       kv: openKv, space, endpoint: ENDPOINT, instanceId: openInstance,
-      probeHolder: async () => { throw new Error("the probe must not run on a gate that is not frozen"); },
+      recordsKv, probeHolder: async () => { throw new Error("the probe must not run on a gate that is not frozen"); },
       evict: realEvict, log: () => {},
     });
     check("REFUSAL 4 (not frozen): refuses with condition `not-frozen`, BEFORE probing", r1.ok === false && r1.condition === "not-frozen", r1);
@@ -411,7 +414,7 @@ try {
     const missing = mintLifecycleUid();
     const r2 = await attempt({
       kv: await execFor(missing), space, endpoint: ENDPOINT, instanceId: missing,
-      probeHolder: async () => { throw new Error("the probe must not run when there is no gate"); },
+      recordsKv, probeHolder: async () => { throw new Error("the probe must not run when there is no gate"); },
       evict: realEvict, log: () => {},
     });
     check("REFUSAL 5 (no gate): refuses with condition `no-gate`", r2.ok === false && r2.condition === "no-gate", r2);
@@ -427,7 +430,7 @@ try {
     await wait(300);
     const r = await attempt({
       kv, space, endpoint: ENDPOINT, instanceId,
-      probeHolder: realProbe(observerNc), evict: async () => false, log: () => {},
+      recordsKv, probeHolder: realProbe(observerNc), evict: async () => false, log: () => {},
     });
     check("REFUSAL 6 (eviction unverified): refuses with condition `eviction-unverified` even though the probe said gone",
       r.ok === false && r.condition === "eviction-unverified", r);

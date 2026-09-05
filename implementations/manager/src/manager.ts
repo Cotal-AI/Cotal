@@ -1896,14 +1896,26 @@ export class Manager {
    */
   private async deregisterServiceOnStop(): Promise<void> {
     const iid = this.managerInstanceId;
-    const dereg = ({ recordsKv }: { recordsKv: KV }): Promise<ServiceDeregistration> =>
-      deregisterServiceInstance(recordsKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const dereg = ({ recordsKv, authKv }: { recordsKv: KV; authKv: KV }): Promise<ServiceDeregistration> =>
+      deregisterServiceInstance(recordsKv, {
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: iid,
+        observeGeneration: async () => {
+          const key = epgateKey(MANAGER_ENDPOINT, iid);
+          const entry = await authKv.get(key);
+          if (!entry || entry.operation !== "PUT")
+            throw new Error(`no issuance gate at ${key}`);
+          return parseEndpointGate(entry.value, key).generation;
+        },
+      });
     try {
       const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
         console.error(`! manager instance ${iid} was not deregistered: its registration moved while this stop ran, so another incarnation owns it now - leaving it alone`);
+      else if (outcome.reason === "registration-in-flight")
+        console.error(`! manager instance ${iid} was not deregistered: a registration is still in flight (governance slot held at the live gate generation) - leaving it alone`);
       // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.
     } catch (e) {
       console.error(
@@ -4935,8 +4947,9 @@ export class Manager {
    *  `gone` into `unestablishable`). Live / unknown / unestablishable / wrong-op-kind stay loud
    *  refusals. No TTL: request-ingress has no process-epoch fence, so a clock would either let a
    *  superseded serve credential keep consuming ingress or just rename the freeze. An open gate
-   *  is a no-op (the successor's own freeze comes next). */
-  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth): Promise<void> {
+   *  is a no-op (the successor's own freeze comes next). A committed spec under that freeze is
+   *  finished at the committed registrationRevision; only a definite no-commit abort-reopens. */
+  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV): Promise<void> {
     const key = epgateKey(MANAGER_ENDPOINT, instanceId);
     const entry = await authKv.get(key);
     if (!entry || entry.operation !== "PUT") return;
@@ -4951,6 +4964,7 @@ export class Manager {
         probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
         evict: makeManagerEndpointEvictor({ space: this.space, servers, auth, log }),
         log,
+        recordsKv,
       });
     } catch (e) {
       // We observed frozen, then a concurrent reconciler finished first. If the gate is now open,
@@ -4967,7 +4981,7 @@ export class Manager {
     }
     console.error(
       `✓ boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} registration gate reopened at generation ${
-        report.reopenedAtGeneration} (processEpoch unchanged at ${report.before.processEpoch}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
+        report.reopenedAtGeneration} (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
     );
   }
 
@@ -5097,7 +5111,9 @@ export class Manager {
       // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
       // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
       // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);
+      if (auth) {
+        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
+      }
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN

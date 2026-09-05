@@ -24,8 +24,8 @@
     {
       "name": "the defect restored: boot does not complete a frozen registration gate",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);\n",
-      "replace": "      if (false && auth) await this.healFrozenRegistrationGate(authKv, iid, auth);\n",
+      "find": "      if (auth) {\n        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);\n      }\n",
+      "replace": "      if (false && auth) {\n        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);\n      }\n",
       "expectRed": "DEAD HOLDER: successor start SUCCEEDS without `cotal reconcile-gate` (boot self-heal)",
       "cell": "DEAD HOLDER: successor start SUCCEEDS without `cotal reconcile-gate` (boot self-heal)",
       "note": "The shipped skip. A successor seeing a frozen registration gate still hits SPEC 13.8 and cannot register until an operator runs reconcile-gate."
