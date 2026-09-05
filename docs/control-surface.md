@@ -59,8 +59,10 @@ On a live miss, a static manager point-reads its durable slot row. A name with n
 whose phase is `retired`, remains `not-found`. A nonterminal slot returns
 `failed-precondition` with `error.details[].kind =
 ai.cotal.manager.static-slot-observation`. The detail carries the slot's `slotPhase`,
-`slotLifecycleUid`, `cleanupComplete` when recorded, and `slotRevision`. It then carries the
-separate lifecycle head's `headState`, `headOp` when present, lifecycle uid, and `headRevision`.
+`owner`, `actor`, `slotLifecycleUid`, `cleanupComplete` when recorded, and `slotRevision`. It
+then carries the separate lifecycle head's `headState`, `headOp` when present,
+`headLifecycleUid`, and `headRevision`. Head fields are absent when provisioning has not written
+the lifecycle head yet.
 The error message carries the same diagnostic summary so string-only operator paths do not hide
 the structured detail.
 
@@ -71,8 +73,10 @@ needed for this diagnosis is already recorded on the head, and reading a third r
 another non-atomic edge without changing the per-name result.
 
 If either durable read fails or exceeds its bound, the miss returns `unavailable` with
-`ai.cotal.manager.static-slot-read-failed` rather than claiming the name is absent. User-auth
-managers do not own `mgrslot` rows, so their inspect misses remain live-map reads.
+`ai.cotal.manager.static-slot-read-failed` rather than claiming the name is absent. That detail
+names the inspected `name`, the failed `record` (`slot`, `head`, or `slot-or-head` when the layer
+cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows,
+so their inspect misses remain live-map reads.
 
 ## Spawn is a goal
 
