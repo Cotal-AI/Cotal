@@ -878,18 +878,25 @@ try {
     /pre-join readiness/.test(midLog) && /cotal_orientation/.test(midLog),
     midLog,
   );
-  await waitFor("slowpeer readiness timeout exit", () => (slow.exitCode === null ? undefined : slow.exitCode), 15_000);
+  // The wait lives inside this named check: a mutant that drops the bound must redden
+  // this assertion, not a helper that times out before it.
+  let timedOutExit: number | null | undefined;
+  try {
+    timedOutExit = await waitFor("slowpeer readiness timeout exit", () => (slow.exitCode === null ? undefined : slow.exitCode), 15_000);
+  } catch {
+    timedOutExit = slow.exitCode;
+  }
+  check(
+    "a readiness turn that overruns its bound ends the launch",
+    timedOutExit !== null && timedOutExit !== undefined && timedOutExit !== 0,
+    { code: timedOutExit, stderr: slowErr },
+  );
   const afterKickoff = gateEntries().find(
     (entry) =>
       entry.ev === "request" &&
       entry.frame?.req === "send_message" &&
       !entry.frame?.no_reply &&
       String(entry.frame?.content).includes("KICKOFF-1216-DO-THE-REVIEW"),
-  );
-  check(
-    "a readiness turn that overruns its bound ends the launch",
-    slow.exitCode !== null && slow.exitCode !== 0,
-    { code: slow.exitCode, stderr: slowErr },
   );
   check("a timed-out readiness turn never reaches the roster", !announced.has("slowpeer"), [...announced]);
   check("a timed-out readiness turn never submits the kickoff prompt", !afterKickoff, afterKickoff);
