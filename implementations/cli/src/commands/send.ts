@@ -29,23 +29,31 @@ function targetAndText(positionals: string[], strip: RegExp): { target?: string;
 export async function send(args: ParsedArgs): Promise<void> {
   const { values, positionals } = args;
   const [mode, ...rest] = positionals;
-  if (mode === "dm") return dm(values, rest);
-  if (mode === "msg") return msg(values, rest);
-  if (mode === "ask") return ask(values, rest);
-  console.error(
-    'usage: cotal send <dm <agent> | msg <channel> | ask <role>> "<text>"  [--space <s>] [--server <url>] [--creds <path>]',
-  );
-  process.exit(1);
+  if (mode !== "dm" && mode !== "msg" && mode !== "ask") {
+    console.error(
+      'usage: cotal send <dm <agent> | msg <channel> | ask <role>> "<text>"  [--space <s>] [--server <url>] [--creds <path>]',
+    );
+    process.exit(1);
+  }
+  const caller = process.env.COTAL_NAME?.trim();
+  if (!caller) {
+    console.error(c.red("COTAL_NAME is required for `cotal send`; without a live-seat caller identity the message would be unattributable."));
+    console.error(c.dim("Set it to the invoking seat before sending: COTAL_NAME=<live-seat-name> cotal send ..."));
+    process.exit(1);
+  }
+  if (mode === "dm") return dm(values, rest, caller);
+  if (mode === "msg") return msg(values, rest, caller);
+  return ask(values, rest, caller);
 }
 
 /** `cotal send dm <agent> "<text>"` — one unicast to a peer by name, then exit. */
-async function dm(values: ParsedArgs["values"], positionals: string[]): Promise<void> {
+async function dm(values: ParsedArgs["values"], positionals: string[], caller: string): Promise<void> {
   const { target, text } = targetAndText(positionals, /^@/);
   if (!target || !text) {
     console.error('usage: cotal send dm <agent> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
     process.exit(1);
   }
-  const { ep, space } = await openTransient(values, "send");
+  const { ep, space } = await openTransient(values, caller);
   // Presence arrives asynchronously after connect; poll briefly (≤2s) for the target to appear.
   // resolvePeer is fail-loud: an exact id or a unique name resolves, a same-name collision throws.
   let peer: Presence | undefined;
@@ -73,26 +81,26 @@ async function dm(values: ParsedArgs["values"], positionals: string[]): Promise<
 }
 
 /** `cotal send msg <channel> "<text>"` — one broadcast to a channel, then exit. */
-async function msg(values: ParsedArgs["values"], positionals: string[]): Promise<void> {
+async function msg(values: ParsedArgs["values"], positionals: string[], caller: string): Promise<void> {
   const { target: channel, text } = targetAndText(positionals, /^#/);
   if (!channel || !text) {
     console.error('usage: cotal send msg <channel> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
     process.exit(1);
   }
-  const { ep } = await openTransient(values, "send");
+  const { ep } = await openTransient(values, caller);
   await ep.multicast(text, { channel, mentions: mentionsIn(text) });
   console.log(c.green(`→ #${channel}`) + c.dim(`  ${text}`));
   await ep.stop();
 }
 
 /** `cotal send ask <role> "<text>"` — one anycast to a role/service (exactly one instance), exit. */
-async function ask(values: ParsedArgs["values"], positionals: string[]): Promise<void> {
+async function ask(values: ParsedArgs["values"], positionals: string[], caller: string): Promise<void> {
   const { target: role, text } = targetAndText(positionals, /^@/);
   if (!role || !text) {
     console.error('usage: cotal send ask <role> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
     process.exit(1);
   }
-  const { ep } = await openTransient(values, "send");
+  const { ep } = await openTransient(values, caller);
   await ep.anycast(role, text);
   console.log(c.green(`→ @${role}`) + c.dim(`  ${text}`));
   await ep.stop();

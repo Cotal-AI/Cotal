@@ -1061,6 +1061,10 @@ One-shot messaging: connect, send a single direct message (`dm`), channel post (
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
 
+`COTAL_NAME` must name the live seat invoking the command. If it is missing, `send` refuses before
+connecting so the recipient never sees a message attributed to a transient command principal. Set it
+on a shell invocation with `COTAL_NAME=<live-seat-name> cotal send ...`.
+
 ## channels
 
 ```bash
