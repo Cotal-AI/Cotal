@@ -346,6 +346,8 @@ export type FreeSlotCause =
   | "process-exit"
   | "pi-crash-loop"
   | "pi-recovery-failed"
+  | "supervise-crash-loop"
+  | "supervise-recovery-failed"
   | "session-bind-failed"
   | "resume-session-rebind-failed";
 
@@ -356,6 +358,8 @@ const FREE_SLOT_CAUSE_TEXT: Record<FreeSlotCause, string> = {
   "process-exit": "its own process exited and this manager did not stop it",
   "pi-crash-loop": "this manager retired it after a Pi crash loop",
   "pi-recovery-failed": "this manager retired it after Pi session recovery failed",
+  "supervise-crash-loop": "this manager retired it after its supervise restart budget was spent",
+  "supervise-recovery-failed": "this manager retired it after a supervised restart failed",
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
 };
@@ -505,6 +509,11 @@ export interface StartAgentOpts {
   /** `--share-tools` selection narrowing which of the operator's configured MCP servers this
    *  agent gets (absent → all declared for the connector — the pre-merge manager behavior). */
   shareTools?: string;
+  /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
+   *  the process under the same name, lifecycle uid, persona, worktree and permits until
+   *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
+   *  (pi) arms the existing session-recovery constants. */
+  supervise?: { restarts: number; windowMs: number };
   /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
    *  `startAgent` takes identity/role/ACLs/capabilities/model from here — NOT from a persona file —
    *  and `config` points at the materialized transient persona the connector reads. The persona file
@@ -583,9 +592,19 @@ interface ManagedAgent {
   control?: { path: string; token: string };
   launch: ManagedLaunch;
   /** In-memory process-recovery input. It is never persisted with secret values: preservation
-   * reconstructs it from the validated inventory and current config. Only connectors explicitly
-   * declaring same-session continuation receive it. */
-  restart?: { opts: LaunchOpts; sessionStatePath?: string; crashes: number[]; recovering: boolean; armed: boolean };
+   * reconstructs it from the validated inventory and current config. Continuation-capable
+   * connectors (pi) receive it by default; any connector receives it when spawn carries
+   * `supervise`. */
+  restart?: {
+    opts: LaunchOpts;
+    sessionStatePath?: string;
+    crashes: number[];
+    recovering: boolean;
+    armed: boolean;
+    /** Present when spawn carried `supervise`; recoverManagedSession takes its budget from it.
+     *  Absent on the pi path without a policy, which keeps SESSION_RESTART_LIMIT / WINDOW_MS. */
+    policy?: { restarts: number; windowMs: number };
+  };
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
   /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
@@ -3128,21 +3147,25 @@ export class Manager {
     throw new Error(`replacement did not prove session ${expected} (${last})`);
   }
 
-  /** Restart one continuation-capable managed process in place. Identity, lifecycle, credentials,
-   *  durables, children, and the manager row remain owned; only the process handle/control endpoint
-   *  change. A fourth crash inside two minutes is a loop and falls through to normal retirement. */
+  /** Restart one managed process in place. Identity, lifecycle, credentials, durables, children,
+   *  and the manager row remain owned; only the process handle/control endpoint change. Budget
+   *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
+   *  constants. Spending the budget falls through to normal retirement. */
   private recoverManagedSession(a: ManagedAgent): void {
     const restart = a.restart;
     if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
     const release = this.beginLifecycle();
     if (!release) return; // preservation owns the cut once the lifecycle fence closes
     const now = Date.now();
-    restart.crashes = restart.crashes.filter((at) => now - at < SESSION_RESTART_WINDOW_MS);
+    const limit = restart.policy?.restarts ?? SESSION_RESTART_LIMIT;
+    const windowMs = restart.policy?.windowMs ?? SESSION_RESTART_WINDOW_MS;
+    const supervised = restart.policy !== undefined;
+    restart.crashes = restart.crashes.filter((at) => now - at < windowMs);
     restart.crashes.push(now);
-    if (restart.crashes.length > SESSION_RESTART_LIMIT) {
-      console.error(`! ${a.name}: Pi crash loop (${restart.crashes.length} crashes in ${SESSION_RESTART_WINDOW_MS / 1000}s) - retiring the managed seat`);
+    if (restart.crashes.length > limit) {
+      console.error(`! ${a.name}: ${supervised ? "supervised" : "Pi"} crash loop (${restart.crashes.length} crashes in ${windowMs / 1000}s) - retiring the managed seat`);
       restart.armed = false;
-      this.freeSlot(a, true, "pi-crash-loop");
+      this.freeSlot(a, true, supervised ? "supervise-crash-loop" : "pi-crash-loop");
       this.reapChildrenOf(this.managedPrincipal(a));
       release();
       return;
@@ -3151,21 +3174,31 @@ export class Manager {
     void (async () => {
       let replacement: AgentHandle | undefined;
       try {
-        const sessionId = this.readManagedSession(a);
         const connector = await this.resolveConnector(a.agent);
-        if (!connector.supportsSessionContinuation)
-          throw new Error(`connector ${connector.name} no longer declares same-session continuation`);
-        const opts: LaunchOpts = {
-          ...restart.opts,
-          resume: undefined,
-          prompt: undefined,
-          continueSession: sessionId,
-        };
+        const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
+        const opts: LaunchOpts = continueSession !== undefined
+          ? { ...restart.opts, resume: undefined, prompt: undefined, continueSession }
+          : { ...restart.opts, resume: undefined, prompt: undefined };
         const spec = connector.buildLaunch(opts);
         const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
-        await this.awaitRecoveredSession(a, sessionId, handle, spec.control);
+        if (continueSession !== undefined)
+          await this.awaitRecoveredSession(a, continueSession, handle, spec.control);
+        else {
+          const previousHandle = a.handle;
+          const previousControl = a.control;
+          a.handle = handle;
+          a.control = spec.control;
+          try {
+            const readiness = await this.awaitReadiness(a, connector.readinessTimeoutMs ?? this.readinessTimeoutMs, { reapOnExit: false });
+            if (!readiness.ok) throw new Error(readiness.detail);
+          } catch (error) {
+            a.handle = previousHandle;
+            a.control = previousControl;
+            throw error;
+          }
+        }
         if (this.agents.get(a.name) !== a || a.terminalizing) {
           try { handle.stop({ graceful: false }); } catch { /* terminal path owns cleanup */ }
           return;
@@ -3175,18 +3208,21 @@ export class Manager {
         replacement = undefined;
         restart.opts = opts;
         restart.recovering = false;
-        console.error(`! ${a.name}: recovered Pi session ${sessionId} after crash (${restart.crashes.length}/${SESSION_RESTART_LIMIT})`);
+        if (continueSession !== undefined)
+          console.error(`! ${a.name}: recovered Pi session ${continueSession} after crash (${restart.crashes.length}/${limit})`);
+        else
+          console.error(`! ${a.name}: restarted under the same lifecycle after crash (${restart.crashes.length}/${limit})`);
         this.watchExit(a);
       } catch (error) {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
         try { tail = this.tail(await (replacement ?? a.handle).attach().backlog()); } catch { /* runtime has no readable tail */ }
-        console.error(`! ${a.name}: Pi session recovery failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
-        // The replacement may be alive but unable to prove the expected session. Stop it BEFORE
+        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
+        // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
         try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
-        this.freeSlot(a, true, "pi-recovery-failed");
+        this.freeSlot(a, true, supervised ? "supervise-recovery-failed" : "pi-recovery-failed");
         this.reapChildrenOf(this.managedPrincipal(a));
       } finally {
         release();
@@ -3195,12 +3231,21 @@ export class Manager {
   }
 
   /** A managed agent's process exited on its own (crash, /exit, finished). Continuation-capable Pi
-   *  seats restart in place after readiness; every other exit follows the existing terminal path. */
+   *  seats restart in place after readiness; a spawn carrying `supervise` restarts any connector
+   *  the same way, without classifying a session-state file. Every other exit follows the existing
+   *  terminal path. */
   private onAgentExit(a: ManagedAgent): void {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
     if (this.maintenanceState !== "active") return;
+    // A replacement is proving readiness under this row. Its own wait owns a failed
+    // relaunch; treating that exit as a seat death would free the slot mid-recovery.
+    if (a.restart?.recovering && !a.terminalizing) return;
     if (a.restart?.armed && !a.terminalizing) {
+      if (a.restart.policy !== undefined) {
+        this.recoverManagedSession(a);
+        return;
+      }
       try {
         if (this.readManagedSessionState(a).status === "running") {
           this.recoverManagedSession(a);
@@ -3291,6 +3336,21 @@ export class Manager {
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
       return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
+    let supervise: { restarts: number; windowMs: number } | undefined;
+    if (args.supervise !== undefined) {
+      const raw = args.supervise;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+        return Promise.resolve({ ok: false, error: "supervise: expected { restarts, windowMs }" });
+      const rec = raw as Record<string, unknown>;
+      const extra = Object.keys(rec).filter((k) => k !== "restarts" && k !== "windowMs");
+      if (extra.length > 0)
+        return Promise.resolve({ ok: false, error: `supervise: unknown key ${extra[0]}; it takes restarts and windowMs` });
+      if (typeof rec.restarts !== "number" || !Number.isInteger(rec.restarts) || rec.restarts < 1)
+        return Promise.resolve({ ok: false, error: "supervise.restarts: expected a positive integer" });
+      if (typeof rec.windowMs !== "number" || !Number.isInteger(rec.windowMs) || rec.windowMs < 1)
+        return Promise.resolve({ ok: false, error: "supervise.windowMs: expected a positive integer" });
+      supervise = { restarts: rec.restarts, windowMs: rec.windowMs };
+    }
     // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
     // not something to coerce (no fallbacks).
     const strList = (v: unknown, flag: string): string[] | undefined => {
@@ -3326,6 +3386,7 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
+        ...(supervise !== undefined ? { supervise } : {}),
       },
       caller,
       hooks,
@@ -3637,6 +3698,16 @@ export class Manager {
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
     if (opts.resume && !connector.supportsResume)
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
+    // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
+    // External runtimes (tmux/cmux/orca/herdr) attach to a process they do not own and stream no
+    // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
+    // keeps the incarnation owned across a process death, so the same refusal applies there.
+    if (opts.supervise !== undefined) {
+      if (this.runtime.kind !== "pty")
+        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.runtime.kind}" cannot respawn a name in place` };
+      if (this.userMode)
+        return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
+    }
 
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
     // + model/variant. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
@@ -4055,8 +4126,17 @@ export class Manager {
               ? Object.keys(opts.launchOptions).sort()
               : undefined,
         },
-        ...(connector.supportsSessionContinuation
-          ? { restart: { opts: launchOpts, sessionStatePath: spec.sessionStatePath, crashes: [], recovering: false, armed: false } }
+        ...(connector.supportsSessionContinuation || opts.supervise !== undefined
+          ? {
+              restart: {
+                opts: launchOpts,
+                sessionStatePath: spec.sessionStatePath,
+                crashes: [],
+                recovering: false,
+                armed: false,
+                ...(opts.supervise !== undefined ? { policy: opts.supervise } : {}),
+              },
+            }
           : {}),
       };
       // Unit B: the DURABLE slot takes the `active` phase before the in-memory row takes the
@@ -4093,15 +4173,19 @@ export class Manager {
         return { ok: false, error: readiness.detail };
       }
       if (managed.restart) {
-        try {
-          await this.armSessionRecovery(managed);
-          managed.launch.sessionId = this.readManagedSession(managed);
-        } catch (error) {
-          const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
-          this.stopHandle(managed, false);
-          this.freeSlot(managed, true, "session-bind-failed");
-          await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
-          return { ok: false, error: detail };
+        if (connector.supportsSessionContinuation) {
+          try {
+            await this.armSessionRecovery(managed);
+            managed.launch.sessionId = this.readManagedSession(managed);
+          } catch (error) {
+            const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
+            this.stopHandle(managed, false);
+            this.freeSlot(managed, true, "session-bind-failed");
+            await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
+            return { ok: false, error: detail };
+          }
+        } else {
+          managed.restart.armed = true;
         }
       }
       this.watchExit(managed);
@@ -4651,7 +4735,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -4721,7 +4805,7 @@ export class Manager {
         const deliberate = a.terminalizing === true;
         void (async () => {
           const tail = this.tail(await s.backlog());
-          this.onAgentExit(a);
+          if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
           // caller the agent died on launch when in fact an operator cancelled it. The process

@@ -25,6 +25,8 @@ resume on another with the recorded steps returning instantly.
 are kebab-case; where the reference says a name is required, it must be a string literal. Option
 bags are closed: an unknown key is refused (L3011) with the full signature in the answer.
 Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.
+`permits` meter `turns` and `wallClock` on this host; `supervise` is `{ restarts, window? }`
+(default window `10m`) and restarts the process in place until that budget is spent.
 
 ## Results you branch on
 

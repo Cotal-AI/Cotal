@@ -178,7 +178,14 @@ duration from the spawn after which no turn is admitted. The turn that would exc
 catchable L4001 (kind `permit-turns` or `permit-wall-clock`; a deadline the remaining wall clock
 cannot hold counts as exceeding it), an adopted run counts the turns its journal recorded, and a
 budget the host has no meter for, such as `tokens` or `spend`, is refused at the spawn rather than
-accepted and ignored. `conclave` joins its
+accepted and ignored. `supervise` is the restart policy this host asks the manager to enforce:
+`restarts`, how many in-window process deaths may come back under the same handle, and `window`,
+the duration those deaths are counted in (default `10m`). The manager restarts the process in
+place under the same name, lifecycle uid, persona, worktree and permits; `monitor` does not fire
+for a restart, and `wait(down)` fires only when the seat is gone for good. Spending the budget
+retires the seat, and the next `turn` is the catchable L4002. A policy this host cannot enforce
+(an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
+at the spawn rather than accepted and ignored. `conclave` joins its
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its

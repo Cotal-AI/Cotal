@@ -18,6 +18,8 @@ export {
   waitConsumerConfig,
   rearmOutstandingPauses,
   outstandingPauseTokens,
+  readSupervise,
+  spawnArgs,
   type MeshHandlerBinding,
   type SettleWatcher,
 } from "./mesh-handler.js";

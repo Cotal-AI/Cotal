@@ -1030,8 +1030,8 @@ export class MeshHandler {
    * and the fact is the thing a resume can still read.
    *
    * `permits`, `supervise` and `onFork` are POLICY, not identity (§6.4): they ride the journalled
-   * request and are enforced where they bind (`permits` at `turn`, `supervise` by `monitor`, an
-   * `onFork` at fork adoption) — nothing about them travels in the submission.
+   * request and are enforced where they bind (`permits` at `turn`, `supervise` as the manager's
+   * restart budget on the spawn submission, an `onFork` at fork adoption).
    */
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
@@ -1049,12 +1049,11 @@ export class MeshHandler {
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
-    // Same rule, for the other policy option. `supervise` is "a declarative restart policy" in the
-    // reference and nothing more: it names no keys, no restart semantics and no code, so there is
-    // nothing here to enforce and no way to invent it without writing language semantics into a
-    // host. Accepting it and restarting nothing is the silent no-op `readPermits` refuses by name.
-    if (req.supervise !== undefined)
-      throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement, and a policy it cannot enforce is refused rather than ignored`);
+    // Same rule, for the other policy option. `supervise` is a declarative restart policy: it
+    // is parsed here (a malformed or unknown-key record is refused before anything is submitted)
+    // and travels on the spawn args so the manager can restart the seat in place. A host that
+    // cannot restart in place refuses at accept rather than accepting a silent no-op.
+    if (req.supervise !== undefined) readSupervise(req.supervise, req.persona);
     // A seat a migration kept for this persona (§11.2): the orphaned spawn's GOAL becomes this
     // step's own, bound with that spawn's floor and the step it came from. From here the two kinds
     // of spawn are one path — the terminal is read under the bound goal, the handle comes from it,
@@ -2133,6 +2132,39 @@ type AskSeat = SeatAddress & { schema: unknown };
  * no turn is admitted. Anything else (tokens, spend) is a budget this host has no meter for, and a
  * budget it cannot enforce is refused loudly rather than accepted as a silent no-op.
  */
+/** The restart budget this host asks the manager to enforce for a spawn. */
+type AgentSupervise = { restarts: number; windowMs: number };
+
+/**
+ * Read a spawn's `supervise` as the restart policy this host can enforce: `restarts`, a positive
+ * integer of in-window process deaths the manager may restart under the same handle, and
+ * `window`, an optional duration (default `10m`) those deaths are counted in. Anything else is a
+ * policy this host has no restart for, and a policy it cannot enforce is refused loudly rather
+ * than accepted as a silent no-op.
+ */
+export function readSupervise(raw: unknown, persona: string): AgentSupervise {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error(`spawn(${persona}): supervise must be a record of { restarts, window? }, got ${JSON.stringify(raw)}`);
+  let restarts: number | undefined;
+  let windowMs: number | undefined;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key === "restarts") {
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
+        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);
+      restarts = value;
+    } else if (key === "window") {
+      if (typeof value !== "string")
+        throw new Error(`spawn(${persona}): supervise.window must be a duration string, got ${JSON.stringify(value)}`);
+      windowMs = parseDuration(value);
+    } else {
+      throw new Error(`spawn(${persona}): supervise.${key} is not a restart policy this host enforces; it takes restarts and window, and a policy it cannot enforce is refused rather than ignored`);
+    }
+  }
+  if (restarts === undefined)
+    throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer`);
+  return { restarts, windowMs: windowMs ?? parseDuration("10m") };
+}
+
 function readPermits(raw: unknown, persona: string): AgentPermits {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new Error(`spawn(${persona}): permits must be a record of budgets, got ${JSON.stringify(raw)}`);
@@ -2198,14 +2230,16 @@ function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {
 const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
 
 /** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
- *  (`name`), `join` becomes the seat's channel subscriptions. Policy fields do not travel. */
-function spawnArgs(req: SpawnRequest): Record<string, unknown> {
+ *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
+ *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
+export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
+    ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
   };
 }
 

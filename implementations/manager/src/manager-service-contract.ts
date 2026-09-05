@@ -170,6 +170,15 @@ const SPAWN_INPUT_SCHEMA = {
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
     shareTools: { type: "string" },
+    supervise: {
+      type: "object",
+      additionalProperties: false,
+      required: ["restarts", "windowMs"],
+      properties: {
+        restarts: { type: "integer", minimum: 1 },
+        windowMs: { type: "integer", minimum: 1 },
+      },
+    },
   },
 } as const;
 
@@ -569,7 +578,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  10 = the turn relay family (`turn`, `turn-pending`, `turn-yield`): a workflow run's one-turn
  *  goal against a seat, the seat's own pull of its pending turns, and its yield. NEW SERVED
- *  COMMANDS are what a revision is for, and three of them cannot fold into 9. */
+ *  COMMANDS are what a revision is for, and three of them cannot fold into 9.
+ *
+ *  11 = `spawn` input grows `supervise` (`restarts` + `windowMs`): a declarative restart policy
+ *  the manager enforces in place. A changed input contract is a changed described surface even
+ *  though the command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -587,7 +600,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 10,
+    revision: 11,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
