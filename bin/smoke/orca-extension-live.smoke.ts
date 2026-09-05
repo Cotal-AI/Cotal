@@ -67,7 +67,7 @@ mkdirSync(join(root, ".cotal"), { recursive: true });
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
 // Isolated XDG first: the e2e boots a real `claude` connector in Orca,
 // so the checkout writer is opted in only after relocation.
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_ALLOW_CHECKOUT_SEED: "1" };
+const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_ALLOW_CHECKOUT_SEED: "1" };
 delete env.COTAL_SKIP_CONNECTOR_SEED;
 
 let pass = 0;
