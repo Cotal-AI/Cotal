@@ -3,8 +3,9 @@
  * broker has records for more than one space. Registry filenames are sorted, so the other record can
  * otherwise be considered first and make a valid same-root refresh look foreign.
  *
- * The fixture drives the shipped binary against its own isolated open broker. It runs both filename
- * orders, then verifies that an absent requested space and a record rooted elsewhere still refuse.
+ * The fixture drives the shipped binary against its own isolated broker with a supported
+ * multi-space account root. It runs both filename orders, then verifies that an absent requested
+ * space and a record rooted elsewhere still refuse.
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawnSync } from "node:child_process";
