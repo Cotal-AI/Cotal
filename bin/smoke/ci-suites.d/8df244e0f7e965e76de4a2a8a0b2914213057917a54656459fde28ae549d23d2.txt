@@ -1,0 +1,2 @@
+# Runtime.adopt is the typed custody seam; every current runtime still throws.
+smoke:runtime-contract

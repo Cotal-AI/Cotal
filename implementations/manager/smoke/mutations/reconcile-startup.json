@@ -21,8 +21,8 @@
     {
       "name": "serve last again, recreating startup-wide manager unavailability",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)\n      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));",
-      "replace": "    if (this.auth && !this.userMode) await this.reconcileStaticLifecycles();",
+      "find": "    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)",
+      "replace": "    const startupReconcile = this.auth && !this.userMode ? await this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)",
       "expectRed": "status serves while later orphan rows remain ACTIVE",
       "cell": "status serves while later orphan rows remain ACTIVE",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"

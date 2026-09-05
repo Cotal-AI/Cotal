@@ -217,6 +217,10 @@ export interface Connector extends Extension {
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
+  /** Whether a launch without {@link LaunchOpts.resume} or {@link LaunchOpts.continueSession}
+   * creates a new host session. This is the first-cutover continuity declaration: a manager may
+   * describe it as `fresh`, but must never infer it by connector name or by probing a live host. */
+  readonly supportsFreshStart?: boolean;
   /**
    * Whether this connector can tell its host that the advertised `cotal_*` list changed.
    *
@@ -248,6 +252,21 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+}
+
+/** The only continuity classes a maintenance report may promise for a connector. */
+export type SessionContinuityClass = "exact" | "fork" | "fresh" | "drain-only";
+
+/**
+ * Classify continuity from declared connector capabilities only. A host throwing while probed is
+ * not capability evidence, and connector names are deliberately not part of this decision.
+ */
+export function sessionContinuityClass(
+  connector: Pick<Connector, "supportsResume" | "supportsSessionContinuation" | "supportsFreshStart">,
+): SessionContinuityClass {
+  if (connector.supportsSessionContinuation) return "exact";
+  if (connector.supportsResume) return "fork";
+  return connector.supportsFreshStart ? "fresh" : "drain-only";
 }
 
 /**
