@@ -23,6 +23,8 @@
       "file": "packages/core/src/run-driver-grants.ts",
       "find": "    `${p}.ept.${e}.${iid}.${args.epoch}.*.schedule`,",
       "replace": "    `${p}.ept.${e}.${iid}.*.*.schedule`,",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "a schedule request under any other epoch is refused: the timer coordinates are this attempt's own",
       "cell": "a schedule request under any other epoch is refused: the timer coordinates are this attempt's own",
       "note": "A credential that can schedule under any epoch can arm fires at coordinates a later attempt of the same instance listens on. The D32 matrix pins the row's text; this proves the broker enforces it."
@@ -32,6 +34,8 @@
       "file": "packages/core/src/kv-scan.ts",
       "find": "export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> {",
       "replace": "export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> {\n  return await liveKvEntries(kv, filter);",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
       "cell": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
       "note": "The walk exists so a principal with no consumer verb on the records store can list its keys. Routed back through the ordered consumer it works on every open broker and fails on every authed one."
