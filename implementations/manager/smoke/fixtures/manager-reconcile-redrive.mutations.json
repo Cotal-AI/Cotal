@@ -7,7 +7,7 @@
     "The suite starts a real authenticated nats-server through serverConfig and an in-process Manager, then plants three durable orphan lifecycle rows.",
     "The first mutation changes only the failed aggregate branch. The earliest named cell observes the completed first sweep after all three shipped terminal paths ran, so it reddens because failure became success-shaped reporting rather than because an earlier row short-circuited.",
     "The second mutation removes only the retry scheduling call after the real middle-row terminal failed. Earlier aggregate, durable hold, and status cells still run; the named re-drive cell is the first one that requires a second exact terminal entry.",
-    "The shutdown mutations independently remove the accepted-sweep drain, the serial stop fence, and the start-task join. The real broker control gates the first terminal, calls stop, and names the first observable failure for each boundary."
+    "The shutdown mutations remove the accepted-sweep drain, the serial stop fence, and the start-task join. The real broker control gates the first terminal and holds service registration after startup has passed its shutdown fence, so the start-task join has its own deterministic observation before the registration gate is released."
   ],
   "mutations": [
     {
@@ -47,8 +47,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
       "replace": "    await this.awaitStaticReconcileDrain();",
-      "expectRed": "startup cannot publish the manager service after stop completes",
-      "cell": "startup cannot publish the manager service after stop completes"
+      "expectRed": "stop joins startup service registration admitted before shutdown",
+      "cell": "stop joins startup service registration admitted before shutdown"
     }
   ]
 }

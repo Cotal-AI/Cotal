@@ -294,8 +294,9 @@ try {
 
   // Shutdown control. A second logical manager can coexist in this space, which isolates its owned
   // rows from the main redrive scenario above. Gate its first exact terminal, request stop, then
-  // release it. stop() must drain that accepted terminal, the serial sweep must not start the later
-  // row after the shutdown fence, and start() must not publish a service after stop has returned.
+  // release it. The registration gate holds startup after it has passed the shutdown fence, so
+  // stop() must join that admitted startup task after draining the terminal. The serial sweep must
+  // not start the later row, and no service registration may survive the completed shutdown.
   const shutdownRoot = join(root, "shutdown-manager");
   const shutdownInstanceId = mintLifecycleUid();
   mkdirSync(join(shutdownRoot, ".cotal", "agents"), { recursive: true });
@@ -310,7 +311,17 @@ try {
   const shutdownInternals = shutdownManager as unknown as {
     staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
     serviceServe?: unknown;
+    registerManagerService(): Promise<void>;
     reconcileStaticLifecycles(): Promise<void>;
+  };
+  let shutdownRegistrationEntered = false;
+  let releaseShutdownRegistration!: () => void;
+  const shutdownRegistrationRelease = new Promise<void>((resolve) => { releaseShutdownRegistration = resolve; });
+  const registerShutdownManagerService = shutdownInternals.registerManagerService.bind(shutdownManager);
+  shutdownInternals.registerManagerService = async () => {
+    shutdownRegistrationEntered = true;
+    await shutdownRegistrationRelease;
+    await registerShutdownManagerService();
   };
   shutdownInternals.staticLifecycleEvict = async (principal): Promise<EvictionResult> => {
     const alias = [...identities].find(([, row]) => row.principal === principal)?.[0] ?? principal;
@@ -323,11 +334,14 @@ try {
   };
   const shutdownStarting = shutdownManager.start();
   check("shutdown control reached its first accepted exact terminal", await until(() => shutdownFirstEntered, 20_000));
+  check("shutdown control reached service registration after the startup fence", await until(() => shutdownRegistrationEntered, 20_000));
   let shutdownSettled = false;
   const shutdownStopping = shutdownManager.stop().then(() => { shutdownSettled = true; });
   await wait(150);
   check("stop waits for an accepted startup reconciliation terminal", shutdownSettled === false);
   releaseShutdownFirst();
+  check("stop joins startup service registration admitted before shutdown", !(await until(() => shutdownSettled, 1_000)));
+  releaseShutdownRegistration();
   await Promise.allSettled([shutdownStarting, shutdownStopping]);
   check("the shutdown fence prevents the serial sweep from starting a later terminal", attempts.get("shutdown-first") === 1 && attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
   check("startup cannot publish the manager service after stop completes", shutdownInternals.serviceServe === undefined, { registered: shutdownInternals.serviceServe !== undefined });
