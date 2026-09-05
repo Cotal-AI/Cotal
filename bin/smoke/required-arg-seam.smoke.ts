@@ -293,7 +293,10 @@ const SEAMS: Seam[] = [
   // 118/87 -> 119/88: static-lifecycle.smoke.ts's #1274 crash-resume cell (driveTerminalDirect) opens
   // one more lifecycle-executor connection to plant a terminalizing slot and drive runStaticTerminal
   // as a resume would. It is under smoke/, harness residue not product connect, and states tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 119, untypecheckedSites: 88 },
+  // 119/88 -> 124/92: #774 adds one typechecked provisioner re-read before each static reconcile
+  // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
+  // observer, caller, and exact terminal gate inspection). Every site states tls: false.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 124, untypecheckedSites: 92 },
 ];
 
 /**
