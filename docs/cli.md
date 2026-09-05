@@ -120,6 +120,9 @@ After disk reconciliation, `update` reads the selected running manager. A manage
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
 for every seat. This report sends no stop, preservation-commit, or replacement command.
+It does not preserve a running PTY. Custody transfer is not available until the custody runtime is
+implemented. Even after compatible custody generations exist, an incompatible native
+`@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
 
 With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
 version it validated, resolves and verifies that package in npm's global root, then launches that
