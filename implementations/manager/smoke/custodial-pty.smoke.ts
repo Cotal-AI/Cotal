@@ -52,10 +52,10 @@ if (process.platform !== "linux") {
   check("spawned handle exposes a durable reference", h.reference !== undefined && h.reference.kind === "pty", h.reference);
   const adopted = requireRuntimeAdopt(rt, h.reference!);
   check("production adopt returns a live proxy", typeof adopted.attach === "function" && adopted.pid === h.pid);
-  adopted.stop({ graceful: false });
-  await adopted.waitForExit?.();
-  const drop = (h: unknown): void => {
-    (h as { close?: () => void }).close?.();
+  h.stop({ graceful: false });
+  await h.waitForExit?.();
+  const drop = (target: unknown): void => {
+    (target as { close?: () => void }).close?.();
   };
   drop(adopted);
   drop(h);
@@ -63,4 +63,4 @@ if (process.platform !== "linux") {
 }
 
 console.log(`\nCUSTODIAL PTY ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-process.exitCode = fail === 0 ? 0 : 1;
+process.exit(fail === 0 ? 0 : 1);

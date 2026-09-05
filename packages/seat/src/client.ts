@@ -25,6 +25,7 @@ interface Pending {
 
 export class SeatClient {
   private sock: Socket | undefined;
+  private connecting: Socket | undefined;
   private reader = new FrameReader();
   private nextId = 1;
   private pending = new Map<number, Pending>();
@@ -37,11 +38,23 @@ export class SeatClient {
 
   async connect(): Promise<HelloInfo> {
     if (this.helloInfo) return this.helloInfo;
+    if (this.closed) throw new Error("seat client is closed");
     const sock = await new Promise<Socket>((resolve, reject) => {
       const s = connect(this.record.socket);
-      s.once("connect", () => resolve(s));
-      s.once("error", reject);
+      this.connecting = s;
+      s.once("connect", () => {
+        this.connecting = undefined;
+        resolve(s);
+      });
+      s.once("error", (err) => {
+        this.connecting = undefined;
+        reject(err);
+      });
     });
+    if (this.closed) {
+      sock.destroy();
+      throw new Error("seat client is closed");
+    }
     this.sock = sock;
     sock.on("data", (chunk) => {
       for (const raw of this.reader.push(chunk)) this.dispatch(raw);
@@ -136,6 +149,8 @@ export class SeatClient {
 
   close(): void {
     this.closed = true;
+    this.connecting?.destroy();
+    this.connecting = undefined;
     this.sock?.destroy();
   }
 
