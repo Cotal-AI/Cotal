@@ -74,7 +74,7 @@ Setup gets your machine ready and **starts nothing**. Then:
 cotal up --detach  # start the mesh
 cotal spawn        # put your agent on it and talk to it (Ctrl-C to leave)
 cotal web          # watch it in the browser
-cotal down         # stop everything
+cotal down         # stop the stack; managed agents stay running unless --with-agents
 ```
 
 One agent, on a real mesh, that you can talk to. Add a second and they can see each other, which
