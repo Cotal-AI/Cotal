@@ -62,7 +62,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BROKEN = "BROKEN:";
 
 type UngatedExemption = { reason: string; recheckBy: string };
-const EXPECTED_EXEMPTIONS = 20;
+const EXPECTED_EXEMPTIONS = 22;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 
@@ -72,6 +72,8 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:orca-e2e:live": standing("drives the public orca CLI"), "smoke:pi": standing("needs a pi install"), "smoke:codex-live": standing("needs a logged-in codex CLI"),
   "smoke:codex-tui-live": standing("needs a codex TUI session"),
   "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
+  "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
+  "smoke:backup-usermode:live": untriagedExemption("BROKEN: red on main at section D on a space backup inventory mismatch; already-red so it cannot enter CI"),
   // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
   // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
   // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
@@ -177,8 +179,9 @@ const bodyOf = (name: string): string => (name === "smoke:ci" ? ciChainBody() : 
 // REACHED MEANS REACHABLE FROM A ROOT THAT ACTUALLY RUNS, transitively — not "mentioned somewhere".
 // The two relations agree on today's graph, which is why the weaker one survived: an allowlisted
 // UNREACHABLE parent naming a child marks the child reached under "mentioned by", though nothing
-// runs either. Roots are what CI and a developer actually invoke.
-const ROOTS = ["smoke:ci", "check", "test"];
+// runs either. Roots are what CI actually invokes. `check` is a developer convenience
+// chain; no workflow runs it, so it is not a root.
+const ROOTS = ["smoke:ci", "test"];
 const wfDir = join(ROOT, ".github", "workflows");
 const roots = new Set<string>(ROOTS.filter((r) => r in pkg.scripts));
 for (const f of readdirSync(wfDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml")))

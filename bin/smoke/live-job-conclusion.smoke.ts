@@ -1,5 +1,5 @@
 /**
- * Issue #967: a live job that reaches its own 25-minute deadline is badged `cancelled`, exactly like
+ * Issue #967: a live job that reaches its own deadline is badged `cancelled`, exactly like
  * an intentionally superseded PR revision. The workflow now has a separate always-running
  * `live-conclusion` job that reads this run-attempt's job timing and makes the two cases distinct.
  *
@@ -64,9 +64,9 @@ check("the aggregate check name makes its live-outcome role visible",
   workflow.includes("name: ci-ok (live outcome classified)"));
 check("the aggregate grants only read access needed for checkout and the Actions jobs API",
   /  ci-ok:\n(?:.|\n)*?    permissions:\n      actions: read\n      contents: read/.test(workflow));
-check("the workflow calls the committed classifier with the measured 25-minute budget",
+check("the workflow calls the committed classifier with the measured 40-minute budget",
   workflow.includes("node scripts/live-job-conclusion.mjs")
-  && workflow.includes("--timeout-seconds 1500"));
+  && workflow.includes("--timeout-seconds 2400"));
 check("the classifier is inside ci-ok and runs before the aggregate gate",
   workflow.indexOf("node scripts/live-job-conclusion.mjs") < workflow.indexOf("      - name: Gate"));
 
