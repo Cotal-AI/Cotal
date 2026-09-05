@@ -124,12 +124,13 @@ It does not preserve a running PTY. Custody transfer is not available until the 
 implemented. Even after compatible custody generations exist, an incompatible native
 `@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
 
-With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
-version it validated, resolves and verifies that package in npm's global root, then launches that
-binary to reconcile connectors and first-party extensions to the new generation. An npx or dev-clone
-invocation therefore installs and continues through a separate global copy; it never claims the
-already-running process changed. If the binary is current, `--self` performs the normal local
-reconcile without reinstalling it.
+With `--self`, the selected running manager is reported before any global install. When a newer
+release exists, Cotal then installs the exact version it validated, resolves and verifies that
+package in npm's global root, then launches that binary with the same `--space` / `--server` /
+`--creds` selection to reconcile connectors and first-party extensions to the new generation. An npx
+or dev-clone invocation therefore installs and continues through a separate global copy; it never
+claims the already-running process changed. If the binary is current, `--self` performs the normal
+local reconcile without reinstalling it.
 
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are

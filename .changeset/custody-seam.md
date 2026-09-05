@@ -13,4 +13,4 @@
 "@cotal-ai/connector-codex": minor
 ---
 
-Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot.
+Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.

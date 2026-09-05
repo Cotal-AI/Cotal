@@ -110,7 +110,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime, 
 
   if (self) {
     const latest = latestVersion(rt);
-    if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt);
+    if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt, target);
 
     return reconcileCurrent(current, rt, target, (reconciled) => {
       if (!latest.ok) {
@@ -255,7 +255,14 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
-async function upgradeAndReconcile(target: string, current: string, rt: UpdateRuntime): Promise<number> {
+async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
+  try {
+    if (await rt.reportRunningManager(target) === "legacy") return 1;
+  } catch (e) {
+    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
+    return 1;
+  }
+
   const rootResult = rt.npm(["root", "-g"]);
   if (rootResult.status !== 0) {
     rt.err(c.red(`✗ could not resolve npm's global root before install: ${failure(rootResult)}`));
@@ -277,8 +284,8 @@ async function upgradeAndReconcile(target: string, current: string, rt: UpdateRu
 
   try {
   rt.out(c.bold("cotal-ai binary"));
-  rt.out(c.dim(`installing cotal-ai@${target} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
-  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", `cotal-ai@${target}`]);
+  rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
+  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", `cotal-ai@${targetVersion}`]);
   const installed = await rt.spawnGlobal(
     root,
     "install",
@@ -289,35 +296,44 @@ async function upgradeAndReconcile(target: string, current: string, rt: UpdateRu
     npmInstall.windowsVerbatimArguments,
   );
   if (installed.status !== 0) {
-    rt.err(c.red(`✗ global cotal-ai@${target} install failed: ${failure(installed)}`));
+    rt.err(c.red(`✗ global cotal-ai@${targetVersion} install failed: ${failure(installed)}`));
     return 1;
   }
 
   let entry: string;
   try {
-    entry = rt.verifyGlobalEntry(root, target);
+    entry = rt.verifyGlobalEntry(root, targetVersion);
   } catch (e) {
     rt.err(c.red(`✗ installed global cotal-ai could not be verified: ${message(e)}`));
     return 1;
   }
   const env: NodeJS.ProcessEnv = {
     ...rt.env,
-    [UPDATE_TARGET_ENV]: target,
+    [UPDATE_TARGET_ENV]: targetVersion,
     [UPDATE_PARENT_ENV]: String(rt.pid),
   };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const child = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
+  const child = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update", ...targetArgv(target)], env, true);
   if (child.stderr) rt.stderr(child.stderr);
   if (child.stdout) rt.stdout(child.stdout);
   if (child.status !== 0) {
-    rt.err(c.red(`✗ cotal-ai@${target} installed globally, but its reconcile failed: ${failure(child)}`));
+    rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
     return child.status ?? 1;
   }
-  rt.out(c.green(`✓ cotal-ai@${target} installed globally and reconciled`));
+  rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
   return 0;
   } finally {
     releaseGlobal();
   }
+}
+
+function targetArgv(target: Record<string, unknown>): string[] {
+  const argv: string[] = [];
+  for (const name of ["space", "server", "creds"] as const) {
+    const value = target[name];
+    if (typeof value === "string") argv.push(`--${name}`, value);
+  }
+  return argv;
 }
 
 function reportVersion(current: string, latest: string, rt: UpdateRuntime): void {

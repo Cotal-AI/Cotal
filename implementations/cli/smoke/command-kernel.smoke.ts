@@ -370,6 +370,37 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(successful.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update")));
   assert.ok(successful.events.some((event) => event.includes("npm's global installation") && event.includes("process remains loaded")));
   assert.ok(!successful.events.includes("reconcile"), "old generation is not reconciled before self-upgrade");
+  const selfReport = successful.events.indexOf("report-running-manager");
+  assert.ok(selfReport !== -1 && selfReport < installEvent, "self-update reports the running manager before the global install");
+
+  const namedTarget = updateRuntime({
+    npm: (args) => {
+      if (args[0] === "view") return { status: 0, stdout: '"0.13.2"' };
+      if (args[0] === "root") return { status: 0, stdout: "/alternate/global/node_modules\n" };
+      return { status: 0 };
+    },
+  });
+  assert.equal(await executeUpdate(true, namedTarget.rt, {
+    space: "named-space",
+    server: "nats://example:4222",
+    creds: "/tmp/creds.creds",
+  }), 0);
+  assert.ok(
+    namedTarget.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update --space named-space --server nats://example:4222 --creds /tmp/creds.creds")),
+    "self-update replacement child carries the selected target flags",
+  );
+
+  const selfLegacy = updateRuntime({
+    reportRunningManager: async () => "legacy",
+    npm: (args) => {
+      if (args[0] === "view") return { status: 0, stdout: '"0.13.2"' };
+      if (args[0] === "root") return { status: 0, stdout: "/alternate/global/node_modules\n" };
+      return { status: 0 };
+    },
+  });
+  assert.equal(await executeUpdate(true, selfLegacy.rt, { space: "named-space" }), 1);
+  assert.ok(selfLegacy.events.includes("report-running-manager"), "self-update classifies the selected manager before install");
+  assert.ok(!selfLegacy.events.some((event) => event.startsWith("global:install")), "legacy report refuses the global install");
 
   const failedChild = updateRuntime({
     npm: (args) => args[0] === "view"
