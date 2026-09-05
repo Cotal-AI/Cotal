@@ -532,9 +532,15 @@ try {
     const auth4: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
     const spec4 = { endpoint: "reg4", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg4", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
-    const r = await regSvc(flakyKv, { space, spec: spec4, instanceId: IID, registrant: { owner: "u_op" }, authority: auth4, barrier: g.barrier });
+    let recovered4: { registrationRevision: number } | Error | undefined;
+    try {
+      recovered4 = await regSvc(flakyKv, { space, spec: spec4, instanceId: IID, registrant: { owner: "u_op" }, authority: auth4, barrier: g.barrier });
+    } catch (e) {
+      recovered4 = e as Error;
+    }
     c("an AMBIGUOUS first spec-write (committed then ack lost) read-back completes the same freeze rather than leaving a stuck gate",
-      r.registrationRevision > 0 && g.coord().state === "open" && g.coord().registrationRevision === r.registrationRevision && g.coord().processEpoch === EPOCH, g.coord());
+      !(recovered4 instanceof Error) && recovered4.registrationRevision > 0 && g.coord().state === "open" && g.coord().registrationRevision === recovered4.registrationRevision && g.coord().processEpoch === EPOCH,
+      recovered4 instanceof Error ? recovered4.message : g.coord());
   }
   // #1243: after a completed first registration, a RE-registration spec UPDATE can commit and then
   // lose the ack. Leaving the gate frozen exits the manager; boot self-heal abort-reopens; the next
