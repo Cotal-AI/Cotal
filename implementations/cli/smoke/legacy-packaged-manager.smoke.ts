@@ -6,8 +6,10 @@ import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const operatorStamp = join(homedir(), ".config", "cotal", "seed", "stamp.json");
-const stampBefore = existsSync(operatorStamp) ? readFileSync(operatorStamp, "utf8") : undefined;
+const originalHome = process.env.HOME ?? homedir();
+const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");
+const operatorStamp = join(originalXdg, "cotal", "seed", "stamp.json");
+const stampBefore = existsSync(operatorStamp) ? readFileSync(operatorStamp) : undefined;
 const ambient: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(ambient)) if (key.startsWith("COTAL_")) delete ambient[key];
 
@@ -43,7 +45,7 @@ for (const name of ["node", "npm", "pnpm", "nats-server", "sh", "tar", "gzip", "
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
-const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:/usr/bin:/bin`, NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
+const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:/usr/bin:/bin`, NO_COLOR: "1" };
 const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
@@ -52,11 +54,7 @@ const run = (file: string, args: string[], cwd: string) => spawnSync(file, args,
 let broker: ChildProcess | undefined;
 let legacy: ChildProcess | undefined;
 try {
-  assert.deepEqual(JSON.parse(stampBefore ?? "null"), {
-    generation: "0.41.4",
-    writtenBy: "/home/cotal/.local/lib/node_modules/cotal-ai/dist/cotal.js",
-    writtenAt: "2026-09-05T03:39:45.609Z",
-  }, "operator stamp is the installed CLI generation before fixture installs");
+  assert.equal(Object.keys(cleanEnv).filter((key) => key.startsWith("COTAL_")).length, 0, "child env carries no COTAL_*");
   assert.equal(spawnSync("sh", ["-c", "command -v cotal"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), fixtureCotal, "the fixture PATH masks the operator cotal binary");
   assert.equal(run(npm, ["root"], current).stdout.trim(), join(realpathSync(current), "node_modules"), "current package install resolves into the isolated prefix before installation");
   assert.equal(run(npm, ["root"], old).stdout.trim(), join(realpathSync(old), "node_modules"), "old package install resolves into the isolated prefix before installation");
@@ -102,6 +100,6 @@ setInterval(() => {}, 1000);
   if (legacy?.pid && alive(legacy.pid)) legacy.kill("SIGKILL");
   if (broker?.pid && alive(broker.pid)) broker.kill("SIGKILL");
   await Promise.all([legacy, broker].filter(Boolean).map((child) => new Promise<void>((resolve) => child!.once("exit", () => resolve()))));
-  assert.equal(existsSync(operatorStamp) ? readFileSync(operatorStamp, "utf8") : undefined, stampBefore, "fixture did not change the operator seed stamp");
+  assert.deepEqual(existsSync(operatorStamp) ? readFileSync(operatorStamp) : undefined, stampBefore, "fixture did not change the operator seed stamp");
   rmSync(base, { recursive: true, force: true });
 }
