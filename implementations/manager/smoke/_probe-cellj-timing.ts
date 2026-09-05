@@ -360,7 +360,7 @@ try {
   att?.kill();
   onKnock = undefined;
   await closeLink();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   // Order is the whole of it, and the suite states the rule: kill and remove FIRST, release LAST.
   // `releaseBroker` does not stop anything, it hands ownership BACK (`owned.delete(entry)`), and
   // the reap that runs on exit only touches what it still owns. Releasing before exiting therefore

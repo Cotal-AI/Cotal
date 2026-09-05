@@ -102,7 +102,8 @@ old-manager preflight → **delivery daemon** (auth mode only) → **manager**, 
 `ensureControlPlane`
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The detached
 processes, all stopped by `cotal down` (managed agents stay running unless
-`cotal down --with-agents`):
+`cotal down --with-agents`). A PTY child may still die when the manager process
+exits. A later manager on the same root may still take leftover seats.
 
 With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker
 address is already held by another root or an unrecorded broker; an explicit `--server` remains

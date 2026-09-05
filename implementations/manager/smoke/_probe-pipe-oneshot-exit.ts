@@ -156,7 +156,7 @@ try {
   console.log(`transcript tail: ${JSON.stringify(buf.slice(-400))}`);
 } finally {
   try { child?.kill("SIGKILL"); } catch { /* already gone */ }
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();

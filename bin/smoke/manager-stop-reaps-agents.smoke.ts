@@ -14,8 +14,10 @@
  * What runs here:
  *   SPARE phase: manager up, one live managed seat (pidfile), then a plain `mgr.stop()`.
  *   The seat's process stays alive and its minted creds file stays. The managed table is empty.
- *   REAP phase: a fresh manager, a second seat, `mgr.stop({ withAgents: true })`. The process
- *   is dead and the creds file is gone.
+ *   REAP phase: a FRESH workspace root (a successor on the SAME root would run
+ *   `reconcileStaticLifecycles` and terminalize seat A's durable slot; that successor
+ *   hazard is named and out of this PR). A second seat, `mgr.stop({ withAgents: true })`.
+ *   The process is dead and the creds file is gone.
  *
  * NAMED GAPS (deliberate, not oversights):
  *   - The CLI `down` surface itself is not driven here: this host must never run `cotal down`
@@ -70,9 +72,9 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-/** Cells that ran, before the count cell itself: 6 must + 10 ok. A throw lands in the catch as a
+/** Cells that ran, before the count cell itself: 6 must + 11 ok. A throw lands in the catch as a
  *  counted failure, so a partial run can never print the OK banner. */
-const EXPECTED_CELLS = 17;
+const EXPECTED_CELLS = 18;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   const end = Date.now() + ms;
@@ -158,9 +160,9 @@ const cmd = (name: string): Command => {
 };
 /** Spawn a seat through the REAL CLI spawn command, in-process, standing in the workspace root
  *  (the command resolves auth from the cwd root, exactly as an operator's shell would). */
-const spawnSeat = async (name: string): Promise<void> => {
+const spawnSeat = async (name: string, cwd: string = root): Promise<void> => {
   const prev = process.cwd();
-  process.chdir(root);
+  process.chdir(cwd);
   try {
     await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--agent", "seatcon", "--space", SPACE, "--name", name]));
   } finally {
@@ -254,11 +256,17 @@ try {
   ok("#964: a plain Manager.stop() leaves the live managed seat running", pidA !== undefined && alive(pidA), { pidA });
   ok("#964: a spared seat is not deprovisioned (its minted creds file remains)", credsA !== undefined && existsSync(credsA), { credsA });
 
-  // ── REAP phase: a fresh manager, a second seat, stop({ withAgents: true }) ────────────────────
-  mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
+  // ── REAP phase: a different root, so this manager is not seat A's successor ──────────────────
+  const rootB = join(base, "rootB");
+  mkdirSync(join(rootB, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(rootB, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: worker\nsubscribe: []\n---\nA supervised seat that exists to be reaped.\n");
+  saveSpaceAuth(authDir(rootB), auth);
+  recordMesh({ space: SPACE, server: SERVER, root: rootB, mode: "auth", ts: new Date().toISOString() });
+  mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: rootB });
   await mgr2.start();
-  must("a fresh manager starts over the same root (reap phase)", true);
-  await spawnSeat("seatB");
+  must("a fresh manager starts over a different root (reap phase is not a same-root successor)", true);
+  ok("#964: seat A is still live after a manager starts on a different root (same-root successor reconcile is out of this PR)", pidA !== undefined && alive(pidA), { pidA });
+  await spawnSeat("seatB", rootB);
   const pidB = await until(() => pidOf(join(pidDir, "seatB.pid")) !== undefined, 15_000) ? pidOf(join(pidDir, "seatB.pid"))! : undefined;
   must("seat B is live under the fresh manager", pidB !== undefined && alive(pidB) && optsByName.has("seatB"), { pidB });
   const credsB = optsByName.get("seatB")?.creds;

@@ -1438,7 +1438,7 @@ try {
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
   const alphaFamily = incFiles("alpha"); // resolve the incarnation paths BEFORE teardown shreds them
-  await manager.stop(); // teardown deprovisions alpha: user-mode revoke (row delete) + token/sentinel/health shred
+  await manager.stop({ withAgents: true }); // teardown deprovisions alpha: user-mode revoke (row delete) + token/sentinel/health shred
   managerStopped = true;
   const rowGone = !existsSync(managedRowPath);
   const filesGone = [alphaFamily.actorToken, alphaFamily.sentinelCreds, alphaFamily.health].every((f) => !existsSync(f)) && noIncFiles("alpha");
@@ -1456,7 +1456,7 @@ try {
   try { await observer?.stop(); } catch { /* */ }
   try { await shortEp?.stop(); } catch { /* */ }
   for (const e of ctlEps) { try { await e.stop(); } catch { /* */ } }
-  if (manager && !managerStopped) await manager.stop().catch(() => {});
+  if (manager && !managerStopped) await manager.stop({ withAgents: true }).catch(() => {});
   await killPid(authChild?.pid);
   broker?.kill("SIGKILL");
   idpSrv.close();

@@ -203,7 +203,7 @@ try {
 } finally {
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* already gone */ } }
   await sever();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();

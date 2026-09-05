@@ -289,7 +289,7 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  try { await mgr.stop(); } catch { /* already stopped */ }
+  try { await mgr.stop({ withAgents: true }); } catch { /* already stopped */ }
   await delivery?.stop().catch(() => {});
   srv.kill("SIGKILL");
   await wait(300);

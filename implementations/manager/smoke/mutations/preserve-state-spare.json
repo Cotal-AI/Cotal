@@ -1,0 +1,22 @@
+{
+  "suite": "implementations/manager/smoke/preserve-state.smoke.ts",
+  "guard": "plain Manager.stop leaves managed agents running; stop({ withAgents: true }) still reaps",
+  "command": "pnpm smoke:preserve-state",
+  "completionMarker": "PRESERVE-STATE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/preserve-state-spare.json",
+  "why": [
+    "The suite imports Manager relatively (`../src/manager.js`), so a mutation on manager.ts is live with no dist in the path.",
+    "MUTATION 1 restores the #964 defect: a plain stop always tears down children. The named spare cells redden; the withAgents counterpart pair stays green, so the first red is the spare contract, not an earlier short-circuit."
+  ],
+  "mutations": [
+    {
+      "name": "the defect restored: a plain stop still reaps every managed agent",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();\n      else this.detachManagedAgents();",
+      "replace": "      await this.teardownManagedAgents();",
+      "expectRed": "normal stop leaves managed agents running",
+      "cell": "normal stop leaves managed agents running",
+      "note": "Issue #964 restored on the active path. The stop({ withAgents: true }) counterpart pair stays green; only the spare cells redden."
+    }
+  ]
+}

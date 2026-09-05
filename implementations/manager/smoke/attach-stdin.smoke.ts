@@ -1099,7 +1099,7 @@ try {
   onKnock = undefined;
   sawClientPing = undefined;
   await closeLink();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   // Kill and remove FIRST, release LAST: `releaseBroker` hands the kill duty back rather than doing
   // it, so releasing before the kill leaves a window where nobody owns this broker.
   srv.kill("SIGKILL");

@@ -2344,7 +2344,8 @@ export class Manager {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
-        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
+        const graceful = args(ctx).graceful !== false;
+        return unwrap(await this.despawnAuthorized(a, graceful, true, !graceful));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -4860,15 +4861,25 @@ export class Manager {
   private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean): Promise<ControlReply> {
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    return this.despawnAuthorized(a, graceful, !admin);
+    return this.despawnAuthorized(a, graceful, !admin, !graceful);
   }
 
   /** The post-authorization terminal effect (both doors). `trackNonAdmin` mirrors the ctl door's
-   *  `trackStoppedHandle(a, !admin)` disposition. */
-  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean): ControlReply {
+   *  `trackStoppedHandle(a, !admin)` disposition. A hard stop (`graceful: false`) is the mass-reap
+   *  path (`cotal down --with-agents`): it keeps the slot until the runtime proves exit, the same
+   *  demand recursive reap already makes via {@link trackStoppedHandle}'s third argument. Ordinary
+   *  `cotal stop` stays acceptance-not-exit (graceful defaults true). */
+  private async despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, requireAuthoritativeExit = false): Promise<ControlReply> {
     this.stopHandle(a, graceful);
-    this.trackStoppedHandle(a, trackNonAdmin);
+    this.trackStoppedHandle(a, trackNonAdmin, requireAuthoritativeExit);
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // M4: cancel a live spawn goal
+    if (requireAuthoritativeExit) {
+      try {
+        await this.awaitHandleExit(a.handle);
+      } catch (e) {
+        return { ok: false, error: `stop requested but exit was not proven: ${(e as Error).message}` };
+      }
+    }
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }
 

@@ -574,7 +574,7 @@ try {
   // the fault arms above, and the `rmSync` below could not clear it. Imported at the top now, with
   // the same best-effort intent.
   try { chmodSync(managedActorLedgerDir(dir), 0o700); } catch { /* best-effort restore before rm */ }
-  try { await manager?.stop(); } catch { /* already stopped */ }
+  try { await manager?.stop({ withAgents: true }); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }
   if (authChild?.pid) { try { process.kill(authChild.pid, "SIGKILL"); } catch { /* gone */ } }
   if (broker?.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }

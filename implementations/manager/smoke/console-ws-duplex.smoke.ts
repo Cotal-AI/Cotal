@@ -96,7 +96,7 @@ try {
   await nc.close();
   console.log(`\nconsole-ws-duplex: ${pass} passed, ${fail} failed`);
 } finally {
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) k.kill("SIGKILL");
   await wait(200);
 }

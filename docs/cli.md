@@ -258,10 +258,16 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 
 Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents
-running as unmanaged OS processes. It prints their names, pids, and working directories, and
-points at `cotal down --with-agents` to take them with the stack. `--with-agents` cannot be
-combined with `--preserve-state`, component names, `--space`, `--file`, `--run`, or `--dry-run`.
-A live manager that cannot list its seats is refused, and the stack is not signalled. Positional
+running as unmanaged OS processes. If the manager answers `ps`, it prints their names, pids, and
+working directories, and points at `cotal down --with-agents` to take them with the stack. If the
+manager cannot be asked, it still signals the stack and says leftovers may remain. A PTY child
+may still die when the manager process exits. A later manager on the same root may still take
+leftover seats. This listing is `cotal down`. A failed `cotal up` teardown SIGTERMs the manager
+without listing leftover seats. An older manager whose `stop()` still reaps will still reap on
+SIGTERM. `--with-agents`
+cannot be combined with `--preserve-state`, component names, `--space`, `--file`, or `--run`.
+`--with-agents --dry-run` prints the seats that would be reaped and mutates nothing. `--with-agents`
+waits for each seat's runtime to prove exit before signalling the manager. Positional
 component names stop only those self-registered local processes; for example, `cotal down manager` leaves delivery and
 the broker running, and `cotal down web` is available when the web extension is installed. A
 component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`

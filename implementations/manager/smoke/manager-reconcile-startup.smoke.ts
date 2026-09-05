@@ -578,14 +578,14 @@ try {
         (await readGoalResult(actx, ref))?.state === "failed", await readGoalResult(actx, ref));
     }
 
-    await adopting.stop().catch(() => {});
+    await adopting.stop({ withAgents: true }).catch(() => {});
   }
 
 
 } finally {
   await callerNc?.drain().catch(() => callerNc?.close());
   await observerNc?.drain().catch(() => observerNc?.close());
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
 }

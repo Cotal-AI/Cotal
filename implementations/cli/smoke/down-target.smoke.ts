@@ -159,8 +159,23 @@ try {
   check("--with-agents with --run is refused", true);
   await assert.rejects(run([], { "with-agents": true, space: "teamA" }), /--with-agents is bare-whole-stack only/);
   check("--with-agents with --space is refused", true);
-  await assert.rejects(run([], { "with-agents": true, "dry-run": true }), /--with-agents is bare-whole-stack only/);
-  check("--with-agents with --dry-run is refused", true);
+  const realExit = process.exit;
+  let dryCombo: string | undefined;
+  (process as { exit: (code?: number) => never }).exit = ((code?: number) => {
+    throw new Error(`exit ${code ?? 0}`);
+  }) as typeof process.exit;
+  try {
+    await run([], { "with-agents": true, "dry-run": true });
+  } catch (e) {
+    dryCombo = (e as Error).message;
+  } finally {
+    process.exit = realExit;
+  }
+  check(
+    "--with-agents with --dry-run is allowed (preview, not a combination refusal)",
+    dryCombo !== undefined && !/--with-agents is bare-whole-stack only/.test(dryCombo),
+    dryCombo,
+  );
 
   console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {
