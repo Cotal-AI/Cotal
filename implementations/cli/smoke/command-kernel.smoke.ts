@@ -29,6 +29,7 @@ function updateRuntime(opts: {
   env?: NodeJS.ProcessEnv;
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
+  reportRunningManager?: () => Promise<"none" | "legacy">;
 }) {
   const events: string[] = [];
   const rt: UpdateRuntime = {
@@ -38,7 +39,10 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
-    reportRunningManager: async () => void events.push("report-running-manager"),
+    reportRunningManager: async () => {
+      events.push("report-running-manager");
+      return await opts.reportRunningManager?.() ?? "none";
+    },
     extensions: () => opts.extensions ?? [],
     claimUpdatePass: () => {
       events.push("claim-mutation");
@@ -267,6 +271,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   );
   assert.ok(events.some((event) => event.includes("third-party-ext@1.2.3 - not auto-updated")));
   assert.ok(events.indexOf("reconcile") < events.findIndex((event) => event.startsWith("npm:view")), "default reconciles before npm check");
+}
+
+// --- a running legacy manager is reported, then blocks an update before replay --------------------
+{
+  const legacy = updateRuntime({ reportRunningManager: async () => "legacy" });
+  assert.equal(await executeUpdate(false, legacy.rt), 1);
+  assert.ok(legacy.events.includes("reconcile"), "disk reconciliation completes before the running-manager report");
+  assert.ok(legacy.events.includes("report-running-manager"), "the running manager is classified before refusal");
+  assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
+  assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
 }
 
 // --- malformed npm fails after local reconcile; extension failures continue and aggregate --------
