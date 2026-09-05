@@ -97,23 +97,29 @@ jobs:
         run: pnpm build
       - name: Re-prove every mutation fixture
         run: node scripts/mutation-reproof.mjs --all
-      - name: File a triage issue when the sweep fails
+      - name: File a tracking issue when the sweep fails
         # The scheduled sweep runs on no pull request, so a red run is otherwise visible only to
-        # whoever opens the Actions tab. This turns a failed sweep into an assigned, deduplicated
-        # tracking issue, so "a maintainer owns triage" is enforced by the workflow rather than
-        # asserted in prose. One open issue at a time: a run that fails while the marker issue is
-        # still open comments on it instead of opening a second.
+        # whoever opens the Actions tab. This turns a failed sweep into one open, labelled tracking
+        # issue: a run that fails while the marker issue is still open comments on it instead of
+        # opening a second. The key is the label, read through the Issues API, not title search
+        # (tokenised and eventually consistent). No failure here is swallowed: the job is already
+        # red, so an aborted filing step hides nothing, while a false "no marker" would file a
+        # duplicate, which is the one thing this step exists to prevent.
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          marker="mutation-reproof: full sweep failing"
-          existing="$(gh issue list --state open --search "in:title \"$marker\"" --json number --jq '.[0].number' || true)"
-          body="The daily mutation-reproof full sweep failed. A fixture's guarded suite no longer kills its named mutant, or a fixture is dangling or malformed. Triage: open the run, read the SURVIVED / dangling / malformed lines, and repair the fixture or file the named finding. Run: $RUN_URL"
+          label="ci:mutation-reproof"
+          title="mutation-reproof: full sweep failing"
+          gh label create "$label" --description "Open while the scheduled mutation-reproof full sweep is failing" --color B60205 --force
+          existing="$(gh issue list --state open --label "$label" --json number --jq '.[0].number // empty')"
+          body="The daily mutation-reproof full sweep failed: $RUN_URL
+
+          Read the run log. A fatal verdict (SURVIVED, UNGRADABLE, WRONG-RED, ERROR) means a guarded suite no longer discriminates its named mutant or the fixture's anchor is broken; an UNMEASURED refusal names dangling or malformed fixtures; a failure before the sweep step (checkout, install, build) has no verdict lines at all. Repair the fixture or file the named finding, then close this issue once a scheduled sweep is green."
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
-            gh issue create --title "$marker" --body "$body"
+            gh issue create --title "$title" --label "$label" --body "$body"
           fi
