@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const originalHome = process.env.HOME ?? homedir();
 const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");
@@ -93,12 +93,34 @@ try {
   const tarballs = readdirSync(packs).filter((name) => name.endsWith(".tgz")).map((name) => join(packs, name));
   assert.equal(tarballs.length, needed.size, `packed ${tarballs.length} tarball(s) for ${needed.size} closure member(s): ${[...needed].join(", ")}`);
   writeFileSync(join(current, "package.json"), JSON.stringify({ name: "current-fixture", private: true }));
-  // `--offline` is the guard, and it is the half that generalises. Without it a member missing from
-  // the closure is fetched from the registry and the install succeeds by luck; with it, any attempt
-  // to reach npm fails loudly and names the package. Derivation fixes today's membership; this makes
-  // tomorrow's omission impossible to pass unnoticed.
-  const install = run(npm, ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], current);
-  assert.equal(install.status, 0, `installed current packaged closure entirely from local tarballs (no registry): ${install.stdout}\n${install.stderr}`);
+  const install = run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], current);
+  assert.equal(install.status, 0, `installed current packaged closure: ${install.stdout}\n${install.stderr}`);
+  // The guard is PROVENANCE, and deliberately not `--offline`. Forbidding the registry outright was
+  // tried and is wrong here: this fixture installs under an isolated HOME whose npm cache starts
+  // empty, so `--offline` fails on legitimate third-party dependencies -- `@cotal-ai/lang` needs
+  // `acorn` -- exactly as readily as on a workspace package that leaked to the registry. A complete
+  // and correct closure still ENOTCACHEDs, so the guard would red every run including the release
+  // it exists to unblock. It cannot tell the defect from the intended behaviour.
+  //
+  // The narrower property is the one worth asserting: any WORKSPACE package that ends up installed
+  // must have come from a tarball this run packed. Third-party packages resolve from npm, which is
+  // correct and stays silent. Membership is keyed on the workspace set rather than on an
+  // `@cotal-ai/` name prefix, because the entry point `cotal-ai` carries no scope and a prefix test
+  // would exempt the one package the closure is rooted at.
+  const packedTarballs = new Set(tarballs.map((path) => basename(path)));
+  const lock = JSON.parse(readFileSync(join(current, "node_modules", ".package-lock.json"), "utf8")) as { packages?: Record<string, { resolved?: string }> };
+  let checked = 0;
+  for (const [path, entry] of Object.entries(lock.packages ?? {})) {
+    const name = path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length);
+    if (!workspacePackages.has(name)) continue;
+    checked += 1;
+    // A missing `resolved` fails. An unrecorded source is an unanswered question, not a clean bill.
+    assert.ok(entry.resolved?.startsWith("file:") && packedTarballs.has(basename(entry.resolved)),
+      `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
+  }
+  // Without this the guard goes vacuous the day npm moves the hidden lockfile or reshapes its keys:
+  // nothing would match, zero packages would be checked, and the loop above would pass in silence.
+  assert.equal(checked, needed.size, `provenance checked ${checked} workspace package(s) but the closure has ${needed.size} -- the lockfile is not being read as expected`);
   writeFileSync(join(old, "package.json"), JSON.stringify({ name: "old-fixture", private: true }));
   assert.equal(run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "cotal-ai@0.42.0"], old).status, 0, "installed published old package");
   const oldRuntime = readFileSync(join(old, "node_modules", "@cotal-ai", "core", "dist", "runtime.js"), "utf8");
