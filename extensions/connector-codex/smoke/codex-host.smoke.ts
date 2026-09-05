@@ -641,11 +641,15 @@ try {
   );
   await sleep(1500); // a mis-classified TUI exit would have called shutdown() by now
   check("a TUI dying with its crashed app-server does NOT shut the agent down", tcExited === "alive", tcExited);
-  check(
+  // `>= 2` is a lower bound, so waiting for the count to REACH 2 is sound: the replacement TUI is
+  // spawned asynchronously after the respawn, and nothing above waited on its `tui` line landing.
+  // The timeout is the failure — a replacement that never attaches never reaches 2.
+  const tcTuis = await waitFor(
     "a replacement TUI is attached to the new listener",
-    tcEntries().filter((e) => e.ev === "tui").length >= 2,
-    tcEntries().filter((e) => e.ev === "tui").length,
+    () => (tcEntries().filter((e) => e.ev === "tui").length >= 2 ? tcEntries().filter((e) => e.ev === "tui").length : undefined),
+    30_000,
   );
+  check("a replacement TUI is attached to the new listener", tcTuis >= 2, tcTuis);
   tuiCrash.kill("SIGTERM");
   await Promise.race([once(tuiCrash, "exit"), sleep(8_000)]);
 
@@ -777,6 +781,33 @@ try {
   );
   operator.off("presence", genWatch);
   check("a crash mid-launch is recovered by the restart, and the peer is fully online", genDriven !== undefined);
+  // EXACTLY ONE, so a "wait for the count to reach 1" is unsound: it would pass the instant the
+  // first `tui` lands, blessing the very bug this cell guards (one TUI per generation) whenever the
+  // second `tui` is merely a few ms behind. An exact count must wait on the event that BOUNDS it.
+  //
+  // The bound is the SUPERSEDED tail standing down. In this scenario there are two launch tails —
+  // the initial one whose child died before its tools were ready, and the restart that recovered
+  // it — and only ONE of them may reach `startTui()`. The restart is the live tail (its `startTui`
+  // precedes the drive we already waited on above, so it has been invoked). The initial tail is the
+  // only other possible `tui` emitter, and it logs its stand-down on the host's stderr the moment it
+  // returns without touching `startTui`. Once that line is present the emitter set is closed at one,
+  // so counting after it is exact — and a mutant that let the superseded tail carry on into
+  // `startTui` either never logs the stand-down (this wait times out, red here) or emits its extra
+  // `tui` around the same time (the count below is 2, red here). Either way THIS cell is the failure.
+  await waitFor(
+    "the superseded launch tail stood down (no further TUI can be emitted)",
+    () => (/superseded|initial launch did not finish/.test(genErr) ? true : undefined),
+    25_000,
+  );
+  // The live restart's `startTui()` was invoked before the drive above, but its child writes the
+  // `tui` line asynchronously; wait for that one to land so the count is a settled lower bound too.
+  await waitFor("the recovered peer's TUI attached", () => (genEntries().some((e) => e.ev === "tui") ? true : undefined), 25_000);
+  // Both launch tails have now reached a terminal state — the restart drove a turn (above) and the
+  // initial tail logged its stand-down — so every `startTui()` this scenario will ever call has been
+  // called. A settle lets any second child's `tui` write flush before the exact count: it closes the
+  // "the extra TUI is 50ms behind the assertion" window that a bare "wait for 1, assert === 1" leaves
+  // open, without which this exact-count cell could bless the one-TUI-per-generation bug it guards.
+  await sleep(1500);
   check(
     "exactly one launch tail finished: one TUI, not one per generation",
     genEntries().filter((e) => e.ev === "tui").length === 1,
