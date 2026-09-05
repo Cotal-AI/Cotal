@@ -59,8 +59,8 @@ On a live miss, a static manager point-reads its durable slot row. A name with n
 whose phase is `retired`, remains `not-found`. A nonterminal slot returns
 `failed-precondition` with `error.details[].kind =
 ai.cotal.manager.static-slot-observation`. The detail carries the slot's `slotPhase`,
-`slotLifecycleUid`, `cleanupComplete` when recorded, and store revision. It then carries the
-separate lifecycle head's `headState`, `headOp` when present, lifecycle uid, and revision.
+`slotLifecycleUid`, `cleanupComplete` when recorded, and `slotRevision`. It then carries the
+separate lifecycle head's `headState`, `headOp` when present, lifecycle uid, and `headRevision`.
 The error message carries the same diagnostic summary so string-only operator paths do not hide
 the structured detail.
 
