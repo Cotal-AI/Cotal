@@ -197,6 +197,10 @@ jobs:
       # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
       - name: Core boundary, mesh preflight & resolution
         run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
+      # Own step so a later failure cannot hide whether this suite ran. First CI execution
+      # of join-external:live passed 19 checks at 2850a5a2e.
+      - name: Join an external broker
+        run: pnpm smoke:join-external:live
       - name: Manager lifecycle e2e (real broker + real agents)
         run: pnpm smoke:lifecycle-e2e
       - name: Runtime smoke tests (tmux, orca, herdr)

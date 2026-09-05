@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { provenance } from "@cotal-ai/workspace";
-import { seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
+import { assertReleasedSeedWriter, seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
 
 /**
  * The durable seed store: a stable, per-generation copy of each shipped connector payload that
@@ -30,6 +30,7 @@ function payloadFilter(root: string, from: string): boolean {
 export function stageSeedPayload(generation: string, name: string, opts: { force?: boolean } = {}): string {
   const dest = seedStorePath(generation, name);
   if (!opts.force && existsSync(join(dest, "package.json"))) return dest;
+  assertReleasedSeedWriter(generation, "write");
   const src = shippedSourceDir(name);
   const staging = `${dest}.staging`;
   rmSync(staging, { recursive: true, force: true });
@@ -68,6 +69,7 @@ export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly st
     const genDir = join(root, gen);
     const referenced = referencedSpecs.some((spec) => spec === genDir || spec.startsWith(genDir + sep));
     if (referenced) continue;
+    assertReleasedSeedWriter(keepGeneration, "garbage-collect");
     rmSync(genDir, { recursive: true, force: true });
     // Announce the DELETE for the same reason the write above is announced: this store is
     // operator-global, so dropping a generation from it is a machine-wide act performed by a command

@@ -393,7 +393,7 @@ try {
   const runCli = (argv: string[]) => {
     const r = spawnSync(TSX, [BIN, ...argv], {
       cwd: workBare,
-      env: { ...cleanEnv, COTAL_HOME: home, NO_COLOR: "1" },
+      env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       encoding: "utf8",
       timeout: 120_000,
     });

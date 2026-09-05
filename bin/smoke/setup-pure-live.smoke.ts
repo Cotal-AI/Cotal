@@ -36,7 +36,16 @@ const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim(
 const realNpm = spawnSync("which", ["npm"], { encoding: "utf8" }).stdout.trim();
 symlinkSync(realNode, join(binDir, "node"));
 symlinkSync(realNpm, join(binDir, "npm"));
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configHome, PATH: binDir, COTAL_SKIP_ASSIST: "1" };
+const env = {
+  ...process.env,
+  COTAL_HOME: home,
+  XDG_CONFIG_HOME: configHome,
+  PATH: binDir,
+  COTAL_SKIP_ASSIST: "1",
+  // Isolated XDG first: `cotal setup --yes` auto-seeds the dashboard into that
+  // scratch store, so the checkout writer is opted in only after relocation.
+  COTAL_ALLOW_CHECKOUT_SEED: "1",
+};
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
 

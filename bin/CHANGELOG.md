@@ -1,5 +1,63 @@
 # cotal-ai
 
+## 0.45.0
+
+### Patch Changes
+
+- Updated dependencies [299a353]
+- Updated dependencies [2a34295]
+- Updated dependencies [38d7bb7]
+  - @cotal-ai/core@0.45.0
+  - @cotal-ai/cli@0.45.0
+  - @cotal-ai/connector-core@0.45.0
+  - @cotal-ai/manager@0.45.0
+  - @cotal-ai/auth@0.45.0
+  - @cotal-ai/delivery@0.45.0
+  - @cotal-ai/runtime@0.45.0
+  - @cotal-ai/workspace@0.45.0
+
+## 0.44.0
+
+### Patch Changes
+
+- 2850a5a: Count a smoke suite as gated only when a CI job actually runs it. join-external live coverage now rides its own live-job step; a duplicate connect classifier that only `pnpm check` reached is gone. Backup live suites stay UNGATED as already-red (#643 / #1285).
+- Updated dependencies [2850a5a]
+- Updated dependencies [ba9af19]
+  - @cotal-ai/cli@0.44.0
+  - @cotal-ai/connector-core@0.44.0
+  - @cotal-ai/manager@0.44.0
+  - @cotal-ai/core@0.44.0
+  - @cotal-ai/workspace@0.44.0
+  - @cotal-ai/runtime@0.44.0
+  - @cotal-ai/delivery@0.44.0
+  - @cotal-ai/auth@0.44.0
+
+## 0.43.0
+
+### Patch Changes
+
+- 6dd4dfb: Fail a commit that adds a suite line to the frozen `ci-suites.txt` list.
+
+  The freeze has been a comment since #1052. A tail append is shard-stable and inventory-green, then conflicts the next PR. GitHub will not build a CONFLICTING PR, so that branch also gets zero CI. New suites go under `ci-suites.d/<sha256(name)>.txt`.
+
+- acacca4: Run the sandbox-down adoption scan in CI, and require the three remaining live `down` wrappers to prove the sandbox held before the destructive verb.
+- Updated dependencies [42b1fce]
+- Updated dependencies [5038519]
+- Updated dependencies [42635d2]
+- Updated dependencies [64d6131]
+- Updated dependencies [d967f76]
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/manager@0.43.0
+  - @cotal-ai/cli@0.43.0
+  - @cotal-ai/connector-core@0.43.0
+  - @cotal-ai/core@0.43.0
+  - @cotal-ai/auth@0.43.0
+  - @cotal-ai/delivery@0.43.0
+  - @cotal-ai/runtime@0.43.0
+  - @cotal-ai/workspace@0.43.0
+
 ## 0.42.0
 
 ### Minor Changes

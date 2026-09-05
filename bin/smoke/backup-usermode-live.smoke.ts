@@ -37,7 +37,9 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-bum-root-"));
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const childEnv: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+childEnv.COTAL_NAME = "cli";
+childEnv.COTAL_ID = "cli_send";
 
 // better-auth is a dependency of implementations/auth, not of this root package, so it does not
 // resolve from bin/. Resolve it from the package that owns it rather than widen root deps.

@@ -919,8 +919,13 @@ export class Manager {
    * arrives after pendingTurns is gone and before `settled` is remembered (or after a concurrent
    * sweep dropped the settled field) still has to name that terminal, never `not-found`. The
    * index entry is not that answer: it is cleared at commit, and the yield path never consults it.
+   *
+   * `leftoverSince` is when the pending latch dropped. An unsettled leftover ages off that stamp,
+   * never off `acceptance.deadlineAt`: a turn that expired after a long outage would otherwise be
+   * pruned on the first sweep tick, taking the GoalRef with it, and a late yield in the retry
+   * window would hear `not-found` again.
    */
-  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; settled?: { state: string; at: number } }>();
+  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>();
   /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
    *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
@@ -1892,14 +1897,26 @@ export class Manager {
    */
   private async deregisterServiceOnStop(): Promise<void> {
     const iid = this.managerInstanceId;
-    const dereg = ({ recordsKv }: { recordsKv: KV }): Promise<ServiceDeregistration> =>
-      deregisterServiceInstance(recordsKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const dereg = ({ recordsKv, authKv }: { recordsKv: KV; authKv: KV }): Promise<ServiceDeregistration> =>
+      deregisterServiceInstance(recordsKv, {
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: iid,
+        observeGeneration: async () => {
+          const key = epgateKey(MANAGER_ENDPOINT, iid);
+          const entry = await authKv.get(key);
+          if (!entry || entry.operation !== "PUT")
+            throw new Error(`no issuance gate at ${key}`);
+          return parseEndpointGate(entry.value, key).generation;
+        },
+      });
     try {
       const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
         console.error(`! manager instance ${iid} was not deregistered: its registration moved while this stop ran, so another incarnation owns it now - leaving it alone`);
+      else if (outcome.reason === "registration-in-flight")
+        console.error(`! manager instance ${iid} was not deregistered: a registration is still in flight (governance slot held at the live gate generation) - leaving it alone`);
       // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.
     } catch (e) {
       console.error(
@@ -4932,8 +4949,9 @@ export class Manager {
    *  `gone` into `unestablishable`). Live / unknown / unestablishable / wrong-op-kind stay loud
    *  refusals. No TTL: request-ingress has no process-epoch fence, so a clock would either let a
    *  superseded serve credential keep consuming ingress or just rename the freeze. An open gate
-   *  is a no-op (the successor's own freeze comes next). */
-  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth): Promise<void> {
+   *  is a no-op (the successor's own freeze comes next). A committed spec under that freeze is
+   *  finished at the committed registrationRevision; only a definite no-commit abort-reopens. */
+  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV): Promise<void> {
     const key = epgateKey(MANAGER_ENDPOINT, instanceId);
     const entry = await authKv.get(key);
     if (!entry || entry.operation !== "PUT") return;
@@ -4948,6 +4966,7 @@ export class Manager {
         probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
         evict: makeManagerEndpointEvictor({ space: this.space, servers, auth, log }),
         log,
+        recordsKv,
       });
     } catch (e) {
       // We observed frozen, then a concurrent reconciler finished first. If the gate is now open,
@@ -4964,7 +4983,7 @@ export class Manager {
     }
     console.error(
       `✓ boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} registration gate reopened at generation ${
-        report.reopenedAtGeneration} (processEpoch unchanged at ${report.before.processEpoch}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
+        report.reopenedAtGeneration} (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
     );
   }
 
@@ -5094,7 +5113,9 @@ export class Manager {
       // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
       // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
       // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);
+      if (auth) {
+        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
+      }
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
@@ -6163,6 +6184,7 @@ export class Manager {
     this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
     await clearGoalIndex(gw.ctx, p.ref);
     this.pendingTurns.delete(goalId);
+    this.markTurnLatchDropped(goalId, at);
     this.rememberSettledTurn(goalId, fact.state, at);
     this.maybeStopTurnSweep();
     return { goalId, state: fact.state };
@@ -6176,6 +6198,7 @@ export class Manager {
     const gw = this.goalWriter;
     if (!gw) return;
     if (!this.pendingTurns.delete(p.goalId)) return;
+    this.markTurnLatchDropped(p.goalId);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
       await this.assertGoalWriterEpochCurrent(epoch);
@@ -6231,6 +6254,14 @@ export class Manager {
     entry.settled = { state, at };
   }
 
+  /** Stamp when the pending latch dropped, so an unsettled leftover ages off that instant rather
+   *  than the original deadline. Idempotent: the first drop is the one the retry window starts at. */
+  private markTurnLatchDropped(goalId: string, at = Date.now()): void {
+    const entry = this.turnAcceptances.get(goalId);
+    if (entry === undefined || entry.leftoverSince !== undefined) return;
+    entry.leftoverSince = at;
+  }
+
   /** Stop the sweep only when it has nothing left to do. It drives elapsed turns to their deadline
    *  terminals AND drops settled answers once their retry window has passed, so a stop while the
    *  second is still owed would leave one entry per turn for the process lifetime. */
@@ -6256,8 +6287,15 @@ export class Manager {
   private async sweepTurnDeadlines(): Promise<void> {
     const now = Date.now();
     // A settled answer is kept only as long as a lost reply could still be retried under it.
-    for (const [goalId, e] of [...this.turnAcceptances.entries()])
-      if (e.settled !== undefined && now - e.settled.at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
+    // An UNSETTLED acceptance whose pending latch is already gone is the in-flight (or failed)
+    // deadline commit: keep it for the same window so a late yield can still read the durable
+    // terminal, then drop it so a commit that never remembered cannot pin the sweep forever.
+    for (const [goalId, e] of [...this.turnAcceptances.entries()]) {
+      if (this.pendingTurns.has(goalId)) continue;
+      // Unsettled leftovers age off the latch-drop stamp, never `deadlineAt`.
+      const at = e.settled?.at ?? e.leftoverSince;
+      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
+    }
     // The prune above is the one event after which the sweep may have nothing left to do, and
     // the settle-time callers cannot see it: they run when an answer has just been remembered.
     this.maybeStopTurnSweep();

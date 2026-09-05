@@ -1,0 +1,25 @@
+{
+  "suite": "bin/smoke/gate-inventory.smoke.ts",
+  "guard": "gate-inventory roots are what CI actually runs, and a live suite dropped from that chain is named as ungated",
+  "command": "pnpm smoke:gate-inventory",
+  "completionMarker": "GATE INVENTORY",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gate-inventory-roots.json",
+  "why": [
+    "Treating `check` as a root made every suite reachable only from that developer chain look gated.",
+    "The inventory then printed OK whether CI ran those suites or not. Removing `check` from ROOTS is the",
+    "instrument repair; putting join-external:live on its own live-job step is the coverage repair.",
+    "Dropping that newly added live invocation must redden the inventory on that suite name.",
+    "The find is the dedicated live-job step, not a comment and not a call signature."
+  ],
+  "mutations": [
+    {
+      "name": "drop join-external:live from the live job so a check-only suite looks gated again",
+      "file": ".github/workflows/ci.yml",
+      "find": "      - name: Join an external broker\n        run: pnpm smoke:join-external:live\n",
+      "replace": "",
+      "expectRed": "      smoke:join-external:live",
+      "cell": "smoke:join-external:live"
+    }
+  ],
+  "grades": "tool"
+}

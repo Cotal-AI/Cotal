@@ -13,6 +13,16 @@
  */
 /** @param {string} raw @param {string} [label] @returns {string[]} */
 export function parseCiSuites(raw: string, label?: string): string[];
+/** Filename a new suite must use under `ci-suites.d/`. Derived from the public script name so two
+ *  branches adding unrelated suites cannot share a path. */
+/** @param {string} suite @returns {string} */
+export function fragmentFileName(suite: string): string;
+/** Suite names present in `headRaw` that `baseRaw` does not already carry. Derived from the two
+ *  blobs with the same parser the chain uses: comment edits and deletions do not appear, a new
+ *  `smoke:*` line does. The frozen list is whatever suite names the file currently parses to, not a
+ *  copy of those names kept beside it. */
+/** @param {string} baseRaw @param {string} headRaw @param {string} [baseLabel] @param {string} [headLabel] @returns {string[]} */
+export function addedLegacySuites(baseRaw: string, headRaw: string, baseLabel?: string, headLabel?: string): string[];
 /** Reads the chain file. A MISSING or unreadable file throws here - it never yields an empty chain,
  *  because "the chain cannot be empty" is only a real guard if empty cannot be produced silently. */
 export function readCiSuites(path?: string): string[];

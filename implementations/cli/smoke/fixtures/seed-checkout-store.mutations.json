@@ -1,0 +1,76 @@
+{
+  "suite": "implementations/cli/smoke/seed-checkout-store.smoke.ts",
+  "guard": "a source-checkout CLI refuses to write or GC the operator-global seed store; unknown identity is refused; only COTAL_ALLOW_CHECKOUT_SEED=1 is the deliberate opt-in",
+  "command": "pnpm smoke:seed-checkout-store",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-checkout-store.mutations.json",
+  "why": [
+    "SIX MUTATIONS, one per independent promise. Every find window is a unique code-only span.",
+    "",
+    "M1 deletes the write refusal. That restores #1215: a checkout stages a payload into the",
+    "operator-global store. The first cell that can notice is the staging refusal.",
+    "",
+    "M2 deletes the GC refusal. A checkout can still be refused on write, so the suite has to reach",
+    "gcSeedStore with an unreferenced generation already on disk. The GC cell is the first red.",
+    "",
+    "M3 lets an unknown writer through the assert. Classification still reports unknown; the unknown",
+    "identity staging cell is the first red. That is the fail-closed contract: no-data is not all-clear.",
+    "",
+    "M4 classifies a repo-shaped bin/cotal-ai as released. The classification cell is first because it",
+    "runs before any staging call.",
+    "",
+    "M5 treats any truthy COTAL_ALLOW_CHECKOUT_SEED as the opt-in, so =0 writes. The non-1 cell is first.",
+    "",
+    "M6 puts the opt-in back on the refusal line. Isolation is still named, so the cell that forbids",
+    "advertising the bypass is the first red."
+  ],
+  "mutations": [
+    {
+      "name": "a checkout can write the operator-global seed payload again (the write refusal is deleted)",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) return dest;\n  assertReleasedSeedWriter(generation, \"write\");\n  const src = shippedSourceDir(name);",
+      "replace": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) return dest;\n  const src = shippedSourceDir(name);",
+      "expectRed": "✗ FAIL: checkout: staging an operator-global seed payload is refused",
+      "cell": "✗ FAIL: checkout: staging an operator-global seed payload is refused"
+    },
+    {
+      "name": "a checkout can GC an unreferenced operator-global generation again (the GC refusal is deleted)",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "    if (referenced) continue;\n    assertReleasedSeedWriter(keepGeneration, \"garbage-collect\");\n    rmSync(genDir, { recursive: true, force: true });",
+      "replace": "    if (referenced) continue;\n    rmSync(genDir, { recursive: true, force: true });",
+      "expectRed": "✗ FAIL: checkout: GC of an unreferenced operator-global generation is refused",
+      "cell": "✗ FAIL: checkout: GC of an unreferenced operator-global generation is refused"
+    },
+    {
+      "name": "an unknown writer is treated as a released install at the assert, so no-data is all-clear",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  const kind = seedWriterKind();\n  if (kind === \"released\") return;",
+      "replace": "  const kind = seedWriterKind();\n  if (kind === \"released\" || kind === \"unknown\") return;",
+      "expectRed": "✗ FAIL: unknown identity: staging is refused rather than treated as a released install",
+      "cell": "✗ FAIL: unknown identity: staging is refused rather than treated as a released install"
+    },
+    {
+      "name": "a repo-shaped bin/cotal-ai is classified as a released install",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "    (existsSync(join(parent, \"implementations\")) || existsSync(join(parent, \"pnpm-workspace.yaml\")))\n  ) {\n    return \"checkout\";\n  }",
+      "replace": "    (existsSync(join(parent, \"implementations\")) || existsSync(join(parent, \"pnpm-workspace.yaml\")))\n  ) {\n    return \"released\";\n  }",
+      "expectRed": "✗ FAIL: classification: a repo-shaped bin/cotal-ai is a checkout",
+      "cell": "✗ FAIL: classification: a repo-shaped bin/cotal-ai is a checkout"
+    },
+    {
+      "name": "any truthy COTAL_ALLOW_CHECKOUT_SEED is treated as the deliberate opt-in",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (process.env.COTAL_ALLOW_CHECKOUT_SEED === \"1\") return;",
+      "replace": "  if (process.env.COTAL_ALLOW_CHECKOUT_SEED) return;",
+      "expectRed": "✗ FAIL: checkout: a non-1 COTAL_ALLOW_CHECKOUT_SEED is not an opt-in",
+      "cell": "✗ FAIL: checkout: a non-1 COTAL_ALLOW_CHECKOUT_SEED is not an opt-in"
+    },
+    {
+      "name": "the checkout refusal advertises COTAL_ALLOW_CHECKOUT_SEED as the way out",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store.`,",
+      "replace": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store. Set COTAL_ALLOW_CHECKOUT_SEED=1 to write deliberately.`,",
+      "expectRed": "✗ FAIL: checkout: the refusal does not advertise COTAL_ALLOW_CHECKOUT_SEED",
+      "cell": "✗ FAIL: checkout: the refusal does not advertise COTAL_ALLOW_CHECKOUT_SEED"
+    }
+  ]
+}

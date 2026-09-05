@@ -197,13 +197,20 @@ resurrects a removal. Before writing the generation stamp, setup verifies that e
 (re)installed extension is recorded in the manifest, present on disk with a resolvable entry file,
 and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
 **older** than the store's stamped generation refuses before writing anything, rather than stamping the
-store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
-to rebuild the store for the version you are running. The refusal names a concrete cotal executable
+store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --force`
+to rebuild the store for the version you are running. `--reset` is not that recovery: it discards the
+ever-seeded authority and resurrects deliberately-removed connectors. The refusal names a concrete cotal executable
 only after a bounded `--version` probe proves that executable is at least the store generation;
 otherwise it retains the generic instruction. A generation advance records the exact
 realpath-resolved CLI entry and an ISO timestamp in `seed/stamp.json`, then announces the migration
 after that stamp commits. An older CLI includes those fields in its refusal when present; legacy
-generation-only stamps stay valid and retain the shorter refusal.
+generation-only stamps stay valid and retain the shorter refusal. A CLI whose package root is the
+repo `bin/` (a source checkout, including a suite child of `bin/cotal.ts`) refuses that write, stamp,
+and generation GC rather than migrating the operator-global store. The refusal names
+`$XDG_CONFIG_HOME` as the isolation remedy; `COTAL_HOME` does not relocate this store. Isolated
+in-tree seed smokes set `COTAL_ALLOW_CHECKOUT_SEED=1` after pointing `$XDG_CONFIG_HOME` at a scratch
+dir. An unproven entry is refused the same way: a missing identity answer is not treated as a
+released install.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the

@@ -275,7 +275,7 @@ try {
     // the run already has. The answer the first reply carried is served again instead.
     const retryDoors = seeded as unknown as {
       goalWriter?: unknown;
-      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; settled?: { state: string; at: number } }>;
+      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; leftoverSince?: number; settled?: { state: string; at: number } }>;
       sweepTurnDeadlines: () => Promise<void>;
     };
     retryDoors.goalWriter = { ctx: {} };
@@ -306,6 +306,25 @@ try {
     check("the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
       !retryDoors.turnAcceptances.has("long-done") && retryDoors.turnAcceptances.has("done-already"),
       [...retryDoors.turnAcceptances.keys()]);
+    // A FAILED DEADLINE COMMIT leaves an acceptance with no `settled` (pending was the latch
+    // and is already gone). That entry used to pin the sweep forever once maybeStopTurnSweep
+    // stopped wiping the map. Age it off leftoverSince (when the latch dropped), NEVER off
+    // deadlineAt: a turn that expired after a long outage would otherwise be pruned on the
+    // first tick and take the GoalRef with it. The two clocks are inverted so aging off
+    // deadlineAt cannot pass.
+    retryDoors.turnAcceptances.set("stale-unsettled", {
+      acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "stale-unsettled", fingerprint: "f", deadlineAt: Date.now() + 60_000, executor: { lifecycleUid: "x", epoch: 0 } },
+      leftoverSince: Date.now() - 10 * 60_000,
+    });
+    retryDoors.turnAcceptances.set("fresh-unsettled", {
+      acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "fresh-unsettled", fingerprint: "f", deadlineAt: t0 - 10 * 60_000, executor: { lifecycleUid: "x", epoch: 0 } },
+      leftoverSince: Date.now(),
+    });
+    await retryDoors.sweepTurnDeadlines();
+    check("the sweep drops a stale unsettled acceptance once its retry window has passed, and keeps a fresh one",
+      !retryDoors.turnAcceptances.has("stale-unsettled") && retryDoors.turnAcceptances.has("fresh-unsettled"),
+      [...retryDoors.turnAcceptances.keys()]);
+    retryDoors.turnAcceptances.delete("fresh-unsettled");
     // AND THE SWEEP STOPS ONCE THE LAST ANSWER IS GONE. The settle-time callers of the stop check
     // run when an answer has just been remembered, so they never see the map empty; the prune is
     // the one event after which nothing is owed, and it is the sweep's own to notice.
@@ -466,7 +485,7 @@ try {
         payload: string; acceptedAt: number; deadlineAt: number;
         holdToken: string; holdEpoch: number;
       }>;
-      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; ref?: GoalRef; settled?: { state: string; at: number } }>;
+      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>;
       expireTurnHold: (p: { ref: GoalRef; goalId: string; holdToken: string }) => Promise<{ settle?: string } | undefined>;
       commitTurnDeadline: (p: { ref: GoalRef; goalId: string; holdToken: string; seat: { name: string; owner: string; actor: string; uid: string }; payload: string; acceptedAt: number; deadlineAt: number; holdEpoch: number }) => Promise<void>;
       serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
@@ -519,6 +538,10 @@ try {
       check("the deadline deny is the goal's terminal, reason `turn-deadline`; no success over it",
         deniedLate?.state === "failed" && (deniedLate.data as { reason?: string } | undefined)?.reason === "turn-deadline",
         deniedLate);
+      const stamped = lateDoors.turnAcceptances.get(lateId);
+      check("commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
+        typeof stamped?.leftoverSince === "number" && stamped.leftoverSince > LATE_DEADLINE,
+        stamped);
       // Ordering 1: terminal committed, index still present (we skip the clear), settled
       // answer not remembered. This is the window between pendingTurns.delete and
       // rememberSettledTurn (and the window a concurrent sweep's maybeStopTurnSweep can
@@ -567,7 +590,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 25;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

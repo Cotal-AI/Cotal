@@ -63,6 +63,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-964-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
@@ -193,7 +194,7 @@ const cliStop = (name: string): Promise<{ code: number | null; out: string }> =>
   new Promise((resolve, reject) => {
     const p = spawnProc(TSX, [BIN, "stop", "--name", name, "--space", SPACE], {
       cwd: root,
-      env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     kids.push(p);
@@ -250,7 +251,7 @@ try {
   daemon = spawnProc(TSX, [BIN, "deliver", "--space", SPACE, "--server", SERVER, "--creds", join(seg, DELIVERY_CREDS_KIND)], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   daemon.stdout!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
   daemon.stderr!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });

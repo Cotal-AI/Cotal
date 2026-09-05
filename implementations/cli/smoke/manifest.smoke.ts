@@ -8,6 +8,8 @@ import type { AgentDef } from "@cotal-ai/core";
 import { resolveManifest } from "../src/lib/manifest/resolve.js";
 import { ManifestError } from "../src/lib/manifest/errors.js";
 import { prepareAgent } from "../src/lib/manifest/prepare.js";
+import { buildLaunchSpec, hashAgent } from "../src/lib/manifest/apply.js";
+import { renderTopology } from "../src/lib/manifest/render.js";
 import type { ResolvedAgent, ResolvedManifest } from "../src/lib/manifest/model.js";
 
 const PATH = "/tmp/cotal.yaml";
@@ -313,6 +315,32 @@ const declared = new Set(["general", "review"]);
   assert.equal(warnings[0].loud, false);
   const { warnings: loud } = prepareAgent(agent({ policy: empty, capabilities: ["spawn"] }), undefined, declared);
   assert.equal(loud[0].loud, true);
+}
+
+// --- manifest cwd belongs to the manager host, not the manifest directory (#963) ---------------
+{
+  const source = (cwd?: string) => `${HEAD}agents:\n  worker:\n    model: opus\n${cwd === undefined ? "" : `    cwd: ${JSON.stringify(cwd)}\n`}channels: {}\n`;
+  const legacy = ok(source());
+  const base = prepareAgent(legacy.agents[0], undefined, new Set()).prepared;
+  // Captured from the shipped pre-cwd hash: an upgrade must not make every old entry stale.
+  assert.equal(hashAgent(base), "fd4f6aefa0a2402f");
+  assert.equal(base.cwd, undefined);
+  assert.equal(buildLaunchSpec({ manifest: legacy, agents: [base], warnings: [] }, "legacy").agents[0].cwd, undefined);
+  for (const cwd of ["repos/api", "../other repo", resolve("/target/repo")]) {
+    const m = ok(source(cwd));
+    assert.equal(m.agents[0].cwd, cwd); // no operator-host path resolution
+    const prepared = prepareAgent(m.agents[0], undefined, new Set()).prepared;
+    assert.equal(prepared.cwd, cwd);
+    const full = { manifest: m, agents: [prepared], warnings: [] };
+    const spec = JSON.parse(JSON.stringify(buildLaunchSpec(full, "cwdtest")));
+    assert.equal(spec.agents[0].cwd, cwd);
+    assert.notEqual(hashAgent(prepared), hashAgent(base));
+    assert.notEqual(hashAgent(prepared), hashAgent({ ...prepared, cwd: `${cwd}/changed` }));
+    assert.ok(renderTopology(full).includes(JSON.stringify(cwd)));
+  }
+  fails(source(""), "cwd");
+  fails(source("bad\0path"), "cwd");
+  fails(`${HEAD}agents:\n  worker: { model: opus, cwd: 42 }\nchannels: {}\n`, "cwd");
 }
 
 console.log("manifest pipeline smoke ok");
