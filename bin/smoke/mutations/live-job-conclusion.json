@@ -24,8 +24,8 @@
       "file": ".github/workflows/ci.yml",
       "find": "          node scripts/live-job-conclusion.mjs\n",
       "replace": "          node --version\n",
-      "expectRed": "the workflow calls the committed classifier with the measured 40-minute budget",
-      "cell": "the workflow calls the committed classifier with the measured 40-minute budget"
+      "expectRed": "the workflow calls the committed classifier with the measured 25-minute budget",
+      "cell": "the workflow calls the committed classifier with the measured 25-minute budget"
     }
   ]
 }

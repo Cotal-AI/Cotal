@@ -7,16 +7,16 @@
   "why": [
     "Treating `check` as a root made every suite reachable only from that developer chain look gated.",
     "The inventory then printed OK whether CI ran those suites or not. Removing `check` from ROOTS is the",
-    "instrument repair; putting the revealed live suites on the live job is the coverage repair.",
-    "Dropping one of those newly added live invocations must redden the inventory on that suite name.",
-    "The find is the live-job chain fragment, not a comment and not a call signature."
+    "instrument repair; putting join-external:live on its own live-job step is the coverage repair.",
+    "Dropping that newly added live invocation must redden the inventory on that suite name.",
+    "The find is the dedicated live-job step, not a comment and not a call signature."
   ],
   "mutations": [
     {
       "name": "drop join-external:live from the live job so a check-only suite looks gated again",
       "file": ".github/workflows/ci.yml",
-      "find": "pnpm smoke:dogfood:live && pnpm smoke:join-external:live && pnpm smoke:backup-perms:live",
-      "replace": "pnpm smoke:dogfood:live && pnpm smoke:backup-perms:live",
+      "find": "      - name: Join an external broker\n        run: pnpm smoke:join-external:live\n",
+      "replace": "",
       "expectRed": "      smoke:join-external:live",
       "cell": "smoke:join-external:live"
     }

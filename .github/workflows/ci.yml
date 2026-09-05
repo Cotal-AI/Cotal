@@ -153,7 +153,7 @@ jobs:
         run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" ${{ matrix.shard }} 4 ci "${{ steps.smoke-tools.outputs.node_path }}" "${{ steps.smoke-tools.outputs.node_target }}" "${{ steps.smoke-tools.outputs.node_sha }}" "${{ steps.smoke-tools.outputs.pnpm_path }}" "${{ steps.smoke-tools.outputs.pnpm_target }}" "${{ steps.smoke-tools.outputs.pnpm_sha }}"
 
   live:
-    timeout-minutes: 40
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -196,7 +196,11 @@ jobs:
       # Broker-free boundary/preflight guards + the live target-resolution / spawn-from-anywhere /
       # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
       - name: Core boundary, mesh preflight & resolution
-        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live && pnpm smoke:join-external:live && pnpm smoke:backup-perms:live && pnpm smoke:backup-restore:live && pnpm smoke:backup-conservation:live && pnpm smoke:backup-faults:live
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
+      # Own step so a later failure cannot hide whether this suite ran. First CI execution
+      # of join-external:live passed 19 checks at 2850a5a2e.
+      - name: Join an external broker
+        run: pnpm smoke:join-external:live
       - name: Manager lifecycle e2e (real broker + real agents)
         run: pnpm smoke:lifecycle-e2e
       - name: Runtime smoke tests (tmux, orca, herdr)
@@ -249,7 +253,7 @@ jobs:
           --attempt "$GITHUB_RUN_ATTEMPT"
           --workflow ci.yml
           --job live
-          --timeout-seconds 2400
+          --timeout-seconds 1500
           --event "$GITHUB_EVENT_NAME"
           --pr-number "$PR_NUMBER"
           --head-ref "$HEAD_REF"

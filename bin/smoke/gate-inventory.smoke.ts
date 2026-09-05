@@ -62,7 +62,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BROKEN = "BROKEN:";
 
 type UngatedExemption = { reason: string; recheckBy: string };
-const EXPECTED_EXEMPTIONS = 22;
+const EXPECTED_EXEMPTIONS = 26;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 
@@ -74,6 +74,11 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
   "smoke:backup-usermode:live": untriagedExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
+  // These four are #643's to fix (backup live coverage that can fail), not an inventory mystery.
+  "smoke:backup-perms:live": untriagedExemption("BROKEN: red on CI at 2850a5a2e (backup-live.smoke.ts:125 zero-delivery New consumer preserves its creation frontier, 1 !== 2); #643; already-red so it cannot enter CI"),
+  "smoke:backup-restore:live": untriagedExemption("BROKEN: never executed; blocked behind failing backup-perms:live on the && chain at 2850a5a2e; status unknown; #643"),
+  "smoke:backup-conservation:live": untriagedExemption("BROKEN: never executed; blocked behind failing backup-perms:live on the && chain at 2850a5a2e; status unknown; #643"),
+  "smoke:backup-faults:live": untriagedExemption("BROKEN: never executed; blocked behind failing backup-perms:live on the && chain at 2850a5a2e; status unknown; #643"),
   // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
   // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
   // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
