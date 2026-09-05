@@ -50,9 +50,7 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 // refusal fires, so a cell can pass on an operator's machine and fail in CI's clean env
 // (measured, PR #962 shard 3). The child sees only the sandbox's own pins.
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
-// Isolated XDG first: two cells spawn through the default `claude`
-// connector, so the checkout writer is opted in only after relocation.
-const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_ALLOW_CHECKOUT_SEED: "1" };
+const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 // Follow-on assign so a concurrent isolation edit on the object literal does not collide.
 // `cotal send` now refuses without a complete identity in this process.
 childEnv.COTAL_NAME = "cli";
@@ -83,6 +81,7 @@ const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `ua-launch-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connector-claude-code");
 
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
@@ -252,6 +251,11 @@ try {
   await cotal(["actor", "revoke", "widenprobe", "--sub", sub]);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
+  // Isolated XDG + skip-seed: this suite is not a first-run seeder. Foreground
+  // spawn still materializes the default `claude` connector, so install THIS
+  // WORKTREE's connector into the sandbox prefix, never the operator store.
+  const extAdd = await cotal(["ext", "add", CLAUDE]);
+  check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
   const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
   check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
     overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);

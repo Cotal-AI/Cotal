@@ -37,6 +37,7 @@ interface OrcaTerminal {
 const REPO = resolve(import.meta.dirname, "..", "..");
 const CLI = join(REPO, "bin", "cotal.ts");
 const ORCA_EXTENSION = join(REPO, "extensions", "orca");
+const CLAUDE_EXTENSION = join(REPO, "extensions", "connector-claude-code");
 const TSX_IMPORT = import.meta.resolve("tsx");
 const runId = `${process.pid}-${Date.now().toString(36)}`;
 const SPACE = `orca-e2e-${runId}`;
@@ -65,10 +66,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-orca-e2e-home-"));
 const config = mkdtempSync(join(tmpdir(), "cotal-orca-e2e-config-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
-// Isolated XDG first: the e2e boots a real `claude` connector in Orca,
-// so the checkout writer is opted in only after relocation.
-const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_ALLOW_CHECKOUT_SEED: "1" };
-delete env.COTAL_SKIP_CONNECTOR_SEED;
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown): void => {
@@ -206,6 +204,11 @@ try {
 
   const add = cli(["ext", "add", ORCA_EXTENSION]);
   ok("real Orca package installs through cotal ext", add.status === 0 && /runtime:orca/.test(add.stdout), add.stdout + add.stderr);
+  // Isolated XDG + skip-seed: this suite is not a first-run seeder. The agent
+  // still boots `claude`, so install THIS WORKTREE's connector into the
+  // sandbox prefix, never the operator store.
+  const addClaude = cli(["ext", "add", CLAUDE_EXTENSION]);
+  ok("sandbox ext add of the worktree claude connector succeeds", addClaude.status === 0, addClaude.stdout + addClaude.stderr);
   const listed = cli(["ext", "list"]);
   ok("ext list records @cotal-ai/orca as a runtime provider", listed.status === 0 && /@cotal-ai\/orca/.test(listed.stdout) && /runtime:orca/.test(listed.stdout), listed.stdout + listed.stderr);
   // Now `cotal runtimes` reports it installed and probes it reachable on this machine.
