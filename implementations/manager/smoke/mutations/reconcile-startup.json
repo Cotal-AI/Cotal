@@ -102,11 +102,38 @@
     {
       "name": "settled answers are kept for the process lifetime",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (e.settled !== undefined && now - e.settled.at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
-      "replace": "      if (e.settled !== undefined && now - e.settled.at >= TURN_ANSWER_RETENTION_MS) void goalId;",
+      "find": "      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
+      "replace": "      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) void goalId;",
       "expectRed": "the sweep drops a settled answer once its retry window has passed",
       "cell": "the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
       "note": "The map had no eviction at all: one entry per turn for the life of the process. The mutant keeps the loop and its scope intact and only removes the delete; a first draft replaced the whole if with statements that referenced the loop bindings OUTSIDE the loop, which is a ReferenceError every sweep tick and graded WRONG-RED about nothing."
+    },
+    {
+      "name": "an unsettled leftover acceptance is kept for the process lifetime",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
+      "replace": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
+      "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
+      "cell": "the sweep drops a stale unsettled acceptance once its retry window has passed, and keeps a fresh one",
+      "note": "#1262 follow-through. maybeStopTurnSweep used to wipe the map the moment pending was empty, which is the in-flight deadline window. After that wipe was removed, an acceptance whose deadline commit never remembered would pin the 5s sweep forever."
+    },
+    {
+      "name": "an unsettled leftover ages off the original deadline, not the latch-drop stamp",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const at = e.settled?.at ?? e.leftoverSince;",
+      "replace": "      const at = e.settled?.at ?? e.acceptance.deadlineAt;",
+      "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
+      "cell": "the sweep drops a stale unsettled acceptance once its retry window has passed, and keeps a fresh one",
+      "note": "Aging off deadlineAt drops a leftover immediately after a long outage (deadline already elapsed) and keeps one whose deadline is still in the future. leftoverSince is when the pending latch dropped; the cell inverts the two clocks so this mutant cannot hide."
+    },
+    {
+      "name": "commitTurnDeadline never stamps leftoverSince",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!this.pendingTurns.delete(p.goalId)) return;\n    this.markTurnLatchDropped(p.goalId);",
+      "replace": "    if (!this.pendingTurns.delete(p.goalId)) return;",
+      "expectRed": "commitTurnDeadline stamps leftoverSince when the pending latch drops",
+      "cell": "commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
+      "note": "Without this stamp a failed deadline commit leaves an acceptance with no settled and no leftoverSince, so the sweep never ages it off."
     },
     {
       "name": "the sweep never re-checks its stop after pruning the last answer",
