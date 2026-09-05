@@ -5,7 +5,7 @@
   "completionMarker": "seed smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-downgrade.mutations.json",
   "why": [
-    "FOUR MUTATIONS, ONE FOR EACH INDEPENDENT PROMISE. Extending the downgrade predicate with the",
+    "FIVE MUTATIONS, ONE FOR EACH INDEPENDENT PROMISE. Extending the downgrade predicate with the",
     "deterministic runtime-false `process.pid < 0` keeps TypeScript's store-generation narrowing while",
     "disabling the refusal at runtime. Replacing the verified recovery selection with",
     "the generic sentence removes sufficient-path hinting while leaving the refusal intact. Making the",
@@ -66,6 +66,15 @@
       "completionMarker": "install smoke:",
       "expectRed": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path",
       "cell": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path"
+    },
+    {
+      "name": "the older-than-store refusal points at --reset, which discards authority",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "        `${recovery}, or \\`cotal ext seed --force\\` to rebuild the store for this version`,",
+      "replace": "        `${recovery}, or \\`cotal ext seed --reset\\` to rebuild the store for this version`,",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "✗ FAIL: downgrade: the refusal names the way out",
+      "cell": "✗ FAIL: downgrade: the refusal names the way out"
     }
   ]
 }

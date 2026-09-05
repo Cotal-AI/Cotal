@@ -492,6 +492,13 @@ export interface StaticManagedSlotRow {
    *  it as its own (the single-manager past). An orphaned sibling row is claimed only by an explicit
    *  operator CAS takeover (ruling 1), never auto-adopted. */
   ownerInstanceId?: string;
+  /** Set true, on the `terminalizing` row, once the terminal's footprint cleanup has finished and
+   *  BEFORE the final CAS to `retired`. It lets a resumed terminal tell "cleanup already completed"
+   *  (the process died between cleanup and the `retired` CAS) from "cleanup never ran or was in
+   *  flight", so the resume skips a completed cleanup instead of re-running it as the only total
+   *  option. Absent on a legacy row and on every phase before the cleanup step, which a resume reads
+   *  as not-known-complete and re-runs the idempotent cleanup — the totality-preserving default. */
+  cleanupComplete?: boolean;
 }
 
 /** The slot key prefix in the records store. Core-owned so permission builders and the manager
@@ -513,16 +520,17 @@ export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedS
     throw new EpEnvelopeError("internal", `the static slot row ${key} is not JSON; garbled trusted-path state never drives supervision (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the static slot row ${key} is not an object`);
-  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance", "ownerInstanceId"]);
+  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance", "ownerInstanceId", "cleanupComplete"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the static slot row ${key} carries the unknown field "${k}" (closed schema)`);
   if (
     typeof o.owner !== "string" || typeof o.alias !== "string" || typeof o.actor !== "string" ||
     typeof o.lifecycleUid !== "string" || typeof o.managerInstance !== "string" || o.managerInstance.length === 0 ||
     typeof o.phase !== "string" || !STATIC_SLOT_PHASES.has(o.phase) ||
     (o.ownerInstanceId !== undefined && (typeof o.ownerInstanceId !== "string" || o.ownerInstanceId.length === 0)) ||
+    (o.cleanupComplete !== undefined && typeof o.cleanupComplete !== "boolean") ||
     !Array.isArray(o.credentialIds) || !o.credentialIds.every((c) => typeof c === "string" && c.length > 0)
   )
-    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance/ownerInstanceId)`);
+    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance/ownerInstanceId/cleanupComplete)`);
   assertLifecycleToken(o.lifecycleUid);
   for (const c of o.credentialIds) assertCredentialIdTail(c, `slot row ${key} credentialId`);
   if (staticSlotKey(o.owner, o.alias) !== key)

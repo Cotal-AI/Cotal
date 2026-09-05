@@ -134,7 +134,7 @@ const spawnDaemon = (root: string, space: string, servers: string, credsPath: st
     stdio: ["ignore", "pipe", "pipe"],
     // Direct daemon run (not via `up`): the first-real-command connector seed would run installs
     // and delay readiness; the daemon needs no connectors, so opt out.
-    env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   d.stdout!.on("data", (b: Buffer) => { sink.out += b.toString(); });
   d.stderr!.on("data", (b: Buffer) => { sink.out += b.toString(); });

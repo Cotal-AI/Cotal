@@ -14,6 +14,7 @@ const STARTUP_FAILURE_CODES = new Set([
   "model_refused",
   "model_mismatch",
   "private_state",
+  "readiness_timeout",
 ]);
 
 function startupFailureCode(error: unknown): string {

@@ -944,8 +944,10 @@ incarnation finishes leaves the endpoint's issuance gate *frozen*, held by a
 process that no longer exists. The freeze is what stops two incarnations serving at once, which is
 correct. The successor manager now completes that dead registration itself on boot, using the same
 guard this command uses: it acts only when the freeze-holder is affirmatively gone under a complete
-CONNZ sweep (`gone` and `sweepComplete=true`), then abort-reopens the gate at generation+1 with
-processEpoch unchanged and continues the normal takeover. Live, unknown, unestablishable, and
+CONNZ sweep (`gone` and `sweepComplete=true`). If that registration's spec write already committed,
+it finishes the same freeze at the committed registration revision. If the spec did not advance, it
+abort-reopens the gate at generation+1 with processEpoch unchanged and continues the normal takeover.
+Live, unknown, unestablishable, and
 wrong-op-kind still refuse; there is no TTL.
 
 Use this command when the boot path cannot run: the delivery daemon is down, the repair targets a
@@ -1014,6 +1016,7 @@ no connection and therefore no subscription, so a real corpse is still removed.
 | `instance-not-affirmed-gone` | It did not answer, and the broker did not report its rail empty, which is what a held subscription looks like: slow or hung, not affirmed gone | Nothing was removed. Stop the process; its record goes on its own clean stop, or re-run this once it is down |
 | `liveness-unestablishable` | The probe itself failed, so nothing was learned | Fix the probe's path (credential, broker) and re-run. A probe that could not run is never read as death |
 | `not-registered` | No registration at that coordinate | Check `--instance` and `--endpoint`. This takes the whole id, never a prefix |
+| `registration-in-flight` | The instance holds the endpoint governance slot at the live issuance-gate generation, so a registration is still completing | Nothing was removed. Wait for that registration to finish, then re-run |
 | `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
 
 There is no `--force` and no sweep: silence is not death, and a rule that removed rows on silence
@@ -1060,6 +1063,16 @@ cotal send ask <role> "<text>"
 One-shot messaging: connect, send a single direct message (`dm`), channel post (`msg`), or role
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
+
+`cotal send` requires `COTAL_NAME` plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
+If that tuple is missing, `send` refuses before connecting so the recipient never sees a message
+attributed to a nameless command principal. A child that inherited a
+seat's environment is attributed as that seat; this command does not distinguish the two. An operator
+who is not a live seat can set both variables for the one shot:
+
+```bash
+COTAL_NAME=<name> COTAL_ID=<id> cotal send ...
+```
 
 ## channels
 
@@ -1342,8 +1355,17 @@ Legacy generation-only stamps remain readable; their refusal simply has no write
 An older `cotal` refuses a seed store written by a newer version. When it can verify a sufficient
 `cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the refusal names
 that absolute path so a reduced service PATH does not select the older binary again. Otherwise it
-keeps the generic newer-version instruction. `--reset` remains the explicit way to rebuild the store
-for the running older version.
+keeps the generic newer-version instruction. `--force` rebuilds the store for the running older
+version without discarding the ever-seeded authority. `--reset` still exists for corrupt state and
+resurrects deliberately-removed connectors.
+
+A source-checkout CLI (`pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, or a suite child of
+those) refuses to write or garbage-collect that store. The refusal names the path, the generation
+it declined, and `$XDG_CONFIG_HOME` as the isolation remedy. `COTAL_HOME` does not relocate this
+store. An entry that cannot be proven as a released install is refused the same way. Isolated
+release tests that must seed from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` after
+pointing `$XDG_CONFIG_HOME` at a scratch dir; that override is documented here, not on the refusal
+line. An opt-in write still records the checkout path in `seed/stamp.json` as `writtenBy`.
 
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is

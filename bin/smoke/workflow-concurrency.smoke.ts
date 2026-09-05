@@ -59,13 +59,27 @@ function check(name: string, cond: boolean, extra?: unknown): void {
 
 /** The population this file is asserting over. A count that drifts is a workflow added or removed,
  *  and either deserves a human deciding whether it needs the queue rule, so the numbers are exact
- *  rather than floors. Without them a rename makes every check below vacuously true. */
-const EXPECTED_WORKFLOWS = 6;
-const EXPECTED_PUSH_TO_MAIN = 5;
+ *  rather than floors. Without them a rename makes every check below vacuously true.
+ *
+ *  Bumped for `mutation-reproof.yml` (#1272, closing #1217): the mutation-reproof gate that re-proves
+ *  fixtures whose guarded source changed. It is the 7th workflow and is push-to-main startable (its
+ *  `changed` job runs on push to main), so both the total and the push-to-main count move by one.
+ *  It declares NO concurrency group, so EXPECTED_GROUPED is unchanged — see the note below for why a
+ *  group was considered and deliberately not added here. */
+const EXPECTED_WORKFLOWS = 7;
+const EXPECTED_PUSH_TO_MAIN = 6;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. `docs.yml` pushes
  *  to main with no group at all, so its runs are independent and there is nothing to queue. That is
  *  a valid answer to this problem, not an omission, and counting it separately keeps the difference
- *  visible instead of letting a future removal of a group look like compliance. */
+ *  visible instead of letting a future removal of a group look like compliance.
+ *
+ *  `mutation-reproof.yml` is also groupless, on purpose: its scheduled full sweep runs daily (cron
+ *  `17 5 * * *`) under a 360-minute cap, so a scheduled run cannot overlap the next one, and its
+ *  lightweight push/PR `changed` job wants ordinary per-ref eviction, not queueing. The one residual
+ *  overlap — a manual `workflow_dispatch` sweep alongside a scheduled one — is rare and intentional.
+ *  A job-scoped `full` group (queue, not evict) would be the tidy belt-and-braces answer, but adding
+ *  it edits a file under `.github/workflows/` and is folded into #1292 with the triage step, which
+ *  needs a credential with the `workflow` OAuth scope this lane lacks. */
 const EXPECTED_GROUPED = 4;
 
 /** What a concurrency key can be: absent, a literal, or one of the expressions this repo uses.

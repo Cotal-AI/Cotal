@@ -1,5 +1,28 @@
 # @cotal-ai/core
 
+## 0.45.0
+
+### Minor Changes
+
+- 38d7bb7: Record a durable cleanup-complete marker on a terminalizing static managed slot before the final CAS to `retired`. A `terminalizing` row was previously consistent with three worlds (cleanup not started, cleanup in flight, or cleanup completed with the process dead before the CAS) that the state could not tell apart, so a resumed terminal always re-ran `cleanup()` as the only total option and the row could never assert cleanup was already done. `runStaticTerminal` now runs the footprint cleanup through one at-most-once helper that writes `cleanupComplete: true` on the `terminalizing` slot before the `retired` CAS; a resumed terminal reads it and skips a completed cleanup. The marker distinguishes the cleanup-completed world from the not-known-complete worlds (which keep the same remedy: re-run the idempotent cleanup) and adds no unrecoverable intermediate state.
+
+### Patch Changes
+
+- 299a353: Pin the unavailable translation for a thrown observeGeneration in deregisterServiceInstance. The new smoke:ep-traits cell holds the governance slot, throws from the observer, and asserts the envelope stays unavailable with the spec un-deleted.
+
+## 0.44.0
+
+## 0.43.0
+
+### Minor Changes
+
+- 890d08a: Complete a committed registration spec after a lost ack instead of freezing a new coordinate. Boot self-heal and `cotal reconcile-gate` now finish that same freeze when the spec advanced, and abort-reopen only on a definite no-commit.
+- e5412a1: Add per-agent `cwd` to mesh manifests. Relative paths resolve on the manager host against its workspace, matching the imperative spawn option. The directory survives launch-spec validation and contributes to stale-entry detection without changing hashes for manifests that omit it.
+
+  This implements the working-directory part of #963. Manifest session continuity remains separate work.
+
+- 7ff0c21: Hold the endpoint governance slot through Phase-4 reopen so a concurrent deregister cannot delete the spec a registration is still completing. `deregisterServiceInstance` now requires an observe-only read of this instance's issuance-gate generation: matching the held slot is `registration-in-flight`; a slot behind that generation is a leftover after reopen and does not block.
+
 ## 0.42.0
 
 ### Minor Changes

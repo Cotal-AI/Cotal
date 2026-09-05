@@ -43,6 +43,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 env.COTAL_HOME = home;
+env.XDG_CONFIG_HOME = join(home, "xdg");
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 const remoteProbe = webProbeTarget("node cotal web --host 192.0.2.10 --port 8123 --no-open");

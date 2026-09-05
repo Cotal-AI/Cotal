@@ -36,6 +36,7 @@ agents:
   builder:                              # 2) a persona file + overrides (manifest wins)
     persona: ./agents/builder.md
     model: sonnet
+    cwd: repos/backend                  # relative to the manager workspace
     role: implementer
     instructions: Prefer the smallest change that works.
   lead:                                 # 3) inline (no file): needs at least model or instructions
@@ -46,7 +47,7 @@ agents:
     prompt: Introduce yourself in #general and assign the first task.
 ```
 
-Per-agent keys: `persona`, `agent` (harness override), `model`, `variant`, `role`,
+Per-agent keys: `persona`, `agent` (harness override), `cwd`, `model`, `variant`, `role`,
 `description`, `instructions`, `prompt`, `capabilities` (`spawn`,
 [what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
@@ -54,6 +55,13 @@ agent may delegate that role when spawning; `admin` is never accepted from a man
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
 OpenCode use `provider/model` plus an optional variant (`cotal models --agent opencode`
 lists both). Persona file format: [agent files](agent-files.md).
+
+`cwd` is the agent's working directory on the **manager host**. A relative path resolves
+against the manager workspace, matching `cotal spawn --cwd`; an absolute path is used
+as supplied. Omitting it keeps the manager workspace as the default. It is never resolved
+against the manifest or persona directory on the deploying machine. Changing `cwd` marks
+an already-deployed agent stale and requires a restart. Empty paths and NUL bytes are
+rejected. This field controls the directory only; it does not restore a harness session.
 
 `instructions` and `prompt` differ in kind: `instructions` become the session's **system
 prompt** (who the agent is), while `prompt` is a **kickoff message** auto-submitted once

@@ -1,0 +1,31 @@
+{
+  "suite": "packages/core/smoke/endpoint-traits.smoke.ts",
+  "guard": "deregisterServiceInstance must translate a thrown observeGeneration into an unavailable envelope while the governance slot is held, and must not delete the spec",
+  "command": "pnpm smoke:ep-traits",
+  "completionMarker": "ENDPOINT TRAITS SMOKE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/observe-generation-unavailable.json",
+  "why": [
+    "The production-most failure form is a thrown observation (both manager call sites throw",
+    "`no issuance gate at ${key}` when the row is missing). Three of four observeGeneration",
+    "outcomes already have cells; this mutation is the one that used to leave the suite green.",
+    "",
+    "ANCHOR ON CODE ONLY. The `catch (e)` window plus the EpEnvelopeError throw is unique in",
+    "endpoint-service.ts. Do not widen it onto the comment above the function.",
+    "",
+    "The suite imports from ../src/index.js, so a src mutation is what the run sees. No core",
+    "build is required for the mutant to be visible.",
+    "",
+    "expectRed names the FIRST cell that reddens under `throw e`: the envelope-code assertion.",
+    "The spec-still-PUT cell stays green because rethrowing still aborts the delete."
+  ],
+  "mutations": [
+    {
+      "name": "observeGeneration catch rethrows instead of translating to unavailable",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "      } catch (e) {\n        throw new EpEnvelopeError(\"unavailable\", `could not observe the issuance-gate generation for \"${args.endpoint}/${iId}\" while its governance slot is held; refusing the delete rather than racing an in-flight registration (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);\n      }",
+      "replace": "      } catch (e) {\n        throw e;\n      }",
+      "expectRed": "a thrown observeGeneration with a held slot FAILS CLOSED as unavailable",
+      "cell": "a thrown observeGeneration with a held slot FAILS CLOSED as unavailable"
+    }
+  ]
+}

@@ -24,6 +24,7 @@ const LaunchAgentSchema = z.strictObject({
   name: z.string().min(1),
   agent: z.string().regex(TOKEN, "agent must be a connector token ([A-Za-z0-9_-])"),
   role: z.string().regex(TOKEN, "role must be a route-safe token ([A-Za-z0-9_-])").optional(),
+  cwd: z.string().min(1).refine((s) => !s.includes("\0"), "cwd must not contain a NUL byte").optional(),
   model: z.string().optional(),
   variant: z.string().min(1).optional(),
   launchOptions: z.record(z.string(), z.unknown()).optional(),
@@ -179,6 +180,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
 export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, owner?: string, runId?: string): {
   name: string;
   agent: string;
+  cwd?: string;
   role?: string;
   model?: string;
   variant?: string;
@@ -190,6 +192,7 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, o
   return {
     name: a.name,
     agent: a.agent,
+    cwd: a.cwd,
     role: a.role,
     model: a.model,
     variant: a.variant,

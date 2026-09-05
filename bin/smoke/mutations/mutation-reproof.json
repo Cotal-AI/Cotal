@@ -1,0 +1,57 @@
+{
+  "suite": "bin/smoke/mutation-reproof.smoke.ts",
+  "guard": "changed guarded source re-proves its fixture; a deleted or renamed-away source is a loud dangling failure naming the exact fixture; both sides of a rename enter the changed set",
+  "command": "pnpm smoke:mutation-reproof",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
+  "mutations": [
+    {
+      "name": "the diff excludes deletions again (the original ACMR bug)",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  const raw = git(root, [\"diff\", \"--name-status\", \"-M\", `${base}...${head}`])",
+      "replace": "  const raw = git(root, [\"diff\", \"--name-status\", \"-M\", \"--diff-filter=ACMR\", `${base}...${head}`])",
+      "expectRed": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture",
+      "cell": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a rename contributes only its new path, not the old one the fixture still anchors to",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      if (parts[1]) changed.add(parts[1]);\n      if (parts[2]) changed.add(parts[2]);",
+      "replace": "      if (parts[2]) changed.add(parts[2]);",
+      "expectRed": "the gate FAILS on a renamed-away guarded source and names exactly the dangling fixture",
+      "cell": "the gate FAILS on a renamed-away guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a dangling fixture is no longer refused, so a deleted source stops being a loud failure",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "if (dangling.length) {",
+      "replace": "if (false && dangling.length) {",
+      "expectRed": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture",
+      "cell": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a pre-red suite is blamed as a fatal finding instead of reported as its own state",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "{ preRed.push(path); continue; }",
+      "replace": "{ fatal.push(path); continue; }",
+      "expectRed": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
+      "cell": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate"
+    },
+    {
+      "name": "verdict lines are matched without stripping ANSI colour, so every verdict reads as absent",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "[...output.replace(ANSI, \"\").matchAll(verdictRe)]",
+      "replace": "[...output.matchAll(verdictRe)]",
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
+    },
+    {
+      "name": "an INCONCLUSIVE run is collapsed into a fatal finding instead of its own non-fatal state",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "inconclusive.push(path);",
+      "replace": "fatal.push(path);",
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
+    }
+  ]
+}

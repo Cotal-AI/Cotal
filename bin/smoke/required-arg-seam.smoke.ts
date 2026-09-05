@@ -286,12 +286,18 @@ const SEAMS: Seam[] = [
   // 301a6cf6e) adds three smoke-side calls. The pin was not moved when that suite landed, so this
   // cell was red from 301a6cf6e until 24b3d9281 corrected it: a whole-repo exact count goes red
   // without the file that holds it being touched, which is the reason it is exact.
-  // 117/86 -> 123/90: manager-hosted workflow runs. The manager's per-call run-operator
+  // 117/86 -> 118/87: gate-reconcile-auth.smoke.ts opens one more provisioner connection for the
+  // records KV the lost-ack same-op recovery needs. It stays under smoke/ with the suite's other
+  // three sites: the call is harness residue, not product connect, and it already states tls: false.
+  // Every added site states the transport decision explicitly.
+  // 118/87 -> 119/88: static-lifecycle.smoke.ts's #1274 crash-resume cell (driveTerminalDirect) opens
+  // one more lifecycle-executor connection to plant a terminalizing slot and drive runStaticTerminal
+  // as a resume would. It is under smoke/, harness residue not product connect, and states tls: false.
+  // 119/88 -> 125/92: manager-hosted workflow runs. The manager's per-call run-operator
   // connection (implementations/manager/src/run-hosting.ts) and `cotal run`'s hosted-client
   // connection (implementations/runtime/src/run-command.ts) add two typechecked calls; the
   // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
-  // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 123, untypecheckedSites: 90 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 125, untypecheckedSites: 92 },
 ];
 
 /**

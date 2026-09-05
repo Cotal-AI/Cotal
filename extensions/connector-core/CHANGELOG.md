@@ -1,5 +1,27 @@
 # @cotal-ai/connector-core
 
+## 0.45.0
+
+### Patch Changes
+
+- 2a34295: `cotal send` identity refusal and CLI docs now name `COTAL_NAME` as required in both accepted shapes: plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
+
+## 0.44.0
+
+### Minor Changes
+
+- ba9af19: Refuse a source-checkout `cotal` from writing or GC'ing the operator-global seed store. A missing identity answer is a refusal, not a released install. The refusal names `$XDG_CONFIG_HOME` isolation, not the test-only `COTAL_ALLOW_CHECKOUT_SEED=1` override. An older CLI that meets a newer store is pointed at `cotal ext seed --force`, not `--reset`. `COTAL_HOME` does not relocate this store.
+
+## 0.43.0
+
+### Minor Changes
+
+- 64d6131: Require a complete seat identity (`COTAL_NAME` plus `COTAL_ID`, or `COTAL_OWNER` plus `COTAL_ACTOR`) for one-shot CLI messages, so a nameless `cotal send` cannot deliver as the command verb. Isolate the send smoke's CLI subprocesses from the operator seed store (`HOME`, `XDG_CONFIG_HOME`, `TMPDIR`, strip `COTAL_*`). In-tree callers that previously relied on a missing or ambient name now set that identity: `send.smoke.ts`, `user-auth-launch.smoke.ts`, `sys-rotation-e2e.smoke.ts`, `up-tls-routes-live.smoke.ts`, `backup-usermode-live.smoke.ts`, and `backup-faults-live.smoke.ts`. A child that inherited a seat's environment is still attributed as that seat.
+
+### Patch Changes
+
+- d967f76: Bound the Jcode connector's pre-join `cotal_orientation` proof so a heavy persona cannot keep a seat alive and unreachable. A turn that overruns the declared three-minute window now exits `readiness_timeout` instead of working with no mesh presence. That teardown kills the private Jcode tree and discards the in-flight turn; nothing from it is recovered. The connector log still names the gate while the proof is running, and a later outcome line names what happened: proved (with or without a spawn `--prompt`), provider refusal, or timeout. A hang that never returns and never hits the bound has no outcome line.
+
 ## 0.42.0
 
 ### Minor Changes

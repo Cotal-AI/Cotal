@@ -124,7 +124,7 @@ type Run = { status: number | null; out: string; timedOut: boolean; signal: Node
 function cotal(args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> {
   return new Promise((res) => {
     const child = spawn(TSX, [BIN, ...args], {
-      cwd, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
+      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "", timedOut = false, settled = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null;

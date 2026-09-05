@@ -49,7 +49,7 @@ const anchors = new Map([
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
