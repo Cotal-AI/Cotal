@@ -77,7 +77,11 @@ jobs:
             base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
             echo "no base commit on this event; using first parent $base"
           fi
-          echo "MUTATION_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          # A FILE, not $GITHUB_ENV. The runner processes a step's env file when the step ENDS, so a
+          # step killed by `timeout-minutes` never contributes its variables and the next step would
+          # see nothing — on precisely the timed-out run this measurement exists for. A file written
+          # by the shell exists the moment the redirect completes.
+          date +%s > "$RUNNER_TEMP/mutation-started"
           node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)"
       - name: Report elapsed
         # Until this step existed, no run of this job recorded how long it took, so a cancellation
@@ -85,14 +89,17 @@ jobs:
         # and the budget above could only ever be guessed.
         #
         # `always()` rather than `failure()` because the run whose duration matters most is the one
-        # the timer kills, and a timeout cancels the job rather than failing it. This is best
-        # effort on that path: a cancelled job gives its remaining steps only a grace period, so a
-        # timed-out run MAY print nothing here. It is reliable on the success and failure paths,
-        # which is what re-deriving the budget needs.
+        # the timer kills, and a timeout cancels the job rather than failing it. The start marker is
+        # a file for the same reason: $GITHUB_ENV is only processed when a step ENDS, so a step the
+        # timer kills contributes nothing and this step would take its else branch on exactly the
+        # run it was added for. Still best effort on that path — a cancelled job gives its remaining
+        # steps only a grace period, so this may not run at all — but when it does run it now has a
+        # start time to work from.
         if: always()
         run: |
-          if [ -n "${MUTATION_STARTED:-}" ]; then
-            echo "mutation reproof: changed-set elapsed $(( $(date +%s) - MUTATION_STARTED ))s (budget 150m)"
+          marker="$RUNNER_TEMP/mutation-started"
+          if [ -s "$marker" ]; then
+            echo "mutation reproof: changed-set elapsed $(( $(date +%s) - $(cat "$marker") ))s (budget 150m)"
           else
             echo "mutation reproof: no start marker; the job ended before the re-prove step began"
           fi
