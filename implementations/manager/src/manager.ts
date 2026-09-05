@@ -913,8 +913,13 @@ export class Manager {
    * hear `not-found`, which a seat reads as "drop it": failure reported for work that committed.
    * The settled answer lives here for a bounded window instead, and the sweep drops it after,
    * which is also what keeps this map from being one entry per turn for the process lifetime.
+   *
+   * `ref` is the goal coordinates the durable terminal is published under. A late yield that
+   * arrives after pendingTurns is gone and before `settled` is remembered (or after a concurrent
+   * sweep dropped the settled field) still has to name that terminal, never `not-found`. The
+   * index entry is not that answer: it is cleared at commit, and the yield path never consults it.
    */
-  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; settled?: { state: string; at: number } }>();
+  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; settled?: { state: string; at: number } }>();
   /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
    *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
@@ -6051,7 +6056,7 @@ export class Manager {
     this.pendingTurns.set(goalId, pending);
     this.ensureTurnSweep();
     const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
-    this.turnAcceptances.set(goalId, { acceptance });
+    this.turnAcceptances.set(goalId, { acceptance, ref });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
     return acceptance;
   }
@@ -6106,11 +6111,21 @@ export class Manager {
       // reporting failure for work the run already has. The answer the first reply carried is
       // served again instead, to the addressee it was addressed to and nobody else.
       const settled = this.turnAcceptances.get(goalId);
-      if (settled?.settled !== undefined) {
+      if (settled !== undefined) {
         const a = settled.acceptance;
         if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)
           throw new EpEnvelopeError("permission-denied", `turn "${goalId}" was addressed to ${a.owner}.${a.actor}/${a.uid}; a yield is the addressee's own (SPEC 13.6)`);
-        return { goalId, state: settled.settled.state };
+        if (settled.settled !== undefined) return { goalId, state: settled.settled.state };
+        // The in-memory answer is not yet remembered (pending deleted before the terminal CAS,
+        // or a concurrent sweep dropped `settled` while the commit was still in flight). The
+        // durable terminal is the one the run already has; name it, never `not-found`.
+        if (settled.ref !== undefined) {
+          const ended = await readGoalResult(gw.ctx, settled.ref);
+          if (ended !== undefined) {
+            this.rememberSettledTurn(goalId, ended.state, ended.ts);
+            return { goalId, state: ended.state };
+          }
+        }
       }
       throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
     }
@@ -6164,12 +6179,12 @@ export class Manager {
       await this.assertGoalWriterEpochCurrent(epoch);
       const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
       this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
-      await clearGoalIndex(gw.ctx, p.ref);
-      // The SAME order the yield path keeps: remember, then ask whether the sweep may stop. Asked
-      // first, the stop saw no pending turn and no settled answer, cleared the acceptance map, and
-      // the remember below found nothing to write to; a yield whose reply was lost then heard
-      // `not-found` for the last expired turn, which the seat reads as "drop it".
+      // Remember BEFORE the index clear: a late yield that arrives after the pending latch
+      // (the delete at the top of this function) and after this CAS has to name this terminal.
+      // Clearing first, then remembering, left a window where maybeStopTurnSweep saw no pending
+      // turn and no settled answer, wiped the acceptance, and rememberSettledTurn no-op'd.
       this.rememberSettledTurn(p.goalId, fact.state, Date.now());
+      await clearGoalIndex(gw.ctx, p.ref);
     } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${(e as Error).message}`); }
     this.maybeStopTurnSweep();
   }
@@ -6219,8 +6234,12 @@ export class Manager {
    *  second is still owed would leave one entry per turn for the process lifetime. */
   private maybeStopTurnSweep(): void {
     if (this.pendingTurns.size > 0) return;
-    for (const e of this.turnAcceptances.values()) if (e.settled !== undefined) return;
-    this.turnAcceptances.clear();
+    // An acceptance with no `settled` yet is the in-flight deadline commit: pending was the
+    // latch and is already gone, the terminal CAS has not returned, and a concurrent sweep
+    // tick used to clear the map here, so rememberSettledTurn no-op'd and a late yield heard
+    // `not-found` for a deny the run already has. Prune is the only deleter; stop only when
+    // it has left nothing.
+    if (this.turnAcceptances.size > 0) return;
     this.stopTurnSweep();
   }
 
@@ -6308,6 +6327,7 @@ export class Manager {
         fingerprint: spec.value.fingerprint, deadlineAt: p.deadlineAt,
         executor: { lifecycleUid: this.managerInstanceId, epoch: p.holdEpoch },
       },
+      ref: p.ref,
     });
     // NO LIVENESS VERDICT AT BOOT. The agents map is empty here: seats are re-registered later,
     // by the resume path, so `not in the map` at this moment means "not yet re-registered", never
