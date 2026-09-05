@@ -135,6 +135,9 @@ try {
     return (r.reply.data ?? []) as PsRow[];
   };
 
+  // Top-level `return` is L1024, so the program cannot yield e.code as RunResult.value.
+  // Uncaught L4002 is re-thrown by startRun after noteFinal("failed") (run-driver.ts),
+  // which this wrapper records as `{ status: "threw" }`. `completed` is the in-program catch.
   const source = `
 const s = await spawn("seat", { supervise: { restarts: 1, window: "1m" } });
 const t = await turn(s, { name: "do-it" });
@@ -240,9 +243,11 @@ try {
     c("spending the restart budget retires the seat", gone);
   }
 
-  const out = await Promise.race([drv, wait(60_000).then(() => undefined)]);
+  const out = await Promise.race([drv, wait(60_000).then(() => undefined)]) as
+    { status?: string; result?: { value?: unknown }; error?: string } | undefined;
   c("the run completes after the second turn fails in-program",
-    (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
+    out?.status === "completed" && out?.error === undefined,
+    JSON.stringify({ status: out?.status, value: out?.result?.value, error: out?.error }));
 
   const turns = await entriesOf("ls-sup", "turn");
   const second = turns.filter((e) => e.state === "settled" && String(e.external?.goalId ?? "") !== goalId).at(-1);
