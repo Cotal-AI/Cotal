@@ -31,8 +31,10 @@
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard,
  * and likewise when a NEW entry's comment claims "Appended" while the entry sits before a
  * pre-existing suite: the claim sentence is validated against position instead of trusted (#1011).
+ * It also exits 1 when head's frozen list names a suite the base list does not: a tail append
+ * is shard-stable and inventory-green, then CONFLICTS the next PR, which GitHub will not build.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All nineteen run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All twenty-two run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -52,6 +54,9 @@
  *   - a NEW entry claiming "Appended" while inserted mid-file must be named as a violation
  *   - the same claim on a true tail append must report nothing
  *   - "Appended" claims on PRE-EXISTING entries must be ignored (history is not re-graded)
+ *   - a tail append of a new suite name must report that name
+ *   - a comment-only edit of the frozen list must report nothing
+ *   - a deletion from the frozen list must report nothing
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -69,6 +74,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changedSuiteIndices } from "./shard-stability.mjs";
+import { addedLegacySuites, fragmentFileName } from "./ci-suites.mjs";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
 // actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
@@ -701,6 +707,9 @@ const claimTail = appendedClaimViolations(claimControlBase,
   `smoke:a\nsmoke:b\nsmoke:c\n\n${claimSentence}\nsmoke:NEW-CONTROL\n`);
 const claimHistorical = appendedClaimViolations(claimControlBase,
   `${claimSentence}\nsmoke:a\n${claimSentence}\nsmoke:b\n${claimSentence}\nsmoke:c\n`);
+const freezeTail = addedLegacySuites("smoke:a\nsmoke:b\n", "smoke:a\nsmoke:b\nsmoke:NEW\n") as string[];
+const freezeComment = addedLegacySuites("smoke:a\n", "smoke:a\n# freeze note only\n") as string[];
+const freezeDelete = addedLegacySuites("smoke:a\nsmoke:b\n", "smoke:a\n") as string[];
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL same-shard reindex     -> ${indexRotation.changed.length} of ${indexRotation.examined} examined  (must be 20 of 20)`);
@@ -722,6 +731,9 @@ console.log(`CONTROL complete workflow ${headCount} -> ${headCount + 1} -> ${com
 console.log(`CONTROL mid-file "Appended" claim -> ${claimMidFile.length} named  (must be 1)`);
 console.log(`CONTROL tail "Appended" claim     -> ${claimTail.length} named  (must be 0)`);
 console.log(`CONTROL historical claims         -> ${claimHistorical.length} named  (must be 0)`);
+console.log(`CONTROL freeze tail append        -> ${JSON.stringify(freezeTail)}  (must be ["smoke:NEW"])`);
+console.log(`CONTROL freeze comment-only       -> ${JSON.stringify(freezeComment)}  (must be [])`);
+console.log(`CONTROL freeze deletion           -> ${JSON.stringify(freezeDelete)}  (must be [])`);
 if (
   forced.length === 0 || identity.length !== 0 ||
   indexRotation.changed.length !== 20 || indexRotation.examined !== 20 ||
@@ -732,7 +744,9 @@ if (
   !duplicateMappedIdControl.injected || duplicateMappedIdControl.count !== null ||
   !duplicateLeadingIdControl.injected || duplicateLeadingIdControl.count !== null ||
   completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused ||
-  claimMidFile.length !== 1 || claimTail.length !== 0 || claimHistorical.length !== 0
+  claimMidFile.length !== 1 || claimTail.length !== 0 || claimHistorical.length !== 0 ||
+  freezeTail.length !== 1 || freezeTail[0] !== "smoke:NEW" ||
+  freezeComment.length !== 0 || freezeDelete.length !== 0
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
@@ -741,6 +755,16 @@ const allA = [...A, ...AF], allB = [...B, ...BF];
 const added = allB.filter((suite) => !allA.includes(suite));
 const removed = allA.filter((suite) => !allB.includes(suite));
 const claimViolations = appendedClaimViolations(A, readRaw(head));
+let freezeAdds: string[];
+try {
+  freezeAdds = addedLegacySuites(readRaw(base), readRaw(head), `ci-suites.txt@${base}`, `ci-suites.txt@${head}`) as string[];
+} catch (error) {
+  verdict(
+    "RESHARD",
+    `FROZEN LIST UNPARSEABLE at head: ${(error as Error).message}. Keep ci-suites.txt frozen; add new suites under ci-suites.d/<sha256(name)>.txt.`,
+    1,
+  );
+}
 console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${headCount} shards`);
 console.log(`  suites: ${allA.length} -> ${allB.length} · added ${added.length} · removed ${removed.length}`);
 console.log(`  frozen legacy suites CHANGING INDEX: ${indices.changed.length} of ${indices.examined} examined`);
@@ -752,16 +776,26 @@ if (changed.length > 0) {
 if (claimViolations.length > 0) {
   console.log(`  NEW entries claiming "Appended" while mid-file: ${claimViolations.join(", ")}`);
 }
-if (indices.changed.length > 0 || removed.length > 0 || changed.length > 0 || claimViolations.length > 0) {
+if (freezeAdds.length > 0) {
+  console.log(
+    `  FROZEN LIST APPENDED: ${freezeAdds.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(", ")}`,
+  );
+}
+if (indices.changed.length > 0 || removed.length > 0 || changed.length > 0 || claimViolations.length > 0 || freezeAdds.length > 0) {
   const remedy = baseCount === headCount
     ? "Keep ci-suites.txt frozen; add new suites as one-file fragments under ci-suites.d."
     : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
   const claimNote = claimViolations.length > 0
     ? ` FALSE "Appended" CLAIM on ${claimViolations.join(", ")}: the sentence is validated against position (#1011); a new entry carrying it must sit after every pre-existing suite.`
     : "";
+  const freezeNote = freezeAdds.length > 0
+    ? ` FROZEN LIST APPENDED ${freezeAdds.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(", ")}. A CONFLICTING PR gets zero CI.`
+    : "";
   const headline = indices.changed.length > 0 || removed.length > 0 || changed.length > 0
     ? `RE-SHARD DETECTED. ${remedy}`
-    : "NO pre-existing suite moved, but the registry lies about how it grew.";
-  verdict("RESHARD", `${headline}${claimNote}`, 1);
+    : freezeAdds.length > 0
+      ? `FROZEN LIST APPENDED. ${remedy}`
+      : "NO pre-existing suite moved, but the registry lies about how it grew.";
+  verdict("RESHARD", `${headline}${claimNote}${freezeNote}`, 1);
 }
-verdict("STABLE", "STABLE - every frozen legacy suite keeps its index, every pre-existing suite keeps its runner, no false append claims.", 0);
+verdict("STABLE", "STABLE - every frozen legacy suite keeps its index, every pre-existing suite keeps its runner, no false append claims, no new suite on the frozen list.", 0);

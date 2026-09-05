@@ -3,6 +3,10 @@
 Add each new `smoke:*` gate as its own `<sha256(suite-name)>.txt` file containing exactly that one
 script name. Derive the filename from the full public suite name; do not choose a shared topic slug.
 Do not append to `../ci-suites.txt`; that list is frozen to preserve its positional assignments.
+`pnpm smoke:ci-suites-freeze` fails a commit that adds a suite line there, and names the
+`<sha256(suite-name)>.txt` path to use instead. `pnpm check:shard-stability` runs the same scan
+on the two committed blobs, which is how the required unit job reaches it. Deletions and
+comment edits stay legal.
 
 Fragment suites use a stable hash of the script name for sharding, so concurrent file additions and
 filename ordering cannot move another suite between runners.
