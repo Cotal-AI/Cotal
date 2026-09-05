@@ -147,6 +147,7 @@ function cotal(args: string[], home: string, cwd: string, env: Record<string, st
       ...process.env,
       COTAL_HOME: home,
       XDG_CONFIG_HOME: join(home, "xdg"),
+      COTAL_SKIP_CONNECTOR_SEED: "1",
       NODE_EXTRA_CA_CERTS: caFile,
       COTAL_NAME: "tlsprobe",
       COTAL_ID: "tlsprobe_send",

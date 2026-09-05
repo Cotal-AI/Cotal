@@ -84,7 +84,7 @@ async function backupStageFaultScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_stages";
-  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
   // Follow-on assign: `cotal send` refuses without a complete identity in this process.
   env.COTAL_NAME = "cli";
   env.COTAL_ID = "cli_send";
@@ -160,7 +160,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_replay";
-  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
   // Follow-on assign: `cotal send` refuses without a complete identity in this process.
   env.COTAL_NAME = "cli";
   env.COTAL_ID = "cli_send";
