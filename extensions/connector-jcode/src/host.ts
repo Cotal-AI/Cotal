@@ -864,8 +864,6 @@ export async function runJcodeHost(): Promise<void> {
           }),
         ]);
         if (timedOut === "timeout") {
-          // Do not await the in-flight run() or client.close(): both wait for turn_done, which is
-          // the unbounded thing this bound exists to stop. Startup catch stops the private tree.
           throw new JcodeConnectorError(
             "readiness_timeout",
             `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,

@@ -48,7 +48,7 @@
     {
       "name": "M6 drop the host-side readiness turn bound",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        const timedOut = await Promise.race([\n          proveReadiness().then(() => \"ready\" as const),\n          new Promise<\"timeout\">((resolve) => {\n            timeout = setTimeout(() => resolve(\"timeout\"), readinessBudgetMs);\n          }),\n        ]);\n        if (timedOut === \"timeout\") {\n          // Do not await the in-flight run() or client.close(): both wait for turn_done, which is\n          // the unbounded thing this bound exists to stop. Startup catch stops the private tree.\n          throw new JcodeConnectorError(\n            \"readiness_timeout\",\n            `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,\n          );\n        }",
+      "find": "        const timedOut = await Promise.race([\n          proveReadiness().then(() => \"ready\" as const),\n          new Promise<\"timeout\">((resolve) => {\n            timeout = setTimeout(() => resolve(\"timeout\"), readinessBudgetMs);\n          }),\n        ]);\n        if (timedOut === \"timeout\") {\n          throw new JcodeConnectorError(\n            \"readiness_timeout\",\n            `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,\n          );\n        }",
       "replace": "        await proveReadiness();",
       "expectRed": "a readiness turn that overruns its bound ends the launch"
     },
