@@ -247,7 +247,11 @@ try {
   const turns = await entriesOf("ls-sup", "turn");
   const second = turns.filter((e) => e.state === "settled" && String(e.external?.goalId ?? "") !== goalId).at(-1);
   c("the next turn fails L4002 with the recorded reason",
-    second?.status === "failed" && second?.error?.code === "L4002",
+    second?.status === "failed"
+      && second?.error?.code === "L4002"
+      && second?.error?.kind === "turn"
+      && typeof second?.error?.message === "string"
+      && second.error.message.includes("found the agent down"),
     JSON.stringify(second?.error));
 
   await nc.drain().catch(() => undefined);
