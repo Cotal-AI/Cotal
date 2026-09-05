@@ -346,7 +346,14 @@ try {
     }
 
     let durableReadAttempted = false;
-    kv.get = async (): Promise<never> => { durableReadAttempted = true; return new Promise<never>(() => {}); };
+    const outageSlotKey = staticSlotKey(DEV_OWNER, "store-outage");
+    kv.get = async (key: string): Promise<unknown> => {
+      if (key === outageSlotKey) {
+        durableReadAttempted = true;
+        return new Promise<never>(() => {});
+      }
+      return originalGet.call(kv, key);
+    };
     try {
       const liveDuringOutage = await A.call("inspect", { name: "w1" });
       check("inspect keeps live hits entirely local when the durable slot store is unavailable",
