@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { CotalEndpoint, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -354,6 +354,14 @@ try {
   // the seat mid-turn five minutes later. The seat's version is fixed at spawn time.
   check("host pins the seat binary against background self-update", argv.env?.JCODE_NO_AUTO_UPDATE === "1", argv.env);
   const peerHome = managedHome("jcodehost", "jcodepeer");
+  const peerLog = connectorLog(peerHome);
+  check(
+    "a successful join with no spawn --prompt names that outcome",
+    /pre-join readiness outcome: orientation proved; joining with no spawn --prompt/.test(peerLog) &&
+      !/pre-join readiness outcome: timeout/.test(peerLog) &&
+      !/pre-join readiness outcome: provider refusal/.test(peerLog),
+    peerLog,
+  );
   check("host copies auth mirror rather than linking it", lstatSync(join(peerHome, "auth.json")).isFile() && !lstatSync(join(peerHome, "auth.json")).isSymbolicLink());
   check("host copied auth mirror is owner-only", (statSync(join(peerHome, "auth.json")).mode & 0o777) === 0o600);
 
@@ -789,9 +797,139 @@ try {
     },
   );
   check(
+    "provider readiness refusal names that outcome, not a timeout or a missing prompt",
+    /pre-join readiness outcome: provider refusal/.test(refusalErr) &&
+      !/pre-join readiness outcome: timeout/.test(refusalErr) &&
+      !/joining with no spawn --prompt/.test(refusalErr) &&
+      !/submitting the spawn --prompt/.test(refusalErr),
+    refusalErr,
+  );
+  check(
     "provider readiness refusal stays scrubbed beyond the classified fields",
     !refusalErr.includes("was refused by provider"),
     refusalErr,
+  );
+
+  // #1216: a long readiness turn used to keep the host alive with no mesh presence at all.
+  // The persona is already in the transcript, the kickoff prompt is not, and cotal_dm fails
+  // with `no peer`. Bound that turn, and name the pre-join state while it is still running.
+  const gateLog = join(root, "readiness-gate.jsonl");
+  const personaFile = join(root, "slowpeer.md");
+  writeFileSync(
+    personaFile,
+    "---\nname: slowpeer\nrole: reviewer\n---\nHEAVY-PERSONA-1216-DO-WORK-NOW\n",
+  );
+  const gateTurnMs = 2_500;
+  const gateDeadlineMs = 800;
+  const slow = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: gateLog,
+      FAKE_JCODE_TURN_DELAY_MS: String(gateTurnMs),
+      COTAL_JCODE_READINESS_TIMEOUT_MS: String(gateDeadlineMs),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "slowpeer",
+      COTAL_ID: "slowpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_AGENT_FILE: personaFile,
+      COTAL_JCODE_PROMPT: "KICKOFF-1216-DO-THE-REVIEW",
+      COTAL_CONTROL_SOCKET: controlSock("slow-control.sock"),
+      COTAL_CONTROL_TOKEN: "slow-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let slowErr = "";
+  slow.stderr?.on("data", (chunk: Buffer) => (slowErr += chunk.toString()));
+  const gateEntries = (): Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }> =>
+    readJsonLines(gateLog);
+  await waitFor("slowpeer readiness turn in flight", () => {
+    const orientation = gateEntries().find(
+      (entry) =>
+        entry.ev === "request" &&
+        entry.frame?.req === "send_message" &&
+        !entry.frame?.no_reply &&
+        String(entry.frame?.content).includes("cotal_orientation"),
+    );
+    return orientation ? true : undefined;
+  });
+  await sleep(200);
+  const midAlive = slow.exitCode === null && slow.signalCode === null;
+  const midRoster = operator.getRoster().filter((p) => p.card.name === "slowpeer" && p.status !== "offline");
+  const midPeer = resolvePeer(operator.getRoster(), "slowpeer", { selfId: operator.id });
+  const midDmError = midPeer ? undefined : `no peer "slowpeer" in space "jcodehost"`;
+  const midPersona = gateEntries().find(
+    (entry) =>
+      entry.ev === "request" &&
+      entry.frame?.req === "send_message" &&
+      entry.frame?.no_reply &&
+      String(entry.frame?.content).includes("HEAVY-PERSONA-1216-DO-WORK-NOW"),
+  );
+  const midKickoff = gateEntries().find(
+    (entry) =>
+      entry.ev === "request" &&
+      entry.frame?.req === "send_message" &&
+      !entry.frame?.no_reply &&
+      String(entry.frame?.content).includes("KICKOFF-1216-DO-THE-REVIEW"),
+  );
+  const midLog = connectorLog(managedHome("jcodehost", "slowpeer"));
+  check("a long readiness turn keeps the host alive before join", midAlive, { exitCode: slow.exitCode, signalCode: slow.signalCode, stderr: slowErr });
+  check("a long readiness turn has no mesh presence", midRoster.length === 0 && !announced.has("slowpeer"), { midRoster, announced: [...announced] });
+  check(
+    "cotal_dm to a seat still at the readiness gate fails with no peer",
+    midDmError === `no peer "slowpeer" in space "jcodehost"`,
+    { midPeer, midDmError },
+  );
+  check("the persona is already in the transcript before the gate returns", Boolean(midPersona), midPersona);
+  check("the kickoff prompt is not submitted while the gate is still open", !midKickoff, midKickoff);
+  check(
+    "the connector log names the pre-join readiness gate while that turn is still running",
+    /pre-join readiness/.test(midLog) && /cotal_orientation/.test(midLog),
+    midLog,
+  );
+  // The wait lives inside this named check: a mutant that drops the bound must redden
+  // this assertion, not a helper that times out before it.
+  let timedOutExit: number | null | undefined;
+  try {
+    timedOutExit = await waitFor("slowpeer readiness timeout exit", () => (slow.exitCode === null ? undefined : slow.exitCode), 15_000);
+  } catch {
+    timedOutExit = slow.exitCode;
+  }
+  check(
+    "a readiness turn that overruns its bound ends the launch",
+    timedOutExit !== null && timedOutExit !== undefined && timedOutExit !== 0,
+    { code: timedOutExit, stderr: slowErr },
+  );
+  const afterKickoff = gateEntries().find(
+    (entry) =>
+      entry.ev === "request" &&
+      entry.frame?.req === "send_message" &&
+      !entry.frame?.no_reply &&
+      String(entry.frame?.content).includes("KICKOFF-1216-DO-THE-REVIEW"),
+  );
+  check("a timed-out readiness turn never reaches the roster", !announced.has("slowpeer"), [...announced]);
+  check("a timed-out readiness turn never submits the kickoff prompt", !afterKickoff, afterKickoff);
+  check(
+    "a timed-out readiness turn is named as a readiness timeout, not unknown",
+    /readiness_timeout/.test(slowErr) || /readiness turn exceeded/.test(slowErr),
+    slowErr,
+  );
+  const afterLog = connectorLog(managedHome("jcodehost", "slowpeer"));
+  check(
+    "a timed-out readiness turn names its outcome as timeout, not a hang or a missing prompt",
+    /pre-join readiness outcome: timeout/.test(afterLog) &&
+      /discarding that in-flight turn/.test(afterLog) &&
+      !/pre-join readiness outcome: provider refusal/.test(afterLog) &&
+      !/joining with no spawn --prompt/.test(afterLog) &&
+      !/submitting the spawn --prompt/.test(afterLog),
+    afterLog,
   );
 } finally {
   for (const proc of hosts) await stopHostTree(proc, "SIGKILL");

@@ -327,11 +327,14 @@ A manager that dies mid-registration leaves its issuance gate *frozen* under tha
 op. The freeze is correct: it stops two incarnations serving at once. The successor now completes
 that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#reconcile-gate): it
 acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
-`sweepComplete=true`), abort-reopens the gate (generation+1, processEpoch unchanged), and continues
-the normal takeover. A live holder, an incomplete sweep, or an unreachable delivery daemon still
+`sweepComplete=true`). If the dead op's spec write committed, it finishes that same freeze
+(promote and reopen at the committed registration revision). If the spec did not advance, it
+abort-reopens the gate (generation+1, processEpoch unchanged) and continues the normal takeover.
+A live holder, an incomplete sweep, or an unreachable delivery daemon still
 refuses. Silence is never evidence of death, and there is no TTL. If holder verification is
 interrupted, the frozen operation resumes from its durable, operation-and-gate-revision-bound
-progress after liveness is checked again. Use `cotal reconcile-gate` when the boot path cannot run
+progress after liveness is checked again. A later freeze cannot reuse that progress: the cursor
+binds the exact op, gate revision, and holder set. Use `cotal reconcile-gate` when the boot path cannot run
 (daemon down, a non-manager endpoint, or you want to lift the freeze without starting a manager). A spawn that hits the same frozen gate names that verb in the refusal
 (`blockedOp=registration`, the holding `opId`, `remedy=cotal reconcile-gate`) instead of a
 wait-timeout: the facts were always in the manager log; they now reach the spawn caller too.
