@@ -20,7 +20,7 @@ import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnS
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 21;
+const EXPECTED = 22;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -123,6 +123,11 @@ try {
 
   check("`cotal send dm` without COTAL_NAME exits non-zero", noIdentityDm.code !== 0, noIdentityDm);
   check("`cotal send dm` refusal names COTAL_NAME", /COTAL_NAME/.test(noIdentityDm.stderr), noIdentityDm.stderr);
+  check(
+    "`cotal send` identity refusal names COTAL_NAME as required in both accepted shapes",
+    noIdentityDm.stderr.includes("`cotal send` requires COTAL_NAME plus either COTAL_ID or both COTAL_OWNER and COTAL_ACTOR."),
+    noIdentityDm.stderr,
+  );
   check("`cotal send dm` without COTAL_NAME delivers nothing", !got.some((m) => m.text === noIdentityDmText), got);
   check("`cotal send msg` without COTAL_NAME exits non-zero", noIdentityMsg.code !== 0, noIdentityMsg);
   check("`cotal send msg` refusal names COTAL_NAME", /COTAL_NAME/.test(noIdentityMsg.stderr), noIdentityMsg.stderr);
