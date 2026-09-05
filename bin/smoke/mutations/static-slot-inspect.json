@@ -1,0 +1,46 @@
+{
+  "suite": "implementations/manager/smoke/manager-service-ops.smoke.ts",
+  "guard": "manager inspect keeps live success local and closed, but distinguishes a nonterminal durable static slot from an unknown name with an honest ordered slot-plus-head observation",
+  "command": "pnpm --filter @cotal-ai/manager... build && pnpm smoke:manager-service-ops",
+  "completionMarker": "MANAGER SERVICE OPS SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/static-slot-inspect.json",
+  "why": [
+    "The suite drives the real manager service over ep.one. It plants a durable terminalizing slot and retiring lifecycle head after boot, so startup reconciliation cannot consume the fixture before inspect reads it.",
+    "",
+    "The first mutation restores the shipped defect at the real entry point: inspect never consults durable state after a live-map miss. The second removes the cleanup-complete field while preserving the rest of the projection. The third removes the read-order marker while keeping both values, so a two-record pair can be mistaken for a snapshot.",
+    "",
+    "BUILD FIRST and rebuild after restore. The manager smoke imports core and workspace through their dist outputs, and the command also refreshes manager dist. The source files are restored before afterRestore runs, so no ignored output remains compiled from a mutant."
+  ],
+  "mutations": [
+    {
+      "name": "inspect stops consulting the durable slot store after a live-map miss",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "              observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);",
+      "replace": "              observed = undefined;",
+      "expectRed": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      "cell": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      "note": "This restores the exact symptom: stranded and never-known names both become not-found.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "the slot projection drops cleanupComplete while keeping phase and head facts",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "    ...(slot.row.cleanupComplete !== undefined ? { cleanupComplete: slot.row.cleanupComplete } : {}),",
+      "replace": "    // cleanup completion omitted",
+      "expectRed": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      "cell": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      "note": "The durability field exists but becomes unread again. The same real-wire cell requires both the store lookup and this field projection.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "the two-record observation stops declaring its read order",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "    readOrder: [\"slot\", \"head\"],",
+      "replace": "    readOrder: [] as unknown as [\"slot\", \"head\"],",
+      "expectRed": "a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
+      "cell": "a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
+      "note": "The fixture advances the head between reads. Without the explicit order, the pair no longer says how the torn observation was obtained.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    }
+  ]
+}
