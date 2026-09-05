@@ -238,6 +238,7 @@ type StaticReconcileItem = ManagerStaticReconciliationFailure & {
   owner: string;
   timer?: ReturnType<typeof setTimeout>;
   flight?: Promise<boolean>;
+  retryFlight?: Promise<void>;
 };
 
 /** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
@@ -4972,7 +4973,7 @@ export class Manager {
    *  clear, so recovery is visible without becoming stale process-lifetime history. */
   private staticReconciliationStatus(): ManagerStaticReconciliationStatus {
     const failures = [...this.staticReconcileItems.values()]
-      .map(({ owner: _owner, timer: _timer, flight: _flight, ...item }) => ({ ...item }))
+      .map(({ owner: _owner, timer: _timer, flight: _flight, retryFlight: _retryFlight, ...item }) => ({ ...item }))
       .sort((a, b) => a.alias.localeCompare(b.alias));
     const state: ManagerStaticReconciliationStatus["state"] =
       failures.some((item) => item.disposition === "retrying") ? "retrying" :
@@ -6608,9 +6609,22 @@ export class Manager {
     console.error(`! static reconcile retry-scheduled alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid} attempt=${item.attempts + 1}/${item.maxAttempts} nextRetryAt=${item.nextRetryAt}`);
   }
 
-  private async retryStaticReconcile(key: string): Promise<void> {
+  private retryStaticReconcile(key: string): Promise<void> {
     const item = this.staticReconcileItems.get(key);
-    if (!item || this.staticReconcileStopping || item.disposition === "recovered") return;
+    if (!item || this.staticReconcileStopping || item.disposition === "recovered") return Promise.resolve();
+    if (item.retryFlight) return item.retryFlight;
+    const flight = this.driveStaticReconcileRetry(key, item);
+    let wrapped!: Promise<void>;
+    wrapped = flight.finally(() => {
+      if (item.retryFlight === wrapped) item.retryFlight = undefined;
+    });
+    item.retryFlight = wrapped;
+    return wrapped;
+  }
+
+  private async driveStaticReconcileRetry(key: string, item: StaticReconcileItem): Promise<void> {
+    if (item.flight) await item.flight;
+    if (this.staticReconcileStopping || item.disposition === "recovered") return;
     // A retry trigger consumes one finite budget entry even if the authoritative re-read itself
     // fails. Otherwise a broker outage before the planner could reschedule forever without ever
     // incrementing `attempts`, violating the bounded-retry guarantee.
@@ -6676,6 +6690,10 @@ export class Manager {
   private attemptStaticReconcile(key: string, item: StaticReconcileItem, row: StaticManagedSlotRow, countAttempt = true): Promise<boolean> {
     if (item.flight) return item.flight;
     if (item.timer) return Promise.resolve(false);
+    // A timer/retry driver increments before its mandatory durable re-read, then calls with
+    // countAttempt=false. Let that already-consumed budget entry enter the terminal. Only a fresh
+    // sweep entry (countAttempt=true) is refused once the per-process budget is exhausted.
+    if (countAttempt && item.attempts >= item.maxAttempts) return Promise.resolve(false);
     const flight = (async (): Promise<boolean> => {
       if (countAttempt) item.attempts++;
       item.phase = row.phase;
@@ -6713,7 +6731,10 @@ export class Manager {
           item.remedy = "restart this manager for a fresh per-process retry budget";
           console.error(`! static reconcile retry-exhausted alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}; NEXT: restart this manager for a fresh per-process retry budget`);
         } else {
-          this.scheduleStaticReconcileRetry(key, item);
+          // The initial serial sweep must publish its complete failed aggregate before any timer can
+          // re-enter a middle row. Mark it now; the sweep arms the timer after its last planned row.
+          if (this.staticReconcileSweepsInFlight > 0) item.disposition = "retry-scheduled";
+          else this.scheduleStaticReconcileRetry(key, item);
         }
         return false;
       } finally {
@@ -6822,6 +6843,11 @@ export class Manager {
         this.reconcilingAliases.delete(row.alias);
       }
       sweep.completedAt = new Date().toISOString();
+      for (const row of terminalRows) {
+        const key = this.staticReconcileKey(row);
+        const item = this.staticReconcileItems.get(key);
+        if (item?.disposition === "retry-scheduled" && !item.timer) this.scheduleStaticReconcileRetry(key, item);
+      }
       const failed = terminalRows.flatMap((row) => {
         const item = this.staticReconcileItems.get(this.staticReconcileKey(row));
         return item && item.disposition !== "recovered" ? [`${item.alias}:${item.phase}:${item.disposition}`] : [];

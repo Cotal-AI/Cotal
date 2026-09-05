@@ -21,6 +21,7 @@ import {
   credRowKey,
   epAuthBucket,
   epCall,
+  gateFreeze,
   gateObserve,
   mintCreds,
   mintLifecycleUid,
@@ -126,7 +127,7 @@ const connector: Connector = {
 };
 registry.register(connector);
 
-async function writeOrphan(alias: string): Promise<void> {
+async function writeOrphan(alias: string, foreignRetirementOp = false): Promise<void> {
   const identity = newIdentity();
   const uid = mintLifecycleUid();
   const principal = principalKey(DEV_OWNER, identity.id).key;
@@ -143,6 +144,10 @@ async function writeOrphan(alias: string): Promise<void> {
     await appendStaticCredentialRow(transport, { lifecycleUid: uid, credentialId, holderPrincipal: principal, exp: Math.floor(Date.now() / 1000) + 3600 });
     const slot = await readStaticSlot(transport, DEV_OWNER, alias);
     await casStaticSlot(transport, { ...slot!.row, phase: "active" }, slot!.revision);
+    if (foreignRetirementOp) {
+      const gate = await gateObserve(transport, uid);
+      await gateFreeze(transport, { lifecycleUid: uid, revision: gate!.revision, op: { kind: "retirement", opId: "f".repeat(26) } });
+    }
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -182,8 +187,10 @@ try {
   const internals = manager as unknown as {
     staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
     staticReconcileRetryDelaysMs: readonly number[];
+    staticReconcileItems: Map<string, { timer?: ReturnType<typeof setTimeout>; nextRetryAt?: string; attempts: number; disposition: string }>;
     managerStatusData(): ManagerStatus;
     reconcileStaticLifecycles(): Promise<void>;
+    retryStaticReconcile(key: string): Promise<void>;
   };
   internals.staticReconcileRetryDelaysMs = [1_000, 80, 80];
   internals.staticLifecycleEvict = async (principal): Promise<EvictionResult> => {
@@ -243,11 +250,26 @@ try {
   // Persistent control. A fresh sweep clears the recovered transition, but keeps a failed coordinate's
   // existing per-process budget. Two extra triggers join its scheduled retry rather than resetting it.
   await writeOrphan("orphan-persistent");
-  internals.staticReconcileRetryDelaysMs = [80, 80, 80];
+  // The transient acceptance above already used the real timer. Keep this independent bounded and
+  // duplicate-trigger control manual so a loaded host cannot fire a compressed timer mid-assertion.
+  internals.staticReconcileRetryDelaysMs = [60_000, 60_000, 60_000];
   await internals.reconcileStaticLifecycles();
-  void internals.reconcileStaticLifecycles();
-  void internals.reconcileStaticLifecycles();
-  const exhausted = await until(() => internals.managerStatusData().staticReconciliation.failures.some((row) => row.alias === "orphan-persistent" && row.disposition === "retry-exhausted"), 5_000);
+  const persistentIdentity = identities.get("orphan-persistent")!;
+  const persistentKey = JSON.stringify([DEV_OWNER, "orphan-persistent", persistentIdentity.uid]);
+  const persistentItem = internals.staticReconcileItems.get(persistentKey)!;
+  if (persistentItem.timer) clearTimeout(persistentItem.timer);
+  persistentItem.timer = undefined;
+  persistentItem.nextRetryAt = undefined;
+  await Promise.all([internals.retryStaticReconcile(persistentKey), internals.retryStaticReconcile(persistentKey)]);
+  check("two retry triggers join one durable re-read and exact-terminal flight", attempts.get("orphan-persistent") === 2 && persistentItem.attempts === 2, { attempts: attempts.get("orphan-persistent"), item: persistentItem });
+  for (let expected = 3; expected <= 4; expected++) {
+    if (persistentItem.timer) clearTimeout(persistentItem.timer);
+    persistentItem.timer = undefined;
+    persistentItem.nextRetryAt = undefined;
+    await internals.retryStaticReconcile(persistentKey);
+    check(`persistent failure completed bounded attempt ${expected}/4`, attempts.get("orphan-persistent") === expected && persistentItem.attempts === expected, { attempts: attempts.get("orphan-persistent"), item: persistentItem });
+  }
+  const exhausted = internals.managerStatusData().staticReconciliation.failures.some((row) => row.alias === "orphan-persistent" && row.disposition === "retry-exhausted");
   const exhaustedStatus = internals.managerStatusData().staticReconciliation;
   const exhaustedRow = exhaustedStatus.failures.find((row) => row.alias === "orphan-persistent");
   check("persistent failure is bounded at four attempts despite duplicate retry triggers", exhausted && attempts.get("orphan-persistent") === 4, { attempts: attempts.get("orphan-persistent"), exhaustedStatus });
@@ -256,7 +278,14 @@ try {
   const attemptsAtExhaustion = attempts.get("orphan-persistent");
   await wait(250);
   check("an exhausted item does not busy-loop", attempts.get("orphan-persistent") === attemptsAtExhaustion, Object.fromEntries(attempts));
+  await internals.reconcileStaticLifecycles();
+  check("a later sweep in the same process does not reset an exhausted retry budget", attempts.get("orphan-persistent") === attemptsAtExhaustion, Object.fromEntries(attempts));
   check("the exhausted durable alias remains terminalizing for a fresh manager process to re-plan", (await slot("orphan-persistent"))?.phase === "terminalizing", await slot("orphan-persistent"));
+
+  await writeOrphan("orphan-foreign", true);
+  await internals.reconcileStaticLifecycles();
+  const foreignRow = internals.managerStatusData().staticReconciliation.failures.find((row) => row.alias === "orphan-foreign");
+  check("a foreign frozen retirement is refused literally and never reaches eviction", foreignRow?.disposition === "refused-foreign" && attempts.get("orphan-foreign") === undefined, { foreignRow, attempts: Object.fromEntries(attempts) });
 } finally {
   console.error = realError;
   await manager?.stop().catch(() => {});
