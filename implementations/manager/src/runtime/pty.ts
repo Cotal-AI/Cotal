@@ -22,12 +22,12 @@ const MAX_CONFIRMS = 5;
 const GRACE_MS = 3_000;
 
 /**
- * The default runtime: the manager spawns the agent in a pseudo-terminal it owns
- * via `@lydell/node-pty`. A real native TUI — the manager keeps full OS-signal
- * control, and `cotal attach` streams the same PTY. Terminal I/O stays off the
- * mesh; the agent's own plugin still talks to NATS directly.
+ * In-process node-pty ownership. The worker is the child's parent, so killing
+ * the worker kills the seat. Kept as the honest M1 residual and as the class
+ * `legacy-pty-custody` still instantiates. Production Linux pty goes through
+ * `CustodialPtyRuntime`.
  */
-export class PtyRuntime implements Runtime {
+export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
@@ -207,3 +207,6 @@ export class PtyRuntime implements Runtime {
     };
   }
 }
+
+/** @deprecated Use LegacyPtyRuntime. Kept so existing isolated fixtures keep compiling. */
+export { LegacyPtyRuntime as PtyRuntime };

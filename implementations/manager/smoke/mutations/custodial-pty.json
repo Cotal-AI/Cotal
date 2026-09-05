@@ -1,0 +1,20 @@
+{
+  "suite": "implementations/manager/smoke/custodial-pty.smoke.ts",
+  "guard": "the production pty runtime adopts a live proxy and a runtime without adopt still refuses by name",
+  "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && pnpm smoke:custodial-pty",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/custodial-pty.json",
+  "why": [
+    "The refusal cell is the earliest expectRed. The production adopt cell is a later, separate observation of a live proxy."
+  ],
+  "mutations": [
+    {
+      "name": "M1 swallow the absent-adopt refusal",
+      "file": "implementations/manager/smoke/custodial-pty.smoke.ts",
+      "find": "threw === 'runtime \"fixture\" does not support adopt'",
+      "replace": "true",
+      "expectRed": "absent adopt refuses by runtime name",
+      "cell": "absent adopt refuses by runtime name",
+      "note": "Code-only unique anchor on the earliest refusal cell."
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "suite": "packages/seat/smoke/lifecycle.smoke.ts",
+  "guard": "an isolated worker can die without taking the custodial child PID with it, and a successor can adopt the surviving seat",
+  "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:seat-lifecycle",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/lifecycle.json",
+  "why": [
+    "The fixture launches a real detached custodian, records worker and child pids, kills only the worker, then adopts the surviving seat. Both mutation windows are code-only unique anchors."
+  ],
+  "mutations": [
+    {
+      "name": "M1 suppress worker-death survival",
+      "file": "packages/seat/smoke/lifecycle.smoke.ts",
+      "find": "state(ids.childPid) !== \"gone\" && state(ids.childPid) !== \"Z\"",
+      "replace": "false",
+      "expectRed": "worker death leaves the custodial child PID running",
+      "cell": "worker death leaves the custodial child PID running",
+      "note": "The mutation is only the final child-live predicate after the worker is proven dead."
+    }
+  ]
+}

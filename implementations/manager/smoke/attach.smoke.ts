@@ -22,6 +22,10 @@ function check(label: string, cond: boolean): void {
 function skip(label: string, why: string): void {
   console.log(`• ${label} skipped (${why})`);
 }
+function closeHandle(h: unknown): void {
+  const closer = h as { close?: () => void } | undefined;
+  closer?.close?.();
+}
 function attachError(fn: () => unknown): string {
   try {
     fn();
@@ -32,7 +36,7 @@ function attachError(fn: () => unknown): string {
 }
 
 const SESSION = "cotal-smoke";
-const spec: LaunchSpec = { command: "sleep", args: ["60"] };
+const spec: LaunchSpec = { command: "sleep", args: ["60"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } };
 const cwd = process.cwd();
 
 // pty (default) — the one streamable backend: attach() returns a live session, never throws.
@@ -45,6 +49,7 @@ const cwd = process.cwd();
     err === "" && typeof sess?.onData === "function" && typeof sess?.cols === "number",
   );
   h.stop({ graceful: false });
+  closeHandle(h);
 }
 
 // Runtime-selection contract (no fallbacks): `auto` is deterministic pty — even inside $TMUX. tmux
@@ -148,8 +153,17 @@ const cwd = process.cwd();
   const capable: Runtime = { kind: "capable", spawn: () => handle, adopt: () => handle };
   check("present adopt returns the runtime handle", requireRuntimeAdopt(capable, { kind: "capable", id: "opaque" }) === handle);
 
-  const ptyErr = attachError(() => requireRuntimeAdopt(createRuntime("pty", SESSION), { kind: "pty", id: "opaque" }));
-  check('pty runtime without adopt refuses by name', ptyErr === 'runtime "pty" does not support adopt');
+  const pty = createRuntime("pty", SESSION);
+  const spawned = pty.spawn("smoke-pty-adopt", spec, cwd);
+  let adopted: AgentHandle | undefined;
+  const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(pty, spawned.reference ?? { kind: "pty", id: "missing" })));
+  check(
+    "pty adopt returns a live proxy",
+    ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid !== undefined,
+  );
+  spawned.stop({ graceful: false });
+  closeHandle(spawned);
+  closeHandle(adopted);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

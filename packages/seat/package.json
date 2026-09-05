@@ -1,0 +1,43 @@
+{
+  "name": "@cotal-ai/seat",
+  "description": "Local PTY seat custody: one detached custodian process per seat, a one-shot launcher, and the authenticated local protocol a manager worker uses to adopt the handle. Depends on nothing else in the repo.",
+  "version": "0.45.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "packages/seat"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.check.json",
+    "build": "node scripts/build-native.mjs && tsc -p tsconfig.json",
+    "build:native": "node scripts/build-native.mjs",
+    "test": "pnpm run build && tsx smoke/platform.smoke.ts && tsx smoke/protocol.smoke.ts && tsx smoke/lifecycle.smoke.ts && tsx smoke/isolation.smoke.ts",
+    "prepublishOnly": "pnpm run build",
+    "install": "node scripts/build-native.mjs"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
+    "@xterm/addon-serialize": "^0.13.0",
+    "@xterm/headless": "^5.5.0"
+  },
+  "files": [
+    "dist",
+    "native",
+    "binding.gyp",
+    "scripts/build-native.mjs",
+    "build"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

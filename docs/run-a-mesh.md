@@ -134,7 +134,8 @@ How a spawn resolves:
 Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it with
 `COTAL_DETACH_KEY=ctrl-<char>` when it clashes with a keybinding inside the agent's TUI.
 
-**Runtimes.** The manager spawns into a **pty** it owns by default. Optional runtimes are installed
+**Runtimes.** The manager spawns into a **pty** by default. On Linux a detached per-seat
+custodian owns that PTY, so replacing the manager worker does not close the seat. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
 `--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Runtime names are open-ended and resolved from

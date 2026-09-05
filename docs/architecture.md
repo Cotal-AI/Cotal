@@ -75,6 +75,11 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
 - **`@cotal-ai/workspace`**, the machine-local operator layer over `~/.cotal`: mesh
   registry, target resolution, auth-path helpers. Not part of the wire standard, so a
   third party can embed core without inheriting workstation plumbing.
+- **`@cotal-ai/lang`**, the workflow language: validator, interpreter, journal. Depends on
+  nothing else in the repo.
+- **`@cotal-ai/seat`**, local PTY seat custody: one detached custodian process per seat and the
+  authenticated local protocol a manager worker uses to adopt that handle. Depends on PTY
+  libraries, not on core or NATS. Linux is the production transport; other platforms throw.
 - **`extensions/*`**: pluggable adapters (connectors, runtimes). Each **peer-depends** on
   core (binding to the host's single core instance) and self-registers on import; an
   unknown agent type **throws**, no silent fallback.
@@ -154,8 +159,9 @@ laterally; the manager only births and configures them.
   through presence, so a bring-your-own-terminal agent it never spawned still shows up in
   `ps`.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
-  docker for agent TUIs): **`pty`** ships built-in (the manager owns a pseudo-terminal;
-  watch or type via `cotal attach`); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
+  docker for agent TUIs): **`pty`** ships built-in (a detached per-seat custodian owns the
+  pseudo-terminal on Linux; watch or type via `cotal attach`; other platforms throw until their
+  transport lands); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
   extensions that put each teammate in its own native terminal surface (explicit opt-ins
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn
