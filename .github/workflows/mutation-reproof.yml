@@ -29,10 +29,20 @@ jobs:
     #                                self-update-handoff.json, which that head added
     #
     # The budget is derived from cancelled runs' own progress rather than from a model. Count
-    # completed mutations by their VERDICT token (KILLED / SURVIVED / INCONCLUSIVE / UNGRADABLE /
-    # WRONG-RED / ERROR / PRE-RED, the vocabulary at scripts/mutation-reproof.mjs:217). Do not
-    # grep for KILLED alone: a prediction line reads "PREDICTED KILLED", so a line-count over that
-    # token overstates the total, which is how an earlier revision of this comment said 109.
+    # completed mutations by their VERDICT token. The authority is the `VERDICTS` array in
+    # scripts/mutation-reproof.mjs (six tokens as of 99d50f510: KILLED, SURVIVED, INCONCLUSIVE,
+    # UNGRADABLE, WRONG-RED, ERROR) — read it from source rather than trusting this list, which is
+    # a snapshot and will drift when a seventh is added.
+    #
+    # Two tokens that look countable and are not:
+    #   PREDICTED KILLED  a per-mutation PREDICTION preamble, not a verdict. `grep -c KILLED`
+    #                     counts those lines too, which is how an earlier revision said 109 of a
+    #                     set whose real total is 99.
+    #   PRE-RED (N ...)   a per-FIXTURE summary for suites already red before mutation. It is not
+    #                     in VERDICTS and contributes ZERO completed mutations, but its emitted
+    #                     line is `PRE-RED (` — token, space, paren — so a naive alternation with a
+    #                     trailing space matches it and silently adds one fixture-level event to a
+    #                     mutation-level count.
     #
     #   d1db29e23  re-prove 16:34:33Z -> 17:33:49Z (59.3 min), 99 of 183 done   35.9 s/mutation
     #   ec6f1f7b2  re-prove 18:35:56Z -> 19:35:15Z (59.3 min), 85 done          41.9 s/mutation
