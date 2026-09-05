@@ -18,7 +18,6 @@ import { Kvm } from "@nats-io/kv";
 import {
   DEV_OWNER,
   createSpaceAuth,
-  credRowKey,
   epAuthBucket,
   epCall,
   gateFreeze,
@@ -26,7 +25,6 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
-  parseLedgerRow,
   principalKey,
   probeConnect,
   recordsBucket,
