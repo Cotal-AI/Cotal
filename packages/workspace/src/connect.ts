@@ -323,10 +323,11 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
       );
     // A workflow run's own profiles are minted by the space signer, which a client of a user-auth
-    // mesh does not hold; the bearer carries none of their rows. The hosted path is the way there.
+    // mesh does not hold; the bearer carries none of their rows. The hosted path refuses too (the
+    // manager names why), so the sentence does not steer at it.
     if (role === "run-driver" || role === "run-operator")
       throw new ConnectRefusal(
-        `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6). Drop \`--local\`: the mesh's manager hosts the run on that credential.`,
+        `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6), and a user-auth mesh hosts no runs yet either. Run programs on a static-auth mesh.`,
       );
     // NAMED, not overlooked: the user-mode connect still ends the process on its own refusals. No
     // reconnect loop reaches it (`cotal attach` refuses a user-mode mesh before it ever loops, and
