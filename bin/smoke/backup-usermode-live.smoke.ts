@@ -37,7 +37,7 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-bum-root-"));
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const childEnv: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 childEnv.COTAL_NAME = "cli";
 childEnv.COTAL_ID = "cli_send";
 
