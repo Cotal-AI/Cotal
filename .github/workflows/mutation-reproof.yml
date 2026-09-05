@@ -18,7 +18,7 @@ jobs:
     if: github.event_name != 'schedule'
     timeout-minutes: 60
     runs-on: ubuntu-latest
-    steps: &setup
+    steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
