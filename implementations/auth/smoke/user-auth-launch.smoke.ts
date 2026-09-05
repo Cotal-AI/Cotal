@@ -50,7 +50,9 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 // refusal fires, so a cell can pass on an operator's machine and fail in CI's clean env
 // (measured, PR #962 shard 3). The child sees only the sandbox's own pins.
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
-const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+// Isolated XDG first: two cells spawn through the default `claude`
+// connector, so the checkout writer is opted in only after relocation.
+const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_ALLOW_CHECKOUT_SEED: "1" };
 // Follow-on assign so a concurrent isolation edit on the object literal does not collide.
 // `cotal send` now refuses without a complete identity in this process.
 childEnv.COTAL_NAME = "cli";
