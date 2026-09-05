@@ -13,8 +13,8 @@
       "file": "implementations/cli/src/commands/update.ts",
       "find": "if (await rt.reportRunningManager(target) === \"legacy\") return finish(false);",
       "replace": "if (await rt.reportRunningManager(target) === \"none\") return finish(false);",
-      "expectRed": "legacy report refuses before extension replay can mutate packages",
-      "cell": "legacy report refuses before extension replay can mutate packages",
+      "expectRed": "update replays first-party extensions at the current binary generation",
+      "cell": "update replays first-party extensions at the current binary generation",
       "note": "The result remains type-correct but a legacy manager falls through to claimUpdatePass and the extension replay loop. The kernel's injected report returns legacy, and the named cell observes the first forbidden package-mutation edge."
     }
   ]

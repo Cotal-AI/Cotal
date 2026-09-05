@@ -261,7 +261,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     ],
     npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "" }),
   });
-  assert.equal(await executeUpdate(false, rt), 0);
+  assert.equal(await executeUpdate(false, rt), 0, "update replays first-party extensions at the current binary generation");
   const replay = events.find((event) => event.startsWith("spawn:"));
   assert.ok(replay?.includes("ext __update-add @cotal-ai/orca @cotal-ai/orca@0.13.1"));
   assert.equal(events.filter((event) => event.startsWith("spawn:")).length, 1, "seeded web + third-party extension are not operator-replayed");
