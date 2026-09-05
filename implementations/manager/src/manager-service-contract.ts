@@ -55,7 +55,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "agentCount", "uptimeMs", "connectors"],
+  required: ["instanceId", "runtime", "agentCount", "uptimeMs", "connectors", "staticReconciliation"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
@@ -80,6 +80,49 @@ const STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    /** Current startup/post-adoption static lifecycle convergence state. */
+    staticReconciliation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["state", "failures"],
+      properties: {
+        state: { enum: ["idle", "running", "retry-wait", "retrying", "recovered", "failed"] },
+        lastSweep: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "startedAt", "attempted", "succeeded", "failed"],
+          properties: {
+            kind: { enum: ["startup", "post-adoption"] },
+            startedAt: { type: "string" },
+            completedAt: { type: "string" },
+            attempted: { type: "integer", minimum: 0 },
+            succeeded: { type: "integer", minimum: 0 },
+            failed: { type: "integer", minimum: 0 },
+          },
+        },
+        failures: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["alias", "actor", "lifecycleUid", "phase", "attempts", "maxAttempts", "disposition"],
+            properties: {
+              alias: { type: "string" },
+              actor: { type: "string" },
+              lifecycleUid: { type: "string" },
+              phase: { enum: ["provisioning", "active", "terminalizing", "retired"] },
+              attempts: { type: "integer", minimum: 0 },
+              maxAttempts: { type: "integer", minimum: 1 },
+              disposition: { enum: ["retry-scheduled", "retrying", "recovered", "refused", "refused-foreign", "retry-exhausted"] },
+              lastError: { type: "string" },
+              nextRetryAt: { type: "string" },
+              recoveredAt: { type: "string" },
+              remedy: { type: "string" },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -90,6 +133,36 @@ export interface ManagerStatus {
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
+  staticReconciliation: ManagerStaticReconciliationStatus;
+}
+
+export interface ManagerStaticReconciliationSweep {
+  kind: "startup" | "post-adoption";
+  startedAt: string;
+  completedAt?: string;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface ManagerStaticReconciliationFailure {
+  alias: string;
+  actor: string;
+  lifecycleUid: string;
+  phase: "provisioning" | "active" | "terminalizing" | "retired";
+  attempts: number;
+  maxAttempts: number;
+  disposition: "retry-scheduled" | "retrying" | "recovered" | "refused" | "refused-foreign" | "retry-exhausted";
+  lastError?: string;
+  nextRetryAt?: string;
+  recoveredAt?: string;
+  remedy?: string;
+}
+
+export interface ManagerStaticReconciliationStatus {
+  state: "idle" | "running" | "retry-wait" | "retrying" | "recovered" | "failed";
+  lastSweep?: ManagerStaticReconciliationSweep;
+  failures: ManagerStaticReconciliationFailure[];
 }
 
 export interface ManagerConnectorStatus {

@@ -1,0 +1,29 @@
+{
+  "suite": "implementations/manager/smoke/manager-reconcile-redrive.smoke.ts",
+  "guard": "startup static reconciliation reports a failed sweep and re-drives the same durable exact terminal in process",
+  "command": "pnpm smoke:manager-reconcile-redrive",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/manager-reconcile-redrive.mutations.json",
+  "why": [
+    "The suite starts a real authenticated nats-server through serverConfig and an in-process Manager, then plants three durable orphan lifecycle rows.",
+    "The first mutation changes only the failed aggregate branch. The earliest named cell observes the completed first sweep after all three shipped terminal paths ran, so it reddens because failure became success-shaped reporting rather than because an earlier row short-circuited.",
+    "The second mutation removes only the retry scheduling call after the real middle-row terminal failed. Earlier aggregate, durable hold, and status cells still run; the named re-drive cell is the first one that requires a second exact terminal entry."
+  ],
+  "mutations": [
+    {
+      "name": "report a failed reconciliation sweep with the clean-success aggregate",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        console.error(`! static reconcile completed: ${sweep.attempted} attempted, ${sweep.succeeded} succeeded, ${sweep.failed} failed; failed=${failed.join(\",\")}`);",
+      "replace": "        console.error(`✓ static reconcile completed: ${sweep.attempted} attempted, ${sweep.attempted} succeeded, 0 failed`);",
+      "expectRed": "the first sweep is non-success and names the failed alias, phase, and disposition",
+      "cell": "the first sweep is non-success and names the failed alias, phase, and disposition"
+    },
+    {
+      "name": "do not schedule an in-process re-drive after the exact terminal fails",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        } else {\n          this.scheduleStaticReconcileRetry(key, item);\n        }\n        return false;",
+      "replace": "        } else {\n          item.disposition = \"retry-exhausted\";\n          item.remedy = \"restart this manager for a fresh per-process retry budget\";\n        }\n        return false;",
+      "expectRed": "the same manager process re-drives the failed alias to retired",
+      "cell": "the same manager process re-drives the failed alias to retired"
+    }
+  ]
+}

@@ -65,6 +65,20 @@ continues, but prints a named `connector <name> unavailable` line and records th
 manager's `status` response. Available connector rows record the absolute paths boot resolved.
 Spawn keeps the same pre-mint check as a backstop for connectors registered after boot.
 
+On an authenticated manager start, unfinished static lifecycle rows reconcile while the control
+endpoint is already serving. The manager `status` response and `cotal status --components` report
+the `staticReconciliation` state, the last sweep counts, and each failed alias with its durable
+phase and literal disposition. A failed exact terminal is retried in the same process after 1, 5,
+and 30 seconds. Each attempt re-reads the durable slot and re-enters the same deterministic terminal
+operation; the delays only schedule work and never release the lifecycle fence.
+
+The four-attempt budget is per manager process. An exhausted row stays held and reports
+`retry-exhausted` with the remedy to restart the manager. The next process derives a fresh budget
+from the still-authoritative durable row. A `recovered` row remains visible until the next static
+reconciliation sweep, then clears. This component reports reconciliation outcomes. It does not say
+whether footprint cleanup completed independently of the terminal result; that separate durable
+projection remains tracked by #1274.
+
 There is no supported `cotal service install` command yet. Running the manager as a launchd agent or
 systemd user service remains operator-managed; service installation is separate from this boot-time
 detection behavior.
