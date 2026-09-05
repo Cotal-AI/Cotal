@@ -96,8 +96,17 @@ export interface ResolveCheckpointDeps {
   readonly endpoint: string;
 }
 
+/** The open pause at a step, located: its token and the holder that armed it. */
+export interface OpenCheckpoint {
+  readonly token: string;
+  readonly holder: { readonly id: string; readonly lifecycleUid: string };
+}
+
 /**
- * Answer a run's open checkpoint.
+ * Answer a run's open checkpoint over ONE set of planes: {@link locateOpenCheckpoint} then
+ * {@link answerOpenCheckpoint}. A caller whose credential must be pinned to the pause before it may
+ * write (the hosting manager, `cotal run --local`) performs the two halves on two credentials; a
+ * caller on a standing credential composes them here.
  *
  * Refusals are the plane's own and are not softened here: a checkpoint already resumed is a
  * `conflict` (resume authorization is one-use) and one already expired is a `failed-precondition`
@@ -109,7 +118,26 @@ export async function resolveCheckpoint(
   deps: ResolveCheckpointDeps,
   req: ResolveCheckpointRequest,
 ): Promise<ResolveCheckpointResult> {
-  const entries = await replayRunEntries(deps, req.runId, req.takeoverId ?? newTakeoverId());
+  const open = await locateOpenCheckpoint(deps, { runId: req.runId, stepKey: req.stepKey, takeoverId: req.takeoverId ?? newTakeoverId() });
+  return await answerOpenCheckpoint(deps, {
+    open,
+    by: req.by,
+    ...(req.value !== undefined ? { value: req.value } : {}),
+    ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
+    now: req.now,
+  });
+}
+
+/**
+ * The READ half of an answer: replay the run's journal to the open pause at `stepKey` and read the
+ * holder off its record. Nothing is written. The replay durable is named by `takeoverId`, the one
+ * the caller's credential row pins.
+ */
+export async function locateOpenCheckpoint(
+  deps: ResolveCheckpointDeps,
+  req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
+): Promise<OpenCheckpoint> {
+  const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
   const token = openCheckpointToken(entries, req.runId, req.stepKey);
   const spec = await readCheckpointSpec(deps.kv, { endpoint: deps.endpoint, token });
   if (spec === undefined) {
@@ -118,7 +146,19 @@ export async function resolveCheckpoint(
       + `refusing to guess a presenter — reconcile the store before answering`,
     );
   }
+  return { token, holder: spec.holder };
+}
 
+/**
+ * The WRITE half of an answer: file the answer record for the located pause, then present its
+ * token as the arming holder. Every write is keyed by `open.token`, so a credential minted for this
+ * half is pinned to the one pause being answered (SPEC 14.3).
+ */
+export async function answerOpenCheckpoint(
+  deps: ResolveCheckpointDeps,
+  req: { readonly open: OpenCheckpoint; readonly by: string; readonly value?: unknown; readonly artifact?: string; readonly now: number },
+): Promise<ResolveCheckpointResult> {
+  const { token, holder } = req.open;
   const answerId = checkpointAnswerId({
     token,
     by: req.by,
@@ -137,7 +177,7 @@ export async function resolveCheckpoint(
 
   const settle = await resumeCheckpoint(deps.kv, deps.js, deps.jsm, deps.space, {
     ref: { endpoint: deps.endpoint, token },
-    presenter: spec.holder,
+    presenter: holder,
     now: req.now,
     answerId,
   });

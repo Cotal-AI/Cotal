@@ -15,7 +15,14 @@
  * exact coordinates, and re-minted for the same nkey on the renewal loop so a run parked for days
  * outlives the credential's TTL. A served read or answer rides a one-shot `run-operator` credential
  * minted for that one call, so the serve handler's reach over the records store is exactly the
- * call's and expires with it. An open mesh has no credential system and connects bare.
+ * call's and expires with it; an answer is two such calls, the read that finds the pause and then
+ * a write pinned to that pause's token. An open mesh has no credential system and connects bare.
+ *
+ * A USER-AUTH mesh hosts no runs, and the manager says so instead of standing this host up: a
+ * hosted run's spawns, turns and despawns ride a caller derived from the run id under the static
+ * owner, which is no user's, so on a user mesh they would be refused at the manager's own owner
+ * check and the program would fail at its first seat. Until a run carries its starting user's
+ * owner into that caller, the family is `unimplemented` there, named as such.
  *
  * A manager restart takes its runs back: at boot, every run recorded `running` under this
  * endpoint is resumed under a fresh takeover, epoch + 1, from its recorded program. A run whose
@@ -25,8 +32,10 @@
  * would launch a second attempt of a run the reconcile is about to take back.
  *
  * ONE ATTEMPT PER RUN, HELD SYNCHRONOUSLY. A run's slot in the live map is claimed before the
- * first await of a launch and released only by that attempt's own end, so two concurrent resumes,
- * or a resume racing the boot reconcile, cannot both reach the activation barrier. Each attempt
+ * first await of a launch and released only by that attempt's own end: its drive's completion, or
+ * any refusal on the way to one, the admission cap included. So two concurrent resumes, or a
+ * resume racing the boot reconcile, cannot both reach the activation barrier, and a refused
+ * attempt leaves nothing behind that a later one would read as held. Each attempt
  * also presents its OWN holder id (the manager's endpoint id plus the takeover id): the journal's
  * activation barrier admits an identical (token, holder, epoch) tuple as the same process picking
  * its run back up, so a constant holder id would let two attempts co-activate through that
@@ -56,6 +65,7 @@ import {
   type Identity,
   type RunHost,
   type RunHostDrive,
+  type RunHostOpenPause,
   type RunHostOutcome,
   type RunHostPlanes,
   type RunListRow,
@@ -177,7 +187,7 @@ export class RunHosting {
       this.free(slot);
       throw e;
     }
-    // From here the slot is the launch's: it frees it on a refusal, or the drive's own end does.
+    // From here the slot is the launch's: every refusal there frees it, or the drive's own end does.
     await this.launch(host, {
       mode: "existing",
       runId: args.runId,
@@ -191,31 +201,33 @@ export class RunHosting {
   }
 
   /** `run-answer`: resolve an open checkpoint, or an open `ask` attempt, through the driver's door.
+   *  Two credentials: a READ that replays the run's journal to the open pause, then an ANSWERING
+   *  one minted for that pause's token alone, so the writes reach no other pause on the endpoint.
    *  `by` is the caller as the manager knows them, decided by the serve layer from the
    *  authenticated principal (SPEC 14.5), never read from the request. */
   async answer(args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, by: string): Promise<unknown> {
     const host = this.host();
     const endpoint = args.endpoint ?? this.ctx.endpoint;
-    return await this.withOperator({ endpoint, runId: args.runId, answers: true }, async (planes, _kv, takeoverId) => {
-      try {
-        return await host.answer(planes, {
-          endpoint,
-          runId: args.runId,
-          takeoverId,
-          stepKey: args.stepKey,
-          by,
-          ...(args.value !== undefined ? { value: args.value } : {}),
-          ...(args.artifact !== undefined ? { artifact: args.artifact } : {}),
-          now: Date.now(),
-        });
-      } catch (e) {
-        // The resolver's own refusals are facts about the run, worded for the caller: no open
-        // checkpoint at that key is `not-found`; the plane's own envelope errors pass through.
-        if (e instanceof EpEnvelopeError) throw e;
-        if ((e as { name?: string }).name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", (e as Error).message);
-        throw e;
-      }
-    });
+    let open: RunHostOpenPause;
+    try {
+      open = await this.withOperator({ endpoint, runId: args.runId }, (planes, _kv, takeoverId) =>
+        host.locate(planes, { endpoint, runId: args.runId, takeoverId, stepKey: args.stepKey }));
+    } catch (e) {
+      // The resolver's own refusal is a fact about the run, worded for the caller: no open
+      // checkpoint at that key is `not-found`; the plane's own envelope errors pass through.
+      if (e instanceof EpEnvelopeError) throw e;
+      if ((e as { name?: string }).name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", (e as Error).message);
+      throw e;
+    }
+    return await this.withOperator({ endpoint, answers: { token: open.token } }, (planes) =>
+      host.answer(planes, {
+        endpoint,
+        open,
+        by,
+        ...(args.value !== undefined ? { value: args.value } : {}),
+        ...(args.artifact !== undefined ? { artifact: args.artifact } : {}),
+        now: Date.now(),
+      }));
   }
 
   /** `run-status`: the record plus the journal view. */
@@ -342,25 +354,30 @@ export class RunHosting {
     if (this.runs.get(slot.runId) === slot) this.runs.delete(slot.runId);
   }
 
+  /** Launch one attempt on a slot. The slot is claimed here when the caller has not already
+   *  (`start`), and is this launch's to give back from the first line: every refusal below,
+   *  including the two before a drive is attempted, frees a slot whose drive never started. */
   private async launch(
     host: RunHost,
     req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string },
     claimed?: HostedRun,
   ): Promise<void> {
-    if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-    if (this.launching >= MAX_LAUNCHING)
-      throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
     const slot = claimed ?? this.claim(req.runId);
-    this.launching += 1;
     try {
-      await this.drive(host, req, slot);
+      if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
+      if (this.launching >= MAX_LAUNCHING)
+        throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
+      this.launching += 1;
+      try {
+        await this.drive(host, req, slot);
+      } finally {
+        this.launching -= 1;
+      }
     } catch (e) {
       // A slot whose drive never started is freed here; one whose drive exists is freed by that
       // drive's own end, so the run reads as held until its attempt has stopped.
       if (slot.drive === undefined) this.free(slot);
       throw e;
-    } finally {
-      this.launching -= 1;
     }
   }
 
@@ -466,9 +483,10 @@ export class RunHosting {
 
   /** One served read or answer over a one-shot `run-operator` connection (open mesh: bare). The
    *  takeover id the rows are minted for is handed to `fn`, so a journal replay inside names the
-   *  durable the credential admits. Only an answering call holds the answer and settle writes. */
+   *  durable the credential admits. Only an answering call holds the answer and settle writes,
+   *  and those are pinned to the one pause it names. */
   private async withOperator<T>(
-    scope: { endpoint?: string; runId?: string; answers?: true },
+    scope: { endpoint?: string; runId?: string; answers?: { token: string } },
     fn: (planes: RunHostPlanes, kv: KV, takeoverId: string) => Promise<T>,
   ): Promise<T> {
     const takeoverId = newTakeoverId();
@@ -479,7 +497,7 @@ export class RunHosting {
       ...(auth
         ? standaloneConnectOpts({
             creds: await mintCreds(auth, newIdentity(), "run-operator", {
-              runOperator: { endpoint, takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}), ...(scope.answers === true ? { answers: true } : {}) },
+              runOperator: { endpoint, takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}), ...(scope.answers !== undefined ? { answers: scope.answers } : {}) },
             }),
             /* not yet wired to a recorded transport */ tls: false,
           })

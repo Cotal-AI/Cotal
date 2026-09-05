@@ -620,9 +620,9 @@ export interface MintOpts {
    *  other. The ep caller triple is DERIVED from the run id ({@link runDriverCaller}), never supplied. */
   runDriver?: RunDriverGrantArgs;
   /** `run-operator` profile only (SPEC 14.3): the ONE endpoint whose runs this credential may read,
-   *  the takeover id its journal replays are named by, and whether this call ANSWERS (files an
-   *  answer record and settles a checkpoint) or only reads. REQUIRED for that profile; ignored by
-   *  every other. */
+   *  the takeover id its journal replays are named by, and, for the answering half of a
+   *  `run-answer`, the ONE checkpoint token its answer and settle writes are pinned to. REQUIRED
+   *  for that profile; ignored by every other. */
   runOperator?: RunOperatorGrantArgs;
   /** `remote-manager` profile only: the server-derived owner, fixed server-selected actor, and the
    * ONE locally-selected manager instance id this credential may supervise. REQUIRED for that profile. The builder pins its

@@ -1287,8 +1287,9 @@ export class Manager {
     // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
     // The serve surface is already live by here, so the family itself holds the gate: `runHost()`
     // refuses `run-start`/`run-resume` as `unavailable` until the host exists and `RunHosting`
-    // refuses them until its reconcile has returned.
-    if (!this.remoteAuthority) {
+    // refuses them until its reconcile has returned. A user-auth mesh stands no host up at all
+    // (`runHost()` names why); a remote-authority manager holds no signer to mint with.
+    if (!this.remoteAuthority && !this.userMode) {
       this.runHosting = new RunHosting({
         space: this.space,
         servers: this.servers,
@@ -2330,16 +2331,22 @@ export class Manager {
    *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
    *  Both are least-privilege reductions, never widenings. */
-  /** The run host, or one of two refusals. A remote-authority manager holds no space signer, so it
-   *  cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
-   *  identity would be the fallback this tree does not take: `unimplemented`, for good. An
-   *  ordinary manager whose host is not standing yet is still booting (the serve surface comes up
-   *  before the host): `unavailable`, retry. The two are told apart, since the first sentence
-   *  steers a caller to `--local` and the second must not. */
+  /** The run host, or one of three refusals. A remote-authority manager holds no space signer, so
+   *  it cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
+   *  identity would be the fallback this tree does not take: `unimplemented`, for good. A
+   *  user-auth mesh is `unimplemented` too, for a different reason it names: a hosted run's seats
+   *  are spawned, turned and despawned by a caller derived from the run id under the static
+   *  owner, which the user-mode spawn door refuses (no `u_` owner), so a program would fail at
+   *  its first seat; no path to `--local` is offered there since a user bearer holds no run rows
+   *  either. An ordinary manager whose host is not standing yet is still booting (the serve
+   *  surface comes up before the host): `unavailable`, retry. The three are told apart, since
+   *  the first sentence steers a caller to `--local` and the others must not. */
   private runHost(): RunHosting {
     if (this.runHosting) return this.runHosting;
     if (this.remoteAuthority)
       throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
+    if (this.userMode)
+      throw new EpEnvelopeError("unimplemented", `user-auth space "${this.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
     throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
   }
 

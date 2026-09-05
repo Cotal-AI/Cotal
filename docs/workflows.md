@@ -143,8 +143,10 @@ retry a moment later is the whole remedy.
 drive settles, `--by <who>` names the answerer, and `cotal run resume <runId> --local --file
 <program>` is how a run with no recorded program, or a run on a bare broker with no manager, is
 continued. On a static mesh the local drive mints the run's own credential from the folder's
-trust material, so it runs from the mesh's project folder; a user-auth mesh has no local drive,
-since only the manager holds the signer. A run whose step was refused (L5016) stays held; a
+trust material, so it runs from the mesh's project folder. A user-auth mesh runs no programs
+yet, hosted or local: the manager refuses the family by name, since a hosted run's seats would be
+spawned under the static owner, which a user mesh refuses, and a user bearer holds no run rows.
+A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
 `journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
 back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
@@ -164,15 +166,21 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
 
 A run's **driver** connects on a credential of its own, the `run-driver` profile, minted for one
-run and one takeover attempt. It holds publish on its own run's journal subject and its own replay
-durable, the run's records, the checkpoint plane at its own timer coordinates, the channel and
-presence reads a wait needs, and the manager's lifecycle commands as the run's own caller. It
-holds no consumer on the records store, so it lists its notices and migrations by walking the
-store one message at a time, and it cannot speak on a channel, read another run's journal, or
-file an answer. A served read or answer rides a one-shot `run-operator` credential minted for
-that one call: a read holds the records walk and the named run's replay and nothing it can write;
-an answer adds the answer record and the checkpoint settle. `cotal run --local` mints the same two
-profiles for itself on a static mesh, one per invocation.
+run and one takeover attempt. Pinned to the run: publish on its own journal subject and its own
+replay durable, its `run`, `program`, `notice` and `migration` records, the timer schedule at its
+own instance and epoch, and the manager's lifecycle commands as the run's own caller. Wider than
+the run, and named as the profile's residual: the checkpoint records and settle facts of the whole
+endpoint (a pause is keyed by a token that does not exist at mint), the point reads of the records,
+fact and timer stores (a KV read is one verb on the whole backing stream), a wait's own durable on
+the chat stream (named per step, so the consumer rows are stream-scoped), and the channel and
+membership registries a conclave writes. It holds no consumer on the records store, so it lists its
+notices and migrations by walking the store one message at a time, and it cannot speak on a
+channel, read another run's journal, or file an answer. A served read rides a one-shot
+`run-operator` credential minted for that one call, holding the records walk and the named run's
+replay and nothing it can write. An answer is two such calls: the read that finds the open pause,
+then a second credential minted for that pause's token alone, holding its answer record and its
+checkpoint settle and no other pause's. `cotal run --local` mints the same profiles for itself on
+a static mesh, one per connection.
 
 ## What ships today
 

@@ -143,15 +143,18 @@ export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId:
 export interface RunOperatorGrantArgs {
   /** The endpoint hosting the runs: the manager daemon. Leads every record key. */
   endpoint: string;
-  /** The ONE run this call reads or answers. Absent for `run-ps`, which walks records and replays
-   *  no journal. A replay durable's name is one token, so no pattern spans runs: the run is pinned
-   *  at mint or there is no journal row at all. */
+  /** The ONE run this call replays. Absent for `run-ps`, which walks records and replays no
+   *  journal, and for the answering form, which replays nothing (the pause was already found). A
+   *  replay durable's name is one token, so no pattern spans runs: the run is pinned at mint or
+   *  there is no journal row at all. */
   runId?: string;
   /** The takeover id this call's journal replay durable is named by, one per call. */
   takeoverId: string;
-  /** Present for `run-answer` and NOTHING else: the call files an answer record and settles a
-   *  checkpoint, which are writes on token-keyed rows. A read call never holds them. */
-  answers?: true;
+  /** Present for the SECOND half of `run-answer` and NOTHING else: the call files an answer record
+   *  and settles ONE checkpoint, named by its token. The token is found first, under the read form,
+   *  by replaying the run's journal; only then is this form minted, so the write rows are pinned to
+   *  the one pause being answered and reach no other pause on the endpoint. */
+  answers?: { token: string };
 }
 
 /**
@@ -160,31 +163,31 @@ export interface RunOperatorGrantArgs {
  * never carry a run's journal or records reach.
  *
  * `run-ps` walks the run records consumer-free; `run-status` also replays the named run's journal
- * through a per-call durable. Both are READS and hold no write row at all. `run-answer` replays the
- * journal to find the open pause, files the answer record and settles the checkpoint through the
- * checkpoint plane, and only that form (`answers: true`) holds those three writes. Every row is
- * the endpoint's own; the checkpoint and answer rows are keyed by token and so span the endpoint's
- * runs, the same named residual the driver profile carries on the `cp` rows (the pause's token is
- * found by the replay, not derivable at mint). The records read is stream-wide by the store's own
- * design (a KV point read is `STREAM.MSG.GET` on the one backing stream), the same as every
- * commit-side profile's fencing read. No publish on any journal subject, no run or program record
- * write, no consumer verb on the records store.
+ * through a per-call durable. Both are READS and hold no write row at all. `run-answer` is two
+ * calls on two credentials: a READ that replays the journal to find the open pause's token, then
+ * an ANSWERING form (`answers: { token }`) that files the answer record and settles that ONE
+ * checkpoint. Its three writes are pinned to the token, so an answering credential reaches no
+ * other pause of the endpoint, and it holds no replay row at all. The records and EPF reads are
+ * stream-wide by the store's own design (a KV point read is `STREAM.MSG.GET` on the one backing
+ * stream, and a fact read the same on EPF), the same as every commit-side profile's fencing read.
+ * No publish on any journal subject, no run or program record write, no consumer verb on the
+ * records store.
  */
 export function runOperatorGrants(space: string, args: RunOperatorGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
   const e = endpointToken(args.endpoint);
   const records = recordsBucket(space);
-  if (args.answers === true && args.runId === undefined) throw new Error("runOperatorGrants: an answering call names the ONE run it answers");
+  const token = args.answers === undefined ? undefined : assertIdToken(args.answers.token, "checkpoint token");
   const publish = [
     // The run and program records of the endpoint, read through the leader-served point read and
     // the consumer-free walk.
     `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
     // The named run's journal replay, read-only, under this call's own takeover id.
     ...(args.runId === undefined ? [] : runJournalReplayGrants(space, args.runId, args.takeoverId)),
-    // An ANSWER: the answer record (create-only), the checkpoint status a settle moves, the settle
-    // fact publish and the fact read its convergence performs. A read call holds none of these.
-    ...(args.answers === true
-      ? [`$KV.${records}.answer.${e}.>`, `$KV.${records}.cp.${e}.>`, `${spacePrefix(space)}.epf.${e}.cp.>`, `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`]
-      : []),
+    // An ANSWER of one pause: its answer record (create-only), the checkpoint status a settle
+    // moves, the one-use settle fact, and the fact read the settle's convergence performs.
+    ...(token === undefined
+      ? []
+      : [`$KV.${records}.answer.${e}.${token}.>`, `$KV.${records}.cp.${e}.${token}.>`, `${spacePrefix(space)}.epf.${e}.cp.${token}`, `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`]),
     "$JS.API.INFO",
   ];
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };

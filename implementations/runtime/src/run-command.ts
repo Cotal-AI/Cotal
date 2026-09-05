@@ -50,7 +50,7 @@ import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type ControlAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
-import { resolveCheckpoint } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
   'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]> [--local] [--space <s>] [--server <url>] [--creds <path>]';
@@ -334,7 +334,9 @@ async function journal(planes: Planes, runId: string | undefined, takeoverId: st
   }
 }
 
-async function answer(values: RunValues, planes: Planes, runId: string | undefined, stepKey: string | undefined, takeoverId: string): Promise<void> {
+/** `answer --local`: the pause is found under the READ credential this call was opened on, then
+ *  the answer rides a second, one-shot credential pinned to that pause's token. */
+async function answer(values: RunValues, reader: Planes, runId: string | undefined, stepKey: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined || stepKey === undefined || values.by === undefined) {
     console.error(USAGE);
     console.error("run answer: <runId> <stepKey> and --by <who> are required");
@@ -342,22 +344,29 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
   }
   const endpoint = values.endpoint ?? "manager";
   const parsedValue = parseAnswerValue(values);
-  // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
-  // the ARMING holder it reads off the checkpoint's own record, so a fresh invocation answers
-  // exactly as the minter would have. The answerer's name rides `by`, never the presenter.
-  const result = await resolveCheckpoint(
-    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint },
-    {
-      runId,
-      stepKey,
-      by: values.by,
-      ...(values.value !== undefined ? { value: parsedValue } : {}),
-      ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
-      now: Date.now(),
-      takeoverId,
-    },
+  const open = await locateOpenCheckpoint(
+    { kv: reader.kv, js: reader.js, jsm: reader.jsm, space: reader.space, endpoint },
+    { runId, stepKey, takeoverId },
   );
-  console.log(JSON.stringify(result, null, 2));
+  // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
+  // the ARMING holder it read off the checkpoint's own record, so a fresh invocation answers
+  // exactly as the minter would have. The answerer's name rides `by`, never the presenter.
+  const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: open.token } } });
+  try {
+    const result = await answerOpenCheckpoint(
+      { kv: writer.kv, js: writer.js, jsm: writer.jsm, space: writer.space, endpoint },
+      {
+        open,
+        by: values.by,
+        ...(values.value !== undefined ? { value: parsedValue } : {}),
+        ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
+        now: Date.now(),
+      },
+    );
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    await writer.close();
+  }
 }
 
 /** Parse `--value` as JSON, with the one hint every first-time user needs. */
@@ -538,12 +547,13 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
   if (verb === "start") return start(values);
   if (verb === "resume") return resume(values, a);
-  // The reads and the answer each ride a one-shot operator credential for that call; a journal or
-  // an answer names the run its replay durable is pinned to, and only the answer holds the writes.
+  // The reads ride a one-shot operator READ credential for that call; a journal or an answer names
+  // the run its replay durable is pinned to. An answer finds its pause on this credential and then
+  // writes on a second one, minted for that pause alone (see `answer`).
   const endpoint = values.endpoint ?? "manager";
   const takeoverId = newTakeoverId();
   const planes = await openPlanes(values, "run-operator", {
-    runOperator: { endpoint, takeoverId, ...(verb !== "ps" && a !== undefined ? { runId: a } : {}), ...(verb === "answer" ? { answers: true as const } : {}) },
+    runOperator: { endpoint, takeoverId, ...(verb !== "ps" && a !== undefined ? { runId: a } : {}) },
   });
   try {
     if (verb === "ps") await ps(values, planes);

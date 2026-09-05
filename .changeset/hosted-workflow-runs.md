@@ -12,7 +12,8 @@ The manager hosts workflow runs. `run-start`, `run-resume`, `run-answer`, `run-s
 recorded, driven in the manager's process under a per-run `run-driver` credential, and taken back
 from its journal after a manager restart. `cotal run` is a client of that surface by default,
 with `--local` keeping the in-process drive, now under the run's own `run-driver` and
-`run-operator` credentials rather than `admin`. A new `run` capability mints the family into an
+`run-operator` credentials rather than `admin`; an answer's writes are pinned to the one pause it
+answers. A user-auth mesh refuses the family by name until a run can carry its user's owner. A new `run` capability mints the family into an
 agent's credential and injects the `cotal_run` tool, so an agent can write a cotal-lang program
 and start it from a session. `run-answer` records the answerer from the caller's credential and
 takes no `by`; `cotal run answer` drops `--by` on the hosted path. `spawn({ supervise })` is a restart policy the manager enforces in

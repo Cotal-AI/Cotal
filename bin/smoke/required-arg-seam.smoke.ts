@@ -299,7 +299,9 @@ const SEAMS: Seam[] = [
   // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
   // 125/92 -> 126/93: run-host-live reads an answer record back under a run-operator READ
   // credential of its own (one smoke-side call, tls: false).
-  { fn: "standaloneConnectOpts", key: "tls", sites: 126, untypecheckedSites: 93 },
+  // 126/93 -> 127/94: run-host-live connects under a token-pinned run-operator ANSWERING
+  // credential to prove the broker refuses an answer on any other pause.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 127, untypecheckedSites: 94 },
 ];
 
 /**

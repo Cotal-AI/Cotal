@@ -1441,8 +1441,9 @@ answerer from your credential, so no `--by` is taken there. `--timeout` sets the
 checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`); `answer --local` takes `--by <who>`. The
-guide is [workflows](workflows.md).
+(`cotal run resume <runId> --local --file <program>`); `answer --local` takes `--by <who>`. A
+user-auth mesh runs no programs yet: the manager refuses the family by name, and `--local` has no
+credential there. The guide is [workflows](workflows.md).
 
 ## Server daemons
 

@@ -25,8 +25,11 @@ export {
 } from "./mesh-handler.js";
 export {
   resolveCheckpoint,
+  locateOpenCheckpoint,
+  answerOpenCheckpoint,
   openCheckpointToken,
   CheckpointNotOpen,
+  type OpenCheckpoint,
   type ResolveCheckpointDeps,
   type ResolveCheckpointRequest,
   type ResolveCheckpointResult,

@@ -88,7 +88,8 @@ export interface RunHostDrive {
   release(reason: string): void;
 }
 
-export interface RunHostAnswerRequest {
+/** The READ half of an answer: which pause, addressed by its step. */
+export interface RunHostLocateRequest {
   readonly endpoint: string;
   readonly runId: string;
   /** The takeover id the journal replay of this call is named by: the one the caller's credential
@@ -96,6 +97,19 @@ export interface RunHostAnswerRequest {
   readonly takeoverId: string;
   /** The step's canonical key string, as `journal` renders it. */
   readonly stepKey: string;
+}
+
+/** An open pause, located: its token and the holder that armed it. What a hosting daemon mints
+ *  the answering credential for, so the answer's writes are pinned to this one pause. */
+export interface RunHostOpenPause {
+  readonly token: string;
+  readonly holder: { readonly id: string; readonly lifecycleUid: string };
+}
+
+/** The WRITE half of an answer: the located pause and what to file on it. */
+export interface RunHostAnswerRequest {
+  readonly endpoint: string;
+  readonly open: RunHostOpenPause;
   /** The answerer as the host's authorization knows them (SPEC 14.5): derived by the host from
    *  the caller's authenticated principal, never taken from the request body. */
   readonly by: string;
@@ -151,7 +165,10 @@ export interface RunHost extends Extension {
   /** Drive a run over `planes`. Returns as soon as the drive is launched; `done` settles when the
    *  run completes, is released, or fails, and never rejects. */
   drive(planes: RunHostPlanes, req: RunHostDriveRequest): RunHostDrive;
-  /** Answer an open checkpoint, or an open `ask` attempt, through the driver's own door. */
+  /** Find the open checkpoint, or open `ask` attempt, at a step: a read, nothing written. */
+  locate(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostOpenPause>;
+  /** Answer a located pause through the driver's own door. A host that pins credentials mints
+   *  the answering one for `req.open.token` and opens fresh planes under it for this call. */
   answer(planes: RunHostPlanes, req: RunHostAnswerRequest): Promise<unknown>;
   /** The run's record plus its journal view, or undefined when no run record exists. The replay
    *  rides a durable named by `takeoverId`, the one the caller's credential row pins. */

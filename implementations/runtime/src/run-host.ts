@@ -20,6 +20,8 @@ import {
   type RunHostOutcome,
   type RunHostPlanes,
   type RunHostAnswerRequest,
+  type RunHostLocateRequest,
+  type RunHostOpenPause,
   type RunJournalRow,
   type RunListRow,
   type RunStatusView,
@@ -28,7 +30,7 @@ import {
 import { validate, LangErrors, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
-import { resolveCheckpoint } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
   if (out.status === "completed")
@@ -126,14 +128,19 @@ export const cotalLangRunHost: RunHost = {
     return { done, release: (reason: string) => pause.pause(reason) };
   },
 
+  async locate(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostOpenPause> {
+    return await locateOpenCheckpoint(
+      { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint: req.endpoint },
+      { runId: req.runId, stepKey: req.stepKey, takeoverId: req.takeoverId },
+    );
+  },
+
   async answer(planes: RunHostPlanes, req: RunHostAnswerRequest): Promise<unknown> {
-    return await resolveCheckpoint(
+    return await answerOpenCheckpoint(
       { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint: req.endpoint },
       {
-        runId: req.runId,
-        stepKey: req.stepKey,
+        open: req.open,
         by: req.by,
-        takeoverId: req.takeoverId,
         ...(req.value !== undefined ? { value: req.value } : {}),
         ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
         now: req.now,

@@ -848,13 +848,15 @@ console.log("6. the run-driver profile (SPEC 14.6): per run, per takeover attemp
 }
 
 // ---- 7. the run-operator profile (SPEC 14.3): one served read or answer, pinned EXACTLY -------------
-// Two forms of one profile: a READ (run-status, run-ps) holds the records point read and, when a run
-// is named, that run's replay durable, and NOTHING it can write; an ANSWER (run-answer) adds the
-// answer record, the checkpoint status a settle moves, the settle fact, and the fact read its
-// convergence performs. Every other read a served call could make is absent from both.
+// Two forms of one profile: a READ (run-status, run-ps, and the first half of run-answer) holds the
+// records point read and, when a run is named, that run's replay durable, and NOTHING it can write;
+// an ANSWER (the second half of run-answer) is minted for ONE checkpoint token, found by the read,
+// and holds that pause's answer record, its checkpoint status, its settle fact, and the fact read
+// the settle's convergence performs. Every other read a served call could make is absent from both,
+// and no answering row spans a second pause.
 console.log("7. the run-operator profile (SPEC 14.3): a read form and an answering form");
 {
-  const RUN = "run-cc33", TK = "tk0009";
+  const RUN = "run-cc33", TK = "tk0009", TOKEN = "t".repeat(43);
   const read = runOperatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK }, CONN);
   const replay = [
     `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
@@ -871,18 +873,22 @@ console.log("7. the run-operator profile (SPEC 14.3): a read form and an answeri
   const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
   c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
     JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, "$JS.API.INFO"]), list.publish);
-  const ans = runOperatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, answers: true }, CONN);
-  c("an ANSWER adds EXACTLY the answer record, the checkpoint status, the settle fact and the fact read, all keyed by the endpoint's tokens (the pause's token is found by the replay, not derivable at mint)",
+  const ans = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } }, CONN);
+  c("an ANSWER of one pause is EXACTLY the records point read + THAT token's answer record, checkpoint status and settle fact + the EPF fact read + INFO: no replay row, and no row that spans a second token",
     JSON.stringify(ans.publish) === JSON.stringify([
-      `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, ...replay,
-      `$KV.cotal_records_${S}.answer.${EP}.>`, `$KV.cotal_records_${S}.cp.${EP}.>`, `cotal.${S}.epf.${EP}.cp.>`, `$JS.API.STREAM.MSG.GET.EPF_${S}`,
+      `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+      `$KV.cotal_records_${S}.answer.${EP}.${TOKEN}.>`, `$KV.cotal_records_${S}.cp.${EP}.${TOKEN}.>`, `cotal.${S}.epf.${EP}.cp.${TOKEN}`, `$JS.API.STREAM.MSG.GET.EPF_${S}`,
       "$JS.API.INFO",
     ]), ans.publish);
-  c("neither form holds a journal publish, a run or program record write, a consumer verb on the records store, or a destructive stream verb",
-    [...read.publish, ...ans.publish].every((r) => !/^cotal\.[^.]+\.wfj\./.test(r) && !/\.(?:run|program)\./.test(r) && !/^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_records_/.test(r) && !DESTRUCTIVE_JS.test(r)), { read: read.publish, ans: ans.publish });
-  const noRun = (() => { try { runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: true }, CONN); return undefined; } catch (e) { return (e as Error).message; } })();
-  c("an answering form with no run named is refused at the builder", typeof noRun === "string" && noRun.includes("ONE run"), noRun);
-  const minted = decode(await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, runId: RUN, takeoverId: TK, answers: true } }));
+  const otherTok = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: "u".repeat(43) } }, CONN);
+  c("an answer minted for another pause shares NO write row with this one (the token pins every write)",
+    !ans.publish.filter((r) => r.includes(TOKEN)).some((r) => otherTok.publish.includes(r)) && ans.publish.filter((r) => r.includes(TOKEN)).length === 3, { mine: ans.publish, theirs: otherTok.publish });
+  c("neither form holds a journal publish, a run or program record write, a consumer verb on the records store, a destructive stream verb, or an endpoint-wide `cp`/`answer`/settle row",
+    [...read.publish, ...ans.publish].every((r) => !/^cotal\.[^.]+\.wfj\./.test(r) && !/\.(?:run|program)\./.test(r) && !/^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_records_/.test(r) && !DESTRUCTIVE_JS.test(r)
+      && !/\.(?:cp|answer)\.[^.]+\.>$/.test(r) && !/\.epf\.[^.]+\.cp\.>$/.test(r)), { read: read.publish, ans: ans.publish });
+  const badTok = (() => { try { runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: "not a token" } }, CONN); return undefined; } catch (e) { return (e as Error).message; } })();
+  c("an answering form with a malformed token is refused at the builder (the token is a subject token, never interpolated unchecked)", typeof badTok === "string" && badTok.includes("checkpoint token"), badTok);
+  const minted = decode(await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } } }));
   c("mintCreds(run-operator) emits exactly the builder's rows (the inbox keyed on the connection nkey)",
     JSON.stringify(minted.pub) === JSON.stringify(ans.publish) && minted.sub.length === 1 && minted.sub[0]!.startsWith("_INBOX_"), minted);
 }

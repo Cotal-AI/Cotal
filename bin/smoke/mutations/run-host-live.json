@@ -1,6 +1,6 @@
 {
   "suite": "bin/smoke/run-host-live.smoke.ts",
-  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records (frame stripped) and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside under the caller's own name; a manager restart takes a run recorded running back under the next epoch, each attempt under its own holder id, and no launch is served until that reconcile has returned.",
+  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records (frame stripped) and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside under the caller's own name; a manager restart takes a run recorded running back under the next epoch, each attempt under its own holder id, and no launch is served until that reconcile has returned. An answer's writes are pinned to the one pause it answers; a refusal at the admission cap gives its slot back; a user-auth mesh refuses the family by name.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-host-live.json",
@@ -9,7 +9,8 @@
     "that build and afterRestore rebuilds so the restored source is the artifact again. Each mutant",
     "aims at one guarantee the family makes: validation before any record, the answer-after-record",
     "wait, and the boot reconcile filter that decides which runs a successor takes back.",
-    "The fix round's mutants each remove one gate the review named: the boot gate, the per-attempt holder id, the caller-derived answerer, the frame strip, and the client deadline outliving the activation wait."
+    "The fix round's mutants each remove one gate the review named: the boot gate, the per-attempt holder id, the caller-derived answerer, the frame strip, and the client deadline outliving the activation wait.",
+    "The second review round's mutants: the pre-claimed slot a cap refusal used to keep, the token pin on the answering credential's write rows, and the user-mesh refusal of the whole family."
   ],
   "mutations": [
     {
@@ -103,6 +104,33 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS",
       "cell": "RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, so the manager's own \"still launching\" refusal is what a slow activation reads as"
+    },
+    {
+      "name": "a refusal before the drive keeps a pre-claimed slot (the resume cap leak)",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "      if (slot.drive === undefined) this.free(slot);",
+      "replace": "      if (slot.drive === undefined && claimed === undefined) this.free(slot);",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a resume refused at the admission cap is resource-exhausted and gives its slot back",
+      "cell": "a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving"
+    },
+    {
+      "name": "the answering credential's answer row spans every pause of the endpoint",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "`$KV.${records}.answer.${e}.${token}.>`",
+      "replace": "`$KV.${records}.answer.${e}.>`",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "an answering credential is minted for THAT pause alone",
+      "cell": "an answering credential is minted for THAT pause alone: filing an answer on any other token is refused by the broker"
+    },
+    {
+      "name": "a user-auth mesh answers run-start as a booting host instead of naming the refusal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (this.userMode)\n      throw new EpEnvelopeError(\"unimplemented\", `user-auth space",
+      "replace": "    if (this.userMode && this.runHosting !== undefined)\n      throw new EpEnvelopeError(\"unimplemented\", `user-auth space",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a user-auth mesh refuses run-start as unimplemented, naming the space",
+      "cell": "a user-auth mesh refuses run-start as unimplemented, naming the space: no host stands there, and no `--local` is offered"
     }
   ]
 }

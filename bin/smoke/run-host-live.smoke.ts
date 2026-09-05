@@ -26,14 +26,14 @@ const { connect } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
-  openRecordsBucket, readCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
+  openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
 } = await import("@cotal-ai/core");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 type ReplyT = import("@cotal-ai/core").EndpointReply;
 type RunStatusViewT = import("@cotal-ai/core").RunStatusView;
 type RunListRowT = import("@cotal-ai/core").RunListRow;
 type RunJournalRowT = import("@cotal-ai/core").RunJournalRow;
-const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { authDir, saveSpaceAuth, recordMesh, removeMesh, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { Manager, RunHosting } = await import("@cotal-ai/manager");
 // Importing the runtime is what registers the `cotal-lang` run host the manager resolves.
 const { runWorkflow } = await import("@cotal-ai/runtime");
@@ -55,6 +55,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
+const denied = (e: unknown): boolean => /permissions? violation/i.test(String((e as Error)?.message));
 const until = async <T>(read: () => Promise<T | undefined>, ms: number): Promise<T | undefined> => {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -166,6 +167,16 @@ try {
     } finally {
       await readNc.drain().catch(() => readNc.close());
     }
+    // The ANSWERING form the manager minted for that write, re-minted here for the same pause and
+    // pointed at a different one: the broker, not the resolver, is what refuses the foreign token.
+    const pinnedNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: "manager", takeoverId: newTakeoverId(), answers: { token: data?.token ?? "" } } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const foreign = await recordCheckpointAnswer(await openRecordsBucket(pinnedNc, spaceA), "manager", { v: 1, token: "x".repeat(43), answerId: "y".repeat(43), by: "nobody", at: Date.now() })
+        .then(() => "allowed", (e: unknown) => (denied(e) ? "denied" : String((e as Error).message).slice(0, 120)));
+      c("an answering credential is minted for THAT pause alone: filing an answer on any other token is refused by the broker", foreign === "denied", foreign);
+    } finally {
+      await pinnedNc.drain().catch(() => pinnedNc.close());
+    }
     const done = await until(async () => { const v = await status(cpId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the hosted run completes", stateOf(done) === "completed", done?.status);
   }
@@ -246,7 +257,41 @@ try {
     c("an answer through the host lands", typeof (answered as { answerId?: unknown })?.answerId === "string", answered);
     const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the run completes there", stateOf(done) === "completed", done?.status);
+    // A refusal at the admission cap gives the slot back. The completed run is the subject: a
+    // resume claims its slot and reads its record before any drive, which is exactly where the
+    // cap refuses, so nothing is driven and the only question is what the refusal leaves behind.
+    const gate = hosting as unknown as { launching: number };
+    const launchingBefore = gate.launching;
+    gate.launching = 1_000_000;
+    let first: unknown, second: unknown;
+    try {
+      first = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
+      second = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    } finally {
+      gate.launching = launchingBefore;
+    }
+    c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
+      code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && hosting.liveCount === 0, { first: code(first), second: code(second), live: hosting.liveCount });
     await hosting.stop();
+    // A user-auth mesh hosts no runs: the family is refused by name, and no host is stood up to
+    // gate. The manager on a user-marked workspace, asked by a static caller holding `run`.
+    const wsUser = mkdtempSync(join(tmpdir(), "cotal-runhost-wsUser-"));
+    scratch.push(wsUser);
+    mkdirSync(join(wsUser, ".cotal", "agents"), { recursive: true });
+    saveSpaceAuth(authDir(wsUser), auth);
+    mkdirSync(userAuthStateDir(wsUser, spaceA), { recursive: true });
+    writeFileSync(join(userAuthStateDir(wsUser, spaceA), "idp.json"), "{}\n");
+    recordMesh({ space: spaceA, server: brokerA.servers, root: wsUser, mode: "user", ts: new Date().toISOString() });
+    const mgrU = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsUser });
+    await mgrU.start();
+    try {
+      const serviceU = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
+      const refused = (await invokeCommand(nc, spaceA, serviceU, "run-start", { source: PURE, file: "pure.cotal.js" }, { deadlineMs: 10_000, currentEpoch: async () => serviceU.responder.epoch })).reply;
+      c("a user-auth mesh refuses run-start as unimplemented, naming the space: no host stands there, and no `--local` is offered", refused.ok === false && refused.error?.code === "unimplemented" && String(refused.error?.message).includes("user-auth space") && !String(refused.error?.message).includes("--local"), refused.error);
+    } finally {
+      await mgrU.stop();
+      removeMesh(spaceA);
+    }
     mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
     await mgrB.start();
   }
@@ -353,7 +398,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 42;
+const EXPECTED_CELLS = 45;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
