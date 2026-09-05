@@ -32,8 +32,8 @@
     {
       "name": "the records enumeration falls back to the consumer-backed pass",
       "file": "packages/core/src/kv-scan.ts",
-      "find": "export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> {",
-      "replace": "export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> {\n  return await liveKvEntries(kv, filter);",
+      "find": "  const bucket: Bucket = kv;\n  const subject = `${bucket.prefix}.${filter}`;",
+      "replace": "  const bucket: Bucket = kv;\n  if (bucket) return await liveKvEntries(kv, filter);\n  const subject = `${bucket.prefix}.${filter}`;",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
