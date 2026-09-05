@@ -770,6 +770,9 @@ try {
   const inspected = await cliResult(["invoke", "manager", "inspect", "--args", '{"name":"alpha"}', "--space", SPACE]);
   check("the shipped CLI invokes the spawn-authorized manager inspect shape through the user's bearer",
     !inspected.timedOut && inspected.status === 0 && /"name": "alpha"/.test(inspected.plain), inspected);
+  const ownerAttach = await cliResult(["invoke", "manager", "attach", "--name", "alpha", "--space", SPACE]);
+  check("a generic --name call without --admin keeps the user bearer on its owner routing tier",
+    !ownerAttach.timedOut && ownerAttach.status === 0, ownerAttach);
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
   check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
     !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
