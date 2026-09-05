@@ -11,7 +11,10 @@ import {
   clearPreservationCommitIntent,
   clearPreservationPrepareIntent,
   completeMaintenanceCut,
+  findMesh,
   loadMeshes,
+  meshesForRoot,
+  recordMesh,
   localProcessPath,
   localProcessPathCandidates,
   readMaintenanceJournal,
@@ -264,8 +267,8 @@ type DownSeatRow = {
 };
 
 function meshForContext(context: LocalProcessContext) {
-  const matching = loadMeshes().filter((mesh) => mesh.root === context.root && mesh.space === context.space);
-  return matching[0] ?? loadMeshes().find((mesh) => mesh.root === context.root);
+  const matching = meshesForRoot(context.root).filter((mesh) => mesh.space === context.space);
+  return matching[0] ?? meshesForRoot(context.root)[0];
 }
 
 type SeatList = { ok: true; rows: DownSeatRow[] } | { ok: false; reason: string };
@@ -281,6 +284,9 @@ async function listManagerSeats(context: LocalProcessContext): Promise<SeatList>
     // whose broker is down. Listing is honesty, never a refuse-to-signal.
     target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
   } catch (e) {
+    // Honesty only: preflight treats an unreachable broker as a stale registry entry and deletes it.
+    // A failed dependent must still keep that record, so restore if the connect pruned it.
+    if (!findMesh(mesh.space)) recordMesh(mesh);
     return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };
   }
   const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
@@ -298,6 +304,7 @@ async function reapListedSeats(context: LocalProcessContext, rows: DownSeatRow[]
     // before the stack stops. Failures join the per-seat list and still let down signal.
     target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
   } catch (e) {
+    if (!findMesh(mesh.space)) recordMesh(mesh);
     throw new Error(`--with-agents could not stop every managed seat: the manager control plane could not be reached (${(e as Error).message})`);
   }
   const failures: string[] = [];
