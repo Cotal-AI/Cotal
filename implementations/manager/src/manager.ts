@@ -5101,7 +5101,9 @@ export class Manager {
       // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
       // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
       // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
+      if (auth) {
+        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
+      }
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
