@@ -780,6 +780,11 @@ try {
   check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer",
     !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /deadline-exceeded|unavailable/i.test(deniedAdmin.plain), deniedAdmin);
 
+  // The mutation proof runs this same fixture with only the native endpoint setup and B1g. It is
+  // not a substitute: the full smoke still runs every section below. It keeps the old-guard red
+  // bounded so a timeout cannot be mistaken for a named assertion failure.
+  const endpointCliFocus = process.env.COTAL_USER_ENDPOINT_CLI_ONLY === "1";
+  if (!endpointCliFocus) {
   // ---------- B2. delegation attenuation (the ENVELOPE rule, end to end) ----------
   console.log("B2) a spawner-attributed spawn is attenuated to the spawner's own grant");
   // The cli grant is [general] + scope [spawn]: an imperative over-ask (`spawn --allow-subscribe`
@@ -1489,6 +1494,8 @@ try {
     await cotalAuthProvider.revokeAgent({ dir, owner: OWNER, actor: "phoenix2" }).catch(() => {});
   }
 
+  }
+
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
   const alphaFamily = incFiles("alpha"); // resolve the incarnation paths BEFORE teardown shreds them
@@ -1500,7 +1507,7 @@ try {
   const revokedEx = await agentExchange("alpha", alphaToken, OWNER); // the OLD captured secret
   check("the old captured actor token is uniformly denied (401) after revocation", revokedEx.status === 401, { status: revokedEx.status, error: revokedEx.body.error });
 
-  console.log(`\nUSER-SPAWN SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
