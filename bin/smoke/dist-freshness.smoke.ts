@@ -68,7 +68,7 @@ function newestMtime(dir: string, exts: string[]): { path: string; ms: number } 
   return best;
 }
 
-const PACKAGES = ["packages/core", "packages/workspace"];
+const PACKAGES = ["packages/core", "packages/seat", "packages/workspace"];
 
 let fail = 0;
 console.log("dist freshness (a manager/CLI/delivery smoke tests the LAST BUILD, not your edit)\n");

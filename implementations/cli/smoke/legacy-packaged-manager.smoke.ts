@@ -58,7 +58,7 @@ try {
   assert.equal(spawnSync("sh", ["-c", "command -v cotal"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), fixtureCotal, "the fixture PATH masks the operator cotal binary");
   assert.equal(run(npm, ["root"], current).stdout.trim(), join(realpathSync(current), "node_modules"), "current package install resolves into the isolated prefix before installation");
   assert.equal(run(npm, ["root"], old).stdout.trim(), join(realpathSync(old), "node_modules"), "old package install resolves into the isolated prefix before installation");
-  for (const dir of ["bin", "packages/core", "packages/workspace", "implementations/cli", "implementations/manager", "implementations/delivery", "implementations/auth", "extensions/connector-core"]) {
+  for (const dir of ["bin", "packages/core", "packages/seat", "packages/workspace", "implementations/cli", "implementations/manager", "implementations/delivery", "implementations/auth", "extensions/connector-core"]) {
     const packed = run(pnpm, ["-C", join(repo, dir), "pack", "--pack-destination", packs], repo);
     assert.equal(packed.status, 0, `packed ${dir}: ${packed.stdout}\n${packed.stderr}`);
   }

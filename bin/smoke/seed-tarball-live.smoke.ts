@@ -47,6 +47,7 @@ try {
   const dirs = [
     "bin",
     "packages/core",
+    "packages/seat",
     "packages/workspace",
     "implementations/cli",
     "implementations/manager",
