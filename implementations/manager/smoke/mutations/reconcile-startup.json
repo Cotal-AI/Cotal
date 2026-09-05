@@ -84,8 +84,8 @@
     {
       "name": "a retried yield hears not-found for work that committed",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const settled = this.turnAcceptances.get(goalId);\n      if (settled?.settled !== undefined) {",
-      "replace": "      const settled = this.turnAcceptances.get(goalId);\n      if (false && settled?.settled !== undefined) {",
+      "find": "      const settled = this.turnAcceptances.get(goalId);\n      if (settled !== undefined) {",
+      "replace": "      const settled = this.turnAcceptances.get(goalId);\n      if (false && settled !== undefined) {",
       "expectRed": "a retried yield is served the answer the lost reply carried, never `not-found`",
       "cell": "a retried yield is served the answer the lost reply carried, never `not-found`",
       "note": "The commit deletes the pending turn, so a retry after a lost reply found nothing and the seat read `not-found` as 'drop it': failure reported for work the run already has."
@@ -134,6 +134,15 @@
       "expectRed": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
       "cell": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
       "note": "rememberSettledTurn writes only against an acceptance this incarnation holds. Adoption rebuilt pendingTurns alone, so a yield whose reply was lost after a restart still heard not-found on the one path adoption exists for."
+    },
+    {
+      "name": "a late yield after the deadline committed hears not-found instead of the deny",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (settled.settled !== undefined) return { goalId, state: settled.settled.state };\n        // The in-memory answer is not yet remembered (pending deleted before the terminal CAS,\n        // or a concurrent sweep dropped `settled` while the commit was still in flight). The\n        // durable terminal is the one the run already has; name it, never `not-found`.\n        if (settled.ref !== undefined) {\n          const ended = await readGoalResult(gw.ctx, settled.ref);\n          if (ended !== undefined) {\n            this.rememberSettledTurn(goalId, ended.state, ended.ts);\n            return { goalId, state: ended.state };\n          }\n        }",
+      "replace": "        if (settled.settled !== undefined) return { goalId, state: settled.settled.state };",
+      "expectRed": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
+      "cell": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
+      "note": "#1262. After commitTurnDeadline deletes pending (the latch, before the terminal CAS) the only in-memory answer a late yield could find was turnAcceptances.settled. When that field was not yet written, or a concurrent sweep dropped it, the yield heard not-found for a deny the run already has. The durable terminal is the answer; the index drop is not the cause (the yield path never consults it)."
     }
   ]
 }

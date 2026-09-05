@@ -41,6 +41,8 @@ import {
   bindGoal,
   createGoal,
   recordGoalIndex,
+  readGoalResult,
+  clearGoalIndex,
   type GoalRef,
   epAuthBucket,
   epCall,
@@ -435,6 +437,124 @@ try {
     check("a turn whose hold was never minted is not adopted as pending: nothing could settle it",
       !doors.pendingTurns.has(holdless) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(holdless),
       { pending: doors.pendingTurns.has(holdless) });
+
+    // #1262: a late yield after the deadline committed. The CI flake is not "the deny lost to a
+    // success" — the deny held — and it is not the durable goal-index drop itself: the yield path
+    // never consults that index. After commitTurnDeadline deletes the pending entry (the latch is
+    // the delete, BEFORE the terminal CAS) the only in-memory answer a late yield can find is
+    // turnAcceptances.settled. Two orderings both happen on a live manager and both have to name
+    // the terminal the goal actually reached, never `not-found`:
+    //
+    //   1. terminal committed, index still present, settled answer not yet remembered
+    //      (the window between pendingTurns.delete and rememberSettledTurn; also the window a
+    //      concurrent sweep's maybeStopTurnSweep can clear turnAcceptances while the commit is
+    //      still in flight, so rememberSettledTurn no-ops)
+    //   2. terminal committed AND the index already cleared (the state the auth-mesh smoke's
+    //      resultOf wait actually observes before it yields)
+    //
+    // Forced here through the same serveTurnYield door, after the durable deny is on the plane,
+    // by dropping the in-memory maps the yield currently consults. No live timer, no broker
+    // perturbation: the hold is minted already-due so expireCheckpoint is the shipped owner
+    // expiry, and commitTurnDeadline is the shipped deny. Two goal ids, because the index
+    // entry is create-only and cannot be restored after a clear.
+    const LATE_ACCEPTED = Date.now() - 5_000;
+    const LATE_DEADLINE = Date.now() - 1_000;
+    const lateDoors = adopting as unknown as {
+      pendingTurns: Map<string, {
+        ref: GoalRef; goalId: string;
+        seat: { name: string; owner: string; actor: string; uid: string };
+        payload: string; acceptedAt: number; deadlineAt: number;
+        holdToken: string; holdEpoch: number;
+      }>;
+      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; ref?: GoalRef; settled?: { state: string; at: number } }>;
+      expireTurnHold: (p: { ref: GoalRef; goalId: string; holdToken: string }) => Promise<{ settle?: string } | undefined>;
+      commitTurnDeadline: (p: { ref: GoalRef; goalId: string; holdToken: string; seat: { name: string; owner: string; actor: string; uid: string }; payload: string; acceptedAt: number; deadlineAt: number; holdEpoch: number }) => Promise<void>;
+      serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
+    };
+    const armLate = async (goalId: string, fingerprint: string) => {
+      const ref: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId };
+      const lateNote = JSON.stringify({ payload: "too late", deadlineAt: LATE_DEADLINE, holdEpoch: serveEpoch, owner: "local" });
+      await bindGoal(actx, ref, fingerprint);
+      await createGoal(actx, ref, {
+        fingerprint, command: "turn",
+        caller: { id: `${runner.owner}.${runner.actor}`, lifecycleUid: runner.uid },
+        acceptedEpoch: 0, requestId: goalId, sourceSeq: 0, acceptedAt: LATE_ACCEPTED, readinessDeadlineMs: 1_000,
+        target: { owner: "local", actor: allocated.actor, lifecycleUid: seatUid, mappingRevision: 0 },
+      });
+      await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, lateNote);
+      const holdToken = createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+      await mintCheckpoint(actx.kv, serveJs, space, {
+        ref: { endpoint: MANAGER_ENDPOINT, token: holdToken },
+        instanceId: doors.managerInstanceId, epoch: serveEpoch,
+        goal: { caller: runner, goalId },
+        holder: { id: MANAGER_ENDPOINT, lifecycleUid: doors.managerInstanceId },
+        deadline: LATE_DEADLINE, now: LATE_ACCEPTED,
+      });
+      const pending = {
+        ref, goalId,
+        seat: { name: allocated.name, owner: "local" as const, actor: allocated.actor, uid: seatUid },
+        payload: "too late", acceptedAt: LATE_ACCEPTED, deadlineAt: LATE_DEADLINE,
+        holdToken, holdEpoch: serveEpoch,
+      };
+      lateDoors.pendingTurns.set(goalId, pending);
+      lateDoors.turnAcceptances.set(goalId, {
+        acceptance: {
+          name: allocated.name, owner: "local", actor: allocated.actor, uid: seatUid, goalId,
+          fingerprint, deadlineAt: LATE_DEADLINE,
+          executor: { lifecycleUid: doors.managerInstanceId, epoch: serveEpoch },
+        },
+        ref,
+      });
+      return { ref, pending };
+    };
+
+    {
+      const lateId = "d".repeat(43);
+      const { ref, pending } = await armLate(lateId, "fp-late-1");
+      const expired = await lateDoors.expireTurnHold(pending);
+      check("a due hold the manager owns expires as `expired` (the deny's predicate)",
+        expired?.settle === "expired", expired);
+      await lateDoors.commitTurnDeadline(pending);
+      const deniedLate = await readGoalResult(actx, ref);
+      check("the deadline deny is the goal's terminal, reason `turn-deadline`; no success over it",
+        deniedLate?.state === "failed" && (deniedLate.data as { reason?: string } | undefined)?.reason === "turn-deadline",
+        deniedLate);
+      // Ordering 1: terminal committed, index still present (we skip the clear), settled
+      // answer not remembered. This is the window between pendingTurns.delete and
+      // rememberSettledTurn (and the window a concurrent sweep's maybeStopTurnSweep can
+      // drop the settled field while leaving the acceptance the yield still addresses).
+      lateDoors.pendingTurns.delete(lateId);
+      const kept1 = lateDoors.turnAcceptances.get(lateId);
+      if (kept1) delete kept1.settled;
+      const afterCommitBeforeIndexDrop = await lateDoors.serveTurnYield(adoptedSeat, { goalId: lateId, status: "done" }).then((r) => r, asValue);
+      check("a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
+        (afterCommitBeforeIndexDrop as { state?: string }).state === "failed"
+          && (afterCommitBeforeIndexDrop as { code?: string }).code !== "not-found",
+        afterCommitBeforeIndexDrop);
+      check("and that late yield did not record a success over the deny",
+        (await readGoalResult(actx, ref))?.state === "failed", await readGoalResult(actx, ref));
+    }
+
+    {
+      const lateId = "e".repeat(43);
+      const { ref, pending } = await armLate(lateId, "fp-late-2");
+      await lateDoors.expireTurnHold(pending);
+      await lateDoors.commitTurnDeadline(pending);
+      // Ordering 2: terminal committed AND the index already cleared — the auth-mesh smoke's
+      // observed state when it yields after resultOf returns the deny.
+      await clearGoalIndex(actx, ref);
+      lateDoors.pendingTurns.delete(lateId);
+      const kept2 = lateDoors.turnAcceptances.get(lateId);
+      if (kept2) delete kept2.settled;
+      const afterIndexDrop = await lateDoors.serveTurnYield(adoptedSeat, { goalId: lateId, status: "done" }).then((r) => r, asValue);
+      check("a yield after the deny committed AND the index dropped is still told the turn ended failed, never `not-found`",
+        (afterIndexDrop as { state?: string }).state === "failed"
+          && (afterIndexDrop as { code?: string }).code !== "not-found",
+        afterIndexDrop);
+      check("and that late yield did not record a success over the deny either",
+        (await readGoalResult(actx, ref))?.state === "failed", await readGoalResult(actx, ref));
+    }
+
     await adopting.stop().catch(() => {});
   }
 
@@ -447,7 +567,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 17;
+const EXPECTED_CELLS = 23;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
