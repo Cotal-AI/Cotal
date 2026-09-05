@@ -840,14 +840,18 @@ export async function runJcodeHost(): Promise<void> {
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
     );
-    let readiness;
+    const readinessClient = client;
+    const readinessSessionId = sessionId;
+    if (!readinessClient || !readinessSessionId)
+      throw new Error("jcode connector: readiness proof reached without a live Harness session");
+    let readiness: Awaited<ReturnType<JcodeClient["run"]>> | undefined;
     const proveReadiness = async (): Promise<void> => {
-      readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });
       if (!hasOrientation(readiness)) {
         writeJcodeDiagnostic(
           `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\n`,
         );
-        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+        readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });
       }
     };
     try {
@@ -876,7 +880,7 @@ export async function runJcodeHost(): Promise<void> {
       // classify. Preserve only those bounded fields; all other message bytes stay scrubbed (#828).
       throw classifyReadinessProviderRefusal(error) ?? error;
     }
-    if (!hasOrientation(readiness))
+    if (!readiness || !hasOrientation(readiness))
       throw new Error(
         "jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface",
       );

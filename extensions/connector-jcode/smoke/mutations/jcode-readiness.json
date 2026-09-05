@@ -13,14 +13,14 @@
     {
       "name": "M1 remove the bounded retry after the pre-MCP snapshot",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (!hasOrientation(readiness)) {\n        writeJcodeDiagnostic(\n          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\\n`,\n        );\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
+      "find": "      if (!hasOrientation(readiness)) {\n        writeJcodeDiagnostic(\n          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\\n`,\n        );\n        readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });\n      }",
       "replace": "",
       "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
     },
     {
       "name": "M2 join without proving orientation after the retry",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (!hasOrientation(readiness))\n      throw new Error(",
+      "find": "    if (!readiness || !hasOrientation(readiness))\n      throw new Error(",
       "replace": "    if (false)\n      throw new Error(",
       "expectRed": "a permanently absent cotal tool ends the launch"
     },
