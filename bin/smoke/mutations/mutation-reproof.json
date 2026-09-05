@@ -1,17 +1,33 @@
 {
   "suite": "bin/smoke/mutation-reproof.smoke.ts",
-  "guard": "changed guarded source re-proves its fixture and reports the exact fixture set whose mutants no longer kill",
+  "guard": "changed guarded source re-proves its fixture; a deleted or renamed-away source is a loud dangling failure naming the exact fixture; both sides of a rename enter the changed set",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
   "mutations": [
     {
-      "name": "a changed guarded source is ignored unless its fixture JSON also changed",
+      "name": "the diff excludes deletions again (the original ACMR bug)",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "let selected = fixtures.filter(({ path, mutations }) => a.all || changed.has(path)\n  || mutations.some((mutation) => typeof mutation?.file === \"string\" && changed.has(mutation.file)));",
-      "replace": "let selected = fixtures.filter(({ path }) => a.all || changed.has(path));",
-      "expectRed": "the shipped scan reports the known survivor set after its guarded source changes",
-      "cell": "the shipped scan reports the known survivor set after its guarded source changes"
+      "find": "  const raw = git(root, [\"diff\", \"--name-status\", \"-M\", `${base}...${head}`])",
+      "replace": "  const raw = git(root, [\"diff\", \"--name-status\", \"-M\", \"--diff-filter=ACMR\", `${base}...${head}`])",
+      "expectRed": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture",
+      "cell": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a rename contributes only its new path, not the old one the fixture still anchors to",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      if (parts[1]) changed.add(parts[1]);\n      if (parts[2]) changed.add(parts[2]);",
+      "replace": "      if (parts[2]) changed.add(parts[2]);",
+      "expectRed": "the gate FAILS on a renamed-away guarded source and names exactly the dangling fixture",
+      "cell": "the gate FAILS on a renamed-away guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a dangling fixture is no longer refused, so a deleted source stops being a loud failure",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "if (dangling.length) {",
+      "replace": "if (false && dangling.length) {",
+      "expectRed": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture",
+      "cell": "the gate FAILS on a deleted guarded source and names exactly the dangling fixture"
     }
   ]
 }
