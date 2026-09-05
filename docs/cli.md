@@ -270,7 +270,9 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents
 running as unmanaged OS processes. If the manager answers `ps`, it prints their names, pids, and
 working directories, and points at `cotal down --with-agents` to take them with the stack. If the
-manager cannot be asked, it still signals the stack and says leftovers may remain. A PTY child
+manager cannot be asked, it still signals the stack and says leftovers may remain.
+`--with-agents` in that case still stops the stack, reaps no seats, and exits non-zero
+naming that the agents are still running unmanaged. A PTY child
 may still die when the manager process exits. A later manager on the same root may still take
 leftover seats. This listing is `cotal down`. A failed `cotal up` teardown SIGTERMs the manager
 without listing leftover seats. An older manager whose `stop()` still reaps will still reap on

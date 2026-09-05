@@ -206,7 +206,7 @@ const SPAWN_OUTPUT_SCHEMA = {
 
 const GRACEFUL_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
-  properties: { graceful: { type: "boolean" } },
+  properties: { graceful: { type: "boolean" }, waitForExit: { type: "boolean" } },
 } as const;
 
 const STOP_OUTPUT_SCHEMA = {
@@ -572,7 +572,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  10 = the turn relay family (`turn`, `turn-pending`, `turn-yield`): a workflow run's one-turn
  *  goal against a seat, the seat's own pull of its pending turns, and its yield. NEW SERVED
- *  COMMANDS are what a revision is for, and three of them cannot fold into 9. */
+ *  COMMANDS are what a revision is for, and three of them cannot fold into 9.
+ *
+ *  11 = `despawn` / `stop` accept optional `waitForExit`. The mass-reap caller passes it so
+ *  proof of exit is not derived from `graceful`. A changed input contract is a changed described
+ *  surface even though the command names are unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -590,7 +594,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 10,
+    revision: 11,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

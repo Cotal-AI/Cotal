@@ -163,7 +163,10 @@ export async function down(args: ParsedArgs): Promise<void> {
     if (withAgents && managerComp && managerLive) {
       const listed = await listManagerSeats(contextFor(managerComp));
       if (listed.ok) printWouldReap(listed.rows);
-      else printCouldNotList(listed.reason);
+      else {
+        printWithAgentsUnreaped(listed.reason);
+        process.exitCode = 1;
+      }
     }
     if (!recorded.length) {
       const target = requested.length ? requested.join(", ") : "the local stack";
@@ -181,11 +184,23 @@ export async function down(args: ParsedArgs): Promise<void> {
   // answers. There is no detach control op. An older manager whose `stop()` still reaps will reap
   // on SIGTERM; that version-skew hole is named, not closed.
   let leftover: DownSeatRow[] | undefined;
+  let withAgentsUnreaped = false;
   if (managerComp && managerLive) {
     const listed = await listManagerSeats(contextFor(managerComp));
     if (listed.ok) {
       leftover = listed.rows;
-      if (withAgents && listed.rows.length) await reapListedSeats(contextFor(managerComp), listed.rows);
+      if (withAgents && listed.rows.length) {
+        try {
+          await reapListedSeats(contextFor(managerComp), listed.rows);
+        } catch (e) {
+          printWithAgentsUnreaped((e as Error).message);
+          withAgentsUnreaped = true;
+        }
+      }
+    } else if (withAgents) {
+      // Still stop the stack. Unreachability must never strand an operator. Do not claim the reap.
+      printWithAgentsUnreaped(listed.reason);
+      withAgentsUnreaped = true;
     } else {
       printCouldNotList(listed.reason);
     }
@@ -228,6 +243,7 @@ export async function down(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   if (leftover?.length && !withAgents) printLeftRunning(leftover);
+  if (withAgentsUnreaped) process.exitCode = 1;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -261,7 +277,9 @@ async function listManagerSeats(context: LocalProcessContext): Promise<SeatList>
     return { ok: false, reason: "this folder has no recorded mesh, so leftover seats cannot be listed" };
   let target;
   try {
-    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged");
+    // Catchable: the default `connectOrExit` would `process.exit(1)` and strand a live manager
+    // whose broker is down. Listing is honesty, never a refuse-to-signal.
+    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
   } catch (e) {
     return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };
   }
@@ -274,10 +292,17 @@ async function listManagerSeats(context: LocalProcessContext): Promise<SeatList>
 async function reapListedSeats(context: LocalProcessContext, rows: DownSeatRow[]): Promise<void> {
   const mesh = meshForContext(context);
   if (!mesh) throw new Error("--with-agents could not stop every managed seat: this folder has no recorded mesh");
-  const target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged");
+  let target;
+  try {
+    // Same class as listing: a broker that dies between ps and the reap must not `process.exit`
+    // before the stack stops. Failures join the per-seat list and still let down signal.
+    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
+  } catch (e) {
+    throw new Error(`--with-agents could not stop every managed seat: the manager control plane could not be reached (${(e as Error).message})`);
+  }
   const failures: string[] = [];
   for (const row of rows) {
-    const stopped = await askManager(target.space, target.server, "stop", { name: row.name, graceful: false }, target.auth, "any", 30_000);
+    const stopped = await askManager(target.space, target.server, "stop", { name: row.name, graceful: false, waitForExit: true }, target.auth, "any", 30_000);
     if (!stopped.ok) failures.push(`${row.name}: ${stopped.error ?? "stop failed"}`);
   }
   if (failures.length)
@@ -307,6 +332,11 @@ function printWouldReap(rows: DownSeatRow[]): void {
 
 function printCouldNotList(reason: string): void {
   console.error(c.dim(`could not list managed seats (${reason}); leftovers may remain after the stack stops`));
+}
+
+/** `--with-agents` asked for a reap that did not happen. The stack still stops; success is not claimed. */
+function printWithAgentsUnreaped(reason: string): void {
+  console.error(c.red(`✗ --with-agents could not stop every managed seat (${reason}); no seats were reaped and they are still running unmanaged`));
 }
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
@@ -544,6 +574,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           managerCommitJournaled = true;
         }
         if (!managerCommitJournaled) {
+        // Preserve-state stays a hard exit on an unreachable broker: a half-cut must not continue.
         const retryTarget = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
@@ -584,6 +615,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           attemptId, space: mesh.space, mode: mesh.mode, server: mesh.server, storeDir,
         });
       }
+      // Preserve-state stays a hard exit on an unreachable broker: a half-cut must not continue.
       const target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
       // Fence Plane 3 BEFORE any inventory work: with the delivery daemon stopped, no durable
       // join/leave can mutate MEMBERS at or after the moment the inventory is taken.
@@ -653,6 +685,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       // intent). A crash here is genuinely pre-commit — recovery MUST still abort, not finish forward.
       if (process.env.COTAL_SMOKE_EXIT_AFTER_CUT_INTENT_BEFORE_COMMIT === "1") process.exit(93);
       writePreservationCommitIntent(lock, { attemptId });
+      // Preserve-state stays a hard exit on an unreachable broker: a half-cut must not continue.
       const target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
       const commit = await askManager(
         target.space,

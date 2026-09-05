@@ -44,7 +44,8 @@ function smokeSources(dir: string, out: string[] = []): string[] {
 
 /** A Manager.stop / mgr.stop / m1?.stop call whose argument list does not pass withAgents: true.
  *  Identifier class is the manager-shaped names smokes actually use. delivery/broker/ep stops
- *  are not this hazard. */
+ *  are not this hazard. Conventional names only: `supervisor`, `boss`, `managerB`, `mBoot`, and
+ *  a destructured or helper-returned handle are outside this regex. */
 const SPARE_STOP = /(?:await\s+)?(?:manager|mgr|mgr[0-9A-Z]|m[0-9]|adopting|openMgr|hung|first|next|live|corpse|booting|replacement)\??\.stop\(\s*(?:\{\s*(?!.*withAgents\s*:\s*true)[^}]*\}\s*)?\)/g;
 
 function livePty(text: string): boolean {

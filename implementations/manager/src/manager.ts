@@ -2352,7 +2352,7 @@ export class Manager {
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         const graceful = args(ctx).graceful !== false;
-        return unwrap(await this.despawnAuthorized(a, graceful, true, !graceful));
+        return unwrap(await this.despawnAuthorized(a, graceful, true, args(ctx).waitForExit === true));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -4857,7 +4857,7 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    return this.despawnCore(a, caller, admin, args.graceful !== false);
+    return this.despawnCore(a, caller, admin, args.graceful !== false, args.waitForExit === true);
   }
 
   /** The ONE named-terminal core both doors share (P2 item 1, checklist 8): the ctl named `stop`
@@ -4865,17 +4865,16 @@ export class Manager {
    *  ({@link authorizeNamed}: own-child / owner-domain on privileged, any on admin), stop, track.
    *  The ep door runs the SAME two pieces separately so a policy denial surfaces as the §13.3
    *  `permission-denied` (never a generic failure). */
-  private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean): Promise<ControlReply> {
+  private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean, requireAuthoritativeExit = false): Promise<ControlReply> {
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    return this.despawnAuthorized(a, graceful, !admin, !graceful);
+    return this.despawnAuthorized(a, graceful, !admin, requireAuthoritativeExit);
   }
 
   /** The post-authorization terminal effect (both doors). `trackNonAdmin` mirrors the ctl door's
-   *  `trackStoppedHandle(a, !admin)` disposition. A hard stop (`graceful: false`) is the mass-reap
-   *  path (`cotal down --with-agents`): it keeps the slot until the runtime proves exit, the same
-   *  demand recursive reap already makes via {@link trackStoppedHandle}'s third argument. Ordinary
-   *  `cotal stop` stays acceptance-not-exit (graceful defaults true). */
+   *  `trackStoppedHandle(a, !admin)` disposition. `requireAuthoritativeExit` is passed by the
+   *  mass-reap caller (`cotal down --with-agents` sends `waitForExit: true`); it is not derived
+   *  from `graceful`. Ordinary `cotal stop` / `cotal_despawn` stay acceptance-not-exit. */
   private async despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, requireAuthoritativeExit = false): Promise<ControlReply> {
     this.stopHandle(a, graceful);
     this.trackStoppedHandle(a, trackNonAdmin, requireAuthoritativeExit);
