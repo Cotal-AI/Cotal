@@ -354,6 +354,14 @@ try {
   // the seat mid-turn five minutes later. The seat's version is fixed at spawn time.
   check("host pins the seat binary against background self-update", argv.env?.JCODE_NO_AUTO_UPDATE === "1", argv.env);
   const peerHome = managedHome("jcodehost", "jcodepeer");
+  const peerLog = connectorLog(peerHome);
+  check(
+    "a successful join with no spawn --prompt names that outcome",
+    /pre-join readiness outcome: orientation proved; joining with no spawn --prompt/.test(peerLog) &&
+      !/pre-join readiness outcome: timeout/.test(peerLog) &&
+      !/pre-join readiness outcome: provider refusal/.test(peerLog),
+    peerLog,
+  );
   check("host copies auth mirror rather than linking it", lstatSync(join(peerHome, "auth.json")).isFile() && !lstatSync(join(peerHome, "auth.json")).isSymbolicLink());
   check("host copied auth mirror is owner-only", (statSync(join(peerHome, "auth.json")).mode & 0o777) === 0o600);
 
@@ -789,6 +797,14 @@ try {
     },
   );
   check(
+    "provider readiness refusal names that outcome, not a timeout or a missing prompt",
+    /pre-join readiness outcome: provider refusal/.test(refusalErr) &&
+      !/pre-join readiness outcome: timeout/.test(refusalErr) &&
+      !/joining with no spawn --prompt/.test(refusalErr) &&
+      !/submitting the spawn --prompt/.test(refusalErr),
+    refusalErr,
+  );
+  check(
     "provider readiness refusal stays scrubbed beyond the classified fields",
     !refusalErr.includes("was refused by provider"),
     refusalErr,
@@ -904,6 +920,16 @@ try {
     "a timed-out readiness turn is named as a readiness timeout, not unknown",
     /readiness_timeout/.test(slowErr) || /readiness turn exceeded/.test(slowErr),
     slowErr,
+  );
+  const afterLog = connectorLog(managedHome("jcodehost", "slowpeer"));
+  check(
+    "a timed-out readiness turn names its outcome as timeout, not a hang or a missing prompt",
+    /pre-join readiness outcome: timeout/.test(afterLog) &&
+      /discarding that in-flight turn/.test(afterLog) &&
+      !/pre-join readiness outcome: provider refusal/.test(afterLog) &&
+      !/joining with no spawn --prompt/.test(afterLog) &&
+      !/submitting the spawn --prompt/.test(afterLog),
+    afterLog,
   );
 } finally {
   for (const proc of hosts) await stopHostTree(proc, "SIGKILL");

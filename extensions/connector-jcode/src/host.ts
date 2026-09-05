@@ -18,6 +18,7 @@ import {
   jcodeEffortRefusal,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
+import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   MeshAgent,
@@ -39,14 +40,10 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
-/** Same three-minute window the connector declares to the manager (`readinessTimeoutMs`).
- *  That wait used to be advisory: a long readiness turn stayed alive with no presence. The host
- *  now uses this bound on the orientation proof itself (#1216). */
-const READINESS_TURN_TIMEOUT_MS = 180_000;
 
 function readinessTurnTimeoutMs(): number {
   const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
-  if (!raw) return READINESS_TURN_TIMEOUT_MS;
+  if (!raw) return JCODE_READINESS_TIMEOUT_MS;
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0)
     throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
@@ -864,6 +861,9 @@ export async function runJcodeHost(): Promise<void> {
           }),
         ]);
         if (timedOut === "timeout") {
+          writeJcodeDiagnostic(
+            `[cotal-jcode] pre-join readiness outcome: timeout after ${readinessBudgetMs}ms; killing the private Jcode tree and discarding that in-flight turn; never joined\n`,
+          );
           throw new JcodeConnectorError(
             "readiness_timeout",
             `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,
@@ -876,12 +876,28 @@ export async function runJcodeHost(): Promise<void> {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
       // supplied an invalid-request code and a rejected model/effort value the connector can safely
       // classify. Preserve only those bounded fields; all other message bytes stay scrubbed (#828).
-      throw classifyReadinessProviderRefusal(error) ?? error;
+      const classified = classifyReadinessProviderRefusal(error);
+      if (classified) {
+        writeJcodeDiagnostic(
+          `[cotal-jcode] pre-join readiness outcome: provider refusal of ${classified.parameter} ${JSON.stringify(classified.value)} (${classified.providerCode}); never joined\n`,
+        );
+        throw classified;
+      }
+      throw error;
     }
-    if (!readiness || !hasOrientation(readiness))
+    if (!readiness || !hasOrientation(readiness)) {
+      writeJcodeDiagnostic(
+        `[cotal-jcode] pre-join readiness outcome: cotal_orientation never became callable; never joined\n`,
+      );
       throw new Error(
         "jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface",
       );
+    }
+    writeJcodeDiagnostic(
+      bootPrompt
+        ? `[cotal-jcode] pre-join readiness outcome: orientation proved; joining, then submitting the spawn --prompt\n`
+        : `[cotal-jcode] pre-join readiness outcome: orientation proved; joining with no spawn --prompt\n`,
+    );
     watchClient(client);
     if (config.model) {
       const runtime = await client.getRuntimeInfo(sessionId);

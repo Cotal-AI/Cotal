@@ -148,11 +148,21 @@ snapshot immediately before Jcode rebuilds that snapshot. The host repeats the i
 in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
 failure rather than an agent that is present but mute. The persona is already in that transcript as
 a no-reply message; the spawn `--prompt` is not submitted until after join. While the proof is in
-flight the connector log names `pre-join readiness` and the bound, so an operator can tell this
-state from a hang, a missing prompt, or a provider refusal. A one-line log with no route line is
-not that signal. The proof itself is bounded to the same three minutes the connector declares to
-the manager. If the turn overruns that bound the host exits `readiness_timeout` and never joins,
-rather than working invisibly. The manager's wait can still report `uncertain` when join itself is
+flight the connector log names `pre-join readiness` and the bound. That in-flight line only means
+startup reached the gate; it is not a hang, a missing prompt, or a provider refusal by itself.
+After the turn, a second line names the outcome and is what separates those cases:
+`orientation proved; joining with no spawn --prompt` or `joining, then submitting the spawn
+--prompt` when the proof passed; `provider refusal` when the provider rejected the turn; `timeout`
+when the bound fired. A genuine hang that never returns and never hits the bound has no outcome
+line. A one-line log with no route line is not that signal. The proof itself is bounded to the
+same three minutes the connector declares to the manager (`readinessTimeoutMs` is the exported
+`JCODE_READINESS_TIMEOUT_MS`). Tests may shorten the host bound through
+`COTAL_JCODE_READINESS_TIMEOUT_MS`; that override is not an operator setting and does not change
+the window the connector declares to the manager. If the turn overruns that bound the host
+exits `readiness_timeout` and never joins, rather than working invisibly. That teardown does not
+wait for the in-flight turn: it kills the private Jcode tree and discards whatever that turn had
+generated. Nothing from it is recoverable; inspect the seat connector log for the timeout
+outcome, then spawn again. The manager's wait can still report `uncertain` when join itself is
 slow after a passing proof; that is not a cleanup verdict, and it is not the same as a host
 `readiness_timeout`. Use `cotal attach <name>` or `cotal ps` to inspect an `uncertain` launch. The
 host then waits for the mesh connection and presence bind to complete before it adds a no-reply
