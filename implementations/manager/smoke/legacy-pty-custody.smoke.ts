@@ -25,12 +25,17 @@ const state = (pid: number): string => {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[0] ?? "unknown";
   } catch {
-    return "gone";
+    try {
+      process.kill(pid, 0);
+      return "live";
+    } catch {
+      return "gone";
+    }
   }
 };
 
 const root = mkdtempSync(join(tmpdir(), "cotal-legacy-pty-custody-"));
-const owner = join(root, "owner.mts");
+const owner = join(root, "owner.mjs");
 const ready = join(root, "ready.json");
 const pidfile = join(root, "counter.pid");
 const managerRoot = join(import.meta.dirname, "..");
@@ -41,13 +46,13 @@ writeFileSync(
   `import { PtyRuntime } from ${JSON.stringify(join(managerRoot, "dist", "runtime", "pty.js"))};\n` +
     `import { writeFileSync } from "node:fs";\n` +
     `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { PATH: process.env.PATH ?? "", PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
-    `writeFileSync(process.env.READY!, JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined }));\n` +
+    `writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined }));\n` +
     `setInterval(() => {}, 1_000);\n`,
 );
 
 let ownerProcess: ChildProcess | undefined;
 try {
-  ownerProcess = spawn(join(repo, "node_modules", ".bin", "tsx"), [owner], {
+  ownerProcess = spawn(process.execPath, [owner], {
     env: { PATH: process.env.PATH ?? "", READY: ready, PIDFILE: pidfile },
     stdio: "ignore",
   });
