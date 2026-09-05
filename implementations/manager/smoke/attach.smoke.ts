@@ -157,10 +157,17 @@ const cwd = process.cwd();
   const spawned = pty.spawn("smoke-pty-adopt", spec, cwd);
   let adopted: AgentHandle | undefined;
   const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(pty, spawned.reference ?? { kind: "pty", id: "missing" })));
-  check(
-    "pty adopt returns a live proxy",
-    ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid !== undefined,
-  );
+  if (process.platform === "linux") {
+    check(
+      "pty adopt returns a live proxy",
+      ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid !== undefined,
+    );
+  } else {
+    check(
+      `pty adopt throws custody transport unsupported on ${process.platform}`,
+      ptyErr === `custody transport unsupported on ${process.platform}`,
+    );
+  }
   spawned.stop({ graceful: false });
   closeHandle(spawned);
   closeHandle(adopted);

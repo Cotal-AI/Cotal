@@ -7,9 +7,10 @@ authenticated local protocol a manager worker uses to adopt that handle.
 `@cotal-ai/core`, workspace, implementations, connectors, or NATS. The manager's `pty` runtime
 is the first production caller.
 
-Linux is the production transport in this cut. `create`/`spawn`/`adopt` throw a named
-`custody transport unsupported on <platform>` error on darwin and win32. There is no in-process
-node-pty fallback.
+Linux is the production transport in this cut. `create`/`spawn`/`adopt` in this package throw a
+named `custody transport unsupported on <platform>` error on darwin and win32. There is no
+in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
+Linux and only `adopt` throws that named error.
 
 The launcher owns no PTY and exits after writing a permissioned per-seat record. Each custodian
 owns exactly one `node-pty` object, its child relationship, its screen mirror, and exit

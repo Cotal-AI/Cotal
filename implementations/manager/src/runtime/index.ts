@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReference } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
+import { LegacyPtyRuntime } from "./pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
@@ -32,7 +33,8 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
           `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
           `Run the manager under node, or install and select an external runtime.`,
       );
-    return new CustodialPtyRuntime();
+    if (process.platform === "linux") return new CustodialPtyRuntime();
+    return new LegacyPtyRuntime();
   }
   let provider: RuntimeProvider;
   try {

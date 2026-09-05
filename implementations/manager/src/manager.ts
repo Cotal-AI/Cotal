@@ -4939,7 +4939,7 @@ export class Manager {
     return {
       instanceId: this.managerInstanceId,
       runtime: this.runtime.kind,
-      custody: "legacy",
+      custody: process.platform === "linux" && this.runtime.kind === "pty" ? "custodied" : "legacy",
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),

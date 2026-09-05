@@ -62,7 +62,7 @@ const STATUS_OUTPUT_SCHEMA = {
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
     /** Whether this manager can hand running runtime handles to a successor. */
-    custody: { enum: ["legacy"] },
+    custody: { enum: ["legacy", "custodied"] },
     /** How many agents this manager currently supervises. */
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
@@ -89,7 +89,7 @@ const STATUS_OUTPUT_SCHEMA = {
 export interface ManagerStatus {
   instanceId: string;
   runtime: string;
-  custody: "legacy";
+  custody: "legacy" | "custodied";
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
@@ -572,7 +572,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  10 = the turn relay family (`turn`, `turn-pending`, `turn-yield`): a workflow run's one-turn
  *  goal against a seat, the seat's own pull of its pending turns, and its yield. NEW SERVED
- *  COMMANDS are what a revision is for, and three of them cannot fold into 9. */
+ *  COMMANDS are what a revision is for, and three of them cannot fold into 9.
+ *
+ *  11 = manager `status` custody generation admits `custodied` (Linux pty seat ownership)
+ *  alongside `legacy`. A changed output contract is a changed described surface even though
+ *  the command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -590,7 +594,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 10,
+    revision: 11,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

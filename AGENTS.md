@@ -98,7 +98,8 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
 Unix socket. Depends on nothing else in the repo; it knows about PTYs, not about NATS. Linux is
-the production transport in this cut; other platforms throw.
+the production transport in this cut; other platforms throw from this package. The manager still
+spawns pty seats in-process off Linux and only `adopt` throws.
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
 the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.

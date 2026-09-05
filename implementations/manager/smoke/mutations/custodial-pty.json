@@ -24,6 +24,24 @@
       "expectRed": "production adopt returns a live proxy",
       "cell": "production adopt returns a live proxy",
       "note": "The mutation is only the adopt return. Spawn still launches a real seat; the successor proxy is what must stay live."
+    },
+    {
+      "name": "M3 swallow in-process adopt throw",
+      "file": "implementations/manager/src/runtime/pty.ts",
+      "find": "  adopt(_reference: RuntimeReference): AgentHandle {\n    throw unsupportedTransport();\n  }",
+      "replace": "  adopt(_reference: RuntimeReference): AgentHandle {\n    return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } };\n  }",
+      "expectRed": "in-process pty adopt throws custody transport unsupported on linux",
+      "cell": "in-process pty adopt throws custody transport unsupported on linux",
+      "note": "Linux still constructs LegacyPtyRuntime in this cell. A silent handle would drop the named transport error."
+    },
+    {
+      "name": "M4 drop custodied from the status enum",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "custody: { enum: [\"legacy\", \"custodied\"] },",
+      "replace": "custody: { enum: [\"legacy\"] },",
+      "expectRed": "status output accepts custodied",
+      "cell": "status output accepts custodied",
+      "note": "The compiled status output is the required enum pin. Dropping custodied must redden that cell."
     }
   ]
 }

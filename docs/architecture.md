@@ -79,7 +79,8 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
   nothing else in the repo.
 - **`@cotal-ai/seat`**, local PTY seat custody: one detached custodian process per seat and the
   authenticated local protocol a manager worker uses to adopt that handle. Depends on PTY
-  libraries, not on core or NATS. Linux is the production transport; other platforms throw.
+  libraries, not on core or NATS. Linux is the production transport; other platforms throw
+  from this package.
 - **`extensions/*`**: pluggable adapters (connectors, runtimes). Each **peer-depends** on
   core (binding to the host's single core instance) and self-registers on import; an
   unknown agent type **throws**, no silent fallback.
@@ -160,8 +161,8 @@ laterally; the manager only births and configures them.
   `ps`.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
   docker for agent TUIs): **`pty`** ships built-in (a detached per-seat custodian owns the
-  pseudo-terminal on Linux; watch or type via `cotal attach`; other platforms throw until their
-  transport lands); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
+  pseudo-terminal on Linux; watch or type via `cotal attach`; other platforms still spawn
+  in-process, and `adopt` throws until their transport lands); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
   extensions that put each teammate in its own native terminal surface (explicit opt-ins
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn

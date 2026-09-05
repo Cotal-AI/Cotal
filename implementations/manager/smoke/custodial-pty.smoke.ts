@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
+import { MANAGER_STATUS_CONTRACT } from "../src/manager-service-contract.js";
+import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 import type { Runtime } from "@cotal-ai/core";
 
 let pass = 0;
@@ -30,20 +32,58 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   check('absent adopt refuses by runtime name', threw === 'runtime "fixture" does not support adopt');
 }
 
-if (process.platform !== "linux") {
-  const rt = createRuntime("pty", "cotal-smoke");
+{
+  const sample = {
+    instanceId: "i",
+    runtime: "pty",
+    custody: "custodied",
+    agentCount: 0,
+    uptimeMs: 0,
+    connectors: [],
+  };
+  check("status output accepts custodied", MANAGER_STATUS_CONTRACT.output.validate(sample) === true);
+  check("status output still accepts legacy", MANAGER_STATUS_CONTRACT.output.validate({ ...sample, custody: "legacy" }) === true);
+  check("status output refuses unknown custody", MANAGER_STATUS_CONTRACT.output.validate({ ...sample, custody: "other" }) === false);
+}
+
+{
+  const legacy = new LegacyPtyRuntime();
   let threw = "";
   try {
-    rt.spawn("nope", { command: process.execPath, args: ["-e", "0"] }, process.cwd());
+    legacy.adopt({ kind: "pty", id: "opaque" });
   } catch (e) {
     threw = (e as Error).message;
   }
   check(
-    `pty spawn throws custody transport unsupported on ${process.platform}`,
+    `in-process pty adopt throws custody transport unsupported on ${process.platform}`,
     threw === `custody transport unsupported on ${process.platform}`,
     threw,
   );
-  console.log(`CUSTODIAL PTY COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
+}
+
+const drop = (target: unknown): void => {
+  (target as { close?: () => void }).close?.();
+};
+
+if (process.platform !== "linux") {
+  const rt = createRuntime("pty", "cotal-smoke");
+  const h = rt.spawn("counter", { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }, process.cwd());
+  check("pty spawn still returns an in-process handle", typeof h.attach === "function" && typeof h.stop === "function");
+  let threw = "";
+  try {
+    requireRuntimeAdopt(rt, h.reference ?? { kind: "pty", id: "missing" });
+  } catch (e) {
+    threw = (e as Error).message;
+  }
+  check(
+    `pty adopt throws custody transport unsupported on ${process.platform}`,
+    threw === `custody transport unsupported on ${process.platform}`,
+    threw,
+  );
+  h.stop({ graceful: false });
+  await h.waitForExit?.();
+  drop(h);
+  console.log(`CUSTODIAL PTY COMPLETE on ${process.platform}: spawn in-process, adopt unsupported (no skip-as-pass)`);
 } else {
   const root = mkdtempSync(join(tmpdir(), "cotal-custodial-"));
   process.env.COTAL_SEAT_ROOT = root;
@@ -54,9 +94,6 @@ if (process.platform !== "linux") {
   check("production adopt returns a live proxy", typeof adopted.attach === "function" && adopted.pid === h.pid);
   h.stop({ graceful: false });
   await h.waitForExit?.();
-  const drop = (target: unknown): void => {
-    (target as { close?: () => void }).close?.();
-  };
   drop(adopted);
   drop(h);
   rmSync(root, { recursive: true, force: true });
