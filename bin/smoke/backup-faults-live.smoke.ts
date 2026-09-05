@@ -84,7 +84,10 @@ async function backupStageFaultScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_stages";
-  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  // Follow-on assign: `cotal send` refuses without a complete identity in this process.
+  env.COTAL_NAME = "cli";
+  env.COTAL_ID = "cli_send";
   const run = (...args: string[]) => {
     const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(sandbox, args, options);
@@ -157,7 +160,10 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_replay";
-  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  // Follow-on assign: `cotal send` refuses without a complete identity in this process.
+  env.COTAL_NAME = "cli";
+  env.COTAL_ID = "cli_send";
   const run = (...args: string[]) => {
     const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(sandbox, args, options);

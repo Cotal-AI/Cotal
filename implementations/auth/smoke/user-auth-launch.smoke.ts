@@ -51,6 +51,10 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 // (measured, PR #962 shard 3). The child sees only the sandbox's own pins.
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
 const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+// Follow-on assign so a concurrent isolation edit on the object literal does not collide.
+// `cotal send` now refuses without a complete identity in this process.
+childEnv.COTAL_NAME = "cli";
+childEnv.COTAL_ID = "cli_send";
 
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
