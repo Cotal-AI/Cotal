@@ -1,7 +1,7 @@
 {
   "suite": "implementations/manager/smoke/manager-service-ops.smoke.ts",
   "guard": "manager inspect keeps live success local and closed, but distinguishes a nonterminal durable static slot from an unknown name with an honest ordered slot-plus-head observation",
-  "command": "pnpm --filter @cotal-ai/manager... build && COTAL_SMOKE_STATIC_SLOT_INSPECT_ONLY=1 pnpm smoke:manager-service-ops",
+  "command": "pnpm --filter @cotal-ai/manager build && COTAL_SMOKE_STATIC_SLOT_INSPECT_ONLY=1 pnpm smoke:manager-service-ops",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/static-slot-inspect.json",
   "why": [
     "The suite drives the real manager service over ep.one. It plants a durable terminalizing slot and retiring lifecycle head after boot, so startup reconciliation cannot consume the fixture before inspect reads it.",
@@ -19,7 +19,7 @@
       "expectRed": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
       "cell": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
       "note": "This restores the exact symptom: stranded and never-known names both become not-found.",
-      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "the slot projection drops cleanupComplete while keeping phase and head facts",
@@ -29,7 +29,7 @@
       "expectRed": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
       "cell": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
       "note": "The durability field exists but becomes unread again. The same real-wire cell requires both the store lookup and this field projection.",
-      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "the two-record observation stops declaring its read order",
@@ -39,7 +39,7 @@
       "expectRed": "a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
       "cell": "a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
       "note": "The fixture advances the head between reads. Without the explicit order, the pair no longer says how the torn observation was obtained.",
-      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }
