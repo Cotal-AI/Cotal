@@ -1352,8 +1352,17 @@ Legacy generation-only stamps remain readable; their refusal simply has no write
 An older `cotal` refuses a seed store written by a newer version. When it can verify a sufficient
 `cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the refusal names
 that absolute path so a reduced service PATH does not select the older binary again. Otherwise it
-keeps the generic newer-version instruction. `--reset` remains the explicit way to rebuild the store
-for the running older version.
+keeps the generic newer-version instruction. `--force` rebuilds the store for the running older
+version without discarding the ever-seeded authority. `--reset` still exists for corrupt state and
+resurrects deliberately-removed connectors.
+
+A source-checkout CLI (`pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, or a suite child of
+those) refuses to write or garbage-collect that store. The refusal names the path, the generation
+it declined, and `$XDG_CONFIG_HOME` as the isolation remedy. `COTAL_HOME` does not relocate this
+store. An entry that cannot be proven as a released install is refused the same way. Isolated
+release tests that must seed from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` after
+pointing `$XDG_CONFIG_HOME` at a scratch dir; that override is documented here, not on the refusal
+line. An opt-in write still records the checkout path in `seed/stamp.json` as `writtenBy`.
 
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
