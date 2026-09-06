@@ -1451,6 +1451,12 @@ try {
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  // THE SUMMARY BELONGS ON BOTH PATHS. A cell here can red and the cascade behind it throw: the
+  // refusal text that the next lines parse is missing, so the flags they extract are empty and the
+  // real ledger writer refuses them. Printing the verdict only on the success path meant such a run
+  // ended silently, and a reader (or a mutation gate keyed on this line) saw an unfinished run
+  // rather than a failed one.
+  console.log(`\nUSER-SPAWN SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
   try { await observer?.stop(); } catch { /* */ }
