@@ -87,6 +87,11 @@ lifecycle-bound prepare → activate → renew exchange. It never exports the sp
 provisioner credential, or generic storage authority. The manager may provision only descendants
 of that same owner, with host validation at each provision.
 
+The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
+dialed as a websocket. The manager-authority registration it runs first also takes its TLS
+requirement from that entry, so the prepare credential is not exchanged over a plaintext
+connection the record did not describe. `cotal meshes add` records both.
+
 When the authority service, login, or renewal is unavailable, the remote manager degrades
 fail-closed: it refuses new agents, restarts, and credential replacement rather than pretending
 local authority exists. Existing agents remain live only while their independent credentials are

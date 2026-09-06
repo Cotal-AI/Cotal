@@ -220,6 +220,7 @@
     "smoke:manager-two-root-renewal": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-two-root-renewal.smoke.ts",
     "smoke:manager-stop-reap": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-stop-reaps-agents.smoke.ts",
     "smoke:control-transport-dial": "tsx bin/smoke/control-transport-dial.smoke.ts && pnpm smoke:control-transport-cleanup",
+    "smoke:supervise-remote-dial": "tsx bin/smoke/supervise-remote-dial.smoke.ts",
     "smoke:control-transport-cleanup": "tsx bin/smoke/fixtures/control-transport-cleanup.mts",
     "smoke:control-transport-crash-cleanup": "tsx bin/smoke/fixtures/control-transport-crash-cleanup.mts",
     "smoke:session-ledger-family": "tsx implementations/manager/smoke/session-ledger-family.smoke.ts",
