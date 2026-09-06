@@ -20,7 +20,11 @@
     "spread away must therefore go RED on the stale-baseline assertion, not quietly pass.",
     "",
     "NO BUILD STEP: the suite reads source files off disk and imports nothing from a built package, so",
-    "there is no dist/ copy that could disagree with the mutation."
+    "there is no dist/ copy that could disagree with the mutation.",
+    "",
+    "N3 IS THE MIXED-FILE CASE. A file can strip one child and still spread ambient identity into another.",
+    "Per-file STRIP+DELETE treated that as clean, including when `delete` only appeared in comments.",
+    "Removing the auth-service strip while the CLI child still filters COTAL_ must redden user-spawn."
   ],
   "mutations": [
     {
@@ -39,6 +43,14 @@
       "allowMultiple": true,
       "expectRed": "FROZEN still lists file(s) that no longer spread",
       "note": "Proves the baseline can only shrink. Without this the frozen list would be a permanent waiver that no assertion ever revisits."
+    },
+    {
+      "name": "N3 user-spawn auth-service child loses its COTAL_ strip while another child in the same file still strips",
+      "file": "implementations/auth/smoke/user-spawn.smoke.ts",
+      "find": "  const env = { ...process.env };\n  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_\")) delete env[key];\n  env.COTAL_HOME = home;\n",
+      "replace": "  const env = { ...process.env, COTAL_HOME: home };\n",
+      "expectRed": "implementations/auth/smoke/user-spawn.smoke.ts (unstripped spread",
+      "note": "The mixed-file regression: one stripped child plus a comment containing delete used to clear this file. The census must fail on the remaining unstripped spread."
     }
   ]
 }
