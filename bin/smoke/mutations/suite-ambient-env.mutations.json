@@ -104,7 +104,7 @@
     {
       "name": "N7 regex literal braces regain structural meaning",
       "file": "bin/smoke/suite-ambient-env.smoke.ts",
-      "find": "      // REGEX-LITERAL REGION: braces here are data, not structural nesting.\n      if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) {\n        mark(offset + node.getStart(file), offset + node.end, nextRegion++);\n        return;\n      }\n",
+      "find": "      if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) {\n        mark(offset + node.getStart(file), offset + node.end, nextRegion++);\n        return;\n      }\n",
       "replace": "",
       "expectRed": "a regex close brace must not hide nested scrub depth",
       "note": "Proves regex-literal tokenization excludes brace data from structural depth while the separate division control remains green at baseline."
@@ -120,15 +120,15 @@
     {
       "name": "N9 interpolation expressions inherit the template raw-text region",
       "file": "bin/smoke/suite-ambient-env.smoke.ts",
-      "find": "            baseRegion,\n          ); // interpolation executes in the containing code region\n",
-      "replace": "            childRegion,\n          ); // interpolation executes in the containing code region\n",
+      "find": "            baseRegion,\n          );\n",
+      "replace": "            childRegion,\n          );\n",
       "expectRed": "a module scrub must clear a spread inside template interpolation code",
       "note": "Proves interpolation expressions inherit the containing code owner instead of the template raw-text owner."
     },
     {
       "name": "N10 interpolation contents stop receiving recursive lexical regions",
       "file": "bin/smoke/suite-ambient-env.smoke.ts",
-      "find": "          parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            offset + expressionStart,\n            baseRegion,\n          ); // interpolation executes in the containing code region\n",
+      "find": "          parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            offset + expressionStart,\n            baseRegion,\n          );\n",
       "replace": "",
       "expectRed": "an unused nested template scrub must not clear a module-code spread",
       "note": "Proves nested literals inside interpolation code are recursively discovered and assigned their own child-script regions."

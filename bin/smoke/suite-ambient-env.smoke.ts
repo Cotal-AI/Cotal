@@ -176,11 +176,12 @@ function lexicalRegions(src: string): Int32Array {
         if (node.head.text) parseRegion(node.head.text, offset + headStart + 1, childRegion);
         for (const span of node.templateSpans) {
           const expressionStart = span.expression.getStart(file);
+          // Interpolation executes in the containing code region.
           parseRegion(
             text.slice(expressionStart, span.expression.end),
             offset + expressionStart,
             baseRegion,
-          ); // interpolation executes in the containing code region
+          );
           const literalStart = span.literal.getStart(file);
           mark(offset + literalStart, offset + span.literal.end, childRegion);
           if (span.literal.text) parseRegion(span.literal.text, offset + literalStart + 1, childRegion);
