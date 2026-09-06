@@ -81,6 +81,8 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
           status = "exited";
           if (info) exit = info;
         }
+      } catch (e) {
+        if (status !== "exited") throw e;
       } finally {
         client.close();
       }

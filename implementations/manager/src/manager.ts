@@ -1717,7 +1717,6 @@ export class Manager {
   private async awaitHandleExit(handle: AgentHandle): Promise<void> {
     if (!handle.waitForExit)
       throw new Error(`runtime "${handle.kind}" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);
-    if (handle.status() === "exited") return;
     await withTimeout(
       handle.waitForExit(),
       this.preserveStopTimeoutMs,
@@ -4950,7 +4949,12 @@ export class Manager {
         // └──────────────────────────────────────────────────────────────────────────────────────┘
         const deliberate = a.terminalizing === true;
         void (async () => {
-          const tail = this.tail(await s.backlog());
+          let tail = "";
+          try {
+            tail = this.tail(await s.backlog());
+          } catch {
+            /* waitForExit may close the attach stream before this snapshot */
+          }
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the

@@ -1,0 +1,19 @@
+{
+  "suite": "implementations/manager/smoke/preserve-state.smoke.ts",
+  "guard": "Manager.awaitHandleExit still invokes AgentHandle.waitForExit when status is already exited, so runtime cleanup runs for a late observer on any runtime kind",
+  "command": "pnpm smoke:preserve-state",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/late-observer-exit.json",
+  "why": [
+    "waitForExit is where seat closes the controller socket. Skipping it when status is already exited leaks that socket on the late-observer path. awaitHandleExit is generic over AgentHandle, so the cell uses a non-seat kind."
+  ],
+  "mutations": [
+    {
+      "name": "skip waitForExit once status is already exited",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!handle.waitForExit)\n      throw new Error(`runtime \"${handle.kind}\" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);\n    await withTimeout(\n",
+      "replace": "    if (!handle.waitForExit)\n      throw new Error(`runtime \"${handle.kind}\" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);\n    if (handle.status() === \"exited\") return;\n    await withTimeout(\n",
+      "expectRed": "late observer still invokes waitForExit after the child already reports exited",
+      "cell": "late observer still invokes waitForExit after the child already reports exited"
+    }
+  ]
+}

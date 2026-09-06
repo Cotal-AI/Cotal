@@ -291,30 +291,24 @@ if (process.platform !== "linux") {
   }
 
   const packDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-"));
+  const packState = mkdtempSync(join(tmpdir(), "cotal-seat-pack-state-"));
+  const savedPack: Array<{ dest: string; backup?: string }> = [];
   try {
-    // Inspect a host-only tree without running prepack. The gate is asserted on the next pack.
+    for (const arch of ["x64", "arm64"]) {
+      const dest = join(pkgRoot, "build", "Release", `linux-${arch}`, "peercred.node");
+      const backup = existsSync(dest) ? join(packState, `saved-${arch}.node`) : undefined;
+      if (backup) copyFileSync(dest, backup);
+      savedPack.push({ dest, backup });
+    }
+    const otherArch = process.arch === "x64" ? "arm64" : "x64";
+    const otherDest = join(pkgRoot, "build", "Release", `linux-${otherArch}`, "peercred.node");
+    if (existsSync(otherDest)) rmSync(otherDest);
+
+    // Inspect a host-only tree without running prepack.
     const packed = spawnSync("pnpm", ["--config.ignore-scripts=true", "pack", "--pack-destination", packDir], {
       cwd: pkgRoot,
       encoding: "utf8",
     });
-    const otherArch = process.arch === "x64" ? "arm64" : "x64";
-    const otherPresent = existsSync(join(pkgRoot, "build", "Release", `linux-${otherArch}`, "peercred.node"));
-    const gatedDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-gated-"));
-    const gated = spawnSync("pnpm", ["pack", "--pack-destination", gatedDir], { cwd: pkgRoot, encoding: "utf8" });
-    if (!otherPresent) {
-      check(
-        "host-only pnpm pack is refused by prepack",
-        gated.status !== 0,
-        { status: gated.status, stdout: gated.stdout, stderr: gated.stderr },
-      );
-    } else {
-      check(
-        "assembled tree packs with scripts",
-        gated.status === 0,
-        { status: gated.status, stdout: gated.stdout, stderr: gated.stderr },
-      );
-    }
-    rmSync(gatedDir, { recursive: true, force: true });
     const tarball = readdirSync(packDir).find((name) => name.endsWith(".tgz"));
     check("pnpm pack wrote a tarball", packed.status === 0 && tarball !== undefined, {
       status: packed.status,
@@ -324,31 +318,86 @@ if (process.platform !== "linux") {
     if (tarball) {
       const listing = spawnSync("tar", ["-tzf", join(packDir, tarball)], { encoding: "utf8" });
       const files = listing.stdout.split("\n").filter(Boolean);
-      if (!otherPresent) {
-        check(
-          "a host-only pack does not ship the other linux arch or an unkeyed helper",
-          files.includes(`package/build/Release/linux-${process.arch}/peercred.node`) &&
-            !files.includes(`package/build/Release/linux-${otherArch}/peercred.node`) &&
-            !files.includes("package/build/Release/peercred.node"),
-          files.filter((f) => f.includes("peercred") || f.includes("build/")),
-        );
-      } else {
-        check(
-          "the tarball ships keyed linux-x64 and linux-arm64 helpers",
-          files.includes("package/build/Release/linux-x64/peercred.node") &&
-            files.includes("package/build/Release/linux-arm64/peercred.node") &&
-            !files.includes("package/build/Release/peercred.node"),
-          files.filter((f) => f.includes("peercred") || f.includes("build/")),
-        );
-      }
+      check(
+        "a host-only pack does not ship the other linux arch or an unkeyed helper",
+        files.includes(`package/build/Release/linux-${process.arch}/peercred.node`) &&
+          !files.includes(`package/build/Release/linux-${otherArch}/peercred.node`) &&
+          !files.includes("package/build/Release/peercred.node"),
+        files.filter((f) => f.includes("peercred") || f.includes("build/")),
+      );
       check(
         "the tarball does not ship compiler sources",
         !files.some((f) => f === "package/native/peercred.c" || f === "package/binding.gyp" || f === "package/scripts/build-native.mjs"),
         files.filter((f) => f.includes("native") || f.includes("binding") || f.includes("build-native")),
       );
     }
+
+    const refuseDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-gated-"));
+    const gated = spawnSync("pnpm", ["pack", "--pack-destination", refuseDir], { cwd: pkgRoot, encoding: "utf8" });
+    check(
+      "host-only pnpm pack is refused by prepack",
+      gated.status !== 0,
+      { status: gated.status, stdout: gated.stdout, stderr: gated.stderr },
+    );
+    rmSync(refuseDir, { recursive: true, force: true });
+
+    const writePackedElf = (arch: string, machine: number): string => {
+      const path = join(packState, `peercred-${arch}.node`);
+      const buf = Buffer.alloc(20);
+      buf[0] = 0x7f;
+      buf.write("ELF", 1);
+      buf.writeUInt16LE(machine, 18);
+      writeFileSync(path, buf);
+      return path;
+    };
+    const assembled = spawnSync(
+      process.execPath,
+      [join(pkgRoot, "..", "..", "scripts", "seat-assemble-natives.mjs"), "--x64", writePackedElf("x64", 62), "--arm64", writePackedElf("arm64", 183)],
+      { encoding: "utf8" },
+    );
+    check(
+      "pack proof assembled both native builder artifacts",
+      assembled.status === 0 &&
+        existsSync(join(pkgRoot, "build", "Release", "linux-x64", "peercred.node")) &&
+        existsSync(join(pkgRoot, "build", "Release", "linux-arm64", "peercred.node")),
+      { status: assembled.status, stdout: assembled.stdout, stderr: assembled.stderr },
+    );
+    const succeedDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-assembled-"));
+    const assembledPack = spawnSync("pnpm", ["pack", "--pack-destination", succeedDir], { cwd: pkgRoot, encoding: "utf8" });
+    check(
+      "assembled tree packs with scripts",
+      assembledPack.status === 0,
+      { status: assembledPack.status, stdout: assembledPack.stdout, stderr: assembledPack.stderr },
+    );
+    const assembledTarball = readdirSync(succeedDir).find((name) => name.endsWith(".tgz"));
+    if (assembledTarball) {
+      const listing = spawnSync("tar", ["-tzf", join(succeedDir, assembledTarball)], { encoding: "utf8" });
+      const files = listing.stdout.split("\n").filter(Boolean);
+      check(
+        "the tarball ships keyed linux-x64 and linux-arm64 helpers",
+        files.includes("package/build/Release/linux-x64/peercred.node") &&
+          files.includes("package/build/Release/linux-arm64/peercred.node") &&
+          !files.includes("package/build/Release/peercred.node"),
+        files.filter((f) => f.includes("peercred") || f.includes("build/")),
+      );
+    }
+    rmSync(succeedDir, { recursive: true, force: true });
   } finally {
+    for (const { dest, backup } of savedPack) {
+      if (backup) {
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(backup, dest);
+      } else if (existsSync(dest)) {
+        rmSync(dest);
+        try {
+          rmSync(dirname(dest));
+        } catch {
+          /* directory still holds other files */
+        }
+      }
+    }
     rmSync(packDir, { recursive: true, force: true });
+    rmSync(packState, { recursive: true, force: true });
   }
   }
 }

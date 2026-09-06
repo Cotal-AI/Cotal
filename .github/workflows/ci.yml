@@ -384,9 +384,10 @@ jobs:
           EOF
 
   ci-ok:
-    # Single required status. It owns the explicit live diagnosis too: adding a separate dependent
-    # job was measured on PR #1043 and left a superseded run queued through TWO later runner jobs,
-    # which held the replacement run behind it. One existing aggregate is the minimal queue shape.
+    # Single required status. It owns the explicit live diagnosis too: adding a separate
+    # always-running dependent job was measured on PR #1043 and left a superseded run queued
+    # through TWO later runner jobs, which held the replacement run behind it. ARM validation
+    # jobs may sit on ci-ok's needs as long as they are not always-running aggregates.
     name: ci-ok (live outcome classified)
     if: always()
     needs: [unit, smoke, live, seat-pack, seat-linux-arm64]

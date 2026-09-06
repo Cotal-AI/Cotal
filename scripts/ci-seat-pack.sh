@@ -12,8 +12,12 @@ mkdir -p "$dest"
 pnpm --filter @cotal-ai/seat pack --pack-destination "$dest"
 tarball="$(find "$dest" -maxdepth 1 -name '*.tgz' | head -n 1)"
 test -n "$tarball" || { echo "no tarball from pnpm pack"; exit 2; }
-echo "host=$(uname -m)"
-echo "platform-arch=$(node -p 'process.platform + \"-\" + process.arch')"
+host="$(uname -m)"
+test -n "$host" || { echo "host computation was empty"; exit 2; }
+platform_arch="$(node -p 'process.platform + "-" + process.arch')"
+test -n "$platform_arch" || { echo "platform-arch computation was empty"; exit 2; }
+echo "host=$host"
+echo "platform-arch=$platform_arch"
 echo "tarball=$tarball"
 echo -n "pack_sha256="
 sha256sum "$tarball"
@@ -24,25 +28,11 @@ if tar -tzf "$tarball" | grep -qx "package/build/Release/peercred.node"; then
 fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-tar -xOf "$tarball" package/build/Release/linux-x64/peercred.node > "$tmp/x64.node"
-tar -xOf "$tarball" package/build/Release/linux-arm64/peercred.node > "$tmp/arm64.node"
-file "$tmp/x64.node"
-file "$tmp/arm64.node"
-readelf -h "$tmp/x64.node" | grep -E 'Machine|Class'
-readelf -h "$tmp/arm64.node" | grep -E 'Machine|Class'
-node --input-type=module - "$tmp/x64.node" "$tmp/arm64.node" <<'EOF'
-import { readFileSync } from "node:fs";
-const machine = (p) => {
-  const b = readFileSync(p);
-  if (b.length < 20 || b[0] !== 0x7f || b.subarray(1, 4).toString("ascii") !== "ELF") {
-    throw new Error(`${p} is not ELF`);
-  }
-  return b.readUInt16LE(18);
-};
-const x64 = machine(process.argv[1]);
-const arm = machine(process.argv[2]);
-console.log(`pack_elf_x64=${x64} pack_elf_arm64=${arm}`);
-if (x64 !== 62 || arm !== 183) {
-  throw new Error("packed helpers are not linux-x64 EM_X86_64 plus linux-arm64 EM_AARCH64");
-}
-EOF
+mkdir -p "$tmp/extracted"
+tar -xzf "$tarball" -C "$tmp/extracted"
+test -d "$tmp/extracted/package" || { echo "tarball missing package/"; exit 2; }
+node "$repo/packages/seat/scripts/assert-shipped-natives.mjs" "$tmp/extracted/package"
+file "$tmp/extracted/package/build/Release/linux-x64/peercred.node"
+file "$tmp/extracted/package/build/Release/linux-arm64/peercred.node"
+readelf -h "$tmp/extracted/package/build/Release/linux-x64/peercred.node" | grep -E 'Machine|Class'
+readelf -h "$tmp/extracted/package/build/Release/linux-arm64/peercred.node" | grep -E 'Machine|Class'

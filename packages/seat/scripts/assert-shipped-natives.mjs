@@ -62,4 +62,11 @@ export function assertShippedNatives(pkgRoot = root) {
 }
 
 const invoked = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invoked) assertShippedNatives();
+if (invoked) {
+  const pkgRoot = process.argv[2];
+  if (pkgRoot !== undefined && pkgRoot.trim() === "") {
+    console.error("@cotal-ai/seat: package-root argument is empty");
+    process.exit(1);
+  }
+  assertShippedNatives(pkgRoot);
+}

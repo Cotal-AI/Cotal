@@ -19,6 +19,7 @@ export interface HelloInfo {
 }
 
 interface Pending {
+  op: ClientRequest["op"];
   resolve: (reply: ServerReply) => void;
   reject: (err: Error) => void;
 }
@@ -168,7 +169,7 @@ export class SeatClient {
     const id = this.nextId++;
     const req = { ...body, id } as ClientRequest;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { op: body.op, resolve, reject });
       this.sock!.write(encodeFrame(req));
     });
   }
@@ -196,7 +197,13 @@ export class SeatClient {
   }
 
   private failAll(err: Error): void {
-    for (const pending of this.pending.values()) pending.reject(err);
+    for (const [id, pending] of this.pending) {
+      if (pending.op === "wait-exit" && (this.helloInfo?.status === "exited" || this.pendingExit)) {
+        pending.resolve({ id, ok: true, op: "wait-exit", exit: this.helloInfo?.exit });
+      } else {
+        pending.reject(err);
+      }
+    }
     this.pending.clear();
     if (this.helloInfo?.status !== "exited") {
       for (const fn of this.exits) fn();
