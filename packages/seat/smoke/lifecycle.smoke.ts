@@ -182,6 +182,11 @@ try {
     });
     const h = adoptSeatSync(rec);
     handles.push(h);
+    check(
+      "fast-exit child is gone before onExit subscribe",
+      await until(() => state(rec.childPid) === "gone" || state(rec.childPid) === "Z", 5_000),
+      state(rec.childPid),
+    );
     let fired = false;
     h.attach().onExit(() => {
       fired = true;
