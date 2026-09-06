@@ -191,6 +191,19 @@ locally recorded space signer to mint both credentials; a single `--creds` file 
 Direct library users supplying broker clients to `MeshHandler` are constructing a trusted effect
 host. A hosted driver receives its closed effect interface instead.
 
+This split confines broker credentials; it is not process isolation for injected host code.
+The runtime and its effect host share the manager process. Workflow channel access still follows
+the program's requested channels, without inheriting the starting caller's channel ACL. Treat
+`run` as trusted program-execution authority. The host's journal checks enforce current run and
+step identity; they do not provide caller-scoped channel delegation.
+
+A version-1 fork can replay its settled parent history through the host. Inherited checkpoint
+identifiers carry no authority to read, rearm or claim the parent's pauses. New child effects use
+child-derived identifiers. The fork planner still uses the version-1 walker; planning a fork from
+a version-2 run currently fails on its language-version pin and needs a separate engine-aware
+planning implementation.
+
+
 ## What ships today
 
 The language, its validator, interpreter, simulator and dry run are `@cotal-ai/lang`

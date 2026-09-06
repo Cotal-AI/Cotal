@@ -55,16 +55,21 @@ export class RunScopeAuthority {
       throw new RunScopeDenied(this.runId, "drive attempt", "use superseded host");
     const entries = new Journal({ run: this.runId, entries: snapshot.entries }).entries();
     for (const entry of entries) {
-      if (entry.requestId === undefined) continue;
-      const attempt = entry.attempt ?? 0;
-      if (!Number.isSafeInteger(attempt) || attempt < 0) throw new RunScopeDenied(this.runId, journalEntryKeyString(entry), "load");
-      // Independently check the recorded id against the language's canonical digest. A driver
-      // can append to its own journal; copying another run's token there must confer no authority.
-      const hash = digest([this.runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
-      const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
-      if (entry.requestId !== expected) throw new RunScopeDenied(this.runId, entry.requestId, "load");
+      if (entry.requestId === undefined || entry.state === "settled") continue;
+      if (!this.owns(entry)) throw new RunScopeDenied(this.runId, entry.requestId, "load");
     }
     return entries;
+  }
+
+  /** Fork prefixes keep settled parent ids as history. Such an entry can be replayed but
+   *  cannot authorize this child to operate on a parent's checkpoint or wait consumer. */
+  private owns(entry: JournalEntry): boolean {
+    if (entry.requestId === undefined) return false;
+    const attempt = entry.attempt ?? 0;
+    if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
+    const hash = digest([this.runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
+    const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
+    return entry.requestId === expected;
   }
 
   async journal(): Promise<readonly JournalEntry[]> {
@@ -98,12 +103,12 @@ export class RunScopeAuthority {
   async cleanupEntries(): Promise<readonly JournalEntry[]> {
     const entries = await this.entries();
     const owed = this.cleanup(entries);
-    return entries.filter((entry) => owed.has(journalEntryKeyString(entry)));
+    return entries.filter((entry) => this.owns(entry) && owed.has(journalEntryKeyString(entry)));
   }
 
   async pause(token: string, operation: PauseOperation): Promise<JournalEntry> {
     const entries = await this.entries();
-    const entry = entries.find((candidate) => pauseTokens(candidate).includes(token));
+    const entry = entries.find((candidate) => this.owns(candidate) && pauseTokens(candidate).includes(token));
     if (entry !== undefined) {
       if (entry.kind === "wait" && (operation === "mint" || operation === "heartbeat")) {
         const timers = entry.external?.waitTimers;
@@ -120,7 +125,7 @@ export class RunScopeAuthority {
 
   async wait(requestId: string, operation: WaitOperation): Promise<JournalEntry> {
     const entries = await this.entries();
-    const entry = entries.find((candidate) => candidate.kind === "wait" && candidate.requestId === requestId);
+    const entry = entries.find((candidate) => this.owns(candidate) && candidate.kind === "wait" && candidate.requestId === requestId);
     if (entry !== undefined) {
       const cleaning = this.cleanup(entries).has(journalEntryKeyString(entry));
       if (operation === "close" && cleaning) return entry;
@@ -130,7 +135,7 @@ export class RunScopeAuthority {
   }
 
   async matchedMessage(requestId: string, sequence: number): Promise<JournalEntry> {
-    const entry = (await this.entries()).find((candidate) => candidate.kind === "wait" && candidate.requestId === requestId);
+    const entry = (await this.entries()).find((candidate) => this.owns(candidate) && candidate.kind === "wait" && candidate.requestId === requestId);
     if (!Number.isSafeInteger(sequence) || sequence <= 0 || entry?.external?.chatSeq !== sequence)
       throw new RunScopeDenied(this.runId, `${requestId}/${sequence}`, "read message");
     return entry;
@@ -141,7 +146,7 @@ export class RunScopeAuthority {
   async rearmTokens(): Promise<readonly string[]> {
     const entries = await this.entries();
     const owed = this.cleanup(entries);
-    return entries.filter((entry) => entry.state === "pending" && !owed.has(journalEntryKeyString(entry))).flatMap(pauseTokens);
+    return entries.filter((entry) => this.owns(entry) && entry.state === "pending" && !owed.has(journalEntryKeyString(entry))).flatMap(pauseTokens);
   }
 }
 

@@ -29,6 +29,10 @@ import {
   mintLifecycleUid,
   standaloneConnectOpts,
   openRecordsBucket,
+  readRunRecord,
+  activateRun,
+  createRunSpec,
+  recordRunProgram,
   openChannelRegistry,
   readRunProgram,
   replayRunJournal,
@@ -49,9 +53,9 @@ import {
   DEV_OWNER,
   type CotalMessage,
 } from "@cotal-ai/core";
-import { MeshHandler, EpfSettleWatcher, startRun, driveRun } from "../src/index.js";
+import { MeshHandler, EpfSettleWatcher, startRun, driveRun, planFork, commitFork, RunJournalStore } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { Cancelled, parseDuration } from "@cotal-ai/lang";
+import { Cancelled, parseDuration, Journal, resolvePins, run as runProgram } from "@cotal-ai/lang";
 import { createRunScopeAuthority, RunScopeDenied, WaitReceipts } from "../src/run-scope-authority.js";
 import { createRunWaitHost } from "../src/run-wait-host.js";
 import { createRunPauseHost } from "../src/run-pause-host.js";
@@ -388,6 +392,55 @@ const A = await driver(RUN_A, TK_A);
   const foreignPause = await pauses.arm("foreign-token", Date.now() + 30_000)
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("the pause host refuses a token absent from its own journal", foreignPause === "denied", foreignPause);
+}
+
+// Fork history belongs to the child without granting it the parent's live pause authority.
+{
+  const parentId = "run-fork-parent";
+  const parentTakeover = newTakeoverId();
+  const parent = await driver(parentId, parentTakeover);
+  const source = 'await sleep("1s", { name: "before" }); await sleep("1s", { name: "after" });';
+  // A real version-1 parent, the historical engine the fork planner and hosted resume serve.
+  // Version-2 planning currently refuses before the copy; it is a separate compatibility defect.
+  const pins = resolvePins({ runId: parentId }, Date.now(), "1");
+  const parentAppender = await activateRun(parent.js, parent.jsm, {
+    space: S, runId: parentId, holder: "manager", fencingToken: 1, epoch: EPOCH,
+    takeoverId: parentTakeover, at: Date.now(), expect: "new",
+  });
+  const journal = new Journal({ run: parentId, store: new RunJournalStore(parentAppender) });
+  const trusted = parent.hostPlanes;
+  const handler = new MeshHandler(trusted.nc, trusted.kv, trusted.js, trusted.jsm, {
+    space: S, endpoint: EP, runId: parentId, caller: runDriverCaller(parentId), instanceId: IID, epoch: EPOCH,
+    holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h",
+  }, new EpfSettleWatcher(trusted.jsm, S));
+  await createRunSpec(parent.kv, EP, parentId, { pins, createdAt: pins.startedAt });
+  await recordRunProgram(parent.kv, EP, { v: 1, run: parentId, source, at: pins.startedAt });
+  const completed = await runProgram(source, { runId: parentId, pins, journal, handler });
+  const parentRecord = await readRunRecord(parent.kv, EP, parentId);
+  const childId = "run-fork-child";
+  const childTakeover = newTakeoverId();
+  const child = await driver(childId, childTakeover, EPOCH + 1, "fork-child", 2);
+  const plan = await planFork({
+    parent: parentId, child: childId, source, fromStepKey: "/sleep:after#0",
+    entries: completed.journal.entries(), pins: parentRecord!.spec.value.pins as never,
+    actor: "fork-control", now: Date.now,
+  });
+  c("the real parent produces an admissible settled fork prefix", plan.admissible && plan.cut.length === 1, plan.refusals);
+  const appender = await activateRun(child.js, child.jsm, {
+    space: S, runId: childId, holder: "fork-copy", fencingToken: 1, epoch: EPOCH,
+    takeoverId: childTakeover, at: Date.now(), expect: "new",
+  });
+  await commitFork(child.kv, EP, plan, new RunJournalStore(appender));
+  const childLease = { holder: "fork-child", epoch: EPOCH + 1, fencingToken: 2, takeoverId: childTakeover };
+  const resumed = await driveRun(child.js, child.jsm, {
+    space: S, endpoint: EP, runId: childId, source, kv: child.kv, lease: childLease, handler: child.handler,
+  }).then((out) => ({ out }), (error: Error) => ({ error: error.message }));
+  c("a forked child resumes through the host with its inherited settled prefix",
+    "out" in resumed && resumed.out.status === "completed", resumed);
+  const authority = createRunScopeAuthority(child.hostPlanes, childId, childLease);
+  const inherited = plan.cut[0]!.requestId!;
+  const readParent = await authority.pause(inherited, "read").then(() => "allowed", (error) => error instanceof RunScopeDenied ? "denied" : short(error));
+  c("an inherited settled token cannot read the parent's live checkpoint plane", readParent === "denied", readParent);
 }
 
 // A valid own-run step must not turn a forged bound plan into foreign registry authority.
