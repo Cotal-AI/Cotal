@@ -147,50 +147,174 @@ function spreadIndexes(code: string): number[] {
   return [...code.matchAll(SPREAD)].map((m) => m.index ?? -1).filter((i) => i >= 0);
 }
 
+interface ProcessEnvStrip {
+  start: number;
+  deleteStart: number;
+  end: number;
+  region: number;
+}
+
+interface LexicalRegions {
+  regions: Int32Array;
+  processEnvStrips: ProcessEnvStrip[];
+}
+
+function sourceOffsetsForCookedText(
+  rawText: string,
+  cookedText: string,
+  rawSourceOffsets: Int32Array,
+): Int32Array {
+  assert.equal(rawSourceOffsets.length, rawText.length + 1);
+  if (rawText === cookedText) return rawSourceOffsets;
+
+  const cookedSourceOffsets = new Int32Array(cookedText.length + 1);
+  cookedSourceOffsets[0] = rawSourceOffsets[0];
+  let rawIndex = 0;
+  let cookedIndex = 0;
+  while (rawIndex < rawText.length) {
+    if (rawText[rawIndex] !== "\\") {
+      const rawWidth = rawText[rawIndex] === "\r" && rawText[rawIndex + 1] === "\n" ? 2 : 1;
+      const cookedCharacter = rawText[rawIndex] === "\r" ? "\n" : rawText[rawIndex];
+      assert.equal(
+        cookedText[cookedIndex],
+        cookedCharacter,
+        "cooked literal text diverged from its source",
+      );
+      rawIndex += rawWidth;
+      cookedIndex++;
+      cookedSourceOffsets[cookedIndex] = rawSourceOffsets[rawIndex];
+      continue;
+    }
+
+    const escapeStart = rawIndex;
+    const escape = rawText[rawIndex + 1];
+    let rawEnd = rawIndex + 2;
+    let cookedWidth = 1;
+    if (escape === "\r" || escape === "\n" || escape === "\u2028" || escape === "\u2029") {
+      if (escape === "\r" && rawText[rawIndex + 2] === "\n") rawEnd++;
+      cookedWidth = 0;
+    } else if (escape === "x") {
+      rawEnd = rawIndex + 4;
+    } else if (escape === "u" && rawText[rawIndex + 2] === "{") {
+      rawEnd = rawText.indexOf("}", rawIndex + 3) + 1;
+      assert.ok(rawEnd > 0, "unterminated Unicode code-point escape in parsed literal");
+      cookedWidth = Number.parseInt(rawText.slice(rawIndex + 3, rawEnd - 1), 16) > 0xffff ? 2 : 1;
+    } else if (escape === "u") {
+      rawEnd = rawIndex + 6;
+    } else if (escape >= "0" && escape <= "7") {
+      const maxDigits = escape <= "3" ? 3 : 2;
+      while (
+        rawEnd < rawText.length &&
+        rawEnd - escapeStart - 1 < maxDigits &&
+        /[0-7]/.test(rawText[rawEnd])
+      )
+        rawEnd++;
+    }
+    assert.ok(rawEnd <= rawText.length, "escape extends beyond parsed literal text");
+    rawIndex = rawEnd;
+    for (let i = 0; i < cookedWidth; i++) {
+      cookedIndex++;
+      assert.ok(
+        cookedIndex <= cookedText.length,
+        "source escape produced more cooked text than TypeScript parsed",
+      );
+      cookedSourceOffsets[cookedIndex] = rawSourceOffsets[i + 1 === cookedWidth ? rawEnd : escapeStart];
+    }
+    if (cookedWidth === 0) cookedSourceOffsets[cookedIndex] = rawSourceOffsets[rawEnd];
+  }
+  assert.equal(
+    cookedIndex,
+    cookedText.length,
+    `source escape produced less cooked text than TypeScript parsed: raw=${JSON.stringify(rawText)} cooked=${JSON.stringify(cookedText)}`,
+  );
+  return cookedSourceOffsets;
+}
+
 /** Region 0 is module code. Each literal is its own child-script region. Parsing each region's
- *  contents recursively gives nested templates their own identity, returns `${...}` interpolation to
- *  the containing code region, and lets TypeScript distinguish regex literals from division. */
-function lexicalRegions(src: string): Int32Array {
+ *  cooked contents recursively gives nested templates their own identity, returns `${...}`
+ *  interpolation to the containing code region, and maps child-script matches back to source. */
+function lexicalRegions(src: string): LexicalRegions {
   const regions = new Int32Array(src.length);
+  const processEnvStrips: ProcessEnvStrip[] = [];
   let nextRegion = 1;
   const mark = (start: number, end: number, region: number): void => {
     regions.fill(region, start, end);
   };
 
-  const parseRegion = (text: string, offset: number, baseRegion: number): void => {
-    mark(offset, offset + text.length, baseRegion);
+  const parseRegion = (text: string, sourceOffsets: Int32Array, baseRegion: number): void => {
+    mark(sourceOffsets[0], sourceOffsets[text.length], baseRegion);
+    for (const match of text.matchAll(PROCESS_ENV_STRIP)) {
+      const start = match.index ?? -1;
+      if (start < 0) continue;
+      processEnvStrips.push({
+        start: sourceOffsets[start],
+        deleteStart: sourceOffsets[start + match[0].lastIndexOf("delete")],
+        end: sourceOffsets[start + match[0].length],
+        region: baseRegion,
+      });
+    }
     const file = ts.createSourceFile("region.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     const visit = (node: ts.Node): void => {
       if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
         const start = node.getStart(file);
         const end = node.end;
         const childRegion = nextRegion++;
-        mark(offset + start, offset + end, childRegion);
-        if (end - start > 2) parseRegion(text.slice(start + 1, end - 1), offset + start + 1, childRegion);
+        mark(sourceOffsets[start], sourceOffsets[end], childRegion);
+        const endTrim = node.isUnterminated ? 0 : 1;
+        if (end - start > 1 + endTrim) {
+          const rawText = text.slice(start + 1, end - endTrim);
+          const rawSourceOffsets = sourceOffsets.slice(start + 1, end - endTrim + 1);
+          const cookedSourceOffsets = sourceOffsetsForCookedText(rawText, node.text, rawSourceOffsets);
+          parseRegion(node.text, cookedSourceOffsets, childRegion);
+        }
         return;
       }
       if (ts.isTemplateExpression(node)) {
         const childRegion = nextRegion++;
         const headStart = node.head.getStart(file);
-        mark(offset + headStart, offset + node.head.end, childRegion);
-        if (node.head.text) parseRegion(node.head.text, offset + headStart + 1, childRegion);
+        mark(sourceOffsets[headStart], sourceOffsets[node.head.end], childRegion);
+        if (node.head.text) {
+          const rawText = text.slice(headStart + 1, node.head.end - 2);
+          const rawSourceOffsets = sourceOffsets.slice(headStart + 1, node.head.end - 1);
+          parseRegion(
+            node.head.text,
+            sourceOffsetsForCookedText(rawText, node.head.text, rawSourceOffsets),
+            childRegion,
+          );
+        }
         for (const span of node.templateSpans) {
           const expressionStart = span.expression.getStart(file);
           // Interpolation executes in the containing code region.
           parseRegion(
             text.slice(expressionStart, span.expression.end),
-            offset + expressionStart,
+            sourceOffsets.slice(expressionStart, span.expression.end + 1),
             baseRegion,
           );
           const literalStart = span.literal.getStart(file);
-          mark(offset + literalStart, offset + span.literal.end, childRegion);
-          if (span.literal.text) parseRegion(span.literal.text, offset + literalStart + 1, childRegion);
+          mark(sourceOffsets[literalStart], sourceOffsets[span.literal.end], childRegion);
+          if (span.literal.text) {
+            const literalEndTrim = ts.isTemplateTail(span.literal)
+              ? span.literal.isUnterminated
+                ? 0
+                : 1
+              : 2;
+            const rawText = text.slice(literalStart + 1, span.literal.end - literalEndTrim);
+            const rawSourceOffsets = sourceOffsets.slice(
+              literalStart + 1,
+              span.literal.end - literalEndTrim + 1,
+            );
+            parseRegion(
+              span.literal.text,
+              sourceOffsetsForCookedText(rawText, span.literal.text, rawSourceOffsets),
+              childRegion,
+            );
+          }
         }
         return;
       }
       // REGEX-LITERAL REGION: braces here are data, not structural nesting.
       if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) {
-        mark(offset + node.getStart(file), offset + node.end, nextRegion++);
+        mark(sourceOffsets[node.getStart(file)], sourceOffsets[node.end], nextRegion++);
         return;
       }
       ts.forEachChild(node, visit);
@@ -198,8 +322,8 @@ function lexicalRegions(src: string): Int32Array {
     visit(file);
   };
 
-  parseRegion(src, 0, 0);
-  return regions;
+  parseRegion(src, Int32Array.from({ length: src.length + 1 }, (_, index) => index), 0);
+  return { regions, processEnvStrips };
 }
 
 /** Structural brace depth inside one lexical region. Module braces ignore embedded child scripts;
@@ -214,10 +338,15 @@ function braceDepthAt(src: string, regions: Int32Array, index: number, region: n
   return depth;
 }
 
-function processEnvStrippedBefore(code: string, regions: Int32Array, index: number): boolean {
-  const region = regions[index];
-  return [...code.slice(0, index).matchAll(PROCESS_ENV_STRIP)].some((m) =>
-    regions[m.index ?? -1] === region && braceDepthAt(code, regions, m.index ?? -1, region) === 0,
+function processEnvStrippedBefore(code: string, lexical: LexicalRegions, index: number): boolean {
+  const region = lexical.regions[index];
+  return lexical.processEnvStrips.some(
+    (strip) =>
+      strip.end <= index &&
+      strip.region === region &&
+      lexical.regions[strip.start] === region &&
+      lexical.regions[strip.deleteStart] === region &&
+      braceDepthAt(code, lexical.regions, strip.start, region) === 0,
   );
 }
 
@@ -228,9 +357,10 @@ function regexEscape(s: string): string {
 /** True when THIS spread is assigned to a copy which is then scrubbed, or `process.env` was already
  *  stripped in this file. Matching the copied variable prevents a later child's strip from clearing
  *  an earlier unstripped spread. */
-function spreadStripped(code: string, regions: Int32Array, index: number): boolean {
+function spreadStripped(code: string, lexical: LexicalRegions, index: number): boolean {
+  const { regions } = lexical;
   const region = regions[index];
-  if (processEnvStrippedBefore(code, regions, index)) return true;
+  if (processEnvStrippedBefore(code, lexical, index)) return true;
   const before = code.slice(Math.max(0, index - 320), index);
   const assignment = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)(?:\s*:[^=;\n]+)?\s*=\s*\{[^{}]*$/.exec(before);
   if (!assignment) return false;
@@ -250,8 +380,8 @@ function spreadStripped(code: string, regions: Int32Array, index: number): boole
 
 function unstrippedSpreadLines(src: string): number[] {
   const code = codeWithoutComments(src);
-  const regions = lexicalRegions(code);
-  return spreadIndexes(code).filter((index) => !spreadStripped(code, regions, index)).map((index) => lineOf(code, index));
+  const lexical = lexicalRegions(code);
+  return spreadIndexes(code).filter((index) => !spreadStripped(code, lexical, index)).map((index) => lineOf(code, index));
 }
 
 assert.deepEqual(
@@ -468,6 +598,62 @@ spawn("second", { env: second });
   "a file must pass when every child spread is stripped",
 );
 
+function assertFixtureParses(name: string, source: string): void {
+  const parsed = ts.createSourceFile("fixture.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const diagnostics = (parsed as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+  assert.equal(diagnostics.length, 0, `${name} must parse before its classification is trusted`);
+}
+
+const childScriptScrubTail =
+  ' (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];';
+const childScriptSpreadTail = ' const safe = { ...process.env }; spawn("safe", { env: safe });';
+const childScriptScrubSpellings = [
+  ["plain child-script scrub", "for"],
+  ["hex-escaped child-script scrub", "\\x66or"],
+  ["Unicode-escaped child-script scrub", "\\u0066or"],
+  ["split Unicode-escaped child-script scrub", "f\\u006fr"],
+] as const;
+
+const noScrubChildScript =
+  'const CHILD = `const unsafe = { ...process.env }; spawn("unsafe", { env: unsafe });`;';
+assertFixtureParses("the no-scrub child-script fixture", noScrubChildScript);
+assert.deepEqual(
+  unstrippedSpreadLines(noScrubChildScript),
+  [1],
+  "a child-script spread without a scrub must remain unsafe",
+);
+
+for (const [name, keyword] of childScriptScrubSpellings) {
+  const source = `const CHILD = \`${keyword}${childScriptScrubTail}${childScriptSpreadTail}\`;`;
+  assertFixtureParses(`the ${name} fixture`, source);
+  assert.deepEqual(
+    unstrippedSpreadLines(source),
+    [],
+    `a ${name} must clear a later spread in the same template`,
+  );
+}
+
+const sourceMappedEscapedScrub =
+  `const CHILD = \`{\\u0030} ${childScriptScrubSpellings[2][1]}${childScriptScrubTail}${childScriptSpreadTail}\`;`;
+assertFixtureParses("the source-mapped escaped-scrub fixture", sourceMappedEscapedScrub);
+assert.deepEqual(
+  unstrippedSpreadLines(sourceMappedEscapedScrub),
+  [],
+  "an escaped child-script scrub must retain its source brace depth",
+);
+
+const unusedEscapedScrub = [
+  `const UNUSED = \`${childScriptScrubSpellings[2][1]}${childScriptScrubTail}\`;`,
+  'const unsafe = { ...process.env };',
+  'spawn("unsafe", { env: unsafe });',
+].join("\n");
+assertFixtureParses("the unused escaped-scrub fixture", unusedEscapedScrub);
+assert.deepEqual(
+  unstrippedSpreadLines(unusedEscapedScrub),
+  [2],
+  "an escaped scrub in an unused template must not clear a module-code spread",
+);
+
 /**
  * Files that spread the ambient environment and are graded SAFE, each with the measurement.
  *
@@ -579,7 +765,7 @@ for (const file of suiteSources(repoRoot)) {
   const rel = relative(repoRoot, file).split("\\").join("/");
   const body = readFileSync(file, "utf8");
   const code = codeWithoutComments(body);
-  const regions = lexicalRegions(code);
+  const lexical = lexicalRegions(code);
   const spreads = spreadIndexes(code);
   if (spreads.length === 0) continue;
   totalSpreads += spreads.length;
@@ -587,7 +773,7 @@ for (const file of suiteSources(repoRoot)) {
     exempted.push(rel);
     continue;
   }
-  const stripStates = spreads.map((index) => spreadStripped(code, regions, index));
+  const stripStates = spreads.map((index) => spreadStripped(code, lexical, index));
   if (spreads.length > 1) multiSpreadFiles.push(rel);
   if (FILTERED_COPY.test(code)) mixedPathFiles.push(rel);
   if (REAL_PROCESS_ENV_SCRUB_FILES.has(rel)) {
