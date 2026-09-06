@@ -7,9 +7,15 @@ export const SCROLLBACK_ROWS = 1000;
 export const CONFIRM_INTERVAL_MS = 1_000;
 export const MAX_CONFIRMS = 5;
 export const GRACE_MS = 3_000;
-/** Max JSON body the local protocol accepts in one frame. */
-export const MAX_FRAME_SIZE = 1_048_576;
-/** Max undecoded bytes a FrameReader may hold. Must cover one max frame plus its 4-byte header. */
+/**
+ * Max JSON body the local protocol accepts in one frame.
+ * A 1000-row, 120-col 16-color serialize is ~744 KiB, and JSON-escaping that
+ * snapshot is 1_365_109 bytes. Truecolor fg+bg per cell is 4_876_998. 8 MiB
+ * covers both so adopt can return scrollback; a 500 MiB claimed length still
+ * fails the per-frame check.
+ */
+export const MAX_FRAME_SIZE = 8 * 1024 * 1024;
+/** Max undecoded residual AFTER complete frames have been drained. */
 export const MAX_BUFFER_SIZE = MAX_FRAME_SIZE + 4;
 
 export type StopMode = "graceful" | "hard";
@@ -76,10 +82,6 @@ export class FrameReader {
   private buf: Buffer = Buffer.alloc(0);
 
   push(chunk: Buffer): unknown[] {
-    if (chunk.length > MAX_BUFFER_SIZE || this.buf.length + chunk.length > MAX_BUFFER_SIZE) {
-      this.buf = Buffer.alloc(0);
-      throw new Error(`frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`);
-    }
     this.buf = Buffer.concat([this.buf, chunk]);
     const out: unknown[] = [];
     while (this.buf.length >= 4) {
@@ -92,6 +94,10 @@ export class FrameReader {
       const body = this.buf.subarray(4, 4 + size);
       this.buf = this.buf.subarray(4 + size);
       out.push(JSON.parse(body.toString("utf8")));
+    }
+    if (this.buf.length > MAX_BUFFER_SIZE) {
+      this.buf = Buffer.alloc(0);
+      throw new Error(`frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`);
     }
     return out;
   }

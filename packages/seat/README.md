@@ -16,6 +16,12 @@ The Linux `SO_PEERCRED` helper is compiled at package build / `prepublishOnly` a
 `build/Release/peercred.node`. Customer `npm i` does not compile it. A host without a C compiler
 installs the prebuilt binary; a missing helper at load time throws rather than compiling in place.
 
+The package.json has no `os` / `cpu` / libc fields. Manager depends on this package on every
+platform: off Linux it still loads, and only `adopt` throws the named custody-transport error.
+Gating install would skip the package on darwin and win32 and break that path. A musl or
+non-Linux host that reaches `peerCredentials` throws; there is no compile fallback and no
+silent degrade. First use of the helper is the right place for that refusal.
+
 The launcher owns no PTY and exits after writing a permissioned per-seat record. Each custodian
 owns exactly one `node-pty` object, its child relationship, its screen mirror, and exit
 observation. A manager worker connects to that custodian over a 0600 filesystem Unix socket

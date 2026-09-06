@@ -5,7 +5,7 @@ import { createServer, connect, type Socket } from "node:net";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FrameReader, MAX_BUFFER_SIZE, MAX_FRAME_SIZE, encodeFrame } from "../src/protocol.js";
+import { FrameReader, MAX_FRAME_SIZE, encodeFrame } from "../src/protocol.js";
 import { peerCredentials } from "../src/peercred.js";
 import { launchSeat } from "../src/index.js";
 
@@ -55,18 +55,18 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
 {
   const reader = new FrameReader();
   const header = Buffer.alloc(4);
-  header.writeUInt32BE(100, 0);
-  reader.push(Buffer.concat([header, Buffer.alloc(50)]));
+  header.writeUInt32BE(MAX_FRAME_SIZE, 0);
   let err = "";
+  let held: unknown[] = [];
   try {
-    reader.push(Buffer.alloc(MAX_BUFFER_SIZE));
+    held = reader.push(Buffer.concat([header, Buffer.alloc(64)]));
   } catch (e) {
     err = (e as Error).message;
   }
   check(
-    "undrained bytes cannot grow past the total buffer bound",
-    err === `frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`,
-    err,
+    "an incomplete valid-size frame is held rather than refused",
+    err === "" && held.length === 0,
+    { err, count: held.length },
   );
 }
 
@@ -82,6 +82,57 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
     err = (e as Error).name;
   }
   check("malformed JSON in a valid-length frame still throws", err === "SyntaxError", err);
+}
+
+{
+  const reader = new FrameReader();
+  const maxBody = "x".repeat(MAX_FRAME_SIZE - 2);
+  const maxFrame = encodeFrame(maxBody);
+  const small = encodeFrame({ n: 2 });
+  let decoded: unknown[] = [];
+  let err = "";
+  try {
+    decoded = reader.push(Buffer.concat([maxFrame, small]));
+  } catch (e) {
+    err = (e as Error).message;
+  }
+  check(
+    "a max-size frame plus a small frame in one chunk both decode",
+    err === "" && decoded.length === 2 && decoded[0] === maxBody && (decoded[1] as { n: number }).n === 2,
+    { err, count: decoded.length, maxWire: maxFrame.length, smallWire: small.length },
+  );
+}
+
+{
+  const snapshotJson = 1_365_109;
+  let err = "";
+  let wire = 0;
+  try {
+    wire = encodeFrame("s".repeat(snapshotJson - 2)).length;
+  } catch (e) {
+    err = (e as Error).message;
+  }
+  check(
+    "a 16-color 1000-row snapshot JSON body (1_365_109) still encodes",
+    err === "" && wire === snapshotJson + 4,
+    { err, wire },
+  );
+}
+
+{
+  const snapshotJson = 4_876_998;
+  let err = "";
+  let wire = 0;
+  try {
+    wire = encodeFrame("s".repeat(snapshotJson - 2)).length;
+  } catch (e) {
+    err = (e as Error).message;
+  }
+  check(
+    "a truecolor 1000-row snapshot JSON body (4_876_998) still encodes",
+    err === "" && wire === snapshotJson + 4,
+    { err, wire },
+  );
 }
 
 if (process.platform !== "linux") {
