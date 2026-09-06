@@ -66,9 +66,10 @@ manager's `status` response. Available connector rows record the absolute paths 
 Spawn keeps the same pre-mint check as a backstop for connectors registered after boot.
 
 On an authenticated manager start, unfinished static lifecycle rows reconcile while the control
-endpoint is already serving. The manager `status` response and `cotal status --components` report
+endpoint is already serving. The manager `status` response reports
 the `staticReconciliation` state, the last sweep counts, and each failed alias with its durable
-phase and literal disposition. A failed exact terminal is retried in the same process after 1, 5,
+phase and literal disposition. `cotal status --components` reports the state and per-alias failure
+details. A failed exact terminal is retried in the same process after 1, 5,
 and 30 seconds. Each attempt re-reads the durable slot and re-enters the same deterministic terminal
 operation; the delays only schedule work and never release the lifecycle fence.
 
