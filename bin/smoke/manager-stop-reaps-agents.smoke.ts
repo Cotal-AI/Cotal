@@ -215,6 +215,7 @@ let mgr2: InstanceType<typeof Manager> | undefined;
 
 console.log("\n── #964: a stack stop reaps every managed agent ─────────────\n");
 try {
+  console.log("manager-stop-reap: first-line");
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
   const auth = await createSpaceAuth(SPACE);
   saveSpaceAuth(authDir(root), auth);
@@ -280,11 +281,13 @@ try {
   ok("instrument: seat A is still live after a settle window (its death below is stop-caused, not self-inflicted)", pidA !== undefined && alive(pidA));
 
   let stopError: string | undefined;
+  console.log("manager-stop-reap: before-mgr1-stop");
   try {
     await mgr1.stop();
   } catch (e) {
     stopError = (e as Error).message;
   }
+  console.log("manager-stop-reap: manager-stop-returned");
   mgr1 = undefined;
   ok(
     "#964 unfixed: a plain Manager.stop() - the stack-stop path bare `cotal down` drives - proceeds against a live managed seat with no refusal and no sparing mode",
@@ -334,6 +337,7 @@ try {
   if (brokerProc) await killAndAwaitExit(brokerProc, "SIGKILL");
   for (const d of [base, home, brokerStore]) if (d) rmSync(d, { recursive: true, force: true });
   releaseBroker?.();
+  console.log("manager-stop-reap: finally-complete");
 }
 
 if (fail > 0) {
