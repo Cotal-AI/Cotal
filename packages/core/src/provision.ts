@@ -79,7 +79,7 @@ import {
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
-import { runDriverGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
+import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -140,13 +140,10 @@ export type Profile =
   // serving endpoint". Holds NO session rail of any shape; the rails are `session-serving`'s and
   // `session-caller`'s. Standing + re-minted for the SAME nkey on renewal (the goal-writer precedent).
   | "session-ledger"
-  // The WORKFLOW RUN DRIVER (SPEC 14.6): minted per run and per takeover attempt, for the ONE
-  // process holding that run — its journal subject and per-takeover replay durable, its own run
-  // records, the checkpoint plane it pauses on, the channels it waits on, the registries a conclave
-  // writes, and the manager's lifecycle commands as the run's own derived caller
-  // ({@link runDriverGrants}). Standing: a run outlives any one-shot window and the hosting manager
-  // re-mints on renewal and on takeover (new takeover id, new epoch).
+  // Per-run journal/replay and own-record writes. Reads and effects live on the separate
+  // trusted run-mediator connection. The manager renews both credentials for their own nkeys.
   | "run-driver"
+  | "run-mediator" // trusted host effects and run-bound reads; never returned to the driver
   // The RUN OPERATOR (SPEC 14.3): the hosting manager's per-call credential for the run surface it
   // serves without driving: the `run-status` / `run-ps` reads (records walk, journal replay) and a
   // `run-answer` (the answer record, the checkpoint settle). Pinned to one endpoint; one-shot, and
@@ -232,6 +229,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred (P2 item 6): rails-only for ONE §13.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
   "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER (P2 item 6): the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
   "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
+  "run-mediator": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "trusted workflow host operations, bound to one run and attempt; kept on the hosting process's connection" },
   "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
@@ -619,6 +617,8 @@ export interface MintOpts {
    *  coordinates its timer schedules are addressed by). REQUIRED for that profile; ignored by every
    *  other. The ep caller triple is DERIVED from the run id ({@link runDriverCaller}), never supplied. */
   runDriver?: RunDriverGrantArgs;
+  /** Trusted host only: the run and takeover whose journal authorizes its effects. */
+  runMediator?: RunDriverGrantArgs;
   /** `run-operator` profile only (SPEC 14.3): the ONE endpoint whose runs this credential may read,
    *  the takeover id its journal replays are named by, and, for the answering half of a
    *  `run-answer`, the ONE checkpoint token its answer and settle writes are pinned to. REQUIRED
@@ -1065,6 +1065,11 @@ export function permissionsFor(
     if (!opts.runDriver)
       throw new Error("permissionsFor: run-driver requires opts.runDriver ({endpoint, runId, takeoverId, instanceId, epoch} of the ONE run and attempt it drives)");
     const g = runDriverGrants(space, opts.runDriver, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+  }
+  if (profile === "run-mediator") {
+    if (!opts.runMediator) throw new Error("permissionsFor: run-mediator requires opts.runMediator for one run and attempt");
+    const g = runMediatorGrants(space, opts.runMediator, pr.connId);
     return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
   }
   if (profile === "run-operator") {

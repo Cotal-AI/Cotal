@@ -162,9 +162,9 @@ export interface RunHost extends Extension {
   readonly name: string;
   /** Parse and validate a program with no broker. A refusal carries every problem found. */
   validate(source: string, file?: string): RunValidation;
-  /** Drive a run over `planes`. Returns as soon as the drive is launched; `done` settles when the
-   *  run completes, is released, or fails, and never rejects. */
-  drive(planes: RunHostPlanes, req: RunHostDriveRequest): RunHostDrive;
+  /** Drive on the narrow `planes` connection, with a separate trusted `mediator` retained by
+   *  the hosting runtime. Returns as soon as launched; `done` never rejects. */
+  drive(planes: RunHostPlanes, req: RunHostDriveRequest, mediator: RunHostPlanes): RunHostDrive;
   /** Find the open checkpoint, or open `ask` attempt, at a step: a read, nothing written. */
   locate(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostOpenPause>;
   /** Answer a located pause through the driver's own door. A host that pins credentials mints

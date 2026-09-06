@@ -29,7 +29,9 @@ import {
 } from "@cotal-ai/core";
 import { validate, LangErrors, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
-import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
+import { createRunEffectHost } from "./run-effect-host.js";
+import { createRunScopeAuthority } from "./run-scope-authority.js";
+import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
@@ -89,32 +91,23 @@ export const cotalLangRunHost: RunHost = {
     }
   },
 
-  drive(planes: RunHostPlanes, req: RunHostDriveRequest): RunHostDrive {
+  drive(planes: RunHostPlanes, req: RunHostDriveRequest, mediator: RunHostPlanes): RunHostDrive {
     const pause = new PauseToken();
-    const handler = new MeshHandler(
-      planes.nc,
-      planes.kv,
-      planes.js,
-      planes.jsm,
-      {
-        space: planes.space,
-        endpoint: req.endpoint,
-        runId: req.runId,
-        caller: runDriverCaller(req.runId),
-        instanceId: req.instanceId,
-        epoch: req.epoch,
-        holder: req.holder,
-        defaultCheckpointTimeout: req.defaultCheckpointTimeout,
-      },
-      new EpfSettleWatcher(planes.jsm, planes.space),
-      () => Date.now(),
-    );
+    if (mediator === undefined || mediator.nc === planes.nc || mediator.space !== planes.space)
+      throw new Error("a hosted run requires a separate trusted mediator connection in the same space");
+    const authority = createRunScopeAuthority(mediator, req.runId, req.lease);
+    const handler = createRunEffectHost(mediator, {
+      space: planes.space, endpoint: req.endpoint, runId: req.runId,
+      caller: runDriverCaller(req.runId), instanceId: req.instanceId, epoch: req.epoch,
+      holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
+    }, authority);
+    const records = createRunRecordHost(mediator, req.endpoint, req.runId);
     const driveReq = {
       space: planes.space,
       endpoint: req.endpoint,
       runId: req.runId,
       source: req.source,
-      kv: planes.kv,
+      kv: runRecordView(planes.kv, records, planes.space),
       lease: req.lease,
       handler,
       pause,

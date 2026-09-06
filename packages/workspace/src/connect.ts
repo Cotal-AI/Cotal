@@ -48,7 +48,7 @@ export interface ConnectFlags {
  *  and attempt, a `run-operator`'s endpoint and call) straight into `mintCreds`. */
 export interface ConnectOpts {
   instanceId?: string | string[];
-  mint?: Pick<MintOpts, "runDriver" | "runOperator">;
+  mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator">;
 }
 
 /** Raw NATS auth for an off-registry connection — a join link / --token / --user+--pass / --creds.
@@ -325,7 +325,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // A workflow run's own profiles are minted by the space signer, which a client of a user-auth
     // mesh does not hold; the bearer carries none of their rows. The hosted path refuses too (the
     // manager names why), so the sentence does not steer at it.
-    if (role === "run-driver" || role === "run-operator")
+    if (role === "run-driver" || role === "run-mediator" || role === "run-operator")
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6), and a user-auth mesh hosts no runs yet either. Run programs on a static-auth mesh.`,
       );
