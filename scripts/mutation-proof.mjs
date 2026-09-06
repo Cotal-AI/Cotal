@@ -121,6 +121,10 @@ function run(command, cwd, timeoutMs) {
   // budget, one mutation into a sweep, with the tree mutated the whole time.
   const r = spawnSync(command, {
     cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+    // A mutation may deliberately desynchronize dependency metadata from pnpm-lock.yaml. pnpm's
+    // default pre-run check would install (or fail under CI's frozen lockfile) before the suite can
+    // observe that mutant. Disable only that check, and only in this child process tree.
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "false" },
     detached: process.platform !== "win32",
     killSignal: "SIGKILL",
   });
