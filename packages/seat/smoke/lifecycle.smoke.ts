@@ -228,6 +228,11 @@ try {
     });
     const h = adoptSeatSync(rec);
     handles.push(h);
+    check(
+      "fast-print child is gone before attach subscribe",
+      await until(() => state(rec.childPid) === "gone" || state(rec.childPid) === "Z", 5_000),
+      state(rec.childPid),
+    );
     const sess = h.attach();
     let buf = "";
     sess.onData((b) => {
