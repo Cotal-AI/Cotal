@@ -12,6 +12,7 @@ import {
   registry,
   type AuthProvider,
   type EpCaller,
+  type MintOpts,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -40,6 +41,14 @@ export interface ConnectFlags {
   space?: string;
   /** Explicit creds file — triggers a raw off-registry connection (see {@link connectOrExit}). */
   creds?: string;
+}
+
+/** What a registry-resolved connect may add to its mint. `instanceId` pins an operator instrument
+ *  to one manager instance; `mint` carries a profile's own required pins (a `run-driver`'s run
+ *  and attempt, a `run-operator`'s endpoint and call) straight into `mintCreds`. */
+export interface ConnectOpts {
+  instanceId?: string | string[];
+  mint?: Pick<MintOpts, "runDriver" | "runOperator">;
 }
 
 /** Raw NATS auth for an off-registry connection — a join link / --token / --user+--pass / --creds.
@@ -256,7 +265,7 @@ function exitOnRefusal(e: unknown): never {
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
-export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
+export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   if (flags.creds) {
     const space = flags.space ?? DEFAULT_SPACE;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
@@ -313,6 +322,13 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: {
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
       );
+    // A workflow run's own profiles are minted by the space signer, which a client of a user-auth
+    // mesh does not hold; the bearer carries none of their rows. The hosted path refuses too (the
+    // manager names why), so the sentence does not steer at it.
+    if (role === "run-driver" || role === "run-operator")
+      throw new ConnectRefusal(
+        `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6), and a user-auth mesh hosts no runs yet either. Run programs on a static-auth mesh.`,
+      );
     // NAMED, not overlooked: the user-mode connect still ends the process on its own refusals. No
     // reconnect loop reaches it (`cotal attach` refuses a user-mode mesh before it ever loops, and
     // a static mesh does not become a user mesh mid-session), and dragging that path into this
@@ -344,7 +360,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: {
       creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid, ...(pinned ? { endpointCapabilities: pinned } : {}) });
       epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
     } else {
-      creds = await mintCreds(target.auth, identity, role);
+      creds = await mintCreds(target.auth, identity, role, opts.mint ?? {});
     }
   }
   await preflightOrThrow(target, creds);
@@ -525,7 +541,7 @@ export async function preflightOrExit(target: MeshTarget, probeCreds?: string): 
  * {@link connectOrThrow} with the exiting disposition: the form nearly every command wants, where a
  * refusal is the end of the command and the operator gets one sentence rather than a stack trace.
  */
-export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
+export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   try {
     return await connectOrThrow(flags, role, opts);
   } catch (e) {

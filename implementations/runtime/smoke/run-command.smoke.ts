@@ -65,7 +65,7 @@ const startedId = () => /starting run (run-[0-9a-f]+) on endpoint/.exec(captured
 
 /** One command invocation, as the dispatcher would hand it over. */
 const wf = (positionals: string[], values: Record<string, string | boolean | undefined> = {}) =>
-  runWorkflow({ values: { server: servers, space: SPACE, ...values }, positionals, raw: [] });
+  runWorkflow({ values: { server: servers, space: SPACE, local: true, ...values }, positionals, raw: [] });
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');

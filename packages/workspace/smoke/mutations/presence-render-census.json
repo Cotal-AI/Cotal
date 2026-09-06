@@ -77,8 +77,8 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 313,",
-      "replace": "    \"total\": 312,",
+      "find": "    \"total\": 315,",
+      "replace": "    \"total\": 314,",
       "expectRed": "presence render census count drifted"
     }
   ]

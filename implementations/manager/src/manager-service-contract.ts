@@ -31,6 +31,8 @@
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
  *   manager.admin    purge / launch / resume family        (operator instruments only)
+ *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
+ *                    run-status / run-ps ride manager.read
  */
 import {
   compileContract,
@@ -173,6 +175,15 @@ const SPAWN_INPUT_SCHEMA = {
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
     shareTools: { type: "string" },
+    supervise: {
+      type: "object",
+      additionalProperties: false,
+      required: ["restarts", "windowMs"],
+      properties: {
+        restarts: { type: "integer", minimum: 1 },
+        windowMs: { type: "integer", minimum: 1 },
+      },
+    },
   },
 } as const;
 
@@ -461,6 +472,97 @@ const ATTEMPT_STATE_OUTPUT_SCHEMA = {
   properties: { attemptId: { type: "string" }, state: { type: "string" } },
 } as const;
 
+// The workflow-run family (SPEC 14.3): the manager hosts a run's driver. Inputs are closed; the
+// program SOURCE travels inline (a run's program is recorded beside it, so no host ever needs a
+// path), and `answer`'s value is an open payload because the checkpoint's own schema is the
+// program's, not this door's. A started run is recorded under THIS endpoint (the record's endpoint
+// is the one hosting the driver), so `run-start` takes no endpoint; the reads and `answer` take an
+// optional one because a run driven elsewhere (`cotal run --local`) may sit under another name.
+const RUN_START_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["source"],
+  properties: {
+    source: { type: "string", minLength: 1 },
+    file: { type: "string", minLength: 1 },
+    timeout: { type: "string", minLength: 1 },
+  },
+} as const;
+const RUN_RESUME_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId"],
+  properties: { runId: { type: "string", minLength: 1 }, timeout: { type: "string", minLength: 1 } },
+} as const;
+const RUN_ID_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId"],
+  properties: { runId: { type: "string", minLength: 1 }, endpoint: { type: "string", minLength: 1 } },
+} as const;
+const RUN_ID_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId"],
+  properties: { runId: { type: "string" } },
+} as const;
+const RUN_PS_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: { endpoint: { type: "string", minLength: 1 } },
+} as const;
+const RUN_ROW_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "endpoint"],
+  properties: {
+    runId: { type: "string" },
+    endpoint: { type: "string" },
+    state: { type: "string", enum: ["running", "released", "completed", "failed"] },
+    holder: { type: "string" },
+    epoch: { type: "integer", minimum: 0 },
+    journalHigh: { type: "integer", minimum: -1 },
+    forkedFrom: {
+      type: "object", additionalProperties: false, required: ["run", "step"],
+      properties: { run: { type: "string" }, step: { type: "string" } },
+    },
+  },
+} as const;
+const RUN_PS_OUTPUT_SCHEMA = { type: "array", items: RUN_ROW_SCHEMA } as const;
+const RUN_STATUS_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "endpoint", "spec", "journal"],
+  properties: {
+    runId: { type: "string" },
+    endpoint: { type: "string" },
+    // The record halves are core's own closed shapes; they ride here as the values the store holds.
+    spec: { type: "object" },
+    status: { type: "object" },
+    journal: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false, required: ["n", "kind"],
+        properties: {
+          n: { type: "integer", minimum: 0 },
+          kind: { type: "string", enum: ["activation", "step"] },
+          holder: { type: "string" },
+          epoch: { type: "integer", minimum: 0 },
+          replayedTo: { type: "integer", minimum: 0 },
+          step: { type: "string" },
+          state: { type: "string", enum: ["pending", "settled"] },
+          outcome: { type: "string" },
+          asks: { type: "string" },
+          addressee: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+/** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
+ *  principal at the serve layer (SPEC 14.5), so a request cannot name someone else. */
+const RUN_ANSWER_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "stepKey"],
+  properties: {
+    runId: { type: "string", minLength: 1 },
+    endpoint: { type: "string", minLength: 1 },
+    stepKey: { type: "string", minLength: 1 },
+    value: {},
+    artifact: { type: "string", minLength: 1 },
+  },
+} as const;
+const RUN_ANSWER_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["token", "answerId", "settle"],
+  properties: { token: { type: "string" }, answerId: { type: "string" }, settle: { type: "object" } },
+} as const;
+
 // ---- the command table (ONE source for the document, the defs, the caller contracts, AND the
 // ---- published store artifacts) ----------------------------------------------------------------
 
@@ -501,6 +603,14 @@ const ROWS: CommandRow[] = [
   { name: "turn-pending", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PENDING_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnPending" },
   { name: "turn-yield", capability: "manager.self", input: TURN_YIELD_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnYield" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
+  // The workflow-run family (SPEC 14.3): untargeted, a run is not an agent. The writes ride the
+  // `manager.run` class (minted by the `run` capability and the privileged instrument); the reads
+  // ride `manager.read` beside every other read.
+  { name: "run-start", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runStart" },
+  { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
+  { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: false, handler: "runAnswer" },
+  { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
+  { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
   { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
   { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
@@ -574,7 +684,15 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  goal against a seat, the seat's own pull of its pending turns, and its yield. NEW SERVED
  *  COMMANDS are what a revision is for, and three of them cannot fold into 9.
  *
- *  11 = `despawn` / `stop` accept optional `waitForExit`. The mass-reap caller passes it so
+ *  11 = `spawn` input grows `supervise` (`restarts` + `windowMs`): a declarative restart policy
+ *  the manager enforces in place. A changed input contract is a changed described surface even
+ *  though the command name is unchanged.
+ *
+ *  12 = the workflow-run family (`run-start`, `run-resume`, `run-answer`, `run-status`, `run-ps`,
+ *  SPEC 14.3): the manager hosts a run's driver and serves its operator surface. NEW SERVED
+ *  COMMANDS are what a revision is for, and five of them cannot fold into 11.
+ *
+ *  13 = `despawn` / `stop` accept optional `waitForExit`. The mass-reap caller passes it so
  *  proof of exit is not derived from `graceful`. A changed input contract is a changed described
  *  surface even though the command names are unchanged. */
 export function managerClusterDocument(): {
@@ -594,7 +712,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 11,
+    revision: 13,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -662,6 +780,11 @@ export interface ManagerServiceHandlers {
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;
   turnYield(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
+  runStart(ctx: EpServeContext): unknown | Promise<unknown>;
+  runResume(ctx: EpServeContext): unknown | Promise<unknown>;
+  runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
+  runStatus(ctx: EpServeContext): unknown | Promise<unknown>;
+  runPs(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
   showPersona(ctx: EpServeContext): unknown | Promise<unknown>;

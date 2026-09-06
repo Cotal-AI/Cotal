@@ -193,6 +193,14 @@ export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
  *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
 export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona"] as const);
+/** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
+ *  three writes start a run, take one over and answer its open pause; the two reads list runs
+ *  and render one run's record and journal. All UNTARGETED: a run is not an agent, so no target
+ *  block names it, and the manager scopes what a caller may see by the run's own record.
+ *  A program can `spawn`, so the `run` capability implies the spawn set as well
+ *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
+export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-answer"] as const);
+export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
 /** The manager endpoint's read commands (`manager.read` class). */
@@ -241,7 +249,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  it derives nothing from a descriptor, which is the part §13.7 forbids. `smoke:unfenced-responder`
  *  tripwires that pin so the version cannot move without this table being named. */
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona"]),
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona", "run-status", "run-ps"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
@@ -272,6 +280,8 @@ const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
 const OPERATOR_SEAT_SNAP = Object.freeze([...OPERATOR_SEAT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
+const RUN_WRITE_SNAP = Object.freeze([...RUN_WRITE_COMMANDS]);
+const RUN_READ_SNAP = Object.freeze([...RUN_READ_COMMANDS]);
 const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
 const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
 
@@ -312,6 +322,18 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
   ];
 }
 
+/** The `run` capability's addition (SPEC 14.3): the five untargeted `run-*` commands PLUS the
+ *  whole spawn set. The implication is deliberate and one-way: a program is free to `spawn`, so a
+ *  caller that may start one must hold what the program's spawns need, and the manager checks
+ *  nothing weaker at `run-start`; a `spawn`-only caller gains no run row from this. */
+export function runCallerCapabilities(callerOwner: string): EpCapability[] {
+  return [
+    ...RUN_WRITE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...RUN_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...spawnCallerCapabilities(callerOwner),
+  ];
+}
+
 /** An operator INSTRUMENT's capability set (the 1c grant-migration table's admin row), per the
  *  instrument's v0.3 control tier - the SAME mint sites that grant a `ctl.<tier>` row today
  *  (`control-caller-*` / `deployer`) consume this for the ep rails; no new minting authority.
@@ -340,6 +362,11 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+    // The workflow-run surface (SPEC 14.3) rides the privileged tier as `cotal run`'s instrument:
+    // the reads beside the manager reads, the writes beside `spawn`, which is the tier's existing
+    // creation authority and what a program's own spawns already need.
+    ...RUN_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...RUN_WRITE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
   ];
   if (tier === "admin") {
     caps.push(

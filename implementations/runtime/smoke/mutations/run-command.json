@@ -7,12 +7,12 @@
     {
       "name": "the answer presents as a fresh principal instead of the arming holder",
       "file": "implementations/runtime/src/resolve-checkpoint.ts",
-      "find": "    presenter: spec.holder,",
+      "find": "    presenter: holder,",
       "replace": "    presenter: { id: \"cli-run\", lifecycleUid: \"u_mutant0000000000000000\" },",
       "expectRed": "answer presents as the arming holder and is accepted",
       "completionMarker": "run-command:",
       "cell": "answer presents as the arming holder and is accepted",
-      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The anchor moved with the strand fix: the presenter is no longer supplied at the CLI call site, it is bound inside resolveCheckpoint off the checkpoint's own record, so the substitution now lives there. The substituted holder differs from the arming one in BOTH components (the arming id is cli-run-<hex> per invocation and the lifecycleUid never matches), so the refusal is on holder identity, not on one lucky field. Re-measured 2026-09-02 at the new anchor: the named cell reds FIRST with the SPEC 13.10 refusal, 18 ok 6 failed, and the suite EXITS red on its own \u2014 the re-measure also caught an unbounded `await orphan` in block 6b that HUNG the suite under this mutant class and is now raced against the same 15s bound as the completions beside it."
+      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The anchor moved with the strand fix: the presenter is no longer supplied at the CLI call site, it is bound inside resolveCheckpoint off the checkpoint's own record, so the substitution now lives there. The substituted holder differs from the arming one in BOTH components (the arming id is cli-run-<hex> per invocation and the lifecycleUid never matches), so the refusal is on holder identity, not on one lucky field. Re-measured 2026-09-02 at the new anchor: the named cell reds FIRST with the SPEC 13.10 refusal, 18 ok 6 failed, and the suite EXITS red on its own \u2014 the re-measure also caught an unbounded `await orphan` in block 6b that HUNG the suite under this mutant class and is now raced against the same 15s bound as the completions beside it. Re-anchored 2026-09-06: the resolver split into locate (reads the holder) and answer (presents it), so the substitution now sits on `answerOpenCheckpoint`'s presenter."
     },
     {
       "name": "a constant holder id lets concurrent drives co-activate through the exact-tuple relaxation",

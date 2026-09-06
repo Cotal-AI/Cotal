@@ -16,7 +16,53 @@ jobs:
     # Source intersection catches the #1217 shape at the changing commit. The daily full sweep
     # below catches cross-cutting changes a fixture did not name within a day.
     if: github.event_name != 'schedule'
-    timeout-minutes: 60
+    # 150, raised from the previous 60-minute budget (150 = 2.5 x 60). A PR touching a high-fan-in
+    # guarded source selects a large fixture set, and #1294 could not satisfy this gate by any
+    # action its author could take: its `changed` job was cancelled at the 60-minute cap on five
+    # consecutive heads. `pr-head-gate.mjs` grades a non-success as failing and this workflow is in
+    # its expected set, so the gate failed closed on a job that could not finish rather than on a
+    # defect.
+    #
+    # The selection differs per head, so each figure names its own sha:
+    #   647e21b5e (run 33973541717)  42 fixtures selected from 341
+    #   d1db29e23 (run 33978243970)  43 fixtures selected from 342, the extra one being
+    #                                self-update-handoff.json, which that head added
+    #
+    # The budget is derived from cancelled runs' own progress rather than from a model. Count
+    # completed mutations by their VERDICT token. The authority is the `VERDICTS` array in
+    # scripts/mutation-reproof.mjs (six tokens as of 99d50f510: KILLED, SURVIVED, INCONCLUSIVE,
+    # UNGRADABLE, WRONG-RED, ERROR) — read it from source rather than trusting this list, which is
+    # a snapshot and will drift when a seventh is added.
+    #
+    # Two tokens that look countable and are not:
+    #   PREDICTED KILLED  a per-mutation PREDICTION preamble, not a verdict. `grep -c KILLED`
+    #                     counts those lines too, which is how an earlier revision said 109 of a
+    #                     set whose real total is 99.
+    #   PRE-RED (N ...)   a per-FIXTURE summary for suites already red before mutation. It is not
+    #                     in VERDICTS and contributes ZERO completed mutations, but its emitted
+    #                     line is `PRE-RED (` — token, space, paren — so a naive alternation with a
+    #                     trailing space matches it and silently adds one fixture-level event to a
+    #                     mutation-level count.
+    #
+    #   d1db29e23  re-prove 16:34:33Z -> 17:33:49Z (59.3 min), 99 of 183 done   35.9 s/mutation
+    #   ec6f1f7b2  re-prove 18:35:56Z -> 19:35:15Z (59.3 min), 85 done          41.9 s/mutation
+    #
+    # Two independent high-fan-in manager.ts sets on different branches, both killed at the old
+    # 60-minute cap, rates within ~17%. At the faster rate a 183-mutation set projects ~110 min and
+    # 150 leaves about 1.37x headroom; at the slower it projects ~128 min and about 1.17x. The
+    # slower figure is the one to plan against, and 1.17x is thin. Widen only from an elapsed line
+    # on a real set, not from another estimate.
+    #
+    # Models fitted from OTHER runs under-predict badly and should not be used to re-derive. The
+    # fastest observed successful run (9 fixtures / 39 mutations in 7m27s) puts d1db's 183
+    # mutations at ~35 min, and the corpus fraction (183 of 1,714) against `full`'s budget puts it
+    # at ~38. The real set needed ~100. Per-mutation cost is dominated by WHICH suites a fixture
+    # guards, not by how many mutations it carries, so a rate measured on a small set does not
+    # transfer to a large one.
+    #
+    # Re-derive from the elapsed line the Report elapsed step prints, on a real high-fan-in set,
+    # and name the sha you measured. Do not raise this again without that data.
+    timeout-minutes: 150
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -47,6 +93,19 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Re-prove fixtures for changed guarded sources
+        # A STEP timeout, deliberately below the job's 150, so that a breach fails the STEP and the
+        # job continues to its remaining steps instead of being cancelled outright.
+        #
+        # The reason is Report elapsed, and only that. A cancelled job gives its remaining steps a
+        # grace period at best, so the run whose duration matters most was the least likely to
+        # report it. A failed step leaves the job running normally and that step executes.
+        #
+        # It is NOT a change to what the head gate sees, and an earlier draft of this comment
+        # claimed it was. `scripts/pr-head-gate.mjs:131` is the whole of its conclusion handling —
+        # `if (run.conclusion !== "success") failing.push(name)` — one comparison with no branch, so
+        # `cancelled`, `failure`, `timed_out` and `neutral` are identical to it. The gate's verdict
+        # is byte-identical either way.
+        timeout-minutes: 145
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
@@ -56,7 +115,35 @@ jobs:
             base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
             echo "no base commit on this event; using first parent $base"
           fi
+          # A FILE, not $GITHUB_ENV. The runner processes a step's env file when the step ENDS, so a
+          # step killed by `timeout-minutes` never contributes its variables and the next step would
+          # see nothing — on precisely the timed-out run this measurement exists for. A file written
+          # by the shell exists the moment the redirect completes.
+          date +%s > "$RUNNER_TEMP/mutation-started"
           node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)"
+      - name: Report elapsed
+        # Until this step existed, no run of this job recorded how long it took, so a cancellation
+        # at the cap and a run finishing one second inside it were indistinguishable afterwards,
+        # and the budget above could only ever be guessed.
+        #
+        # `always()` rather than `failure()` because the run whose duration matters most is the one
+        # the timer kills. The start marker is a file for the same reason: $GITHUB_ENV is processed
+        # by the runner only when a step ENDS (FileCommandManager.ProcessFiles runs in its finally),
+        # so a step the timer kills contributes nothing and this step would take its else branch on
+        # exactly the run it was added for. $RUNNER_TEMP is job-scoped, emptied at job start and end
+        # rather than per step, so the marker survives between steps.
+        #
+        # The step-level timeout below is what actually makes this reachable. A JOB timeout cancels,
+        # and a cancelled job gives its remaining steps only a grace period; a STEP timeout fails
+        # the step and the job continues to this one normally.
+        if: always()
+        run: |
+          marker="$RUNNER_TEMP/mutation-started"
+          if [ -s "$marker" ]; then
+            echo "mutation reproof: changed-set elapsed $(( $(date +%s) - $(cat "$marker") ))s (budget 150m)"
+          else
+            echo "mutation reproof: no start marker; the job ended before the re-prove step began"
+          fi
 
   full:
     # A daily sweep keeps the remaining ambient-drift window bounded without making every pull

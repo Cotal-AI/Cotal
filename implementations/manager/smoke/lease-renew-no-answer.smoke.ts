@@ -90,6 +90,8 @@ const check = (name: string, ok: boolean, detail?: unknown): void => {
 interface Relay {
   /** Start/stop holding that direction, for windows the caller times itself. */
   setStalled: (on: boolean) => void;
+  /** Every client-to-broker publish observed by the frame parser. */
+  publishes: () => ReadonlyArray<{ subject: string; atMs: number }>;
   /** Silently discard client-to-broker publishes whose subject matches. The broker never sees them,
    *  so the effect never happens and the caller's request simply never gets an answer. */
   dropPublishes: (match: ((subject: string) => boolean) | undefined) => void;
@@ -99,6 +101,7 @@ function relay(targetPort: number, listenPort: number): Relay {
   let stalled = false;
   let dropMatch: ((subject: string) => boolean) | undefined;
   const flushers: Array<() => void> = [];
+  const publishes: Array<{ subject: string; atMs: number }> = [];
   const server = net.createServer((client) => {
     const up = net.connect(targetPort, "127.0.0.1");
     const queued: Buffer[] = [];
@@ -108,7 +111,6 @@ function relay(targetPort: number, listenPort: number): Relay {
     // Client to broker, parsed frame by frame so a publish can be dropped whole.
     let pending = Buffer.alloc(0);
     client.on("data", (b: Buffer) => {
-      if (!dropMatch) { up.write(b); return; }
       pending = Buffer.concat([pending, b]);
       for (;;) {
         const eol = pending.indexOf("\r\n");
@@ -123,7 +125,8 @@ function relay(targetPort: number, listenPort: number): Relay {
         if (!Number.isFinite(bodyLen)) { up.write(pending.subarray(0, eol + 2)); pending = pending.subarray(eol + 2); continue; }
         const frameEnd = eol + 2 + bodyLen + 2;
         if (pending.length < frameEnd) return; // wait for the rest of the payload
-        if (!dropMatch(verb[2])) up.write(pending.subarray(0, frameEnd));
+        publishes.push({ subject: verb[2], atMs: Date.now() });
+        if (!dropMatch || !dropMatch(verb[2])) up.write(pending.subarray(0, frameEnd));
         pending = pending.subarray(frameEnd);
       }
     });
@@ -134,6 +137,7 @@ function relay(targetPort: number, listenPort: number): Relay {
   server.listen(listenPort, "127.0.0.1");
   return {
     setStalled: (on: boolean) => { stalled = on; if (!on) for (const f of flushers) f(); },
+    publishes: () => publishes,
     dropPublishes: (match) => { dropMatch = match; },
     close: () => server.close(),
   };
@@ -232,6 +236,9 @@ try {
   // prove it in a way that reads the same whether or not the defect is fixed.
   const duringStall = samples.filter((s) => s.atMs > stallStart + 500 && s.atMs <= stallEnd);
   const learnedDuringStall = reported().filter((r) => r.atMs > stallStart + 500 && r.atMs < stallEnd);
+  const leaseSubject = `$KV.${managerBucket(space)}.${managerLeaseKey(instanceId)}`;
+  const renewAttemptsDuringStall = proxy.publishes().filter((p) =>
+    p.subject === leaseSubject && p.atMs > stallStart && p.atMs <= stallEnd);
   const storedLast = duringStall.at(-1);
 
   // What the manager itself said about the incident. Printed rather than asserted: the cells grade
@@ -259,9 +266,13 @@ try {
   // D3, and it is not hypothetical: a renew whose reply is late runs past the next tick, because the
   // re-read that follows it has a deadline of its own. A second renew started there reads the SAME
   // cached revision, CASes against a sequence the first one legitimately moved, and is refused — a
-  // conflict this instance manufactured about itself. Measured at 3 runs out of 3 before the guard.
+  // conflict this instance manufactured about itself. Count the requests at the relay rather than
+  // looking for an error string: the broker's rejection is itself held during this window, and the
+  // manager deliberately suppresses repeated same-state diagnostics. Measured at 3 runs out of 3
+  // before the guard.
   check("NO SELF-INFLICTED CAS CONFLICT: only one renew is ever in flight, so the manager never CASes against a sequence it moved itself",
-    !/wrong last sequence/.test(err0()), err0().slice(-400));
+    renewAttemptsDuringStall.length === 1,
+    { leaseSubject, renewAttemptsDuringStall });
 
   // The budget as a budget, graded on the numbers rather than on behaviour — and deliberately so.
   // Reverting either number leaves the reconcile in place, so the cells above still pass while the
