@@ -353,14 +353,14 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   });
 }
 
-function parseArgv(argv: string[]): CustodianLaunch {
-  const raw = argv[0];
-  if (!raw) throw new Error("custodian requires a JSON launch on argv");
+function readLaunch(): CustodianLaunch {
+  const raw = readFileSync(0, "utf8");
+  if (!raw.trim()) throw new Error("custodian requires a JSON launch on stdin");
   return JSON.parse(raw) as CustodianLaunch;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const launch = parseArgv(process.argv.slice(2));
+  const launch = readLaunch();
   runCustodian(launch).catch((err) => {
     const text = `${(err as Error).stack ?? (err as Error).message}\n`;
     try {

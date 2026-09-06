@@ -214,6 +214,25 @@ if (process.platform !== "linux") {
       { custodian: state(attack.custodianPid), child: state(attack.childPid) },
     );
 
+    const secret = `SEAT_ARGV_MARK_${Date.now()}_${process.pid}`;
+    const secretSeat = launchSeat({
+      root,
+      name: "argv-secret",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "", SEAT_ARGV_SECRET: secret },
+      },
+      cwd: process.cwd(),
+    });
+    seats.push({ rec: secretSeat });
+    const cmdline = readFileSync(`/proc/${secretSeat.custodianPid}/cmdline`, "utf8");
+    check(
+      "launch payload is not on the custodian cmdline",
+      !cmdline.includes(secretSeat.token) && !cmdline.includes(secret),
+      { tokenInArgv: cmdline.includes(secretSeat.token), secretInArgv: cmdline.includes(secret) },
+    );
+
     const jsonSeat = launchSeat({
       root,
       name: "badjson",

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
@@ -63,11 +63,23 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
     logPath,
     confirm: Boolean(opts.spec.confirm),
   });
-  const child = spawn(process.execPath, [custodianEntry(), payload], {
+  // Payload carries spec.env (provider keys) and the capability token.
+  // argv is world-readable via /proc/<pid>/cmdline (0444). Inherit a 0600
+  // file as stdin so the JSON never appears on argv.
+  const launchPath = join(dirname(recPath), "launch.json");
+  writeFileSync(launchPath, payload, { mode: 0o600 });
+  const launchFd = openSync(launchPath, "r");
+  const child = spawn(process.execPath, [custodianEntry()], {
     detached: true,
-    stdio: "ignore",
+    stdio: [launchFd, "ignore", "ignore"],
     env: { PATH: process.env.PATH ?? "" },
   });
+  closeSync(launchFd);
+  try {
+    unlinkSync(launchPath);
+  } catch {
+    /* child still holds the fd */
+  }
   child.unref();
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {

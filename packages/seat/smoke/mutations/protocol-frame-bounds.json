@@ -24,6 +24,16 @@
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "a max-size frame plus a small frame in one chunk both decode",
       "cell": "a max-size frame plus a small frame in one chunk both decode"
+    },
+    {
+      "name": "M3 put launch payload on argv",
+      "file": "packages/seat/src/launcher.ts",
+      "find": "  const child = spawn(process.execPath, [custodianEntry()], {",
+      "replace": "  const child = spawn(process.execPath, [custodianEntry(), payload], {",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "launch payload is not on the custodian cmdline",
+      "cell": "launch payload is not on the custodian cmdline",
+      "note": "argv is world-readable via /proc/pid/cmdline. stdin still carries the JSON so the seat starts; the cell reads real procfs."
     }
   ]
 }
