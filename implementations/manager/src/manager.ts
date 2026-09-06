@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   STANDING_RENEWABLE_TTL_SEC,
   agentFilePath,
   clearSpaceHistory,
+  dialerFor,
   connectorServers,
   spawnEnvAllow,
   deprovisionAgent,
@@ -1026,6 +1027,18 @@ export class Manager {
   private resumeDurableCommitToken?: string;
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
+
+  /** Every broker dial this manager makes, through ONE transport decision.
+   *
+   *  `this.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
+   *  can be a `ws://`/`wss://` broker published through an HTTPS edge. The raw node transport
+   *  refuses such a URL instead of dialing it, so the scheme picks the dialer here rather than at
+   *  thirteen call sites. `dialerFor` also owns the websocket transport's options, which is why
+   *  callers below still pass their own auth options unchanged. */
+  private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection> {
+    const servers = this.servers ?? DEFAULT_SERVER;
+    return dialerFor(servers)({ ...opts, servers });
+  }
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -3074,7 +3087,7 @@ export class Manager {
       const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
         retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
       });
-      const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+      const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
       try {
         // §13.2 nonce: >=128 bits of CSPRNG entropy, base64url (the `endpoint-invoke` idiom).
         const nonce = randomBytes(24).toString("base64url");
@@ -5085,7 +5098,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
       lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(this.space));
@@ -5109,7 +5122,7 @@ export class Manager {
         })
       : undefined);
     if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
@@ -5124,7 +5137,7 @@ export class Manager {
    *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
   private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     if (this.auth) throw new Error("withOpenServeConnection: an auth mesh must use the scoped endpoint-serve executor");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
+    const nc = await this.dial({ maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
@@ -5226,8 +5239,7 @@ export class Manager {
         creds: remote.serveCreds,
       };
       const enc = new TextEncoder();
-      const nc = await connect({
-        servers: this.servers ?? DEFAULT_SERVER,
+      const nc = await this.dial({
         authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds))(nonce),
         inboxPrefix: `_INBOX_${state.identity.id}`,
         maxReconnectAttempts: -1,
@@ -5257,7 +5269,7 @@ export class Manager {
     {
       // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
-      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+      const provNc = await this.dial({ ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       try {
         // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
         // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
@@ -5398,8 +5410,7 @@ export class Manager {
     // registered surface for its whole incarnation.
     const state = { handle: undefined as unknown as EpServeHandle, nc: undefined as unknown as NatsConnection, identity: serveIdentity, grant, creds };
     const enc = new TextEncoder();
-    const nc = await connect({
-      servers: this.servers ?? DEFAULT_SERVER,
+    const nc = await this.dial({
       // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
       ...(creds !== undefined ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${serveIdentity.id}`,
@@ -5491,8 +5502,7 @@ export class Manager {
     // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
     const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
       { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: (this.auth || this.remoteAuthority) ? this.goalWriterCreds : undefined, identity };
-    const nc = await connect({
-      servers: this.servers ?? DEFAULT_SERVER,
+    const nc = await this.dial({
       ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
@@ -5591,8 +5601,7 @@ export class Manager {
     // updates `sw.creds` and the next (re)connect presents the refreshed credential.
     const sw: { nc: NatsConnection; creds?: string } =
       { nc: undefined as unknown as NatsConnection, creds: (this.auth || this.remoteAuthority) ? this.sessionLedgerCreds : undefined };
-    const nc = await connect({
-      servers: this.servers ?? DEFAULT_SERVER,
+    const nc = await this.dial({
       ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
@@ -5763,7 +5772,7 @@ export class Manager {
         // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
         // without its own credential is exactly the standing-writer shape this design removes.
         const opts = (this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
-        return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
+        return this.dial({ ...opts, maxReconnectAttempts: -1 });
       },
       revoke: async (credentialId) => {
         if (!this.auth && !this.remoteAuthority) return; // open mesh: nothing was minted
@@ -5803,8 +5812,8 @@ export class Manager {
     try {
       let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
       const nc = this.auth
-        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
-        : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
+        ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
+        : await this.dial({ maxReconnectAttempts: 0 });
       try {
         const kvm = new Kvm(nc);
         await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
@@ -6728,7 +6737,7 @@ export class Manager {
     if (!this.auth) return;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     const slotRows: StaticManagedSlotRow[] = [];
     try {
       const jsm = await jetstreamManager(nc);

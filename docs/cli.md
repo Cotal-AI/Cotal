@@ -930,6 +930,12 @@ loopback-only `manager-service` view; `spawn` and `admin` do not substitute for 
 host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
 → renew protocol, never by handing the participant a signer or static provisioner credential.
 
+The broker URL in the registry entry decides the transport. A remote broker is often published
+over a `wss://` edge rather than a raw `nats://` port, and `supervise` dials whichever scheme the
+record holds, starting with the manager-authority registration it runs before the manager exists.
+The record also decides whether that registration requires TLS, so a participant never downgrades
+the credential exchange to a plaintext connection the registry did not describe.
+
 Without that advertised host service or scope, `supervise` refuses before it starts a manager.
 Run `cotal spawn` without `--detach` to launch a foreground agent, or ask the space host to enable
 the authority service and grant `supervise` for detached agents. If a running remote manager loses

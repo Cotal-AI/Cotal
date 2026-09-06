@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CotalEndpoint,
+  dialerFor,
   EpEnvelopeError,
   isReachable,
   mintCreds,
@@ -17,7 +18,6 @@ import {
   type UserAuthStatus,
 } from "@cotal-ai/core";
 import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
-import { connect } from "@nats-io/transport-node";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -608,7 +608,7 @@ async function managerServiceHealth(
   target: MeshTarget,
   auth: { creds?: string; caller: { owner: string; actor: string; uid: string } },
 ): Promise<{ instanceId?: unknown; runtime?: unknown }> {
-  const nc = await connect({
+  const nc = await dialerFor(target.server)({
     servers: target.server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: target.tlsRequired } : { tls: target.tlsRequired }),
     maxReconnectAttempts: 0,
