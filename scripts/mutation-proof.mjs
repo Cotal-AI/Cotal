@@ -51,6 +51,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -133,7 +134,7 @@ function run(command, cwd, timeoutMs) {
   }
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
-  return { status: r.status, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
+  return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
 /**
@@ -458,6 +459,16 @@ for (const cmd of commands) {
   const base = run(cmd, cwd, opts.timeoutMs);
   const ticks = progressCount(base.output, opts.progressPattern);
   if (base.status !== 0) {
+    // Bounded machine-readable provenance from the exact run that refused. Re-running after exit 4
+    // could observe different root state, so mutation-reproof compares this hash instead. The raw
+    // transcript stays private to this process and the long-standing human REFUSING banner survives.
+    say(`MUTATION-PROOF BASELINE PROVENANCE ${JSON.stringify({
+      command: cmd,
+      status: base.status,
+      signal: base.signal ?? null,
+      unmeasurableReason: unmeasurableFailure(base) ?? null,
+      signatureHash: failureSignatureHash(base.output, cwd) ?? null,
+    })}`);
     say(`${C.red}REFUSING: \`${cmd}\` is red BEFORE any mutation (exit ${base.status}).${C.off}`);
     say("Every mutation running it would grade as KILLED for a reason that has nothing to do with the mutation.");
     process.exit(4);

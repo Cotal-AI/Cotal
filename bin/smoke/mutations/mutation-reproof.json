@@ -24,8 +24,8 @@
     {
       "name": "a changed configured suite is ignored by changed-set selection",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "  || (typeof suite === \"string\" && changed.has(suite))\n",
-      "replace": "",
+      "find": "    config: changed.has(fixture.path),\n    suite: typeof fixture.suite === \"string\" && changed.has(fixture.suite),\n    mutation: fixture.mutations.some((mutation) =>",
+      "replace": "    config: changed.has(fixture.path),\n    suite: false,\n    mutation: fixture.mutations.some((mutation) =>",
       "expectRed": "a suite-only change selects exactly the fixture that names that suite",
       "cell": "a suite-only change selects exactly the fixture that names that suite"
     },
@@ -40,10 +40,58 @@
     {
       "name": "a pre-red suite is blamed as a fatal finding instead of reported as its own state",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "{ preRed.push(path); continue; }",
-      "replace": "{ fatal.push(path); continue; }",
-      "expectRed": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
-      "cell": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate"
+      "find": "      else if (transition.kind === \"inherited\") preRed.push(finding);",
+      "replace": "      else if (transition.kind === \"inherited\") fatal.push(path);",
+      "expectRed": "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal",
+      "cell": "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal"
+    },
+    {
+      "name": "pre-red attribution ignores the same command's base-to-head transition",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const transition = compareSnapshots(headRun, baseRun);",
+      "replace": "      const transition = { kind: \"inherited\", baseStatus: baseRun.status };",
+      "expectRed": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling",
+      "cell": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling"
+    },
+    {
+      "name": "the disposable base skips its frozen install and full build before comparison",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  const install = runCommand(\"pnpm install --frozen-lockfile\", snapshot.path, snapshotComparisonEnv({ offline: false }));\n  snapshot.preparationError = preparationFailure(`${label} dependency install`, install);\n  if (snapshot.preparationError) return;\n  const build = runCommand(\"pnpm build\", snapshot.path, snapshotComparisonEnv());\n  snapshot.preparationError = preparationFailure(`${label} build`, build);\n  if (!snapshot.preparationError) snapshot.prepared = true;",
+      "replace": "  snapshot.prepared = true;",
+      "expectRed": "a dist-backed inherited red command is comparable after the disposable base performs its own install and build",
+      "cell": "a dist-backed inherited red command is comparable after the disposable base performs its own install and build"
+    },
+    {
+      "name": "pre-red classification inspects only the first distinct fixture command",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const headRedCommands = commandMatrix.filter(({ headRun }) => headRun.status !== 0);",
+      "replace": "    const headRedCommands = commandMatrix.filter(({ headRun }) => headRun.status !== 0).slice(0, 1);",
+      "expectRed": "reversing command order still reports the later inherited and attributable transitions without clearing",
+      "cell": "reversing command order still reports the later inherited and attributable transitions without clearing"
+    },
+    {
+      "name": "pre-red head commands reuse the possibly poisoned root instead of the clean head snapshot",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const headRun = runCommand(fixtureCommand, snapshots.head.path, snapshotComparisonEnv());",
+      "replace": "      const headRun = runCommand(fixtureCommand, root, rootComparisonEnv());",
+      "expectRed": "clean-head command confirmation uses the snapshot cwd rather than ignored root execution state",
+      "cell": "clean-head command confirmation uses the snapshot cwd rather than ignored root execution state"
+    },
+    {
+      "name": "the base skips commands that are green in the head snapshot, breaking symmetric state evolution",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const baseRun = runCommand(fixtureCommand, snapshots.base.path, snapshotComparisonEnv());",
+      "replace": "      const baseRun = headRun.status === 0 ? headRun : runCommand(fixtureCommand, snapshots.base.path, snapshotComparisonEnv());",
+      "expectRed": "head and base run every command in the same order before comparing stateful red output",
+      "cell": "head and base run every command in the same order before comparing stateful red output"
+    },
+    {
+      "name": "first-party stack frames are dropped, so different error origins collapse to one signature",
+      "file": "scripts/mutation-failure-signature.mjs",
+      "find": "      const classified = classifyLocation(location);\n      if (classified.kind === \"origin\")\n        signature.push(paren ? `at ${paren[1]} (${classified.value})` : `at ${classified.value}`);\n      else if (classified.kind === \"verbatim\") signature.push(line);\n      continue;",
+      "replace": "      const classified = classifyLocation(location);\n      void classified;\n      continue;",
+      "expectRed": "a caught error stack from a different first-party file does not clear as inherited",
+      "cell": "a caught error stack from a different first-party file does not clear as inherited"
     },
     {
       "name": "verdict lines are matched without stripping ANSI colour, so every verdict reads as absent",
@@ -60,6 +108,54 @@
       "replace": "fatal.push(path);",
       "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
       "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
+    },
+    {
+      "name": "root contamination comparison checks only exit status and ignores the exact refused failure signature",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  if (provenance.status !== cleanHeadRun.status || provenance.signatureHash === null\n      || cleanHash === undefined || provenance.signatureHash !== cleanHash) {",
+      "replace": "  if (provenance.status !== cleanHeadRun.status || provenance.signatureHash === null\n      || cleanHash === undefined) {",
+      "expectRed": "a different root refusal signature cannot clear as inherited merely because both snapshots are red with the same status",
+      "cell": "a different root refusal signature cannot clear as inherited merely because both snapshots are red with the same status"
+    },
+    {
+      "name": "root-side proof execution bypasses the comparison environment normalization",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "const rootComparisonEnv = () => comparisonEnv();",
+      "replace": "const rootComparisonEnv = () => ({ ...process.env });",
+      "expectRed": "mutation-proof fixture children strip parent COTAL_ material before executing commands",
+      "cell": "mutation-proof fixture children strip parent COTAL_ material before executing commands"
+    },
+    {
+      "name": "snapshot-side execution bypasses the comparison environment normalization",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "const snapshotComparisonEnv = (options) => comparisonEnv(options);",
+      "replace": "const snapshotComparisonEnv = () => ({ ...process.env });",
+      "expectRed": "clean snapshot commands strip injected parent COTAL_ material independently of the root proof child",
+      "cell": "clean snapshot commands strip injected parent COTAL_ material independently of the root proof child"
+    },
+    {
+      "name": "root provenance ignores its exact infrastructure classification and falls through to signature comparison",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  const rootInfrastructureReason = provenance.unmeasurableReason;\n  if (rootInfrastructureReason) return rootInfrastructureReason;",
+      "replace": "  const rootInfrastructureReason = provenance.unmeasurableReason;\n  void rootInfrastructureReason;",
+      "expectRed": "root-only infrastructure output is UNMEASURED even when clean head and base have a measurable inherited failure",
+      "cell": "root-only infrastructure output is UNMEASURED even when clean head and base have a measurable inherited failure"
+    },
+    {
+      "name": "the exact pnpm missing-node_modules environment warning enters the stable signature again",
+      "file": "scripts/mutation-failure-signature.mjs",
+      "find": "    if (/^\\[WARN\\]\\s+Local package\\.json exists, but node_modules missing, did you mean to install\\?$/i.test(line)) continue;",
+      "replace": "    if (false && /^\\[WARN\\]\\s+Local package\\.json exists, but node_modules missing, did you mean to install\\?$/i.test(line)) continue;",
+      "expectRed": "a pinned root lacking node_modules matches the prepared clean-head verdict instead of false-blocking on pnpm's environment warning",
+      "cell": "a pinned root lacking node_modules matches the prepared clean-head verdict instead of false-blocking on pnpm's environment warning"
+    },
+    {
+      "name": "line-initial semantic WARN failures are broadly dropped again",
+      "file": "scripts/mutation-failure-signature.mjs",
+      "find": "    if (!line || /^(?:Node\\.js v|npm |pnpm |Scope:|Lockfile |Progress:|Packages:|Done in |\\[?ELIFECYCLE\\]?|Command failed)/i.test(line)) continue;",
+      "replace": "    if (!line || /^(?:Node\\.js v|npm |pnpm |Scope:|Lockfile |Progress:|Packages:|Done in |\\[?ELIFECYCLE\\]?|\\[WARN\\]|Command failed)/i.test(line)) continue;",
+      "expectRed": "different line-initial semantic [WARN] failures remain different when stable sibling assertion lines match",
+      "cell": "different line-initial semantic [WARN] failures remain different when stable sibling assertion lines match"
     }
   ]
 }
