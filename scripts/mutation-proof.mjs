@@ -53,6 +53,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
+/** label -> the mutated run's combined stdout+stderr, echoed under any non-KILL verdict. */
+const transcripts = new Map();
+/** Lines of transcript to echo. Enough to carry a stack or an early exit, short enough that a
+ *  fixture with several non-kills does not bury the summary. */
+const TRANSCRIPT_TAIL = 20;
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
@@ -251,6 +256,12 @@ function proveOne(m, opts) {
     say(`${C.dim}  mutated ${hits}× · running: ${m.command ?? opts.command}${C.off}`);
 
     const r = run(m.command ?? opts.command, cwd, opts.timeoutMs);
+    // Keep the transcript for the report. Every verdict below is derived from `r.output` and none
+    // of them printed it, so a WRONG-RED said the expected string was absent and never what was
+    // there instead. `manager-runtime-deps` sat red on main and on a release PR for a day in
+    // exactly that state: four cells at `0 marks (baseline 54)`, reproducible on nobody's machine,
+    // and the one artifact that would have named the cause discarded on every run.
+    transcripts.set(label, r.output);
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
@@ -529,6 +540,21 @@ for (const r of results) {
   // report would be to write mutants that do nothing.
   say(`${colour}${r.verdict.padEnd(12)}${C.off} ${r.label}`);
   say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${r.baseTicks ?? "?"})` : ""}${C.off}`);
+  // A KILL needs no transcript: the verdict already names the assertion that reddened. Every other
+  // verdict is a question — what DID the run print, if not that — and the answer was captured and
+  // then thrown away. Echo it, so a red fixture is diagnosable from the log instead of requiring
+  // someone to reproduce a CI environment. Costs nothing on a clean run, which prints none.
+  if (!good) {
+    const t = (transcripts.get(r.label) ?? "").replace(/\s+$/, "");
+    if (t === "") {
+      say(`  ${C.dim}  (the run produced NO output at all — it failed before writing anything)${C.off}`);
+    } else {
+      const lines = t.split("\n");
+      const tail = lines.slice(-TRANSCRIPT_TAIL);
+      if (lines.length > TRANSCRIPT_TAIL) say(`  ${C.dim}  … ${lines.length - TRANSCRIPT_TAIL} earlier line(s) omitted${C.off}`);
+      for (const l of tail) say(`  ${C.dim}  | ${l}${C.off}`);
+    }
+  }
 }
 say("");
 if (bad === 0) {
