@@ -22,8 +22,7 @@
     "build": "node scripts/build-native.mjs && tsc -p tsconfig.json",
     "build:native": "node scripts/build-native.mjs",
     "test": "pnpm run build && tsx smoke/platform.smoke.ts && tsx smoke/protocol.smoke.ts && tsx smoke/lifecycle.smoke.ts && tsx smoke/isolation.smoke.ts",
-    "prepublishOnly": "pnpm run build",
-    "install": "node scripts/build-native.mjs"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.12",
@@ -32,9 +31,6 @@
   },
   "files": [
     "dist",
-    "native",
-    "binding.gyp",
-    "scripts/build-native.mjs",
     "build"
   ],
   "publishConfig": {

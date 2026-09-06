@@ -3,6 +3,11 @@
  * Other platforms must throw the named error and print a completion banner.
  * No top-of-file skip. References #1297.
  */
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { unsupportedTransport } from "../src/protocol.js";
 
 let pass = 0;
@@ -53,6 +58,93 @@ if (process.platform !== "linux") {
     threw === `custody transport unsupported on ${process.platform}`,
     threw,
   );
+}
+
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgRoot = join(here, "..");
+  const manifest = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as {
+    scripts?: { install?: string };
+    files?: string[];
+  };
+  check("customer install does not compile: package.json has no install script", manifest.scripts?.install === undefined, manifest.scripts);
+  check(
+    "published files list is the prebuilt output, not the compiler sources",
+    JSON.stringify(manifest.files) === JSON.stringify(["dist", "build"]),
+    manifest.files,
+  );
+
+  {
+    const blocked = mkdtempSync(join(tmpdir(), "cotal-seat-ncc-"));
+    try {
+      const bin = join(blocked, "bin");
+      mkdirSync(bin);
+      for (const name of ["cc", "gcc", "g++", "c++", "make", "node-gyp"]) {
+        writeFileSync(join(bin, name), "#!/bin/sh\nexit 1\n");
+        chmodSync(join(bin, name), 0o755);
+      }
+      const helper = join(pkgRoot, "build", "Release", "peercred.node");
+      const saved = existsSync(helper) ? join(blocked, "peercred.node") : undefined;
+      if (saved) copyFileSync(helper, saved);
+      const compile = spawnSync(process.execPath, [join(pkgRoot, "scripts", "build-native.mjs")], {
+        cwd: pkgRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      });
+      if (saved) copyFileSync(saved, helper);
+      check(
+        "source compile without a C compiler fails with a diagnostic",
+        compile.status !== 0 && /failed to compile the SO_PEERCRED helper/.test(`${compile.stdout}\n${compile.stderr}`),
+        { status: compile.status, stdout: compile.stdout, stderr: compile.stderr },
+      );
+    } finally {
+      rmSync(blocked, { recursive: true, force: true });
+    }
+  }
+
+  const packDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-"));
+  try {
+    const packed = spawnSync("pnpm", ["pack", "--pack-destination", packDir], { cwd: pkgRoot, encoding: "utf8" });
+    check("pnpm pack of @cotal-ai/seat succeeds", packed.status === 0, packed.stderr);
+    const tarball = readdirSync(packDir).find((name) => name.endsWith(".tgz"));
+    check("pnpm pack wrote a tarball", tarball !== undefined, readdirSync(packDir));
+    if (tarball) {
+      const listing = spawnSync("tar", ["-tzf", join(packDir, tarball)], { encoding: "utf8" });
+      const files = listing.stdout.split("\n").filter(Boolean);
+      check(
+        "the tarball ships the prebuilt SO_PEERCRED helper",
+        process.platform !== "linux" || files.includes("package/build/Release/peercred.node"),
+        files.filter((f) => f.includes("peercred") || f.includes("build/")),
+      );
+      check(
+        "the tarball does not ship compiler sources",
+        !files.some((f) => f === "package/native/peercred.c" || f === "package/binding.gyp" || f === "package/scripts/build-native.mjs"),
+        files.filter((f) => f.includes("native") || f.includes("binding") || f.includes("build-native")),
+      );
+
+      const prefix = join(packDir, "prefix");
+      mkdirSync(prefix);
+      const bin = join(packDir, "bin");
+      mkdirSync(bin);
+      for (const name of ["cc", "gcc", "g++", "c++", "make", "node-gyp"]) {
+        writeFileSync(join(bin, name), "#!/bin/sh\necho blocked compiler >&2\nexit 1\n");
+        chmodSync(join(bin, name), 0o755);
+      }
+      const install = spawnSync("npm", ["install", "--no-audit", "--no-fund", join(packDir, tarball)], {
+        cwd: prefix,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        timeout: 180_000,
+      });
+      check(
+        "toolchain-less npm install of the packed seat succeeds",
+        install.status === 0,
+        { status: install.status, stdout: install.stdout.slice(-400), stderr: install.stderr.slice(-400) },
+      );
+    }
+  } finally {
+    rmSync(packDir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nSEAT PLATFORM ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);

@@ -12,6 +12,10 @@ named `custody transport unsupported on <platform>` error on darwin and win32. T
 in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
 Linux and only `adopt` throws that named error.
 
+The Linux `SO_PEERCRED` helper is compiled at package build / `prepublishOnly` and shipped as
+`build/Release/peercred.node`. Customer `npm i` does not compile it. A host without a C compiler
+installs the prebuilt binary; a missing helper at load time throws rather than compiling in place.
+
 The launcher owns no PTY and exits after writing a permissioned per-seat record. Each custodian
 owns exactly one `node-pty` object, its child relationship, its screen mirror, and exit
 observation. A manager worker connects to that custodian over a 0600 filesystem Unix socket
