@@ -685,8 +685,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
     facts.push("serve reachable");
     // A manager service without its own liveness lease is a contradicted component surface, not a
     // healthy one. It still reports reachability, but cannot claim the required lease holder.
-    const reconcileFailed = reconcile?.state === "failed";
-    return { name: "manager", verdict: lease && !reconcileFailed ? "serving" : "not-serving", facts };
+    return { name: "manager", verdict: lease ? "serving" : "not-serving", facts };
   } catch (e) {
     facts.push("static reconciliation not reported by this manager build");
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.

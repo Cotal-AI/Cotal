@@ -4,6 +4,15 @@
   "minTicks": 13,
   "mutations": [
     {
+      "name": "a failed reconciliation state overrides a reachable manager service holding its lease",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "return { name: \"manager\", verdict: lease ? \"serving\" : \"not-serving\", facts };",
+      "replace": "const reconcileFailed = reconcile?.state === \"failed\";\n    return { name: \"manager\", verdict: lease && !reconcileFailed ? \"serving\" : \"not-serving\", facts };",
+      "expectRed": "benign foreign-owned reconciliation stays serving with exact failure facts",
+      "cell": "benign foreign-owned reconciliation stays serving with exact failure facts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
       "name": "the manager's service answer is treated as healthy even when its control rail never answered",
       "file": "implementations/cli/src/commands/status.ts",
       "find": "if (!noService) return { name: \"manager\", verdict: \"refused\", facts };\n    const liveRecord = record.kind === \"live\";\n    const hasLease = facts.some((fact) => fact.startsWith(\"lease holder \"));\n    return { name: \"manager\", verdict: liveRecord || hasLease ? \"not-serving\" : \"absent\", facts };",
