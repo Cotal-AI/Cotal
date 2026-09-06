@@ -1,0 +1,89 @@
+{
+  "suite": "bin/smoke/mutation-reproof.smoke.ts",
+  "guard": "Every selected fixture executes on one configured shard; the aggregate changed check rejects failure, cancellation and skipping.",
+  "command": "pnpm smoke:mutation-reproof",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof-shards.json",
+  "mutations": [
+    {
+      "name": "every shard executes the full selected set",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));",
+      "replace": "if (false && shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));",
+      "expectRed": "fixture shards partition the selected set without omission or overlap",
+      "cell": "fixture shards partition the selected set without omission or overlap"
+    },
+    {
+      "name": "all fixtures collapse onto shard zero",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  return hash % count;",
+      "replace": "  return 0;",
+      "expectRed": "the partition control exercises every configured shard with a discriminating fixture",
+      "cell": "the partition control exercises every configured shard with a discriminating fixture"
+    },
+    {
+      "name": "the workflow omits the runner shard argument",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": " --shard \"${{ matrix.shard }}/12\"",
+      "replace": "",
+      "expectRed": "the changed workload runs every configured shard without fail-fast cancellation",
+      "cell": "the changed workload runs every configured shard without fail-fast cancellation"
+    },
+    {
+      "name": "one configured shard is missing",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]",
+      "replace": "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]",
+      "expectRed": "the changed workload runs every configured shard without fail-fast cancellation",
+      "cell": "the changed workload runs every configured shard without fail-fast cancellation"
+    },
+    {
+      "name": "a failed shard cancels its sibling work",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "      fail-fast: false",
+      "replace": "      fail-fast: true",
+      "expectRed": "the changed workload runs every configured shard without fail-fast cancellation",
+      "cell": "the changed workload runs every configured shard without fail-fast cancellation"
+    },
+    {
+      "name": "the aggregate is skipped after a shard fails",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "    if: github.event_name != 'schedule' && always()",
+      "replace": "    if: github.event_name != 'schedule'",
+      "expectRed": "the aggregate changed check waits for all shards even after a failed or cancelled shard",
+      "cell": "the aggregate changed check waits for all shards even after a failed or cancelled shard"
+    },
+    {
+      "name": "the aggregate no longer waits on the matrix",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "    needs: [changed_shard]",
+      "replace": "    needs: []",
+      "expectRed": "the aggregate changed check waits for all shards even after a failed or cancelled shard",
+      "cell": "the aggregate changed check waits for all shards even after a failed or cancelled shard"
+    },
+    {
+      "name": "the aggregate accepts failed shards",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          test \"$SHARD_RESULT\" = success",
+      "replace": "          true",
+      "expectRed": "the aggregate shell rejects shard result failure",
+      "cell": "the aggregate shell rejects shard result failure"
+    },
+    {
+      "name": "the aggregate accepts cancellation",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          test \"$SHARD_RESULT\" = success",
+      "replace": "          test \"$SHARD_RESULT\" != failure",
+      "expectRed": "the aggregate shell rejects shard result cancelled",
+      "cell": "the aggregate shell rejects shard result cancelled"
+    },
+    {
+      "name": "the aggregate accepts a skipped shard set",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          test \"$SHARD_RESULT\" = success",
+      "replace": "          test \"$SHARD_RESULT\" = success || test \"$SHARD_RESULT\" = skipped",
+      "expectRed": "the aggregate shell rejects shard result skipped",
+      "cell": "the aggregate shell rejects shard result skipped"
+    }
+  ]
+}
