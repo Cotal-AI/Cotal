@@ -56,7 +56,7 @@ async function epConnection(
     console.error(c.dim("  open meshes have no service registry; user-mode meshes gain this surface with the 1c.2c bearer-triple wiring"));
     process.exit(1);
   }
-  const nc = await dialerFor(t.server)({ servers: t.server, ...standaloneConnectOpts({ creds: t.auth.creds, tls: false }), maxReconnectAttempts: 0 });
+  const nc = await dialerFor(t.server)({ servers: t.server, ...standaloneConnectOpts({ creds: t.auth.creds, tls: t.auth.tls === true }), maxReconnectAttempts: 0 });
   return { nc, space: t.space, auth: t.auth };
 }
 
