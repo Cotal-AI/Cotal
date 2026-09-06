@@ -227,7 +227,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   run: {
     flags: [
       "artifact:string", "by:string", "creds:string", "endpoint:string", "file:string:f",
-      "server:string", "space:string", "timeout:string", "value:string",
+      "local:boolean", "server:string", "space:string", "timeout:string", "value:string",
     ],
     positionals: true,
   },

@@ -9,7 +9,7 @@
     "",
     "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
     "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment.",
-    "M2 restores revision 10 after the status output digest changed. The named revision cell runs after",
+    "M2 restores revision 12 after the status output digest changed. The named revision cell runs after",
     "the service has published and a generic client has resolved the actual shipped document."
   ],
   "mutations": [
@@ -22,10 +22,10 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 10 after static reconciliation changes status output",
+      "name": "M2 keep revision 12 after static reconciliation changes status output",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 11,",
-      "replace": "    revision: 10,",
+      "find": "    revision: 13,",
+      "replace": "    revision: 12,",
       "expectRed": "static reconciliation status advances the manager cluster revision",
       "cell": "static reconciliation status advances the manager cluster revision"
     }

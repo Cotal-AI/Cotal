@@ -22,5 +22,6 @@ export {
   MAX_RESUME_COMMIT_BYTES,
   type ResumeControlArgs,
 } from "./resume.js";
+export { RunHosting, type RunHostingContext } from "./run-hosting.js";
 export { createRuntime, requireRuntimeAdopt } from "./runtime/index.js";
 export type { Runtime, AgentHandle, AttachSession, RuntimeKind, RuntimeMode } from "./runtime/index.js";

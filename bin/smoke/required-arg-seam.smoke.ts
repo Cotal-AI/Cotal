@@ -293,10 +293,18 @@ const SEAMS: Seam[] = [
   // 118/87 -> 119/88: static-lifecycle.smoke.ts's #1274 crash-resume cell (driveTerminalDirect) opens
   // one more lifecycle-executor connection to plant a terminalizing slot and drive runStaticTerminal
   // as a resume would. It is under smoke/, harness residue not product connect, and states tls: false.
-  // 119/88 -> 124/92: #774 adds one typechecked provisioner re-read before each static reconcile
+  // 119/88 -> 125/92: manager-hosted workflow runs. The manager's per-call run-operator
+  // connection (implementations/manager/src/run-hosting.ts) and `cotal run`'s hosted-client
+  // connection (implementations/runtime/src/run-command.ts) add two typechecked calls; the
+  // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
+  // 125/92 -> 126/93: run-host-live reads an answer record back under a run-operator READ
+  // credential of its own (one smoke-side call, tls: false).
+  // 126/93 -> 127/94: run-host-live connects under a token-pinned run-operator ANSWERING
+  // credential to prove the broker refuses an answer on any other pause.
+  // 127/94 -> 132/98: #774 adds one typechecked provisioner re-read before each static reconcile
   // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
   // observer, caller, and exact terminal gate inspection). Every site states tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 124, untypecheckedSites: 92 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 132, untypecheckedSites: 98 },
 ];
 
 /**

@@ -1,0 +1,4 @@
+# cotal-lang spawn({supervise}) against the REAL manager: a driven program SIGKILLs
+# the seat mid-turn, the replacement pulls and yields the same goal, then a second
+# kill spends the budget and the next turn fails L4002.
+smoke:lang-supervise-live

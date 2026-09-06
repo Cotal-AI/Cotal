@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { IncompleteKvScan, isReachable, liveKvEntries } from "../src/index.js";
+import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = 14771;
@@ -209,6 +209,44 @@ try {
   let refused: unknown;
   await liveKvEntries({ history: async () => [] } as never).catch((e) => { refused = e; });
   check("a non-Bucket KV handle is refused loudly", refused instanceof Error && /Bucket/.test(String((refused as Error).message)), String(refused));
+
+  // ── THE CONSUMER-FREE WALK. The same answer as the pass, by STREAM.MSG.GET alone: no consumer is
+  //    created at any point, which is the property a records-store reader with no consumer verb
+  //    depends on. Same collapse rules (newest revision wins, markers hide a key), same "no match is
+  //    [] and not an error", and a filter that is a real subject pattern rather than a prefix. ────
+  {
+    const jsmw = await jetstreamManager(nc);
+    const wk = await kvm.create("walk", { history: 3 });
+    await wk.put("run.m.a.spec", enc("a1"));
+    await wk.put("run.m.b.spec", enc("b1"));
+    await wk.put("run.m.a.status", enc("s"));
+    await wk.put("run.m.a.spec", enc("a2"));
+    await wk.put("run.m.c.spec", enc("c1"));
+    await wk.delete("run.m.c.spec");
+    await wk.put("notice.m.a.x", enc("n"));
+    const before = (await jsmw.streams.info("KV_walk")).state.consumer_count;
+    const outBefore = nc.stats().outMsgs;
+    const walked = await walkKvEntries(wk, "run.*.*.spec");
+    const cost = nc.stats().outMsgs - outBefore;
+    const after = (await jsmw.streams.info("KV_walk")).state.consumer_count;
+    const byKey = new Map(walked.map((e) => [e.key, new TextDecoder().decode(e.value)]));
+    check("the walk returns every live key the filter matches, and only those",
+      [...byKey.keys()].sort().join(",") === "run.m.a.spec,run.m.b.spec", [...byKey.keys()]);
+    check("the walk resolves a rewritten key to its NEWEST revision", byKey.get("run.m.a.spec") === "a2", byKey.get("run.m.a.spec"));
+    check("a deleted key does not resurrect its retained prior value under the walk", !byKey.has("run.m.c.spec"), [...byKey.keys()]);
+    check("the walk creates NO consumer (the consumer count is unchanged across it)", after === before, { before, after });
+    // Five stored matches: a@1, b@2, a@4, c@5 and c's delete marker@6 (a marker is a stored message
+    // on the same subject), then the one miss that ends the walk.
+    check(`the walk is one request per stored match plus the terminating miss (${cost} for 5 stored matches)`, cost === 6, cost);
+    check("a walk matching nothing returns [] in a non-empty bucket", (await walkKvEntries(wk, "zzz.>")).length === 0);
+    check("a walk over an empty bucket returns []", (await walkKvEntries(await kvm.create("walk_empty", { history: 1 }), ">")).length === 0);
+    const same = await liveKvEntries(wk, "run.*.*.spec");
+    check("the walk and the pass agree on the live set",
+      same.map((e) => `${e.key}@${e.revision}`).sort().join(",") === walked.map((e) => `${e.key}@${e.revision}`).sort().join(","));
+    let walkRefused: unknown;
+    await walkKvEntries({ history: async () => [] } as never, ">").catch((e) => { walkRefused = e; });
+    check("the walk refuses a non-Bucket handle loudly too", walkRefused instanceof Error && /Bucket/.test(String((walkRefused as Error).message)), String(walkRefused));
+  }
 
   await nc.close();
   console.log(`\nkv-scan smoke: ${pass} checks passed`);
