@@ -14,18 +14,23 @@
  *     path was never selected;
  *   - a selected count of zero exited 0 unconditionally, whether the tree was clean or the selector
  *     had been handed nothing to look at.
+ *   - a head PRE-RED was classified from a declared suite PATH even though mutation-proof may have
+ *     refused a different per-mutation command. Attribution now follows that exact command's
+ *     base-to-head transition instead of inferring causation from selection provenance.
  *
  * A fixture whose guarded source was deleted or renamed away is a DANGLING fixture: its anchor can
  * no longer resolve, so its proof is unrunnable. That is precisely the state this gate refuses, so a
  * dangling fixture is a loud failure, not a silent skip.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROOF = resolve(dirname(SCRIPT), "mutation-proof.mjs");
+const COMMAND_TIMEOUT_MS = 900_000;
 
 function usage(message) {
   if (message) console.error(message);
@@ -49,6 +54,19 @@ function args(argv) {
 
 function git(root, argv) {
   return execFileSync("git", argv, { cwd: root, encoding: "utf8" });
+}
+
+function runCommand(command, cwd, env = process.env, { offline = true } = {}) {
+  const commandEnv = { ...env, CI: "true", pnpm_config_frozen_lockfile: "true",
+    pnpm_config_verify_deps_before_run: "false" };
+  if (offline) commandEnv.pnpm_config_offline = "true";
+  else delete commandEnv.pnpm_config_offline;
+  const run = spawnSync(command, {
+    cwd, shell: true, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL",
+    env: commandEnv,
+  });
+  return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 }
 
 /**
@@ -81,7 +99,7 @@ function loadCorpus(root, paths) {
       errors.push(`${path}: no top-level "mutations" array`);
       continue;
     }
-    fixtures.push({ path, suite: config.suite, mutations: config.mutations });
+    fixtures.push({ path, suite: config.suite, command: config.command, mutations: config.mutations });
   }
   return { fixtures, errors };
 }
@@ -137,6 +155,15 @@ if (!a.all) {
     console.error(`${a.base} is not an ancestor of ${head}; refuse a comparison that includes another branch's changes`);
     process.exit(2);
   }
+  const dirty = git(root, ["status", "--porcelain"]);
+  const actualHead = git(root, ["rev-parse", "HEAD"]).trim();
+  const requestedHead = git(root, ["rev-parse", head]).trim();
+  if (dirty || actualHead !== requestedHead) {
+    console.error("mutation reproof: UNMEASURED — root must be clean and checked out at the requested head before comparison");
+    if (dirty) console.error(dirty.trimEnd());
+    if (actualHead !== requestedHead) console.error(`  checked out: ${actualHead}\n  requested:   ${requestedHead}`);
+    process.exit(1);
+  }
 }
 
 // UNMEASURED, exit 1: the corpus is empty. There is nothing this gate could have proven, which is
@@ -158,9 +185,16 @@ if (errors.length) {
 
 const { changed, diffSize } = a.all ? { changed: new Set(), diffSize: 0 } : changedSet(root, a.base, head);
 
-let selected = fixtures.filter(({ path, suite, mutations }) => a.all || changed.has(path)
-  || (typeof suite === "string" && changed.has(suite))
-  || mutations.some((mutation) => typeof mutation?.file === "string" && changed.has(mutation.file)));
+let selected = fixtures.map((fixture) => ({
+  ...fixture,
+  selectedBy: {
+    all: Boolean(a.all),
+    config: changed.has(fixture.path),
+    suite: typeof fixture.suite === "string" && changed.has(fixture.suite),
+    mutation: fixture.mutations.some((mutation) =>
+      typeof mutation?.file === "string" && changed.has(mutation.file)),
+  },
+})).filter(({ selectedBy }) => Object.values(selectedBy).some(Boolean));
 if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));
 
 // UNMEASURED, exit 1: a selected fixture's guarded file does not exist at head — a dangling fixture.
@@ -195,10 +229,12 @@ console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).
 // A fixture's proof has more than two outcomes, and collapsing any of them is itself a silent
 // failure. mutation-proof grades each mutation and encodes the run in its exit code:
 //   exit 0  — every mutation KILLED: the guard discriminates. PASS.
-//   exit 4  — the suite was RED BEFORE any mutation (pre-red). That is a defect in the suite's
-//             current state, not in this diff, and blaming this diff for it is a false blocker.
-//             It is also not a clean bill of health, so it is reported as its own state and does
-//             NOT fail the gate — sequence the suite's own fix, do not carry it here.
+//   exit 4  — one of the fixture's distinct baseline COMMANDS was RED BEFORE any mutation. Path
+//             provenance cannot say whether the diff caused that red: a fixture may declare suite A
+//             while a per-mutation command runs suite B. In diff mode, re-run the exact command that
+//             refused against the base tree. GREEN -> RED is attributable and fatal; RED -> RED is
+//             inherited and non-fatal. An absent or unmeasurable base comparison fails loud. Under
+//             --all there is deliberately no base comparison, so PRE-RED remains non-fatal.
 //   exit 1  — at least one mutation did not produce a clean, named red. That splits again:
 //               SURVIVED / UNGRADABLE — the guard does not discriminate. A real finding. FAIL.
 //               ERROR                 — a dead or ambiguous anchor: the fixture is broken. FAIL.
@@ -221,23 +257,234 @@ const verdictRe = new RegExp(`^(${VERDICTS.join("|")}) `, "gm");
 const verdictsIn = (output) =>
   [...output.replace(ANSI, "").matchAll(verdictRe)].map((m) => m[1]);
 
+/** mutation-proof aborts at its first red distinct command, so exactly one refusal is its contract.
+ *  The all-command matrix below comes from fixture config without changing that contract. */
+function refusedCommand(output) {
+  const matches = [...output.replace(ANSI, "").matchAll(
+    /^REFUSING: `(.*)` is red BEFORE any mutation \(exit ([^)]+)\)\.$/gm,
+  )];
+  if (matches.length !== 1) return { error: `expected exactly one baseline refusal, found ${matches.length}` };
+  return { command: matches[0][1], headStatus: matches[0][2] };
+}
+
+const snapshots = {
+  base: { revision: a.base, path: undefined, error: undefined, prepared: false, preparationError: undefined },
+  head: { revision: head, path: undefined, error: undefined, prepared: false, preparationError: undefined },
+};
+const snapshotHolders = [];
+process.on("exit", () => {
+  for (const holder of snapshotHolders) rmSync(holder, { recursive: true, force: true });
+});
+
+function ensureSnapshot(snapshot, label) {
+  if (snapshot.path || snapshot.error) return;
+  const holder = mkdtempSync(join(tmpdir(), `mutation-reproof-${label}-`));
+  snapshotHolders.push(holder);
+  snapshot.path = join(holder, "repo");
+  if (insideRoot(snapshot.path)) {
+    snapshot.error = `refusing ${label} snapshot inside root: ${snapshot.path}`;
+    snapshot.path = undefined;
+    return;
+  }
+  try {
+    // A separate clone is the correctness boundary: commands must resolve first-party workspace
+    // packages from BASE, never through node_modules links into the head worktree. With no copied
+    // node_modules, pnpm may populate this disposable clone from its store; nothing is installed into
+    // or retained in any lane tree.
+    execFileSync("git", ["clone", "--quiet", "--shared", "--no-checkout", root, snapshot.path],
+      { encoding: "utf8" });
+    git(snapshot.path, ["checkout", "--quiet", "--detach", snapshot.revision]);
+  } catch (err) {
+    snapshot.error = `could not materialize ${label} ${snapshot.revision}: ${err.message}`;
+    snapshot.path = undefined;
+  }
+}
+
+const insideRoot = (entry) => {
+  if (!entry) return false;
+  const rel = relative(root, resolve(entry));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+function snapshotEnv() {
+  const env = { ...process.env };
+  for (const key of ["PATH", "NODE_PATH"])
+    if (env[key]) env[key] = env[key].split(delimiter).filter((entry) => !insideRoot(entry)).join(delimiter);
+  return env;
+}
+
+function proofEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+}
+
+function preparationFailure(label, run) {
+  if (run.error) return `${label} could not start: ${run.error.message}`;
+  if (run.status === null || run.signal)
+    return `${label} produced no exit status${run.signal ? ` (signal ${run.signal})` : ""}`;
+  if (run.status !== 0) return `${label} failed (exit ${run.status})`;
+  return undefined;
+}
+
+function ensureSnapshotPrepared(snapshot, label) {
+  ensureSnapshot(snapshot, label);
+  if (snapshot.error || snapshot.prepared || snapshot.preparationError) return;
+  // A minimal fixture repository may intentionally exercise a direct `node` command and have no
+  // package manager contract to prepare. Production repositories declare package.json; those always
+  // take the frozen-install/full-build path below.
+  if (!existsSync(join(snapshot.path, "package.json"))) { snapshot.prepared = true; return; }
+  const install = runCommand("pnpm install --frozen-lockfile", snapshot.path, snapshotEnv(), { offline: false });
+  snapshot.preparationError = preparationFailure(`${label} dependency install`, install);
+  if (snapshot.preparationError) return;
+  const build = runCommand("pnpm build", snapshot.path, snapshotEnv());
+  snapshot.preparationError = preparationFailure(`${label} build`, build);
+  if (!snapshot.preparationError) snapshot.prepared = true;
+}
+
+function unmeasurableBaseRun(run) {
+  if (run.error) return `command could not start: ${run.error.message}`;
+  if (run.status === null || run.signal) return `command did not produce an exit status${run.signal ? ` (signal ${run.signal})` : ""}`;
+  if (run.status === 126 || run.status === 127) return `command was unavailable (exit ${run.status})`;
+  const infrastructureFailure = /(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module|ERR_PNPM[A-Z0-9_]*|Missing script|command not found|\b[^:\s]+: not found\b|is not recognized as an internal or external command)/i
+    .exec(run.output);
+  if (infrastructureFailure) return `command could not run: ${infrastructureFailure[0]}`;
+  if (run.status !== 0 && run.output.trim() === "") return "red command produced no output, so its verdict is ambiguous";
+  return undefined;
+}
+
+function comparableFailure(output, cwd) {
+  const slash = (value) => value.replace(/\\/g, "/");
+  const projectRoot = slash(realpathSync(cwd)).replace(/\/$/, "");
+  const projectPrefix = `${projectRoot}/`;
+  const dependencyPath = /(?:^|[/\\])(?:node_modules|\.pnpm)(?:[/\\]|$)/;
+  const tempRoots = [...new Set([tmpdir(), realpathSync(tmpdir())]
+    .map((entry) => slash(entry).replace(/\/$/, "")))];
+  const classifyLocation = (location) => {
+    const withoutCoordinates = location.replace(/:\d+(?::\d+)?$/, "");
+    const fileUrl = withoutCoordinates.startsWith("file://");
+    let path = withoutCoordinates;
+    if (fileUrl) {
+      try { path = fileURLToPath(withoutCoordinates); }
+      catch { path = withoutCoordinates.slice(7); }
+    }
+    path = slash(path);
+    const pathShaped = fileUrl || path.startsWith("/") || /^[A-Za-z]:\//.test(path);
+    if (!pathShaped) return { kind: "verbatim" };
+    if (path === projectRoot || path.startsWith(projectPrefix)) {
+      if (dependencyPath.test(path)) return { kind: "drop" };
+      const relativePath = path === projectRoot ? "" : path.slice(projectPrefix.length);
+      return { kind: "origin", value: relativePath ? `<ROOT>/${relativePath}` : "<ROOT>" };
+    }
+    if (dependencyPath.test(path)) return { kind: "drop" };
+    for (const tempRoot of tempRoots) {
+      if (!path.startsWith(`${tempRoot}/`)) continue;
+      const remainder = path.slice(tempRoot.length + 1);
+      const separator = remainder.indexOf("/");
+      return { kind: "origin", value: separator === -1 ? "<TMP>" : `<TMP>/${remainder.slice(separator + 1)}` };
+    }
+    return { kind: "origin", value: path };
+  };
+  const signature = [];
+  for (const raw of output.replace(ANSI, "").split("\n")) {
+    const line = raw.trim();
+    if (!line || /^(?:Node\.js v|npm |pnpm |Scope:|Lockfile |Progress:|Packages:|Done in |\[?ELIFECYCLE\]?|Command failed)/i.test(line)) continue;
+    // Real uncaught Node/tsx errors also print a project source header before the snippet. Normalize
+    // its trailing line/column like a frame; retaining the number turns harmless line shifts fatal.
+    if (/^at\s/.test(line)) {
+      const paren = line.match(/^at\s+(.+?)\s+\((.+)\)$/);
+      const bare = line.match(/^at\s+(?:async\s+)?(.+)$/);
+      const location = paren?.[2] ?? bare?.[1];
+      if (!location || location.startsWith("node:")) continue;
+      const classified = classifyLocation(location);
+      if (classified.kind === "origin")
+        signature.push(paren ? `at ${paren[1]} (${classified.value})` : `at ${classified.value}`);
+      else if (classified.kind === "verbatim") signature.push(line);
+      continue;
+    }
+    const header = line.match(/^(file:\/\/)?(.+?):\d+(?::\d+)?$/);
+    if (header) {
+      const classified = classifyLocation(`${header[1] ?? ""}${header[2]}`);
+      if (classified.kind === "origin") signature.push(classified.value);
+      if (classified.kind !== "verbatim") continue;
+    }
+    signature.push(line.split(`file://${projectPrefix}`).join("file://<ROOT>/")
+      .split(projectRoot).join("<ROOT>"));
+  }
+  return signature.length ? signature.join("\n") : undefined;
+}
+
+function compareSnapshots(headRun, baseRun) {
+  const reason = unmeasurableBaseRun(baseRun);
+  if (reason) return { kind: "unmeasured", reason };
+  if (baseRun.status === 0) return { kind: "attributable", baseStatus: baseRun.status };
+
+  const headReason = unmeasurableBaseRun(headRun);
+  if (headReason) return { kind: "unmeasured", reason: `head command ${headReason}` };
+
+  // A bare non-zero cannot distinguish a suite verdict from broken setup. Only an identical,
+  // non-infrastructure red from the independently run head command proves RED -> RED. Any difference
+  // is ambiguity and therefore UNMEASURED, never a silent inherited clearance.
+  const baseFailure = comparableFailure(baseRun.output, snapshots.base.path);
+  const headFailure = comparableFailure(headRun.output, snapshots.head.path);
+  if (headRun.status !== baseRun.status || baseFailure === undefined || headFailure === undefined
+      || headFailure !== baseFailure) {
+    return { kind: "unmeasured", reason: "base and head were both red but did not produce the same stable failure signature" };
+  }
+  return { kind: "inherited", baseStatus: baseRun.status };
+}
+
 const fatal = [];       // SURVIVED / UNGRADABLE / WRONG-RED / ERROR — the gate's real findings
-const preRed = [];      // exit 4 — the suite was red before mutation; not this diff's defect
+const preRed = [];      // exit 4 + base RED, or any exit 4 under --all — inherited/non-attributed
+const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head RED
+const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base comparison — loud failure
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
-for (const { path } of selected) {
+for (const { path, command, mutations } of selected) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
-    cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: proofEnv(),
   });
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");
   process.stderr.write(run.stderr ?? "");
   if (run.status === 0) continue; // every mutation KILLED
   // Pre-red is keyed on exit 4 ALONE, the code mutation-proof sets only in its pre-mutation baseline
-  // refusal and nowhere a mutation actually ran. A genuine SURVIVED requires a green baseline and a
-  // completed mutation, so it can never carry exit 4 — the two states are exit-code-disjoint, not
-  // distinguished by prose that a suite could coincidentally print.
-  if (run.status === 4) { preRed.push(path); continue; }
+  // refusal and nowhere a mutation actually ran. Attribute it by the SAME command's base-to-head
+  // transition, never by a declared suite path that may name a different command.
+  if (run.status === 4) {
+    const refused = refusedCommand(output);
+    if (refused.error) { unmeasuredPreRed.push({ path, command: "unknown", reason: refused.error }); continue; }
+    const commands = [...new Set([command, ...mutations.map((mutation) => mutation.command)]
+      .filter((fixtureCommand) => typeof fixtureCommand === "string"))];
+    if (a.all) { preRed.push({ path, ...refused, baseStatus: undefined }); continue; }
+    ensureSnapshotPrepared(snapshots.head, "head");
+    ensureSnapshotPrepared(snapshots.base, "base");
+    const preparationError = snapshots.head.error ?? snapshots.head.preparationError
+      ?? snapshots.base.error ?? snapshots.base.preparationError;
+    if (preparationError) { unmeasuredPreRed.push({ path, command: refused.command, reason: preparationError }); continue; }
+    const commandMatrix = [];
+    for (const fixtureCommand of commands) {
+      const headRun = runCommand(fixtureCommand, snapshots.head.path, snapshotEnv());
+      const baseRun = runCommand(fixtureCommand, snapshots.base.path, snapshotEnv());
+      commandMatrix.push({ command: fixtureCommand, headRun, baseRun });
+    }
+    const cleanRefusal = commandMatrix.find(({ command: fixtureCommand }) => fixtureCommand === refused.command)?.headRun;
+    if (!cleanRefusal || cleanRefusal.status === 0) unmeasuredPreRed.push({ path, command: refused.command,
+      reason: "root PRE-RED was not reproduced in the clean head snapshot; root execution-state contamination detected" });
+    const headRedCommands = commandMatrix.filter(({ headRun }) => headRun.status !== 0);
+    for (const { command: fixtureCommand, headRun, baseRun } of headRedCommands) {
+      const headReason = unmeasurableBaseRun(headRun);
+      if (headRun.error || headRun.status === null || headRun.signal) {
+        unmeasuredPreRed.push({ path, command: fixtureCommand, reason: `head confirmation ${headReason}` });
+        continue;
+      }
+      const transition = compareSnapshots(headRun, baseRun);
+      const finding = { path, command: fixtureCommand, headStatus: headRun.status, ...transition };
+      if (transition.kind === "attributable") attributablePreRed.push(finding);
+      else if (transition.kind === "inherited") preRed.push(finding);
+      else unmeasuredPreRed.push(finding);
+    }
+    continue;
+  }
   const verdicts = verdictsIn(output);
   // A single adverse verdict anywhere in the fixture is a finding: SURVIVED does not become benign
   // because another mutation in the same file was INCONCLUSIVE. INCONCLUSIVE is non-fatal ONLY when
@@ -249,14 +496,36 @@ for (const { path } of selected) {
   else fatal.push(path);
 }
 
+const fixtureCount = (findings) => new Set(findings.map(({ path }) => path)).size;
 if (preRed.length) {
-  console.log(`\nPRE-RED (${preRed.length} fixture(s)) — suite already red before mutation, not this diff's defect; sequence the suite's own fix: ${preRed.join(", ")}`);
+  console.log(`\nPRE-RED (${fixtureCount(preRed)} fixture(s)) INHERITED — ${a.all
+    ? "--all supplied no base comparison; kept nonfatal"
+    : "the same command was already red at base; not caused by this diff"}:`);
+  for (const { path, command, baseStatus, headStatus } of preRed) {
+    console.log(baseStatus === undefined
+      ? `  ${path} -> command: ${command}; head RED (exit ${headStatus}), base NOT COMPARED (--all)`
+      : `  ${path} -> command: ${command}; transition: base RED (exit ${baseStatus}) -> head RED (exit ${headStatus})`);
+  }
 }
 if (inconclusive.length) {
   console.log(`\nINCONCLUSIVE (${inconclusive.length} fixture(s)) — a timeout, a teardown hang, or a swallowed exit code left no evidence either way; not treated as SURVIVED and not treated as KILLED: ${inconclusive.join(", ")}`);
 }
+if (attributablePreRed.length) {
+  console.error(`\nPRE-RED TRANSITION FAILED (${fixtureCount(attributablePreRed)} fixture(s)) — the same command was green at base and red at head:`);
+  for (const { path, command, baseStatus, headStatus } of attributablePreRed)
+    console.error(`  ${path} -> command: ${command}; transition: base GREEN (exit ${baseStatus}) -> head RED (exit ${headStatus})`);
+}
+if (unmeasuredPreRed.length) {
+  console.error(`\nPRE-RED TRANSITION UNMEASURED (${fixtureCount(unmeasuredPreRed)} fixture(s)) — base comparison was absent or could not run; refusing to clear:`);
+  for (const { path, command, reason } of unmeasuredPreRed)
+    console.error(`  ${path} -> command: ${command}; transition: UNMEASURED (${reason}) -> head RED`);
+}
 if (fatal.length) {
   console.error(`\nMUTATION REPROOF FAILED (${fatal.length} fixture(s)): ${fatal.join(", ")}`);
+}
+if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length) {
   process.exit(1);
 }
-console.log(`\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive)`);
+console.log(a.all
+  ? `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive; base not compared under --all)`
+  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - fixtureCount(preRed) - inconclusive.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);
