@@ -24,7 +24,7 @@ import type { LaunchSpec } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
-  console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
+  console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra === undefined ? "" : typeof extra === "string" ? extra : JSON.stringify(extra)}`}`);
   if (!cond) failures++;
 }
 function skip(label: string, why: string): void {
