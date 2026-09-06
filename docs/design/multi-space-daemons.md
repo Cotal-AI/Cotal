@@ -62,7 +62,7 @@ Read in this tree at the cited line. §6.2's rows about nats-server are marked t
 | `remoteAuthority` exists so the host holds no participant seed | `implementations/manager/src/manager.ts:317` |
 | A system-account user with no permissions block is broker admin, so every `$SYS` profile is an explicit allowlist | `packages/core/src/provision.ts:2338` |
 | The two `$SYS` profiles that exist are an account-scoped CONNZ observer and a KICK-only evictor | `packages/core/src/provision.ts:2348`, `:2398` |
-| Neither can reach `$SYS.REQ.CLAIMS.*`; the observer is asserted to be refused `CLAIMS.LIST` | `packages/core/src/provision.ts:2340`, `packages/core/smoke/membership-feed-confinement.smoke.ts:138` |
+| Neither can reach `$SYS.REQ.CLAIMS.*`; the observer is asserted to be refused `CLAIMS.LIST` | `packages/core/src/provision.ts:2340`, `:2341`, `packages/core/smoke/membership-feed-confinement.smoke.ts:138` |
 | The system-account signing seed is in memory only while a space is provisioned, so a `$SYS` cred cannot be re-minted later | `packages/core/src/provision.ts:2370`, `:2413` |
 | `serverConfig` renders `resolver: MEMORY` with a preload map of every account | `packages/core/src/provision.ts:2493`, `:2553` |
 | Data accounts are minted with unlimited JetStream storage | `packages/core/src/provision.ts:341`, `:345`, `:461` |
@@ -126,7 +126,9 @@ prefixed face are consistent as long as the proxy rewrite is what closes the gap
 
 ### 3.3 Per-space state needs no new mechanism
 
-P7/P1 already did this work. `userAuthStateDir(root, space)` (`auth-paths.ts:125`) and the store keys
+The [space segmentation](space-segmentation-p7-p1.md) design already did this work; its prerequisite
+numbering is its own and is unrelated to §12's. `userAuthStateDir(root, space)` (`auth-paths.ts:125`)
+and the store keys
 `auth/<spaceSegment>/…` (`store.ts:58`) both route through the one guarded encoder
 (`auth-paths.ts:95`). A multi-space process holds N of each, no layout changes, and no key is
 renamed. That is what makes §9 a topology migration rather than a re-keying.
@@ -275,7 +277,7 @@ properties make that the place rather than a new component:
 |---|---|
 | owner | that space's authority plane, in the multi-space auth process |
 | trigger | a per-space timer at half the standing renewable TTL, the cadence the manager used (`manager.ts:1240`) |
-| operation | `remintDaemonCreds(base, space, store, { preflight })`, unchanged (`renewal.ts:98`): same identity, same profile, written to the same store key the delivery unit reads |
+| operation | `remintDaemonCreds(root, space, store, { preflight })`, unchanged (`renewal.ts:98`): same identity, same profile, written to the same store key the delivery unit reads |
 | what it may produce | the two daemon-cred kinds for the nkey identity already in the store. Never a new identity, never a different profile. A re-sign is a clock extension, not a grant |
 | single writer | the plane claim. A plane that lost or released its claim re-signs nothing, so a reassigned space has one re-signer at a time for the same reason it has one plane |
 | proof before overwrite | the `preflight` the function already gates every candidate on, over the process's own broker connection |
@@ -312,7 +314,7 @@ not this tree.
 
 | Subject | What the server does |
 |---|---|
-| `$SYS.REQ.ACCOUNT.<id>.CLAIMS.UPDATE` | decodes the account claim, validates it structurally, refuses when the claim's subject is not `<id>`, stores it, and replies "jwt updated" carrying its own server identity |
+| `$SYS.REQ.ACCOUNT.<id>.CLAIMS.UPDATE` | decodes the account claim, validates it structurally with its time checks non-blocking, refuses when the claim's subject is not `<id>`, stores it through the resolver's plain save, and replies "jwt updated" carrying its own server identity |
 | `$SYS.REQ.CLAIMS.UPDATE` | the same, with the target account read from the payload instead of the subject |
 | `$SYS.REQ.ACCOUNT.<id>.CLAIMS.LOOKUP` | replies with the stored JWT itself, and with no server identity |
 | `$SYS.REQ.CLAIMS.LIST` | replies with account ids only, no claim bodies |
@@ -320,15 +322,23 @@ not this tree.
 
 Three properties of that behavior shape everything below.
 
-1. **An update touches the store, not the trust chain.** The validation at update time is structural.
-   The operator-chain check happens when the server fetches the account, and a claim that fails it is
-   refused there. So a pushed claim signed by an untrusted issuer is written to the resolver dir and
-   then refused at every subsequent lookup: a durable denial of that account, not a forged mint. The
-   distinction decides §6.3's compromise analysis.
-2. **An ack is not a write.** The store skips the write and returns success when the stored claim has
-   the same `jti`, or an `iat` newer than the pushed one, and the handler replies "jwt updated"
-   either way. A retry after a lease handoff, or any two mutators, can therefore be acked and
-   discarded.
+1. **An update touches the store, not the trust chain.** The validation at update time is
+   structural, and its time checks are non-blocking, so the update path accepts a claim that has
+   already expired. The fetch path validates differently: it requires a trusted issuer and its time
+   checks are blocking, so it refuses both an untrusted issuer and an expired claim. A pushed claim
+   signed by an untrusted issuer is therefore written to the resolver dir and then refused at every
+   subsequent lookup: a durable denial of that account, not a forged mint. That asymmetry decides
+   §6.3's compromise analysis and is the whole mechanism of §6.8's removal path, which is why §6.9
+   pins both sides of it rather than the update side alone.
+2. **An ack is not a write, and a write is not ordered.** The update handler stores through the
+   resolver's plain save. That path's only skip is byte-hash equality: a push whose bytes match what
+   is already stored returns success without writing and without firing the store's change callback.
+   Any other bytes overwrite what is stored, unconditionally. There is no `jti` comparison and no
+   `iat` ordering on this path. Those comparisons do exist in the resolver, in the freshness-checking
+   save that `resolver_preload` and the pack merge use, and no pushed request reaches it. So the
+   server orders nothing: a stale push silently replaces a newer claim with older content, and the
+   reply says "jwt updated" either way. Ordering is the mutator's obligation, and §6.6 names what
+   carries it.
 3. **The account id is a subject token on the per-account update, and the server checks the claim
    against it.** That makes the mutation subject-addressable, which is what lets a credential be
    scoped to it. The account-blind `$SYS.REQ.CLAIMS.UPDATE` carries its target in the payload, and a
@@ -370,7 +380,7 @@ profile for this exists, so it has to be written (prerequisite P7).
 | pub deny | `$SYS.REQ.ACCOUNT.<system account id>.CLAIMS.UPDATE` | deny beats allow, so this credential provably cannot strand the account the broker itself runs on |
 | not granted | `$SYS.REQ.CLAIMS.UPDATE` | payload-addressed, so no subject ACL can scope it (§6.2, property 3) |
 | not granted | `$SYS.REQ.CLAIMS.DELETE` | it could not use it (§6.8), and a credential should not carry a subject it cannot exercise |
-| not granted | `$SYS.REQ.SERVER.*`, `$SYS.ACCOUNT.>` | no KICK, no reload, no cross-tenant event feed |
+| not granted | `$SYS.REQ.SERVER.*`, `$SYS.ACCOUNT.>` | no KICK, no reload, no cross-tenant event feed, and no reach to the backward-compatible `$SYS.ACCOUNT.<id>.CLAIMS.UPDATE` alias, which lands on the same handler as the granted form under a different subject and so would step around the system-account deny above (R10) |
 | sub allow | its own scoped reply-inbox prefix | the proof reads replies and serves nothing |
 
 **Holder.** The U2 writer-lease holder, one process, and neither daemon. The auth service holds no
@@ -391,8 +401,8 @@ what makes property 1 of §6.2 a bound rather than a hole.
 | where the signer lives | the platform's key store. Today the system signing seed is discarded once a space is provisioned, which is why a `$SYS` cred cannot be re-minted later (`provision.ts:2370`, `:2413`). That is right for a workstation and impossible for a control plane that must re-mint, so P7 retains it for the hosted broker and leaves `cotal up` as it is |
 | lifetime | bounded, non-reconnecting, re-minted per lease term rather than standing indefinitely |
 | revocation | system-account rotation, the same path the observer and evictor already have |
-| compromise | the holder can push a structurally valid claim for any tenant account, and by §6.2 property 1 the effect is a durable denial: that account fails validation at every lookup and across restarts. It cannot mint anything the broker trusts, and it cannot touch the system account |
-| recovery | another push, unless the hostile claim carried a future-dated `iat`, which the store's skip rule makes unpushable-over. That case is recoverable only by the operator-key delete, which is the second reason §6.8 keeps that ceremony rehearsed |
+| compromise | the holder can push a structurally valid claim for any tenant account. By §6.2 property 1 the effect is a durable denial: that account fails validation at every lookup and across restarts. By property 2 it can also roll a tenant's claim back to older content, since the store applies no ordering. It cannot mint anything the broker trusts, and it cannot touch the system account |
+| recovery | another push, always. The store applies no freshness rule (§6.2, property 2), so no claim is unpushable-over and no `iat` value strands an account against the legitimate mutator. Recovery is bounded by detection time rather than by the store, which is what makes §6.6's reconciliation required rather than optional |
 | detection | the periodic reconciliation in §6.6, which is what makes a strand visible within one interval instead of at a tenant's next connect |
 
 ### 6.4 A space is an account pair, and so is its saga
@@ -408,13 +418,15 @@ describe its own topology.
 | why that order | the callout account's claim names the data account. A trusted callout over an unknown data account authenticates a connect and then fails to bind it, which reads as a broker fault rather than as an unprovisioned space | the callout account is where connects authenticate, so retiring it first refuses at authenticate. Retiring the data account first leaves a callout that authenticates and cannot bind, which is the same wrong error later in the path |
 | torn state | `pair-partial`, recording which half is proven | `pair-partial`, same |
 | what a torn state serves | nothing. No daemon adds a space until both halves are proven (§3.4), so a partial pair is inert rather than half-serving | nothing. The daemons already dropped the space |
-| resume | re-push the unproven half and leave the proven half alone. Forward-only, never a rollback of the first half | re-drive the remaining half |
+| resume | re-push the unproven half with the bytes recorded at intent time, and leave the proven half alone. Forward-only, never a rollback of the first half | re-drive the remaining half the same way |
 | digest | the pair digests as a pair, so a torn pair is distinguishable from a complete one and from an absent space (§6.6) | the same |
 
-Resume is idempotent by construction: a re-push of byte-identical content read-backs as proven, and
-at the server it lands on the same-`jti` skip, so re-pushing a half that actually landed is a no-op
-rather than a second mutation. This is the one place where §6.2's ack-is-not-a-write property helps
-rather than hurts, and it only helps because the proof is a content read-back rather than the ack.
+Resume re-pushes the bytes recorded at intent time and never re-signs a second claim, which is
+§6.5 rule 3 applied to one half of a pair. A byte-identical re-push read-backs as proven, and at the
+server it lands on the byte-hash skip, the one case the store does not rewrite (§6.2, property 2).
+So re-pushing a half that did land is a no-op rather than a second mutation, and re-pushing a half
+that did not land writes it. Both branches are decidable because the proof is a content read-back
+rather than the ack.
 
 ### 6.5 What counts as proof
 
@@ -422,7 +434,8 @@ A **PROVEN PUSH** is all three of the following. Any one of them missing is an *
 which is not a commit.
 
 1. **Accepted.** At least one update reply for the target account carrying a success status. Necessary
-   and not sufficient: the ack is returned for writes the store discarded (§6.2, property 2).
+   and not sufficient: the same ack is returned for a push the store skipped as byte-identical and for
+   one that overwrote a newer claim (§6.2, property 2).
 2. **Content read-back.** A `$SYS.REQ.ACCOUNT.<id>.CLAIMS.LOOKUP`, collected for the whole request
    window rather than stopping at the first reply, where at least one reply arrived and every reply
    body is byte-identical to the pushed JWT. An empty reply is absence and fails the predicate; a
@@ -439,20 +452,28 @@ prove completeness nor be flipped into requiring a named server's reply without 
 (`SPEC.md:3554`, `:3568`). A server on the declared roster that did not answer leaves the push
 unproven, and the saga fails closed rather than committing.
 
-Three ordering rules make the predicate decidable:
+Three mutator-side rules carry the ordering the server does not:
 
-- Every push carries a fresh `jti`. Without one, a content change to a claim that reuses its id is
-  discarded at the same-`jti` skip and acked as applied.
-- Every push carries an `iat` strictly greater than the stored claim's. The mutator reads the current
-  claim first and, when the wall clock has not passed it, waits: `iat` is second-granularity, so two
-  pushes inside one second are not ordered.
-- An unproven push is re-driven with a fresh `jti` and `iat`, never retried byte-identically after a
-  handoff, because a byte-identical retry cannot distinguish "landed" from "skipped" on its own. The
-  content read-back is what resolves that, and it resolves it in both directions.
+- Every new mutation intent mints a claim with a fresh `jti`. Not because the server would otherwise
+  discard it, which §6.2 property 2 rules out, but because the inventory digest and the read-back
+  identify content as `(accountId, jti, sha256(jwt))` (§6.6). Two different bodies sharing an id are
+  indistinguishable in that digest and in an operator's own read of the resolver dir.
+- Every new intent carries an `iat` strictly greater than the stored claim's. The mutator reads the
+  current claim first and, when the wall clock has not passed it, waits: `iat` is second-granularity,
+  so two intents inside one second are not ordered. This is a record the mutator writes, not a rule
+  the server applies. It makes the intent order total and readable after the fact. It stops no stale
+  writer, and the TORN WRITE row in §6.6 names what does.
+- An unproven push is re-driven with the **same bytes**, from the claim recorded at intent time, and
+  is never re-signed into a second body. A re-signed retry is a second distinct claim, and since the
+  store applies whichever arrives last, a slow first attempt can land after it and win. Identical
+  bytes cannot invert: the store either writes them or skips them, and the stored state is the same
+  either way. The content read-back then distinguishes "landed" from "skipped", in both directions.
+  A fresh `jti` belongs to a new intent, not to a retry of an old one.
 
 What this proves: the claim is stored, with the content pushed, on every server the mutator knows
 about. What it does not prove: anything about a server the inventory does not name. A broker whose
-membership can change without the inventory changing is outside this design (§14, P9).
+membership can change without the inventory changing is outside this design (§14, P9), and the
+predicate itself has to be restated before that boundary moves (R8).
 
 ### 6.6 Reconciling with the U2 CAS inventory
 
@@ -461,7 +482,7 @@ of that, changes the artifact, and changes two of the failure modes.
 
 | U2 element | Under the full resolver |
 |---|---|
-| writer lease | unchanged: one mutator at a time, still TTL-leased |
+| writer lease | unchanged in shape, load-bearing in a way it was not under the config file: see TORN WRITE below |
 | generation and the CAS points | unchanged in shape: intent, proof and commit are still bracketed |
 | `configDigest` | becomes a digest over claim **content**: per account `(accountId, jti, sha256(jwt))`, and per space the pair of them (§6.4). Not the account set, which `CLAIMS.LIST` could serve and which no content-only mutation moves |
 | abort-before-rename fence | becomes abort-before-push, at the same point and for the same reason |
@@ -469,7 +490,7 @@ of that, changes the artifact, and changes two of the failure modes.
 | forward-only once proven | holds harder, since undoing a pushed claim is another push and so is forward motion by construction |
 | SILENT EVICTION and RESURRECTION | narrowed: no whole-file rewrite exists, so an unrelated tenant's mutation can no longer drop or restore this account |
 | TORN READ | unchanged |
-| TORN WRITE | changed, not unchanged. The new artifact has an ack that is not a commit and a stale-`iat` push that is discarded silently, neither of which the config file had. §6.5's `jti` and `iat` rules plus the content read-back are what keep it detectable, and they are load-bearing rather than hygiene |
+| TORN WRITE | changed, and worse than the config file in one direction. The store applies no freshness rule (§6.2, property 2), so a stale or duplicate mutator does not have its push discarded: it silently overwrites a newer claim with older content, up to and including rolling a removed tenant's expired claim (§6.8) back to a live one. The writer lease is therefore the only thing preventing that rollback, not one control among several, and the design does not get to share the load with the store. The content read-back and the reconciliation interval bound how long such a write goes unnoticed; neither prevents it. §6.5's same-bytes resume rule exists so that a mutator's own retries cannot cause it |
 | FAIL-CLOSED ON UNCERTAINTY | unchanged, and it is what an unproven push resolves to |
 
 Two things the per-account artifact adds. U2's hardest cases came from one artifact carrying every
@@ -506,12 +527,15 @@ So removal on the tenant path is not a delete.
 | 3 | Push the data account's claim the same way | the resolver-admin credential |
 | 4 | Delete both from the resolver dir, after the retention window | an operator-key ceremony, offline, not on the tenant path |
 
-An expired claim fails the fetch-time validation, and an already-loaded account fails its next
-lookup, so step 2 stops new connects into the callout account and step 3 does the same for the data
-account. Both are ordinary pushes, so both carry the §6.5 proof and stay on the same forward-only
+An expired claim fails the fetch-time validation (§6.2, property 1), and an already-loaded account
+fails its next lookup, so step 2 stops new connects into the callout account and step 3 does the same
+for the data account. Both are ordinary pushes, so both carry the §6.5 proof and stay on the same forward-only
 path as every other mutation, and both are reversible by a further push while the material still
-exists. Step 4 is garbage collection under human authority, and it is also the only recovery from the
-future-dated `iat` strand in §6.3, which is the argument for rehearsing it rather than describing it.
+exists. Step 4 is garbage collection under human authority. It is not a recovery path: §6.3's recovery is
+another push, because the store applies no freshness rule (§6.2, property 2). What argues for
+rehearsing the ceremony rather than describing it is that it is the only way material leaves the
+resolver dir at all, and a retention window that never drains is a dir that grows with every tenant
+the platform has ever had.
 
 Two limits stated rather than implied. Expiry stops new connects; it does not kill live ones, and
 killing live connections is the eviction path that already exists (`provision.ts:2398`) and is not
@@ -520,12 +544,26 @@ part of this design (R7). And the order in the table is the inverse of the add o
 
 ### 6.9 The version floor
 
-This design turns on five behaviors of an external component: the per-account update's subject-to-claim
-check, the ack-without-write skip, `CLAIMS.LIST` returning ids, `CLAIMS.LOOKUP` returning content with
-no server identity, and the operator-gated delete. Not all of them are documented, and §6.3 and §6.5
-are built on top of them. They were read in `nats-server` v2.14.6. The hosted broker pins a minimum
-version, and a smoke asserts all five so a server upgrade cannot move them without going red
-(prerequisite P8).
+This design turns on seven behaviors of an external component, most of them undocumented. They were
+read in `nats-server` v2.14.6, which is the floor the hosted broker pins. A smoke asserts each one,
+so a server upgrade cannot move it without going red (prerequisite P8).
+
+| # | Behavior | What a move does |
+|---|---|---|
+| 1 | the per-account update refuses a claim whose subject is not the account in the subject token | §6.3's credential stops being scopeable, and the push fails loud |
+| 2 | the update path stores unconditionally and skips only a byte-identical body, with no `jti` and no `iat` rule | a tightening discards live pushes, which the content read-back catches; a loosening cannot make §6.6's ordering analysis worse than it already states |
+| 3 | `CLAIMS.LIST` answers with account ids and no bodies | reconciliation reads more than it asked for, and sees that it did |
+| 4 | `CLAIMS.LOOKUP` answers with the stored claim itself and no server identity | §6.5's byte-identity proof loses its input, and the predicate fails closed |
+| 5 | the delete is gated on a self-signed JWT from a trusted operator key and refuses the system account | §6.8's authority split stops holding, and the ceremony fails loud |
+| 6 | update-time validation is non-blocking on time, so an expired claim is accepted for storage | §6.8's removal pushes start being refused: loud, and safe |
+| 7 | fetch-time validation requires a trusted issuer and refuses an expired claim | **silent.** A removed tenant keeps authenticating and nothing else in this design goes red |
+
+Behaviors 6 and 7 are the asymmetry that §6.2 property 1 and the whole of §6.8 rest on, and they are
+why the smoke is a prerequisite rather than hygiene. Six of the seven fail loud when they move, and
+7 does not: a tenant removal that quietly stops removing is the one failure this design cannot see
+from its own side. Treat the list as the smoke's contract rather than as a closed count. Any further
+server behavior that §6.3, §6.5 or §6.8 comes to rest on is added here and to the smoke in the same
+change.
 
 ## 7. The seam an embedding calls
 
@@ -537,6 +575,7 @@ version, and a smoke asserts all five so a server upgrade cannot move them witho
 | `remintDaemonCreds(root, space, store, opts)` | unchanged, and called per space by the auth handle's own timer rather than by a manager (§5.2) |
 | `serverConfig(broker, spaces, opts)` | unchanged for the local shape; the hosted shape renders the resolver stanza and pushes (§6) |
 | `createBrokerAuth`, `createSpaceAccountAuth`, `SecretStore` | unchanged |
+| the credential matrix records the two daemon creds as manager-renewed (`provision.ts:197`, `:198`) | the same rows, owned by the space's authority plane (§5.2, R9) |
 | no resolver-admin profile exists | a new `$SYS` profile minted alongside the observer and evictor (§6.3, P7) |
 
 The multi-space entry points take an options object rather than `ParsedArgs`. `ParsedArgs` is the
@@ -578,7 +617,7 @@ re-read as a question about blast radius, and they do not all answer the same wa
 | store read fails for one space | start fails | that `add` fails | add is per space and fails alone |
 | daemon cred renewal fails for one space | the manager records it, that space rides to expiry | unchanged per space | the re-signer is per space and per file (§5.2) |
 | membership arm will not start | that space degrades, fail-soft | unchanged | already per space |
-| resolver-admin credential compromised | no such credential exists | every tenant account can be stranded | scoped profile, separate holder, system account denied, reconciliation (§6.3, §6.6) |
+| resolver-admin credential compromised | no such credential exists | every tenant account can be stranded or rolled back to older content | scoped profile, separate holder, system account denied, reconciliation within one interval (§6.3, §6.6) |
 
 ### 8.1 A fenced plane must stop answering, not necessarily exit
 
@@ -642,8 +681,10 @@ dir. A read-back that only asks whether the account is present therefore passes 
 sent, and would prove nothing about the push path while step 3 is the step that removes the other
 trust source. Pushing a claim with a **new** `jti` makes the read-back discriminating: a content
 read-back that matches the new bytes could only have come from the push, because the preloaded copy
-carries the old id. Step 3 is gated on that proof holding for every account in the inventory, plus a
-`CLAIMS.LIST` that returns no id the inventory does not know.
+carries the old id. The preloaded copy does not stand in the way of the push either, whatever its
+`iat`, since the update path overwrites unconditionally (§6.2, property 2). Step 3 is gated on that
+proof holding for every account in the inventory, plus a `CLAIMS.LIST` that returns no id the
+inventory does not know.
 
 Step 5 is stop-then-add, not add-then-stop, and the order is enforced rather than remembered: the
 plane claim and the delivery lease both refuse a second holder, so an overlap is a refusal to start,
@@ -729,8 +770,17 @@ Stated plainly, because several parts of this design look like protocol changes 
 11. **Deleting the account JWT on the tenant-facing removal path.** Delete requires the operator key
     online (§6.8), which is more authority than any per-tenant operation should need. The tenant path
     expires the claim; the delete is an offline ceremony.
+12. **Re-driving an unproven push with a re-signed claim.** The obvious retry, and the wrong one
+    here. The store applies whichever body arrives last (§6.2, property 2), so a re-signed retry and
+    a slow first attempt are two different bodies racing with no tiebreak, and the loser can be the
+    newer one. Re-pushing the recorded bytes has no such race: the store either writes them or skips
+    them, and the state is the same. §6.5 rule 3 takes the second, and §6.4's pair resume is that
+    rule on one half of a pair.
 
 ## 12. Prerequisites
+
+P-numbers here are local to this document. The sibling designs number their own prerequisites, and
+the two sets are unrelated.
 
 | # | Prerequisite | Why |
 |---|---|---|
@@ -741,7 +791,7 @@ Stated plainly, because several parts of this design look like protocol changes 
 | P5 | A verified-close primitive for the fence path, over the account-scoped sweep the plane already reaches (`service.ts:253`) | §8.1 step 3 turns on proving connections are gone, not assuming it. Its per-account observation cost at N tenants is R6 |
 | P6 | Measured broker capacity | thousands of accounts on a full resolver, N callout connections per process, and the resolver sync interval all need numbers before N is chosen. This design asserts none (R2) |
 | P7 | The resolver-admin profile in the provisioning path, and a retained system-account signing key for the hosted broker | §6.3 needs a credential that does not exist, and a signer that today is discarded once provisioning finishes (`provision.ts:2370`). `cotal up` keeps discarding it |
-| P8 | A pinned `nats-server` floor and a smoke over the five behaviors in §6.9 | §6.3 and §6.5 are built on an external component's undocumented behavior; an upgrade must go red rather than move it silently |
+| P8 | A pinned `nats-server` floor and a smoke over the seven behaviors in §6.9, both sides of the update/fetch expiry asymmetry included | §6.3, §6.5 and §6.8 are built on an external component's largely undocumented behavior. Six of the seven fail loud when they move; behavior 7 fails silently, and it is the one that carries tenant removal |
 | P9 | An authoritative server incarnation/roster authority, before any clustered broker | SPEC 13.13 makes a plane-reclaim `gone` verdict valid only under one nats-server process and names this as what replaces the proof (`SPEC.md:3568`). Without it, §8.1 step 3 does not hold on a cluster |
 
 ## 13. Named residuals
@@ -775,6 +825,25 @@ each is a decision it defers.
 - **R7 live connections and expiry removal.** §6.8 stops new connects and does not kill live ones.
   Whether a tenant removal should also evict live connections, over the KICK path that already exists
   (`provision.ts:2398`), is a policy decision this design does not take.
+- **R8 roster attribution past one broker process.** §6.5 clause 2 collects content read-backs over
+  the whole window, and the lookup reply carries no server identity; clause 3 builds its roster from
+  update replies, which do carry one. At §1's single-process boundary the two compose without
+  argument, because there is one server for either to be about. They stop composing the moment P9
+  lifts that boundary: a content reply cannot be attributed to the server that sent it, so "stored on
+  every server the mutator knows about" needs a different construction. Restate the predicate as part
+  of P9 rather than after it.
+- **R9 the credential matrix's renewal owner.** `renewalOwner` is recorded as data in the credential
+  matrix, `"manager"` for the delivery and membership-rw creds (`provision.ts:197`, `:198`). §5.2
+  moves those two to the space's authority plane. The vocabulary already carries an `"auth-service"`
+  owner for another credential (`:221`), so this is a value change on existing rows rather than a new
+  owner kind, but neither §7's seam list nor §12's prerequisites names the matrix as something the
+  multi-space seam touches.
+- **R10 the legacy update alias.** `$SYS.ACCOUNT.<id>.CLAIMS.UPDATE` is a backward-compatible alias
+  that reaches the same per-account handler as the `$SYS.REQ.` form this design pushes on. §6.3's
+  profile is an explicit allowlist that never grants `$SYS.ACCOUNT.>`, so the credential cannot reach
+  the alias and the design is safe as written. What the build owes is the standing constraint: if
+  that allowlist is ever broadened, for an event feed or anything else, the system-account deny has
+  to grow the alias with it in the same change, or the deny stops meaning what §6.3 says it means.
 
 ## 14. Out of scope
 
