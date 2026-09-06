@@ -32,6 +32,7 @@ export class SeatClient {
   private output = new Map<number, (data: Buffer) => void>();
   private exits = new Set<() => void>();
   private helloInfo: HelloInfo | undefined;
+  private pendingExit = false;
   private closed = false;
 
   constructor(private readonly record: SeatRecord) {}
@@ -71,7 +72,7 @@ export class SeatClient {
       pid: reply.pid,
       cols: reply.cols,
       rows: reply.rows,
-      status: reply.status,
+      status: this.pendingExit ? "exited" : reply.status,
       ...(reply.exit ? { exit: reply.exit } : {}),
     };
     return this.helloInfo;
@@ -100,7 +101,7 @@ export class SeatClient {
   }
 
   onExit(fn: () => void): () => void {
-    if (this.helloInfo?.status === "exited") {
+    if (this.helloInfo?.status === "exited" || this.pendingExit) {
       queueMicrotask(fn);
       return () => {};
     }
@@ -174,6 +175,7 @@ export class SeatClient {
       }
       if (msg.event === "exit") {
         if (this.helloInfo) this.helloInfo.status = "exited";
+        else this.pendingExit = true;
         for (const fn of this.exits) fn();
         this.exits.clear();
       }

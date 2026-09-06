@@ -172,6 +172,30 @@ try {
   {
     const rec = launchSeat({
       root,
+      name: "fast-exit",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "process.exit(3)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    const h = adoptSeatSync(rec);
+    handles.push(h);
+    let fired = false;
+    h.attach().onExit(() => {
+      fired = true;
+    });
+    check(
+      "onExit fires for a child that exits before hello",
+      await until(() => fired, 5_000),
+      { fired, status: h.status() },
+    );
+  }
+
+  {
+    const rec = launchSeat({
+      root,
       name: "natural",
       spec: {
         command: process.execPath,

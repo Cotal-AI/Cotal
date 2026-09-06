@@ -238,7 +238,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           return;
         }
         session.setAuthed(true);
-        controllers.add(sock);
         if (alive && childGone()) markExited({});
         send(sock, {
           id: req.id,
@@ -251,6 +250,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           status: alive ? "running" : "exited",
           ...(exit ? { exit } : {}),
         });
+        controllers.add(sock);
+        if (!alive) send(sock, { event: "exit" });
         return;
       }
       case "snapshot": {

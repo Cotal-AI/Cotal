@@ -35,6 +35,16 @@
       "expectRed": "onExit fires without an output subscription",
       "cell": "onExit fires without an output subscription",
       "note": "Manager readiness onExit does not subscribe to output. Output-only notify is the CI M3 process-exit miss."
+    },
+    {
+      "name": "M4 skip already-dead onExit",
+      "file": "packages/seat/src/client.ts",
+      "find": "    if (this.helloInfo?.status === \"exited\" || this.pendingExit) {",
+      "replace": "    if (false && (this.helloInfo?.status === \"exited\" || this.pendingExit)) {",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "onExit fires for a child that exits before hello",
+      "cell": "onExit fires for a child that exits before hello",
+      "note": "A child that exits before attach must still fire onExit. Manager readiness uses that path without an output subscription."
     }
   ]
 }
