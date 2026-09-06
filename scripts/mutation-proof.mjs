@@ -265,6 +265,12 @@ function proveOne(m, opts) {
     return ok;
   };
 
+  // Declared OUTSIDE the try so the catch can read it. `const` inside the block made the catch's
+  // `transcript` a ReferenceError, so a harness throw after the run would have been replaced by
+  // "transcript is not defined" and the original error lost (rel-b, #1328 re-grade). Undefined
+  // until the run happens, which is what the reporter reads as "no run" — correct for a throw
+  // before the run, and the excerpt for a throw after it.
+  let transcript;
   try {
     writeFileSync(path, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
@@ -281,7 +287,7 @@ function proveOne(m, opts) {
     // there instead. `manager-runtime-deps` sat red on main and on a release PR for a day in
     // exactly that state: four cells at `0 marks (baseline 54)`, reproducible on nobody's machine,
     // and the one artifact that would have named the cause discarded on every run.
-    const transcript = excerpt(r.output);
+    transcript = excerpt(r.output);
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
