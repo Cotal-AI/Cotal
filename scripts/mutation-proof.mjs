@@ -53,11 +53,31 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
-/** label -> the mutated run's combined stdout+stderr, echoed under any non-KILL verdict. */
-const transcripts = new Map();
-/** Lines of transcript to echo. Enough to carry a stack or an early exit, short enough that a
- *  fixture with several non-kills does not bury the summary. */
-const TRANSCRIPT_TAIL = 20;
+/** Lines of transcript to echo from each end. Enough to carry a stack or an early exit, short
+ *  enough that a fixture with several non-kills does not bury the summary. HEAD AND TAIL, not tail
+ *  alone: the cause of a red is as often the first line (a throw before any cell ran, a missing
+ *  module, `0 marks (baseline 54)` with its reason printed once at the top) as the last, and a
+ *  tail-only echo prints twenty lines of teardown and omits the one line the feature exists for.
+ *  Measured by the #1328 reviewer: an early cause followed by 25 teardown lines echoed
+ *  `… 6 earlier line(s) omitted` and the cause was among the six. */
+const EXCERPT_HEAD = 10;
+const EXCERPT_TAIL = 10;
+/**
+ * Bound a run's combined output to head + tail lines, at capture time. Carried ON THE RESULT, not
+ * in a map keyed by label: duplicate mutation names are accepted by the fixture format, and a
+ * label-keyed map let a later mutation overwrite an earlier one's transcript, so two WRONG-REDs
+ * echoed the same (second) run's output. A diagnostic that attributes run A's evidence to run B is
+ * worse than the discarded transcript it replaced. Bounding at capture also caps retention: the
+ * old map held every KILL's full output until reporting, 99 mutations × a 64 MiB capture ceiling.
+ */
+const excerpt = (output) => {
+  const t = (output ?? "").replace(/\s+$/, "");
+  if (t === "") return { head: [], tail: [], omitted: 0, empty: true };
+  const lines = t.split("\n");
+  if (lines.length <= EXCERPT_HEAD + EXCERPT_TAIL) return { head: lines, tail: [], omitted: 0, empty: false };
+  return { head: lines.slice(0, EXCERPT_HEAD), tail: lines.slice(-EXCERPT_TAIL),
+    omitted: lines.length - EXCERPT_HEAD - EXCERPT_TAIL, empty: false };
+};
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
@@ -261,13 +281,13 @@ function proveOne(m, opts) {
     // there instead. `manager-runtime-deps` sat red on main and on a release PR for a day in
     // exactly that state: four cells at `0 marks (baseline 54)`, reproducible on nobody's machine,
     // and the one artifact that would have named the cause discarded on every run.
-    transcripts.set(label, r.output);
+    const transcript = excerpt(r.output);
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
-    if (!restored) return { label, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
+    if (!restored) return { label, transcript, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
 
-    if (r.timedOut) return { label, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
+    if (r.timedOut) return { label, transcript, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
     // ---- FIRST QUESTION, ON EVERY PATH: did this run actually execute the check being graded? ---
     //
@@ -317,16 +337,16 @@ function proveOne(m, opts) {
       // Green after barely running is not a survivor — it is a run that never reached the check,
       // which is the fourth lie listed at the top of this file.
       if (short) {
-        return { label, verdict: "INCONCLUSIVE",
+        return { label, transcript, verdict: "INCONCLUSIVE",
           why: `exited 0 but reached only ${ticks} progress marks (expected ≥ ${opts.minTicks}) — the suite did not run far enough for its pass to mean anything`, ticks };
       }
       if (baseHits.size > 0 && named.length === 0) {
-        return { label, verdict: "INCONCLUSIVE",
+        return { label, transcript, verdict: "INCONCLUSIVE",
           why: `exited 0 but never printed the named assertion at all (the green run prints it) — the cell did not run, so its "pass" is about nothing`, ticks };
       }
       const changed = named.find((l) => !baseHits.has(l));
       if (changed !== undefined) {
-        return { label, verdict: "INCONCLUSIVE",
+        return { label, transcript, verdict: "INCONCLUSIVE",
           why: `exited 0, but the named assertion did NOT print what it prints when green (${JSON.stringify(changed.trim())}) — the suite noticed and something swallowed the exit code; a green status is not a pass`, ticks };
       }
       // The remaining swallow: OTHER cells reddened, the NAMED one stayed green, and teardown
@@ -343,7 +363,7 @@ function proveOne(m, opts) {
       // produce. Mark count cannot tell "never saw the mutation" from "saw it and does not care";
       // both are silent by construction. That question is answered by the module SPECIFIER, not here.
       if (baseTicks > 0 && ticks < baseTicks) {
-        return { label, verdict: "INCONCLUSIVE",
+        return { label, transcript, verdict: "INCONCLUSIVE",
           why: `exited 0 with ${ticks} progress marks against the green run's ${baseTicks} — the named assertion held, but cells that print when green did not print here, so the suite did NOT pass and something swallowed the exit code`, ticks };
       }
       // A SURVIVED whose named assertion never appears in the GREEN run either is still a survivor
@@ -359,16 +379,16 @@ function proveOne(m, opts) {
           + " prints nothing on a pass (absence is normal) or it does not contain that cell at all"
           + " (wrong `command`, or a stale `expectRed`). Check before trusting this verdict."
         : "";
-      return { label, verdict: "SURVIVED",
+      return { label, transcript, verdict: "SURVIVED",
         why: `the suite PASSED with the implementation broken — it does not test this${blind}`, ticks };
     }
 
     if (named.length === 0) {
-      return { label, verdict: "WRONG-RED",
+      return { label, transcript, verdict: "WRONG-RED",
         why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`, ticks };
     }
     if (baseHits.size > 0 && named.every((l) => baseHits.has(l))) {
-      return { label, verdict: "WRONG-RED",
+      return { label, transcript, verdict: "WRONG-RED",
         why: `exited ${r.status}, but the named assertion printed exactly what it prints when GREEN `
            + `(${JSON.stringify(named[0].trim())}) — it did not go red, so this red is some other failure`, ticks };
     }
@@ -409,10 +429,10 @@ function proveOne(m, opts) {
         ticks,
       };
     }
-    return { label, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
+    return { label, transcript, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
   } catch (e) {
     restore();
-    return { label, verdict: "ERROR", why: `harness threw: ${e.message}` };
+    return { label, transcript, verdict: "ERROR", why: `harness threw: ${e.message}` };
   }
 }
 
@@ -545,14 +565,17 @@ for (const r of results) {
   // then thrown away. Echo it, so a red fixture is diagnosable from the log instead of requiring
   // someone to reproduce a CI environment. Costs nothing on a clean run, which prints none.
   if (!good) {
-    const t = (transcripts.get(r.label) ?? "").replace(/\s+$/, "");
-    if (t === "") {
+    const t = r.transcript;
+    if (t === undefined) {
+      // ERROR verdicts raised before the run (target not found, no expectRed, identical file) never
+      // executed anything, so there is no transcript and saying so is the honest line.
+      say(`  ${C.dim}  (no run: this verdict was reached before the suite was executed)${C.off}`);
+    } else if (t.empty) {
       say(`  ${C.dim}  (the run produced NO output at all — it failed before writing anything)${C.off}`);
     } else {
-      const lines = t.split("\n");
-      const tail = lines.slice(-TRANSCRIPT_TAIL);
-      if (lines.length > TRANSCRIPT_TAIL) say(`  ${C.dim}  … ${lines.length - TRANSCRIPT_TAIL} earlier line(s) omitted${C.off}`);
-      for (const l of tail) say(`  ${C.dim}  | ${l}${C.off}`);
+      for (const l of t.head) say(`  ${C.dim}  | ${l}${C.off}`);
+      if (t.omitted > 0) say(`  ${C.dim}  … ${t.omitted} middle line(s) omitted${C.off}`);
+      for (const l of t.tail) say(`  ${C.dim}  | ${l}${C.off}`);
     }
   }
 }
