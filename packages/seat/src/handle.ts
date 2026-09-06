@@ -116,8 +116,6 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
           pendingOutput = pendingOutput.then(() => outputReady);
           later(async (c) => {
             try {
-              const snap = await c.snapshot();
-              if (!cancelled && snap.data) fn(Buffer.from(snap.data, "utf8"));
               const u = await c.subscribeOutput(fn);
               unsub = u;
               if (cancelled) {
