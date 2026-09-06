@@ -128,12 +128,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   proc.onData((d) => {
     term.write(d);
-    const retainEarlyForSubscribeReplay = d;
     if (early.length < MAX_FRAME_SIZE) {
-      early +=
-        early.length + retainEarlyForSubscribeReplay.length > MAX_FRAME_SIZE
-          ? retainEarlyForSubscribeReplay.slice(0, MAX_FRAME_SIZE - early.length)
-          : retainEarlyForSubscribeReplay;
+      early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;
     }
     const encoded = Buffer.from(d, "utf8").toString("base64");
     for (const [sub, socks] of dataSubs) {

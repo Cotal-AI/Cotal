@@ -20,8 +20,8 @@
     {
       "name": "M2 skip early-buffer accumulation",
       "file": "packages/seat/src/custodian.ts",
-      "find": "    const retainEarlyForSubscribeReplay = d;",
-      "replace": "    const retainEarlyForSubscribeReplay = \"\";",
+      "find": "    if (early.length < MAX_FRAME_SIZE) {\n      early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;\n    }",
+      "replace": "    void d;",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "capture is valid (child emitted the sentinel)",
       "cell": "capture is valid (child emitted the sentinel)",
