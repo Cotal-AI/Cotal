@@ -187,6 +187,12 @@ try {
       await until(() => state(rec.childPid) === "gone" || state(rec.childPid) === "Z", 5_000),
       state(rec.childPid),
     );
+    await h.attach().backlog();
+    check(
+      "handle already observed exit before a late onExit subscribe",
+      await until(() => h.status() === "exited", 5_000),
+      h.status(),
+    );
     let fired = false;
     h.attach().onExit(() => {
       fired = true;
