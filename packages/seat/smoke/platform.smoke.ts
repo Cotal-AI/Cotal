@@ -78,6 +78,19 @@ if (process.platform !== "linux") {
     manifest.files,
   );
 
+  if (process.platform !== "linux") {
+    const compile = spawnSync(process.execPath, [join(pkgRoot, "scripts", "build-native.mjs")], {
+      cwd: pkgRoot,
+      encoding: "utf8",
+    });
+    check(
+      "source compile is a no-op off linux so Windows build does not need headers or a C compiler",
+      compile.status === 0,
+      { status: compile.status, stdout: compile.stdout, stderr: compile.stderr },
+    );
+  }
+
+  if (process.platform === "linux") {
   {
     const blocked = mkdtempSync(join(tmpdir(), "cotal-seat-ncc-"));
     try {
@@ -191,6 +204,7 @@ if (process.platform !== "linux") {
     }
   } finally {
     rmSync(packDir, { recursive: true, force: true });
+  }
   }
 }
 
