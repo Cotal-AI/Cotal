@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+
+### Patch Changes
+
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+- Updated dependencies [e986173]
+  - @cotal-ai/core@0.46.0
+  - @cotal-ai/cli@0.46.0
+  - @cotal-ai/manager@0.46.0
+  - @cotal-ai/connector-core@0.46.0
+  - @cotal-ai/workspace@0.46.0
+  - @cotal-ai/runtime@0.46.0
+  - @cotal-ai/auth@0.46.0
+  - @cotal-ai/delivery@0.46.0
+
 ## 0.45.0
 
 ### Patch Changes
