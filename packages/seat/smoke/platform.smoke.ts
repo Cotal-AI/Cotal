@@ -70,10 +70,20 @@ if (process.platform !== "linux") {
   const here = dirname(fileURLToPath(import.meta.url));
   const pkgRoot = join(here, "..");
   const manifest = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as {
-    scripts?: { install?: string };
+    scripts?: { install?: string; prepack?: string; prepare?: string; prepublishOnly?: string };
     files?: string[];
   };
   check("customer install does not compile: package.json has no install script", manifest.scripts?.install === undefined, manifest.scripts);
+  check(
+    "prepack runs the shipped-natives assert",
+    manifest.scripts?.prepack === "node scripts/assert-shipped-natives.mjs",
+    manifest.scripts,
+  );
+  check(
+    "prepare is absent so install-from-git is not gated",
+    manifest.scripts?.prepare === undefined,
+    manifest.scripts,
+  );
   check(
     "no binding.gyp so npm/pnpm will not infer node-gyp rebuild on install",
     !existsSync(join(pkgRoot, "binding.gyp")),
@@ -282,9 +292,29 @@ if (process.platform !== "linux") {
 
   const packDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-"));
   try {
-    const packed = spawnSync("pnpm", ["pack", "--pack-destination", packDir], { cwd: pkgRoot, encoding: "utf8" });
+    // Inspect a host-only tree without running prepack. The gate is asserted on the next pack.
+    const packed = spawnSync("pnpm", ["--config.ignore-scripts=true", "pack", "--pack-destination", packDir], {
+      cwd: pkgRoot,
+      encoding: "utf8",
+    });
     const otherArch = process.arch === "x64" ? "arm64" : "x64";
     const otherPresent = existsSync(join(pkgRoot, "build", "Release", `linux-${otherArch}`, "peercred.node"));
+    const gatedDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-gated-"));
+    const gated = spawnSync("pnpm", ["pack", "--pack-destination", gatedDir], { cwd: pkgRoot, encoding: "utf8" });
+    if (!otherPresent) {
+      check(
+        "host-only pnpm pack is refused by prepack",
+        gated.status !== 0,
+        { status: gated.status, stdout: gated.stdout, stderr: gated.stderr },
+      );
+    } else {
+      check(
+        "assembled tree packs with scripts",
+        gated.status === 0,
+        { status: gated.status, stdout: gated.stdout, stderr: gated.stderr },
+      );
+    }
+    rmSync(gatedDir, { recursive: true, force: true });
     const tarball = readdirSync(packDir).find((name) => name.endsWith(".tgz"));
     check("pnpm pack wrote a tarball", packed.status === 0 && tarball !== undefined, {
       status: packed.status,

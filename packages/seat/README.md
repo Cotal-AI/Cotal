@@ -16,8 +16,9 @@ The Linux `SO_PEERCRED` helper is compiled for the host arch by `pnpm build`. Th
 developer tree, not a publishable one: it prints a host-dev-build banner and writes
 `build/Release/linux-<arch>/peercred.node`. Pack and publish require both `linux-x64`
 (ELF e_machine 62) and `linux-arm64` (ELF e_machine 183), copied in by
-`scripts/seat-assemble-natives.mjs` from native builder jobs. `prepublishOnly` asserts
-those two files and does not compile. The ARM load job installs the same packed tarball
+`scripts/seat-assemble-natives.mjs` from native builder jobs. `prepack` asserts
+those two files and does not compile. `prepublishOnly` runs the same assert on
+publish. The ARM load job installs the same packed tarball
 with no rebuild. The compile uses the `include/node` directory next to the running
 Node binary, not a hardcoded `/usr/include/node`. Off Linux the compile script is a no-op, so
 Windows `pnpm build` does not need headers or a C compiler. There is no `binding.gyp`, so

@@ -409,6 +409,7 @@
     "smoke:legacy-pty-custody": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/legacy-pty-custody.smoke.ts",
     "smoke:custodial-pty": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && tsx implementations/manager/smoke/custodial-pty.smoke.ts",
     "smoke:seat-platform": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/platform.smoke.ts",
+    "smoke:seat-native-ci": "tsx bin/smoke/seat-native-ci.smoke.ts",
     "smoke:seat-protocol": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/protocol.smoke.ts",
     "smoke:seat-lifecycle": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/lifecycle.smoke.ts",
     "smoke:seat-isolation": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/isolation.smoke.ts",

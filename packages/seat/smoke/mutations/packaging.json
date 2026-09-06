@@ -44,6 +44,15 @@
       "expectRed": "unsupported linux arch is loud",
       "cell": "unsupported linux arch is loud",
       "note": "The owed loud-fail names linux-x64 and linux-arm64 rather than a generic skip."
+    },
+    {
+      "name": "M5 drop the prepack gate",
+      "file": "packages/seat/package.json",
+      "find": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs\",\n",
+      "replace": "",
+      "expectRed": "host-only pnpm pack is refused by prepack",
+      "cell": "host-only pnpm pack is refused by prepack",
+      "note": "prepublishOnly does not run on pnpm pack. Removing prepack lets a host-only tree pack."
     }
   ]
 }

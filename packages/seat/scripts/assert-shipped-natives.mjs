@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
- * Pack/publish gate. `pnpm pack` / `pnpm publish` pack `files` as they sit on
- * disk. This script refuses a tree that would ship one Linux arch. It does not
- * compile. A host `pnpm build` is a one-arch dev build and is not enough.
+ * Pack and publish gate, hooked as `prepack` (and again as `prepublishOnly`).
+ * `prepack` runs for `pnpm pack` and `pnpm publish`. `prepare` is not used:
+ * it would also fire on install-from-git. This script refuses a tree that
+ * would ship one Linux arch. It does not compile. A host `pnpm build` is a
+ * one-arch dev build and is not enough.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
