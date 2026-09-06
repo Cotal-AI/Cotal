@@ -226,13 +226,12 @@ jobs:
       - name: OpenCode cooperative-stop smoke test
         run: pnpm smoke:opencode-coop
 
-  # Release-equivalent: pack @cotal-ai/seat once on the publishing arch (ubuntu-latest / x64),
-  # then load that SAME tarball on ubuntu-24.04-arm. Packing separately per arch would compile a
-  # matching binary on each runner and never see what a customer actually receives. The ARM job
-  # must RUN and print SEAT_SHIPPED_NATIVE RESULT=; a queued-never-started job is not a measurement.
-  seat-pack:
-    name: seat pack (publish arch)
-    timeout-minutes: 20
+  # Native linux-x64 and linux-arm64 SO_PEERCRED helpers, then one pack on x64
+  # that assembles BOTH into the tarball the ARM load job consumes unchanged.
+  # The ARM load job must not rebuild. A queued-never-started job is not a measurement.
+  seat-native-linux-x64:
+    name: seat native (linux-x64)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -242,26 +241,65 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Same first half as ci:publish (`pnpm build && pnpm publish -r`).
-      - name: Build
-        run: pnpm build
-      - name: Pack @cotal-ai/seat
-        run: |
-          set -eu
-          dest="${RUNNER_TEMP}/seat-pack"
-          mkdir -p "$dest"
-          pnpm --filter @cotal-ai/seat pack --pack-destination "$dest"
-          tarball="$(find "$dest" -maxdepth 1 -name '*.tgz' | head -n 1)"
-          test -n "$tarball" || { echo "no tarball from pnpm pack"; exit 2; }
-          echo "host=$(uname -m)"
-          echo "platform-arch=$(node -p 'process.platform + "-" + process.arch')"
-          echo "tarball=$tarball"
-          sha256sum "$tarball"
-          tar -tzf "$tarball" | grep -E 'peercred|build/' || true
-          native="packages/seat/build/Release/peercred.node"
-          test -f "$native" || { echo "publish-arch helper missing after build"; exit 2; }
-          file "$native"
-          readelf -h "$native" | grep -E 'Machine|Class' || true
+      - name: Build host native
+        run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: packages/seat/build/Release/linux-x64/peercred.node
+          if-no-files-found: error
+          retention-days: 7
+
+  seat-native-linux-arm64:
+    name: seat native (linux-arm64)
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build host native
+        run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: packages/seat/build/Release/linux-arm64/peercred.node
+          if-no-files-found: error
+          retention-days: 7
+
+  seat-pack:
+    name: seat pack (assembled)
+    timeout-minutes: 20
+    needs: [seat-native-linux-x64, seat-native-linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: TypeScript dist only
+        run: pnpm --filter @cotal-ai/seat exec tsc -p tsconfig.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: ${{ runner.temp }}/seat-native-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: ${{ runner.temp }}/seat-native-linux-arm64
+      - name: Assemble natives and pack
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          SEAT_PACK_DEST: ${{ runner.temp }}/seat-pack
+        run: sh scripts/ci-seat-pack.sh
       - uses: actions/upload-artifact@v4
         with:
           name: seat-npm-pack
@@ -289,6 +327,7 @@ jobs:
           echo "platform-arch=$(node -p 'process.platform + "-" + process.arch')"
           tarball="$(find "${RUNNER_TEMP}/seat-pack" -maxdepth 1 -name '*.tgz' | head -n 1)"
           test -n "$tarball" || { echo "downloaded artifact had no tarball"; exit 2; }
+          echo -n "load_sha256="
           sha256sum "$tarball"
           prefix="${RUNNER_TEMP}/seat-prefix"
           mkdir -p "$prefix"
@@ -310,7 +349,7 @@ jobs:
           import { pathToFileURL } from "node:url";
 
           const pkg = join(process.cwd(), "node_modules", "@cotal-ai", "seat");
-          const native = join(pkg, "build", "Release", "peercred.node");
+          const native = join(pkg, "build", "Release", `linux-${process.arch}`, "peercred.node");
           const loader = join(pkg, "dist", "peercred.js");
           const fileOut = spawnSync("file", [native], { encoding: "utf8" });
           console.log(`SEAT_SHIPPED_NATIVE host=${process.platform}-${process.arch}`);

@@ -55,6 +55,16 @@
       "expectRed": "fast-exit print reaches onData before onExit",
       "cell": "fast-exit print reaches onData before onExit",
       "note": "launchSeat returns after the child pid exists, so dump-then-exit bytes are already written. Live subscribe without replay is the env-isolate empty capture."
+    },
+    {
+      "name": "M6 leave the controller socket open after waitForExit",
+      "file": "packages/seat/src/handle.ts",
+      "find": "      } finally {\n        client.close();\n      }",
+      "replace": "      } finally {\n      }",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "waitForExit drops the controller socket so the worker can exit",
+      "cell": "waitForExit drops the controller socket so the worker can exit",
+      "note": "A live Unix socket after waitForExit keeps the manager event loop alive through spawn-detach teardown."
     }
   ]
 }

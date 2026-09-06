@@ -1,7 +1,7 @@
 /**
  * Seven behavior cells plus worker-death survival for one custodial seat.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -45,7 +45,11 @@ const state = (pid: number): string => {
 };
 
 const root = mkdtempSync(join(tmpdir(), "cotal-seat-life-"));
-const handles: Array<{ stop: (o?: { graceful?: boolean }) => void; record: { custodianPid: number; childPid: number } }> = [];
+const handles: Array<{
+  stop: (o?: { graceful?: boolean }) => void;
+  close?: () => void;
+  record: { custodianPid: number; childPid: number };
+}> = [];
 
 const collect = async (h: ReturnType<typeof adoptSeatSync>, ms = 800): Promise<string> => {
   const sess = h.attach();
@@ -254,6 +258,44 @@ try {
   }
 
   {
+    const leakRoot = mkdtempSync(join(tmpdir(), "sl-"));
+    try {
+      const here = dirname(fileURLToPath(import.meta.url));
+      const dist = join(here, "..", "dist");
+      const script = join(leakRoot, "drop-socket.mjs");
+      writeFileSync(
+        script,
+        `import { launchSeat, adoptSeatSync } from ${JSON.stringify(join(dist, "index.js"))};
+const rec = launchSeat({
+  root: ${JSON.stringify(leakRoot)},
+  name: "dropleak",
+  spec: { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } },
+  cwd: process.cwd(),
+});
+const h = adoptSeatSync(rec);
+h.stop({ graceful: false });
+await h.waitForExit();
+`,
+      );
+      const dropEnv = { ...process.env };
+      for (const key of Object.keys(dropEnv)) if (key.startsWith("COTAL_")) delete dropEnv[key];
+      const drop = spawnSync(process.execPath, [script], {
+        encoding: "utf8",
+        timeout: 8_000,
+        killSignal: "SIGKILL",
+        env: dropEnv,
+      });
+      check(
+        "waitForExit drops the controller socket so the worker can exit",
+        drop.status === 0 && drop.signal === null,
+        { status: drop.status, signal: drop.signal, stderr: drop.stderr },
+      );
+    } finally {
+      rmSync(leakRoot, { recursive: true, force: true });
+    }
+  }
+
+  {
     const rec = launchSeat({
       root,
       name: "grace",
@@ -274,6 +316,11 @@ try {
   for (const h of handles) {
     try {
       h.stop({ graceful: false });
+    } catch {
+      /* gone */
+    }
+    try {
+      h.close?.();
     } catch {
       /* gone */
     }

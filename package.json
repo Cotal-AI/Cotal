@@ -38,7 +38,7 @@
     "changeset": "changeset",
     "version": "changeset version",
     "ci:version": "pnpm build && pnpm changeset version && pnpm gen:tooldocs && pnpm gen:docsbundle",
-    "ci:publish": "pnpm build && pnpm publish -r --provenance --access=public --no-git-checks",
+    "ci:publish": "node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks",
     "smoke": "tsx packages/core/smoke.ts",
     "smoke:auth": "tsx packages/core/smoke-auth.ts",
     "smoke:lang-grammar": "tsx packages/lang/smoke/grammar.smoke.ts",

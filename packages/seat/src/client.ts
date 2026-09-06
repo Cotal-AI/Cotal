@@ -159,6 +159,8 @@ export class SeatClient {
     this.connecting?.destroy();
     this.connecting = undefined;
     this.sock?.destroy();
+    this.sock = undefined;
+    this.failAll(new Error("seat client is closed"));
   }
 
   private request<T extends Omit<ClientRequest, "id">>(body: T): Promise<ServerReply> {

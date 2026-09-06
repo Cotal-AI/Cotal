@@ -227,6 +227,7 @@ const detectorSays = (resolvedRoot: string, cwd: string): string => {
 
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
+  console.log("attach-auth-root: first-line");
   // ---- 1. the measurement is only valid in the selected unanchored tree -------------------------
   const walked = findCotalRoot(base);
   must(
@@ -435,8 +436,10 @@ try {
   // `nats-server` from this rig outlived its run by half an hour, and the reaper attributes a leak
   // like that to whichever suite was running.
   await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
+  console.log("attach-auth-root: manager-stop-returned");
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   releaseBroker?.();
+  console.log("attach-auth-root: finally-complete");
   // Manager.stop keeps NATS clients alive after the race returns. That pinned this
   // process past a green banner until the shard hour cap.
   process.exit(exitCode);

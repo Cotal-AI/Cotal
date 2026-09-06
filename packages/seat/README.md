@@ -12,13 +12,18 @@ named `custody transport unsupported on <platform>` error on darwin and win32. T
 in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
 Linux and only `adopt` throws that named error.
 
-The Linux `SO_PEERCRED` helper is compiled at package build / `prepublishOnly` and shipped as
-`build/Release/peercred.node`. The compile uses the `include/node` directory next to the running
+The Linux `SO_PEERCRED` helper is compiled for the host arch by `pnpm build`. That is a
+developer tree, not a publishable one: it prints a host-dev-build banner and writes
+`build/Release/linux-<arch>/peercred.node`. Pack and publish require both `linux-x64`
+(ELF e_machine 62) and `linux-arm64` (ELF e_machine 183), copied in by
+`scripts/seat-assemble-natives.mjs` from native builder jobs. `prepublishOnly` asserts
+those two files and does not compile. The ARM load job installs the same packed tarball
+with no rebuild. The compile uses the `include/node` directory next to the running
 Node binary, not a hardcoded `/usr/include/node`. Off Linux the compile script is a no-op, so
 Windows `pnpm build` does not need headers or a C compiler. There is no `binding.gyp`, so
 `pnpm install` does not infer `node-gyp rebuild`. Customer `npm i` does not compile it. A host
-without a C compiler installs the prebuilt binary; a missing helper at load time throws rather
-than compiling in place.
+without a C compiler installs the prebuilt helpers; a missing helper, an unsupported
+`linux-<arch>`, or a load failure throws rather than compiling in place.
 
 The package.json has no `os` / `cpu` / libc fields. Manager depends on this package on every
 platform: off Linux it still loads, and only `adopt` throws the named custody-transport error.

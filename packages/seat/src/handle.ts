@@ -74,11 +74,16 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
       later((c) => c.stop(opts?.graceful === false ? "hard" : "graceful"));
     },
     waitForExit: async () => {
-      const c = await whenReady();
-      if (status === "exited") return;
-      const info = await c.waitExit();
-      status = "exited";
-      if (info) exit = info;
+      try {
+        const c = await whenReady();
+        if (status !== "exited") {
+          const info = await c.waitExit();
+          status = "exited";
+          if (info) exit = info;
+        }
+      } finally {
+        client.close();
+      }
     },
     interrupt: () => {
       later((c) => c.interrupt());
