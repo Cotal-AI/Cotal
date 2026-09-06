@@ -423,7 +423,9 @@ try {
   );
   ok(
     "the attached-session subprocess does not reconcile connector payloads before exercising attach",
-    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload)/.test(o)),
+    ![fromFossil, fromBare, fromCorrupt].some((o) =>
+      /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload|✗ refusing to reconcile the operator-global seed store)/.test(o),
+    ),
   );
 
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);

@@ -144,6 +144,7 @@ let provisioner: CotalEndpoint | undefined;
 let definer: MeshAgent | undefined;
 
 let pass = 0;
+let code = 1;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
   pass++;
@@ -295,6 +296,7 @@ try {
   );
 
   console.log(`\n  ${pass} checks passed`);
+  code = 0;
 } finally {
   await definer?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
@@ -305,4 +307,4 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-process.exit(0);
+process.exit(code);
