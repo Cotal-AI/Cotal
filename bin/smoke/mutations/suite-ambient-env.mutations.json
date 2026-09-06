@@ -45,11 +45,11 @@
     "N8 PROVES TEMPLATE RAW TEXT HAS ITS OWN OWNER. Flattening raw text into interpolation code must",
     "red before a raw-template scrub can license an interpolation spread.",
     "",
-    "N9 PROVES INTERPOLATION RECURSIVELY PARSES ITS NESTED LITERALS. Removing that recursion must red",
-    "on the sibling-interpolation control before an inner scrub can license a later interpolation spread.",
+    "N9 PROVES INTERPOLATION EXECUTES IN THE CONTAINING CODE REGION. Assigning it to the template's",
+    "raw-text owner must red before a module scrub can stop licensing its interpolation spread.",
     "",
-    "N10 PROVES A NESTED NO-SUBSTITUTION TEMPLATE KEEPS ITS OWN OWNER. Ignoring that literal kind",
-    "must red before its scrub can license a later module-code spread."
+    "N10 PROVES INTERPOLATION CONTENTS ARE PARSED RECURSIVELY. Dropping that recursion must red before",
+    "an inner template scrub can be mistaken for containing module code."
   ],
   "mutations": [
     {
@@ -118,20 +118,20 @@
       "note": "Proves template raw text has a distinct child-script owner while interpolation code keeps the containing region; flattening the two falsely lets raw scrub text license interpolation."
     },
     {
-      "name": "N9 interpolation expressions stop receiving recursive lexical regions",
+      "name": "N9 interpolation expressions inherit the template raw-text region",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "            baseRegion,\n          ); // interpolation executes in the containing code region\n",
+      "replace": "            childRegion,\n          ); // interpolation executes in the containing code region\n",
+      "expectRed": "a module scrub must clear a spread inside template interpolation code",
+      "note": "Proves interpolation expressions inherit the containing code owner instead of the template raw-text owner."
+    },
+    {
+      "name": "N10 interpolation contents stop receiving recursive lexical regions",
       "file": "bin/smoke/suite-ambient-env.smoke.ts",
       "find": "          parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            offset + expressionStart,\n            baseRegion,\n          ); // interpolation executes in the containing code region\n",
       "replace": "",
-      "expectRed": "a nested template scrub must not clear a sibling interpolation spread",
-      "note": "Proves nested literals inside interpolation code receive their own regions while sibling interpolation code keeps the containing owner."
-    },
-    {
-      "name": "N10 nested no-substitution templates lose their lexical region",
-      "file": "bin/smoke/suite-ambient-env.smoke.ts",
-      "find": "      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {\n",
-      "replace": "      if (ts.isStringLiteral(node)) {\n",
       "expectRed": "an unused nested template scrub must not clear a module-code spread",
-      "note": "Proves an inner no-substitution template is assigned a child-script region instead of inheriting the containing interpolation's module region."
+      "note": "Proves nested literals inside interpolation code are recursively discovered and assigned their own child-script regions."
     }
   ]
 }
