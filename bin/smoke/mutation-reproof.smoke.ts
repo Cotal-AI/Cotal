@@ -90,6 +90,7 @@ function makeRepo(mutate: (root: string) => void): { root: string; base: string;
       "",
     ].join("\n"));
     writeFileSync(join(root, "smoke", "mutations", `${name}.mutations.json`), JSON.stringify({
+      suite: `${name}.suite.mjs`,
       command: `node ${name}.suite.mjs`,
       mutations: [{
         name: `the ${name} cap is removed`,
@@ -228,7 +229,45 @@ try {
     );
   }
 
-  // 5. A selected fixture whose suite is ALREADY RED before any mutation. a.mjs changes (so a's
+  // 5. A suite-only change must select the fixture that names that suite, even though neither its
+  //    config nor guarded source changed. The other suite is the negative arm: changing a file whose
+  //    name merely looks like a suite must not select either fixture.
+  {
+    const { root, base, head } = build((r) => {
+      writeFileSync(join(r, "a.suite.mjs"), [
+        "// suite-only change; a.mjs and the fixture config are untouched",
+        "import { capped_a } from './a.mjs';",
+        "if (capped_a(100) !== 32) { console.error('✗ FAIL: the a cap holds'); process.exit(1); }",
+        "console.log('✓ the a cap holds');",
+        "",
+      ].join("\n"));
+      git(r, ["add", "a.suite.mjs"]);
+      git(r, ["commit", "--quiet", "-m", "change only a's suite"]);
+    });
+    const { status, out } = scan(root, base, head);
+    check(
+      "a suite-only change selects exactly the fixture that names that suite",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 1, preRed: 0, inconclusive: 0 }),
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
+    );
+  }
+  {
+    const { root, base, head } = build((r) => {
+      writeFileSync(join(r, "unrelated.suite.mjs"), "// not named by any fixture\n");
+      git(r, ["add", "unrelated.suite.mjs"]);
+      git(r, ["commit", "--quiet", "-m", "change an unrelated suite"]);
+    });
+    const { status, out } = scan(root, base, head);
+    check(
+      "an unrelated suite selects no fixture",
+      status === 0 && selectedPaths(out).length === 0,
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))}\n${out}`,
+    );
+  }
+
+  // 6. A selected fixture whose suite is ALREADY RED before any mutation. a.mjs changes (so a's
   //    fixture is selected) but a's suite fails unconditionally, so mutation-proof refuses at its
   //    baseline (exit 4). That is the suite's own defect, not this diff's — the #1279/sandbox-guard
   //    shape the reviewer reproduced. The gate must report it as PRE-RED, name exactly that fixture,
@@ -263,7 +302,7 @@ try {
     );
   }
 
-  // 6. INCONCLUSIVE (not a timeout — deterministic): a mutation that leaves the suite exiting 0 but
+  // 7. INCONCLUSIVE (not a timeout — deterministic): a mutation that leaves the suite exiting 0 but
   //    never printing its named assertion. mutation-proof grades that INCONCLUSIVE, "a green status
   //    is not a pass". The gate must report it as INCONCLUSIVE, not fail, and NOT collapse it into
   //    SURVIVED (false blocker) or KILLED (false clearance). This is the outcome the reviewer flagged
@@ -303,7 +342,7 @@ try {
     );
   }
 
-  // 7. A real all-clear that reaches the OK summary (a fixture whose mutant is genuinely killed).
+  // 8. A real all-clear that reaches the OK summary (a fixture whose mutant is genuinely killed).
   //    Its counts must read `discriminated > 0, pre-red 0, inconclusive 0` — the positive contrast to
   //    cases 5 and 6, so "the gate worked and everything was clean" is not the same output as "every
   //    selected fixture was pre-red or inconclusive".

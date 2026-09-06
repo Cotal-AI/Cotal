@@ -60,6 +60,7 @@ writeFileSync(
   join(root, "suite.mjs"),
   [
     "import { admit } from './src/impl.js';",
+    "if (process.env.pnpm_config_verify_deps_before_run !== 'false') { console.error('AssertionError: mutation child disables pnpm dependency verification'); process.exit(1); }",
     "console.log('  ✓ admits a small value');",
     "if (admit(5) !== true) { console.error('AssertionError: small values are admitted'); process.exit(1); }",
     "console.log('  ✓ the guard refuses an oversized value');",
@@ -71,7 +72,14 @@ writeFileSync(
 execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm fixture", { cwd: root });
 
 const runTool = (args) =>
-  spawnSync(process.execPath, [TOOL, ...args], { cwd: root, encoding: "utf8", timeout: 120_000 });
+  spawnSync(process.execPath, [TOOL, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 120_000,
+    // Prove the tool overrides this only for commands it launches rather than relying on ambient
+    // configuration already carrying the desired value.
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
+  });
 
 // 1. A mutation the suite DOES catch, named. The everyday case.
 let r = runTool([

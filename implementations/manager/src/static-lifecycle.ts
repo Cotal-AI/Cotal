@@ -24,6 +24,8 @@ import {
   type LifecycleKvEntry,
   type StaticManagedSlotRow,
   type StaticSlotPhase,
+  type LifecycleMapping,
+  type EpErrorDetail,
   type CredentialLedgerRow,
   staticSlotKey,
   parseStaticSlotRow,
@@ -53,6 +55,93 @@ export interface StaticLifecycleAuditSpec {
   managerInstance: string; managerProcessUid: string; retirementOpId: string;
   broker: Pick<EvictionResult, "kicked" | "remaining" | "scanComplete" | "verifiedGone">;
   timestamp: string;
+}
+
+/** `inspect` miss detail for a durable static slot. Slot and lifecycle head are separate records,
+ * read in that order, so this shape carries both revisions and states explicitly rather than
+ * presenting a torn pair as one snapshot. The issuance gate is deliberately excluded: the
+ * retirement op needed for this diagnosis is already on the head, and a third record would add
+ * another non-atomic edge without changing the per-name verdict. */
+export const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
+export interface StaticSlotObservationDetail extends EpErrorDetail {
+  kind: typeof STATIC_SLOT_OBSERVATION_DETAIL;
+  name: string;
+  owner: string;
+  actor: string;
+  slotLifecycleUid: string;
+  slotPhase: StaticSlotPhase;
+  cleanupComplete?: boolean;
+  slotRevision: number;
+  headState?: LifecycleMapping["state"];
+  headOp?: NonNullable<LifecycleMapping["op"]>;
+  headLifecycleUid?: string;
+  headRevision?: number;
+  readOrder: ["slot", "head"];
+  consistency: "ordered-not-atomic";
+}
+
+/** Stable string projection for callers that render only `error.message`. The structured detail is
+ * still authoritative; this suffix prevents the shipped CLI path from hiding its fields. */
+export function renderStaticSlotObservation(detail: StaticSlotObservationDetail): string {
+  const head = detail.headState === undefined
+    ? "head=absent"
+    : `headState=${detail.headState} headUid=${detail.headLifecycleUid} headRevision=${detail.headRevision}${detail.headOp ? ` headOp=${detail.headOp.kind}:${detail.headOp.opId}` : ""}`;
+  return `[static-slot slotPhase=${detail.slotPhase} slotUid=${detail.slotLifecycleUid} cleanupComplete=${detail.cleanupComplete === undefined ? "unknown" : String(detail.cleanupComplete)} slotRevision=${detail.slotRevision} ${head} readOrder=slot,head consistency=${detail.consistency}]`;
+}
+
+export const STATIC_SLOT_READ_FAILED_DETAIL = "ai.cotal.manager.static-slot-read-failed";
+export class StaticSlotReadError extends Error {
+  constructor(readonly record: "slot" | "head", cause: unknown) {
+    super((cause as Error).message);
+    this.name = "StaticSlotReadError";
+  }
+}
+const STATIC_SLOT_READ_TIMEOUT_MS = 2_000;
+
+function boundedStaticRead<T>(record: "slot" | "head", read: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${record} read timed out after ${STATIC_SLOT_READ_TIMEOUT_MS}ms`)), STATIC_SLOT_READ_TIMEOUT_MS);
+  });
+  return Promise.race([read.finally(() => clearTimeout(timer)), timeout])
+    .catch((error) => { throw new StaticSlotReadError(record, error); });
+}
+
+/** Point-read one durable slot, then its principal-keyed lifecycle head. Absence is returned only
+ * after the slot read itself succeeded; callers must surface a store failure rather than converting
+ * an unknown observation into `not-found`, which is the ambiguity this projection removes. */
+export async function observeStaticSlot(
+  recordsKv: KV,
+  owner: string,
+  alias: string,
+  managerInstanceId: string,
+): Promise<StaticSlotObservationDetail | undefined> {
+  const t = staticLifecycleTransport(recordsKv, recordsKv);
+  const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
+  if (slot === undefined) return undefined;
+  // `inspect` remains an instance-local reader. A sibling manager's durable row is not a miss on
+  // this manager becoming global by accident. Legacy rows predate multi-manager ownership and keep
+  // the existing single-manager interpretation used by boot reconciliation.
+  if (slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId) return undefined;
+  const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
+  return {
+    kind: STATIC_SLOT_OBSERVATION_DETAIL,
+    name: slot.row.alias,
+    owner: slot.row.owner,
+    actor: slot.row.actor,
+    slotLifecycleUid: slot.row.lifecycleUid,
+    slotPhase: slot.row.phase,
+    ...(slot.row.cleanupComplete !== undefined ? { cleanupComplete: slot.row.cleanupComplete } : {}),
+    slotRevision: slot.revision,
+    ...(head !== undefined ? {
+      headState: head.mapping.state,
+      ...(head.mapping.op !== undefined ? { headOp: head.mapping.op } : {}),
+      headLifecycleUid: head.mapping.lifecycleUid,
+      headRevision: head.revision,
+    } : {}),
+    readOrder: ["slot", "head"],
+    consistency: "ordered-not-atomic",
+  };
 }
 
 function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): boolean {

@@ -164,6 +164,10 @@ import {
   recordSlotCredential,
   appendStaticCredentialRow,
   planStaticSlotResume,
+  observeStaticSlot,
+  renderStaticSlotObservation,
+  StaticSlotReadError,
+  STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
@@ -2405,7 +2409,33 @@ export class Manager {
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
         const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);
-        if (!row) throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        if (!row) {
+          // The live hit above stays entirely local. Only a miss widens into durable static state,
+          // where `not-found` is honest only after the slot read itself succeeds and returns absent.
+          // User-mode lifecycles have no manager-local mgrslot row; their per-name projection remains
+          // the live map until the auth service exposes an equivalent mediated reader.
+          if (this.auth && !this.userMode) {
+            const recordsKv = this.goalWriter?.ctx.kv;
+            if (!recordsKv)
+              throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while inspecting "${name}"`, [
+                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: "slot", operation: "read" },
+              ]);
+            let observed;
+            try {
+              observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);
+            } catch (error) {
+              throw new EpEnvelopeError("unavailable", `the durable static slot state for "${name}" could not be read: ${(error as Error).message}`, [
+                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "read" },
+              ]);
+            }
+            // A retired row affirms that no agent exists now, so it keeps the old `not-found`
+            // result. The changed refusal is reserved for durable NONTERMINAL state that contradicts
+            // the live-map miss and needs operator attention.
+            if (observed !== undefined && observed.slotPhase !== "retired")
+              throw new EpEnvelopeError("failed-precondition", `no live agent "${name}"; durable state contradicts absence ${renderStaticSlotObservation(observed)}`, [observed]);
+          }
+          throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        }
         return row;
       }),
       models: (ctx) => this.serveGated(ctx, async () => {

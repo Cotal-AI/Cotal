@@ -45,9 +45,41 @@ No client has compile-time knowledge of any endpoint's commands. `cotal describe
 space's content-addressed contract store, recompiled, and verified against those digests.
 Each command prints with its capability class and targeting shape. `cotal invoke <endpoint>
 <command> --args '<json>'` then calls one command by name, validating the arguments against
-the fetched input schema before publish. Every built-in manager command uses this same
-trust chain, so there is nothing the built-ins can reach that a described contract cannot.
+the fetched input schema before publish. A signed-in user invokes the same surface through their
+bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
+through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
+does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
+same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
+
+### Inspecting a managed name
+
+Manager `inspect` keeps its successful response as the live managed-agent row. A live hit does
+not read durable lifecycle state, so a temporary records-store failure cannot break inspection of
+an agent the manager currently holds.
+
+On a live miss, a static manager point-reads its durable slot row. A name with no slot, or a slot
+whose phase is `retired`, remains `not-found`. A nonterminal slot returns
+`failed-precondition` with `error.details[].kind =
+ai.cotal.manager.static-slot-observation`. The detail carries the slot's `slotPhase`,
+`owner`, `actor`, `slotLifecycleUid`, `cleanupComplete` when recorded, and `slotRevision`. It
+then carries the separate lifecycle head's `headState`, `headOp` when present,
+`headLifecycleUid`, and `headRevision`. Head fields are absent when provisioning has not written
+the lifecycle head yet.
+The error message carries the same diagnostic summary so string-only operator paths do not hide
+the structured detail.
+
+The slot is read before the head. These records do not form one atomic snapshot, so the detail
+also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
+advance between the reads. The issuance gate is not projected because the retirement operation
+needed for this diagnosis is already recorded on the head, and reading a third record would add
+another non-atomic edge without changing the per-name result.
+
+If either durable read fails or exceeds its bound, the miss returns `unavailable` with
+`ai.cotal.manager.static-slot-read-failed` rather than claiming the name is absent. That detail
+names the inspected `name`, the failed `record` (`slot`, `head`, or `slot-or-head` when the layer
+cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows,
+so their inspect misses remain live-map reads.
 
 ## Spawn is a goal
 

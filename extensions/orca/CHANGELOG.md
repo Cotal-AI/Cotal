@@ -1,5 +1,11 @@
 # @cotal-ai/orca
 
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+
 ## 0.45.0
 
 ## 0.44.0
