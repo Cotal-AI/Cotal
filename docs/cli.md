@@ -646,13 +646,13 @@ wire - the reserved `describe` command answers the registered contract digests, 
 fetched from the space's content-addressed contract store, recompiled, and verified against those
 digests - and prints each command with its capability class and targeting shape. `invoke` calls one
 command by name: `--args` is a JSON object validated against the fetched input schema *before*
-publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal via
-`ps`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
+publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
+`inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
 endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
 auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
-rides their bearer; cross-agent reach needs the `admin` scope). An open mesh has no service
-registry.
+rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
+reach needs the `admin` scope). An open mesh has no service registry.
 
 ## Managed seats
 
