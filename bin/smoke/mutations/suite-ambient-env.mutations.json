@@ -55,7 +55,13 @@
     "before a nested template scrub in one interpolation can clear a spread in its sibling.",
     "",
     "N12 PROVES COOKED CHILD-SCRIPT MATCHES KEEP SOURCE COORDINATES. Replacing the mapping with",
-    "linear cooked offsets must red where an earlier escape would move a top-level scrub inside a brace."
+    "linear cooked offsets must red where an earlier escape would move a top-level scrub inside a brace.",
+    "",
+    "N13 PROVES TEMPLATE-HEAD COOKED TEXT KEEPS SOURCE COORDINATES. Replacing the mapper with",
+    "raw offsets must red where an earlier escape would move a top-level scrub inside a brace.",
+    "",
+    "N14 PROVES TEMPLATE-SPAN COOKED TEXT KEEPS SOURCE COORDINATES. Replacing the mapper with",
+    "raw offsets must red where an earlier escape would move a top-level scrub inside a brace."
   ],
   "mutations": [
     {
@@ -154,6 +160,22 @@
       "replace": "          const cookedSourceOffsets = rawSourceOffsets.slice(0, node.text.length + 1);\n",
       "expectRed": "an escaped child-script scrub must retain its source brace depth",
       "note": "Proves cooked child-script matches retain original source coordinates: a linear cooked offset lands before the closing brace and falsely treats this top-level scrub as nested."
+    },
+    {
+      "name": "N13 template-head source mapping is bypassed",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "            sourceOffsetsForCookedText(rawText, node.head.text, rawSourceOffsets),\n",
+      "replace": "            rawSourceOffsets,\n",
+      "expectRed": "an escaped template-head scrub must retain its source brace depth",
+      "note": "Proves escaped cooked text in a template head retains original source coordinates instead of using raw offsets directly."
+    },
+    {
+      "name": "N14 template-span source mapping is bypassed",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "              sourceOffsetsForCookedText(rawText, span.literal.text, rawSourceOffsets),\n",
+      "replace": "              rawSourceOffsets,\n",
+      "expectRed": "an escaped template-span scrub must retain its source brace depth",
+      "note": "Proves escaped cooked text in a template span retains original source coordinates instead of using raw offsets directly."
     }
   ]
 }

@@ -654,6 +654,52 @@ assert.deepEqual(
   "an escaped scrub in an unused template must not clear a module-code spread",
 );
 
+const sourceMappedTemplateHeadScrub =
+  "const CHILD = `" +
+  `{\\u0030} ${childScriptScrubSpellings[2][1]}${childScriptScrubTail}${childScriptSpreadTail}` +
+  "${0}`;";
+assertFixtureParses(
+  "the source-mapped template-head escaped-scrub fixture",
+  sourceMappedTemplateHeadScrub,
+);
+assert.deepEqual(
+  unstrippedSpreadLines(sourceMappedTemplateHeadScrub),
+  [],
+  "an escaped template-head scrub must retain its source brace depth",
+);
+
+const noScrubTemplateHead =
+  'const CHILD = `const unsafe = { ...process.env }; spawn("unsafe", { env: unsafe });${0}`;';
+assertFixtureParses("the no-scrub template-head fixture", noScrubTemplateHead);
+assert.deepEqual(
+  unstrippedSpreadLines(noScrubTemplateHead),
+  [1],
+  "a template-head spread without a scrub must remain unsafe",
+);
+
+const sourceMappedTemplateSpanScrub =
+  "const CHILD = `${0}" +
+  `{\\u0030} ${childScriptScrubSpellings[2][1]}${childScriptScrubTail}${childScriptSpreadTail}` +
+  "`;";
+assertFixtureParses(
+  "the source-mapped template-span escaped-scrub fixture",
+  sourceMappedTemplateSpanScrub,
+);
+assert.deepEqual(
+  unstrippedSpreadLines(sourceMappedTemplateSpanScrub),
+  [],
+  "an escaped template-span scrub must retain its source brace depth",
+);
+
+const noScrubTemplateSpan =
+  'const CHILD = `${0}const unsafe = { ...process.env }; spawn("unsafe", { env: unsafe });`;';
+assertFixtureParses("the no-scrub template-span fixture", noScrubTemplateSpan);
+assert.deepEqual(
+  unstrippedSpreadLines(noScrubTemplateSpan),
+  [1],
+  "a template-span spread without a scrub must remain unsafe",
+);
+
 /**
  * Files that spread the ambient environment and are graded SAFE, each with the measurement.
  *
