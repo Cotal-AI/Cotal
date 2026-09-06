@@ -39,8 +39,8 @@
     {
       "name": "a copied foreign token is accepted as owned",
       "file": "implementations/runtime/src/run-scope-authority.ts",
-      "find": "      if (entry.requestId !== expected) throw new RunScopeDenied(this.runId, entry.requestId, \"load\");",
-      "replace": "",
+      "find": "    return entry.requestId === expected;",
+      "replace": "    return true;",
       "expectRed": "copying a foreign token into the driver's own journal grants no host access",
       "cell": "copying a foreign token into the driver's own journal grants no host access"
     },
@@ -91,6 +91,14 @@
       "replace": "",
       "expectRed": "the local credential refusal gives a concrete next command",
       "cell": "the local credential refusal gives a concrete next command"
+    },
+    {
+      "name": "settled parent history is rejected during child adoption",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "      if (entry.requestId === undefined || entry.state === \"settled\") continue;",
+      "replace": "      if (entry.requestId === undefined) continue;",
+      "expectRed": "a forked child resumes through the host with its inherited settled prefix",
+      "cell": "a forked child resumes through the host with its inherited settled prefix"
     }
   ]
 }
