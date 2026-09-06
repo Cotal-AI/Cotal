@@ -15,6 +15,16 @@
       "expectRed": "worker death leaves the custodial child PID running",
       "cell": "worker death leaves the custodial child PID running",
       "note": "The mutation is only the final child-live predicate after the worker is proven dead."
+    },
+    {
+      "name": "M2 re-apply hello geometry on every later",
+      "file": "packages/seat/src/handle.ts",
+      "find": "      if (!helloGeometryApplied) {\n        cols = hello.cols;\n        rows = hello.rows;\n        helloGeometryApplied = true;\n      }",
+      "replace": "      cols = hello.cols;\n      rows = hello.rows;",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "resize: geometry survives the hello apply",
+      "cell": "resize: geometry survives the hello apply",
+      "note": "Unconditional hello apply is the clobber that made mesh-attach-plane miss a 90x25 resize."
     }
   ]
 }

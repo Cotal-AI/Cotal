@@ -34,12 +34,18 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
   let exit: { code?: number; signal?: number } | undefined;
   let cols = 120;
   let rows = 32;
+  let helloGeometryApplied = false;
   const liveUnsubs = new Set<() => void>();
 
   const whenReady = (): Promise<SeatClient> =>
     ready.then((hello) => {
-      cols = hello.cols;
-      rows = hello.rows;
+      // Hello reports spawn size. Re-applying it on every later() overwrites a
+      // resize that already updated these fields (mesh-attach-plane resize cell).
+      if (!helloGeometryApplied) {
+        cols = hello.cols;
+        rows = hello.rows;
+        helloGeometryApplied = true;
+      }
       status = hello.status;
       exit = hello.exit;
       return client;
@@ -140,6 +146,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
           if (c <= 0 || r <= 0) return;
           cols = c;
           rows = r;
+          helloGeometryApplied = true;
           later((cli) => cli.resize(c, r));
         },
       };

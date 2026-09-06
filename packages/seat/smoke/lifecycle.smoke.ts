@@ -83,6 +83,15 @@ try {
     h.attach().resize(80, 24);
     h.attach().resize(0, 0);
     check("resize: 0x0 is a no-op and seat stays running", h.status() === "running");
+    await h.attach().backlog();
+    const sized = h.attach();
+    sized.resize(90, 25);
+    check("resize: geometry is visible on the attach session", sized.cols === 90 && sized.rows === 25);
+    await wait(50);
+    check("resize: geometry survives the hello apply", sized.cols === 90 && sized.rows === 25, {
+      cols: sized.cols,
+      rows: sized.rows,
+    });
     const worker = mkdtempSync(join(root, "worker-"));
     const ready = join(worker, "ready.json");
     const here = dirname(fileURLToPath(import.meta.url));
