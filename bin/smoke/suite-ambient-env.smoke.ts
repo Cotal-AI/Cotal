@@ -153,7 +153,9 @@ function spreadIndexes(code: string): number[] {
 function lexicalRegions(src: string): Int32Array {
   const regions = new Int32Array(src.length);
   let nextRegion = 1;
-  const mark = (start: number, end: number, region: number): void => regions.fill(region, start, end);
+  const mark = (start: number, end: number, region: number): void => {
+    regions.fill(region, start, end);
+  };
 
   const parseRegion = (text: string, offset: number, baseRegion: number): void => {
     mark(offset, offset + text.length, baseRegion);
@@ -309,14 +311,11 @@ spawn("safe", { env: safe });
 );
 assert.deepEqual(
   unstrippedSpreadLines([
-    "const OUTER = `head ${(() => {",
-    "  const INNER = `for (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];`;",
-    "  return INNER;",
-    "})()} tail`;",
+    "const OUTER = `head ${`for (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];`} tail`;",
     "const unsafe = { ...process.env };",
     "spawn(\"unsafe\", { env: unsafe });",
   ].join("\n")),
-  [5],
+  [2],
   "an unused nested template scrub must not clear a module-code spread",
 );
 assert.deepEqual(
