@@ -15,8 +15,10 @@
  * `runtime: "pty"` or `pty.spawn(`. That admitted 26 of 74 `new Manager(` smokes and
  * skipped 32 live-PTY files, 29 of which carry the banned spare-stop form. The spawn-shape
  * gate is kept; silence is not. Every skipped live-PTY file that still carries a candidate
- * stop is named in the suite output. Truncating the examined set below the measured floor
- * reds. The receiver-name list below is a separate, disclosed boundary.
+ * stop is named in the suite output AND must appear on the frozen #1343 inventory below.
+ * A new skipped candidate-stop path reds. A stale inventory path reds so the list can only
+ * shrink. Truncating the examined set below the measured floor reds. The receiver-name list
+ * below is a separate, disclosed boundary (#1310).
  *
  * Run: pnpm smoke:manager-stop-spare-guard
  */
@@ -39,6 +41,45 @@ const SPARE_COVERAGE = new Set([
   "implementations/manager/smoke/preserve-state.smoke.ts",
   "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
 ]);
+
+/**
+ * Tracked deferral of skipped live-PTY files that still carry a candidate spare-stop.
+ * Owned by issue #1343. These are not SPARE_COVERAGE and are not safe: livePty() never
+ * examines them, so a spare-stop there stays green unless this inventory notices growth.
+ * Do not add new paths here. Audit the file, admit it through the spawn-shape gate, or
+ * change its teardown to `{ withAgents: true }` and delete the stale entry.
+ */
+const FROZEN_DROPPED = [
+  "bin/smoke/manager-two-root-renewal.smoke.ts",
+  "bin/smoke/persona-announce.smoke.ts",
+  "bin/smoke/readiness-window-live.smoke.ts",
+  "bin/smoke/run-host-live.smoke.ts",
+  "bin/smoke/spawn-detach-live.smoke.ts",
+  "extensions/connector-hermes/smoke/boot-requirement.smoke.ts",
+  "implementations/cli/smoke/scatter-pinned-probe.smoke.ts",
+  "implementations/manager/smoke/boot-self-heal-gate.smoke.ts",
+  "implementations/manager/smoke/cli-on-instance-live.smoke.ts",
+  "implementations/manager/smoke/describe-split-duplicate-effect.smoke.ts",
+  "implementations/manager/smoke/goal-sibling-race.smoke.ts",
+  "implementations/manager/smoke/instrument-instance-pin.smoke.ts",
+  "implementations/manager/smoke/manager-coexist.smoke.ts",
+  "implementations/manager/smoke/manager-deregister.smoke.ts",
+  "implementations/manager/smoke/manager-on-route.smoke.ts",
+  "implementations/manager/smoke/manager-restart-fence.smoke.ts",
+  "implementations/manager/smoke/manager-restart-live.smoke.ts",
+  "implementations/manager/smoke/manager-scatter.smoke.ts",
+  "implementations/manager/smoke/manager-service-invoke.smoke.ts",
+  "implementations/manager/smoke/manager-service-ops.smoke.ts",
+  "implementations/manager/smoke/manager-service.smoke.ts",
+  "implementations/manager/smoke/queue-win-distribution.smoke.ts",
+  "implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
+  "implementations/manager/smoke/seat-input-live.smoke.ts",
+  "implementations/manager/smoke/session-ledger-family.smoke.ts",
+  "implementations/manager/smoke/sibling-mint-fence.smoke.ts",
+  "implementations/manager/smoke/spawn-action-auth.smoke.ts",
+  "implementations/manager/smoke/spawn-action.smoke.ts",
+  "implementations/manager/smoke/turn-relay-auth.smoke.ts",
+] as const;
 
 let pass = 0, fail = 0;
 const check = (name: string, condition: boolean, detail?: unknown) => {
@@ -122,6 +163,16 @@ for (const f of files) {
   if (found.length) hits.push(`${rel}: ${found.join(" | ")}`);
 }
 
+const droppedPaths = droppedWithStop.map((row) => {
+  const cut = row.indexOf(": ");
+  return cut < 0 ? row : row.slice(0, cut);
+});
+const droppedPathSet = new Set(droppedPaths);
+const frozenSet = new Set<string>(FROZEN_DROPPED);
+const newDropped = droppedPaths.filter((p) => !frozenSet.has(p));
+const staleFrozen = FROZEN_DROPPED.filter((p) => !droppedPathSet.has(p));
+const frozenOnSpare = FROZEN_DROPPED.filter((p) => SPARE_COVERAGE.has(p));
+
 console.log(`examined live-PTY Manager smokes: ${examined.length} of ${newManagerFiles.length} new Manager( files (floor ${EXAMINED_FLOOR})`);
 console.log(`dropped-with-candidate-stop (live PTY, not fake, spawn-shape miss): ${droppedWithStop.length}`);
 for (const row of droppedWithStop) console.log(`  skip ${row}`);
@@ -137,6 +188,21 @@ check(
   `examined ${examined.length}`,
 );
 check(`no live-PTY smoke spare-stops a Manager (${examined.length} files examined)`, hits.length === 0, hits);
+check(
+  "frozen #1343 dropped inventory is not SPARE_COVERAGE and is not a safe list",
+  frozenOnSpare.length === 0,
+  frozenOnSpare,
+);
+check(
+  "a new dropped-with-candidate-stop path is not on the frozen #1343 inventory",
+  newDropped.length === 0,
+  newDropped,
+);
+check(
+  "frozen #1343 dropped inventory has no stale paths",
+  staleFrozen.length === 0,
+  staleFrozen,
+);
 
 const deregPath = join(ROOT, DEREGISTER);
 const deregText = readFileSync(deregPath, "utf8");
