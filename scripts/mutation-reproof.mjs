@@ -179,15 +179,16 @@ if (dangling.length) {
   process.exit(1);
 }
 
-// LEGITIMATE all-clear, exit 0: nothing intersected. Print the evidence — diff size, changed-set
-// size, corpus size, selected count — so a reader can tell a real clean tree from a broken selector
-// that looked at nothing. On --all this branch is unreachable (every fixture selects).
+// A zero after filtering means either no diff match or no assignment to this shard.
+// Keep the diff, corpus and selected counts visible in both cases.
 console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fixtures.length}`
   + (a.all
     ? " for a full sweep"
     : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
 if (selected.length === 0) {
-  console.log("No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
+  console.log(shard
+    ? `No selected mutation fixtures are assigned to shard ${a.shard}.`
+    : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
   process.exit(0);
 }
 console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);

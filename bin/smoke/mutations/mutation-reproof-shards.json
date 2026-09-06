@@ -1,6 +1,6 @@
 {
   "suite": "bin/smoke/mutation-reproof.smoke.ts",
-  "guard": "Every selected fixture executes on one configured shard; the aggregate changed check rejects failure, cancellation and skipping.",
+  "guard": "Every selected fixture executes on one configured shard; the aggregate changed check rejects failure, cancellation and skipping. Every child launched by the smoke excludes inherited COTAL_ variables, and an empty shard reports only its own assignment.",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof-shards.json",
@@ -86,13 +86,44 @@
       "cell": "the aggregate shell rejects shard result skipped"
     },
     {
-      "name": "aggregate subprocesses inherit the live Cotal session environment",
+      "name": "the common smoke child environment keeps Cotal session variables",
       "file": "bin/smoke/mutation-reproof.smoke.ts",
-      "find": "  for (const key of Object.keys(shellEnv)) if (key.startsWith(\"COTAL_\")) delete shellEnv[key];\n",
+      "find": "  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_\")) delete env[key];\n",
       "replace": "",
-      "command": "pnpm smoke:suite-ambient-env",
-      "expectRed": "these suite files spread the ambient environment into a child without stripping COTAL_ first:",
-      "cell": "these suite files spread the ambient environment into a child without stripping COTAL_ first:"
+      "expectRed": "aggregate probes do not inherit Cotal session credentials",
+      "cell": "aggregate probes do not inherit Cotal session credentials"
+    },
+    {
+      "name": "the scanner bypasses the sanitized child environment",
+      "file": "bin/smoke/mutation-reproof.smoke.ts",
+      "find": "  const run = spawnSync(process.execPath, args, { encoding: \"utf8\", env: childEnv() });",
+      "replace": "  const run = spawnSync(process.execPath, args, { encoding: \"utf8\" });",
+      "expectRed": "fixture children do not inherit Cotal session credentials",
+      "cell": "fixture children do not inherit Cotal session credentials"
+    },
+    {
+      "name": "git bypasses the sanitized child environment",
+      "file": "bin/smoke/mutation-reproof.smoke.ts",
+      "find": "{ cwd: root, encoding: \"utf8\", env: childEnv() }",
+      "replace": "{ cwd: root, encoding: \"utf8\" }",
+      "expectRed": "git children do not inherit Cotal session credentials",
+      "cell": "git children do not inherit Cotal session credentials"
+    },
+    {
+      "name": "aggregate probes bypass the sanitized child environment",
+      "file": "bin/smoke/mutation-reproof.smoke.ts",
+      "find": "env: { ...childEnv(), SHARD_RESULT: result }",
+      "replace": "env: { ...process.env, SHARD_RESULT: result }",
+      "expectRed": "aggregate probes do not inherit Cotal session credentials",
+      "cell": "aggregate probes do not inherit Cotal session credentials"
+    },
+    {
+      "name": "an empty shard claims there is no global diff intersection",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  console.log(shard\n",
+      "replace": "  console.log(false && shard\n",
+      "expectRed": "an empty shard reports its own assignment without claiming a globally empty diff",
+      "cell": "an empty shard reports its own assignment without claiming a globally empty diff"
     }
   ]
 }
