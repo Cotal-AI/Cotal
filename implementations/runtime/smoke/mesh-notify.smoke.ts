@@ -80,7 +80,7 @@ const NOW = Date.now();
 const handler = new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId: RUN, caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-  new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+  new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => NOW,
 );
 
@@ -165,7 +165,7 @@ const filed = async (agent: string) => await listRunNotices(kv, EP, RUN, agent);
   const moving = new MeshHandler(
     nc, kv, js, jsm,
     { space: SPACE, endpoint: EP, runId: RUN, caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
     () => Date.now(),
   );
   const req = {

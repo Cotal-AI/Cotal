@@ -135,7 +135,7 @@ const waitPast = async (deadline: number) => {
 const handler = new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-  new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+  new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => CLOCK,
 );
 
@@ -212,7 +212,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   const live = new MeshHandler(
     nc, kv, js, jsm,
     { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
     () => Date.now(),
   );
   const first = live.sleep({ duration: "8s" }, ctx(TOKEN2).ctx);
@@ -261,7 +261,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   const live = new MeshHandler(
     nc, kv, js, jsm,
     { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
     () => Date.now(),
   );
   const first = live.sleep({ duration: "2s" }, ctx(TOKEN3).ctx);

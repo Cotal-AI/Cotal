@@ -910,7 +910,7 @@ async function provisionUserForeground(
       space,
       owner,
       actor: name,
-      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
+      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
       // Read ACL: the flag, else the boot set, else nothing. A spawn that names no channel grants
       // no channel (the agent is still DM-reachable) rather than silently granting `general`.
       allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe ?? []),

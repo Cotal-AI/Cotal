@@ -66,6 +66,13 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 
   const withSpawn = cotalToolSpecs(cfg({ creds: "CREDS", capabilities: ["spawn"] })).map((s) => s.name);
   assert.ok(withSpawn.includes("cotal_spawn") && withSpawn.includes("cotal_persona") && withSpawn.includes("cotal_personas"), "spawn cap ⇒ spawn/persona/personas shown");
+  // The workflow-run door (SPEC 14.3) is gated by its OWN capability: `spawn` alone does not
+  // advertise it (the wire would refuse the run-* rows), `run` does, and open mode is permissive.
+  assert.ok(!noSpawn.includes("cotal_run"), "no run cap ⇒ cotal_run hidden");
+  assert.ok(!withSpawn.includes("cotal_run"), "spawn cap alone ⇒ cotal_run still hidden");
+  const withRun = cotalToolSpecs(cfg({ creds: "CREDS", capabilities: ["run"] })).map((s) => s.name);
+  assert.ok(withRun.includes("cotal_run"), "run cap ⇒ cotal_run shown");
+  assert.ok(open.map((s) => s.name).includes("cotal_run"), "open mode ⇒ cotal_run shown");
 }
 
 // 2 — identity + access mapping, and auth vs open.

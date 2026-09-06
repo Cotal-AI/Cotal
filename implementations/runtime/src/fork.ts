@@ -36,7 +36,7 @@
  *     than something a reader has to notice.
  */
 import type { KV } from "@nats-io/kv";
-import { createRunSpec, readRunRecord } from "@cotal-ai/core";
+import { createRunSpec, readRunRecord, recordRunProgram } from "@cotal-ai/core";
 import {
   Journal,
   JournalReadOnlyError,
@@ -76,6 +76,8 @@ export interface ForkPlan {
   readonly fromStep: string;
   /** The parent's pins, verbatim — what the child must be created under, not what it would resolve. */
   readonly pins: RunPins;
+  /** The program the child runs: the parent's, recorded on the child so it resumes without a file. */
+  readonly source: string;
   /** The entries the child inherits as history, in the parent's recorded order. */
   readonly cut: readonly JournalEntry[];
   readonly admissible: boolean;
@@ -349,6 +351,7 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     actor: req.actor,
     fromStep: req.fromStepKey,
     pins: req.pins,
+    source: req.source,
     cut,
     admissible: refusals.length === 0,
     refusals,
@@ -419,6 +422,7 @@ export async function commitFork(
     createdAt: plan.at,
     forkedFrom: { run: plan.parent, step: plan.fromStep },
   });
+  await recordRunProgram(kv, endpoint, { v: 1, run: plan.child, source: plan.source, at: plan.at });
 
   return { child: plan.child, copied: plan.cut.length, lineageRecorded: true };
 }

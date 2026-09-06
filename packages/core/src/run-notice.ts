@@ -31,6 +31,7 @@ import {
   assertStatusValue,
 } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
+import { walkKvEntries } from "./kv-scan.js";
 
 /** The bounded decision itself. The bound is the language's (L3043) and is enforced before a
  *  notice is ever written; this type is the shape it arrives in. */
@@ -238,16 +239,20 @@ export async function listRunNoticesForRun(
   return await scan(kv, `${prefix}*.*.spec`);
 }
 
-/** Read every notice a KV key filter matches. The filter is the caller's: `*` is one token. */
+/** Read every notice a KV key filter matches. The filter is the caller's: `*` is one token.
+ *
+ *  A CONSUMER-FREE walk, not `kv.keys()`. The records bucket is a §13.9 authority stream whose
+ *  consumer surface is an exact audited list, and the run driver that reads its own notices holds
+ *  no consumer verb on it (SPEC 14.6). `walkKvEntries` rides the leader-served `STREAM.MSG.GET` the
+ *  driver already holds for every point read, and a run's notices are a bounded family. */
 async function scan(kv: KV, filter: string): Promise<RunNoticeRead[]> {
   const found: RunNoticeRead[] = [];
-  const seen = await kv.keys(filter);
   const qs: string[][] = [];
-  for await (const key of seen) {
+  for (const e of await walkKvEntries(kv, filter)) {
     // The key is `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>.spec` and every qualifier is
     // an id token, so the four the read wants are the four before `spec`. Taken from the KEY and
     // not re-derived: an enumeration holds the addressee's digest, never the name it came from.
-    const parts = key.split(".");
+    const parts = e.key.split(".");
     qs.push(parts.slice(parts.length - 5, parts.length - 1));
   }
   for (const q of qs) {
