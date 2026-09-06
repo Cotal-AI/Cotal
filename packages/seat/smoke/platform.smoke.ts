@@ -21,6 +21,11 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   fail++;
   console.log(`  ✗ FAIL: ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
 };
+const childEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
+  const env = { ...process.env, ...extra };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+};
 
 const err = unsupportedTransport("darwin");
 check(
@@ -106,7 +111,7 @@ if (process.platform !== "linux") {
       const compile = spawnSync(process.execPath, [join(pkgRoot, "scripts", "build-native.mjs")], {
         cwd: pkgRoot,
         encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        env: childEnv({ PATH: `${bin}:${process.env.PATH ?? ""}` }),
       });
       if (saved) copyFileSync(saved, helper);
       check(
@@ -142,7 +147,7 @@ if (process.platform !== "linux") {
       const compile = spawnSync(join(bin, "node"), [join(pkgRoot, "scripts", "build-native.mjs")], {
         cwd: pkgRoot,
         encoding: "utf8",
-        env: { ...process.env, PATH: `${ccDir}:${process.env.PATH ?? ""}` },
+        env: childEnv({ PATH: `${ccDir}:${process.env.PATH ?? ""}` }),
       });
       if (saved) copyFileSync(saved, helper);
       const argv = existsSync(argvLog) ? readFileSync(argvLog, "utf8") : "";
@@ -193,7 +198,7 @@ if (process.platform !== "linux") {
       const install = spawnSync("npm", ["install", "--no-audit", "--no-fund", join(packDir, tarball)], {
         cwd: prefix,
         encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        env: childEnv({ PATH: `${bin}:${process.env.PATH ?? ""}` }),
         timeout: 180_000,
       });
       check(
