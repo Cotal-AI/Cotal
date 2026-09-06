@@ -1,0 +1,21 @@
+{
+  "suite": "implementations/manager/smoke/env-isolate.smoke.ts",
+  "guard": "env capture is valid before withheld cells, and dump-then-exit output still reaches attach",
+  "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/cmux --filter @cotal-ai/tmux --filter @cotal-ai/manager build && pnpm smoke:env-isolate",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/env-isolate.json",
+  "why": [
+    "createRuntime(pty) on Linux is now custodial. A dump-then-exit child prints before subscribe. Without replay the capture is empty, withheld cells pass vacuously, and an untimed onExit wait can hang a shard hour."
+  ],
+  "mutations": [
+    {
+      "name": "M1 skip subscribe output replay",
+      "file": "packages/seat/src/custodian.ts",
+      "find": "        if (early) send(sock, { event: \"output\", sub, data: Buffer.from(early, \"utf8\").toString(\"base64\") });",
+      "replace": "        void early;",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "capture is valid (child emitted the sentinel)",
+      "cell": "capture is valid (child emitted the sentinel)",
+      "note": "Replay skipped. The sentinel must fail first, not the twelve env cells."
+    }
+  ]
+}

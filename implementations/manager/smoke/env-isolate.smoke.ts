@@ -57,6 +57,10 @@ const SENTINEL = "COTAL_P3_SENTINEL_UNRELATED";
 const OPERATOR_SECRET = "P3_OPERATOR_SECRET";
 const OPERATOR_VALUE = "withhold-marker-xyz";
 const EXPLICIT = "P3_EXPLICIT_CAPABILITY";
+/** Known KEY=VALUE the child must emit. Withheld cells pass on an empty
+ *  capture, so this is asserted first. */
+const CAPTURE = "P3_CAPTURE_SENTINEL";
+const CAPTURE_VALUE = "p3-capture-visible";
 const PATH_SEP = process.platform === "win32" ? ";" : ":";
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
 if (!HOME) throw new Error("env-isolate: HOME/USERPROFILE is unset, so ~/.local/bin cannot be formed and the PATH cell cannot run");
@@ -97,12 +101,20 @@ async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown
   // Dump the child's env cross-platform — `printenv` is Unix-only; node (always present, and able to
   // start from the inherited env) prints each KEY=value the same way on Windows and POSIX.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
-  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env };
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: { ...env, [CAPTURE]: CAPTURE_VALUE } };
   const h = spawnFn(spec);
   const sess = h.attach() as { onData: (fn: (b: Buffer) => void) => () => void; onExit: (fn: () => void) => () => void };
   let buf = "";
   sess.onData((b) => { buf += b.toString("utf8"); });
-  await new Promise<void>((resolve) => sess.onExit(() => resolve()));
+  let exited = false;
+  sess.onExit(() => { exited = true; });
+  const deadline = Date.now() + 8_000;
+  while (!exited && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  if (!exited) {
+    check("child exit observed (bounded wait)", false, "timed out after 8000ms waiting for seat onExit");
+    h.stop({ graceful: false });
+    return buf;
+  }
   await new Promise((r) => setTimeout(r, 150)); // drain
   h.stop({ graceful: false });
   return buf;
@@ -116,6 +128,9 @@ function stripPty(raw: string): string {
 function assertBoundary(label: string, out: string, opts: { explicit: boolean }): void {
   out = unwrapCapture(out);
   console.log(`${label}:`);
+  const captured = out.includes(`${CAPTURE}=${CAPTURE_VALUE}`);
+  check("capture is valid (child emitted the sentinel)", captured, "capture empty/invalid");
+  if (!captured) return;
   check("ordinary operator variable was withheld", !out.includes(`${OPERATOR_SECRET}=${OPERATOR_VALUE}`));
   if (opts.explicit) check("explicit spawn.env value reached child", out.includes(`${EXPLICIT}=explicit-value`));
   else check("explicit spawn.env value did NOT leak onto the default path", !out.includes(`${EXPLICIT}=explicit-value`));
@@ -164,7 +179,7 @@ if (tmuxOk) {
   // and a line-oriented PATH= match would miss ~/.local/bin on the continuation. sleep keeps the
   // window alive long enough to capture-pane.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
-  const spec: LaunchSpec = { command: process.execPath, args: ["-e", `${dumpEnv}; setTimeout(()=>{}, 5000)`], env: launchEnv({ envAllow: [EXPLICIT] }) };
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", `${dumpEnv}; setTimeout(()=>{}, 5000)`], env: { ...launchEnv({ envAllow: [EXPLICIT] }), [CAPTURE]: CAPTURE_VALUE } };
   const h = runtime.spawn("p3-tmux", spec, cwd);
   await new Promise((r) => setTimeout(r, 900)); // let printenv run + render
   let out = "";
