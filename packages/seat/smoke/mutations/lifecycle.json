@@ -25,6 +25,16 @@
       "expectRed": "resize: geometry survives the hello apply",
       "cell": "resize: geometry survives the hello apply",
       "note": "Unconditional hello apply is the clobber that made mesh-attach-plane miss a 90x25 resize."
+    },
+    {
+      "name": "M3 notify exit only to output subscribers",
+      "file": "packages/seat/src/custodian.ts",
+      "find": "    for (const sock of controllers) send(sock, { event: \"exit\" });",
+      "replace": "    for (const socks of dataSubs.values()) {\n      for (const sock of socks) send(sock, { event: \"exit\" });\n    }",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "onExit fires without an output subscription",
+      "cell": "onExit fires without an output subscription",
+      "note": "Manager readiness onExit does not subscribe to output. Output-only notify is the CI M3 process-exit miss."
     }
   ]
 }

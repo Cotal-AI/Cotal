@@ -30,7 +30,7 @@ The launcher owns no PTY and exits after writing a permissioned per-seat record.
 owns exactly one `node-pty` object, its child relationship, its screen mirror, and exit
 observation. A manager worker connects to that custodian over a 0600 filesystem Unix socket
 authenticated by `SO_PEERCRED` uid match plus a per-seat capability token. Path possession is
-not enough.
+not enough. Child exit is pushed to every authenticated controller socket.
 
 Generation CAS, the crash journal, N/N-1 protocol compatibility, and manager-worker activation
 are later milestones. This package currently speaks a single implicit controller.

@@ -146,6 +146,32 @@ try {
   {
     const rec = launchSeat({
       root,
+      name: "exit-notify",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    const h = adoptSeatSync(rec);
+    handles.push(h);
+    await h.attach().backlog();
+    let fired = false;
+    h.attach().onExit(() => {
+      fired = true;
+    });
+    process.kill(rec.childPid, "SIGKILL");
+    check(
+      "onExit fires without an output subscription",
+      await until(() => fired, 5_000),
+      { fired, status: h.status() },
+    );
+  }
+
+  {
+    const rec = launchSeat({
+      root,
       name: "natural",
       spec: {
         command: process.execPath,

@@ -74,6 +74,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let exit: { code?: number; signal?: number } | undefined;
   const dataSubs = new Map<number, Set<Socket>>();
   const waiters = new Map<Socket, Set<number>>();
+  const controllers = new Set<Socket>();
   let nextSub = 1;
   let confirmTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -119,9 +120,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       clearInterval(confirmTimer);
       confirmTimer = undefined;
     }
-    for (const socks of dataSubs.values()) {
-      for (const sock of socks) send(sock, { event: "exit" });
-    }
+    for (const sock of controllers) send(sock, { event: "exit" });
     resolveWaiters();
   };
 
@@ -169,6 +168,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     let authed = false;
     const owned = new Set<number>();
     const drop = (): void => {
+      controllers.delete(sock);
       for (const sub of owned) {
         const socks = dataSubs.get(sub);
         if (!socks) continue;
@@ -238,6 +238,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           return;
         }
         session.setAuthed(true);
+        controllers.add(sock);
+        if (alive && childGone()) markExited({});
         send(sock, {
           id: req.id,
           ok: true,
