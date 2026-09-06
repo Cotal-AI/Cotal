@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
+  dialerFor,
   isReachable,
   epAuthBucket,
   recordsBucket,
@@ -110,7 +110,7 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  * signer. Do not turn this into a partial startup that later fails on a broker permission error;
  * the public command owns the honest, actionable refusal below.
  */
-export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean } {
+export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean } {
   const localSpace = spaceFor(v, root);
   if (hasUserAuthState(root, localSpace)) {
     // Preserve the historical host path's missing/stale-registry diagnostics in Manager.start():
@@ -121,10 +121,10 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
       const target = resolveMeshTarget(root, { space: localSpace });
       if (v.server !== undefined && v.server !== target.server)
         throw new Error(`--server ${v.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
-      return { space: localSpace, server: target.server, remoteUser: false };
+      return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired };
     } catch (error) {
       if (!isWorkspaceTargetError(error)) throw error;
-      return { space: localSpace, server: v.server ?? DEFAULT_SERVER, remoteUser: false };
+      return { space: localSpace, server: v.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false };
     }
   }
 
@@ -133,14 +133,14 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     if (target.mode === "user" && target.userAuth?.remote === true) {
       if (v.server !== undefined && v.server !== target.server)
         throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
-      return { space: target.space, server: target.server, remoteUser: true };
+      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };
     }
     // The marker is absent, but this is a local/static/open record or a malformed user entry. Let
     // the normal manager validation retain its mode-specific diagnostics rather than rewording a
     // state this helper has not proved is the registered-participant case.
     if (v.server !== undefined && v.server !== target.server)
       throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
-    return { space: target.space, server: target.server, remoteUser: false };
+    return { space: target.space, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired };
   } catch (error) {
     // `resolveMeshTarget(...,{space})` distinguishes every known registry fault. Only an absent
     // record gets the host-or-join wording; a corrupt/ambiguous record remains its own loud error.
@@ -166,7 +166,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   if (defaultRuntime === "auto" && v.runtime) {
     runtime = v.runtime as RuntimeMode;
   }
-  let target: { space: string; server: string; remoteUser: boolean };
+  let target: ReturnType<typeof superviseTarget>;
   try {
     target = superviseTarget(v);
   } catch (e) {
@@ -198,6 +198,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        tlsRequired: target.tlsRequired,
       });
       const artifacts = managerClusterArtifacts();
       const contractArtifacts = [
@@ -429,7 +430,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
   const creds = await mintCreds(auth, identity, "endpoint-serve-executor", {
     endpointServeExecutor: { endpoint, instanceId },
   });
-  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  const nc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(epAuthBucket(space));
     const recordsKv = await new Kvm(nc).open(recordsBucket(space));
@@ -505,7 +506,7 @@ async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
     endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", instanceId),
   });
   const probeCaller: EpCaller = { owner: DEV_OWNER, actor: probeIdentity.id, uid: probeUid };
-  const probeNc = await connect({ servers, ...standaloneConnectOpts({ creds: probeCreds, tls: false }), maxReconnectAttempts: 0 });
+  const probeNc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: probeCreds, tls: false }), maxReconnectAttempts: 0 });
   const probeInstance = makeInstanceProbe(probeNc, { space, endpoint, instanceId, caller: probeCaller });
 
   // The DELETE's credential: the executor whose grants name exactly this registration's two
@@ -514,7 +515,7 @@ async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
   const execCreds = await mintCreds(auth, execIdentity, "endpoint-serve-executor", {
     endpointServeExecutor: { endpoint, instanceId },
   });
-  const execNc = await connect({ servers, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
+  const execNc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(execNc).open(recordsBucket(space));
     const authKv = await new Kvm(execNc).open(epAuthBucket(space));

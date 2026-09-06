@@ -18,7 +18,7 @@
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
@@ -84,7 +84,7 @@ interface Planes {
  *  open mesh connects bare either way. */
 async function openPlanes(values: RunValues, role: "run-driver" | "run-operator", mint: NonNullable<ConnectOpts["mint"]>): Promise<Planes> {
   const conn = await connectOrExit(values, role, { mint });
-  const nc = await connect({
+  const nc = await dialerFor(conn.server)({
     servers: conn.server,
     ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }),
   });
