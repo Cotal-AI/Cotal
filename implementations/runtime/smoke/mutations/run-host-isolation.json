@@ -83,6 +83,14 @@
       "replace": "",
       "expectRed": "the host rejects forged ownership of an existing channel",
       "cell": "the host rejects forged ownership of an existing channel"
+    },
+    {
+      "name": "the single-credential refusal drops its remedy",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": " From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.",
+      "replace": "",
+      "expectRed": "the local credential refusal gives a concrete next command",
+      "cell": "the local credential refusal gives a concrete next command"
     }
   ]
 }

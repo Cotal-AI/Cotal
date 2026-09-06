@@ -120,7 +120,7 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
 async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<RunHostPlanes> {
   const conn = driver.connection;
   if (conn.creds !== undefined && conn.auth === undefined)
-    throw new Error("run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles");
+    throw new Error("run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles. From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.");
   const creds = conn.auth === undefined ? undefined : await mintCreds(conn.auth, newIdentity(), "run-mediator", { runMediator: pin });
   const nc = await connect({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }) });
   try {
