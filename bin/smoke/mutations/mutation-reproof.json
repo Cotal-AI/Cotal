@@ -24,8 +24,8 @@
     {
       "name": "a changed configured suite is ignored by changed-set selection",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "  || (typeof suite === \"string\" && changed.has(suite))\n",
-      "replace": "",
+      "find": "    config: changed.has(fixture.path),\n    suite: typeof fixture.suite === \"string\" && changed.has(fixture.suite),\n    mutation: fixture.mutations.some((mutation) =>",
+      "replace": "    config: changed.has(fixture.path),\n    suite: false,\n    mutation: fixture.mutations.some((mutation) =>",
       "expectRed": "a suite-only change selects exactly the fixture that names that suite",
       "cell": "a suite-only change selects exactly the fixture that names that suite"
     },
@@ -40,10 +40,58 @@
     {
       "name": "a pre-red suite is blamed as a fatal finding instead of reported as its own state",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "{ preRed.push(path); continue; }",
-      "replace": "{ fatal.push(path); continue; }",
-      "expectRed": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate",
-      "cell": "a pre-red selected fixture is reported as PRE-RED, names exactly that fixture, and does NOT fail the gate"
+      "find": "      else if (transition.kind === \"inherited\") preRed.push(finding);",
+      "replace": "      else if (transition.kind === \"inherited\") fatal.push(path);",
+      "expectRed": "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal",
+      "cell": "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal"
+    },
+    {
+      "name": "pre-red attribution ignores the same command's base-to-head transition",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const transition = compareSnapshots(headRun, baseRun);\n      const finding = { path, command: fixtureCommand, headStatus: headRun.status, ...transition };\n      if (transition.kind === \"attributable\") attributablePreRed.push(finding);\n      else if (transition.kind === \"inherited\") preRed.push(finding);\n      else unmeasuredPreRed.push(finding);",
+      "replace": "      preRed.push({ path, command: fixtureCommand, headStatus: headRun.status, baseStatus: undefined });",
+      "expectRed": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling",
+      "cell": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling"
+    },
+    {
+      "name": "the disposable base skips its frozen install and full build before comparison",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  const install = runCommand(\"pnpm install --frozen-lockfile\", snapshot.path, snapshotEnv(), { offline: false });\n  snapshot.preparationError = preparationFailure(`${label} dependency install`, install);\n  if (snapshot.preparationError) return;\n  const build = runCommand(\"pnpm build\", snapshot.path, snapshotEnv());\n  snapshot.preparationError = preparationFailure(`${label} build`, build);\n  if (!snapshot.preparationError) snapshot.prepared = true;",
+      "replace": "  snapshot.prepared = true;",
+      "expectRed": "a dist-backed inherited red command is comparable after the disposable base performs its own install and build",
+      "cell": "a dist-backed inherited red command is comparable after the disposable base performs its own install and build"
+    },
+    {
+      "name": "pre-red classification inspects only the first distinct fixture command",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const headRedCommands = commandMatrix.filter(({ headRun }) => headRun.status !== 0);",
+      "replace": "    const headRedCommands = commandMatrix.filter(({ headRun }) => headRun.status !== 0).slice(0, 1);",
+      "expectRed": "reversing command order still reports the later inherited and attributable transitions without clearing",
+      "cell": "reversing command order still reports the later inherited and attributable transitions without clearing"
+    },
+    {
+      "name": "pre-red head commands reuse the possibly poisoned root instead of the clean head snapshot",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const headRun = runCommand(fixtureCommand, snapshots.head.path, snapshotEnv());",
+      "replace": "      const headRun = runCommand(fixtureCommand, root);",
+      "expectRed": "prepared snapshots scrub head-only PATH and NODE_PATH entries while preserving pnpm and nats-server",
+      "cell": "prepared snapshots scrub head-only PATH and NODE_PATH entries while preserving pnpm and nats-server"
+    },
+    {
+      "name": "the base skips commands that are green in the head snapshot, breaking symmetric state evolution",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const baseRun = runCommand(fixtureCommand, snapshots.base.path, snapshotEnv());",
+      "replace": "      const baseRun = headRun.status === 0 ? headRun : runCommand(fixtureCommand, snapshots.base.path, snapshotEnv());",
+      "expectRed": "head and base run every command in the same order before comparing stateful red output",
+      "cell": "head and base run every command in the same order before comparing stateful red output"
+    },
+    {
+      "name": "first-party stack frames are dropped, so different error origins collapse to one signature",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      const classified = classifyLocation(location);\n      if (classified.kind === \"origin\")\n        signature.push(paren ? `at ${paren[1]} (${classified.value})` : `at ${classified.value}`);\n      else if (classified.kind === \"verbatim\") signature.push(line);\n      continue;",
+      "replace": "      const classified = classifyLocation(location);\n      void classified;\n      continue;",
+      "expectRed": "a caught error stack from a different first-party file does not clear as inherited",
+      "cell": "a caught error stack from a different first-party file does not clear as inherited"
     },
     {
       "name": "verdict lines are matched without stripping ANSI colour, so every verdict reads as absent",
