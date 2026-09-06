@@ -13,7 +13,7 @@
  *
  * Run: pnpm smoke:runtime-run-driver-auth   (needs nats-server on PATH; part of smoke:ci)
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -492,6 +492,33 @@ const A = await driver(RUN_A, TK_A);
 
 }
 
+// Exercise the executable's dispatcher and error renderer without running seed installation.
+{
+  const credsFile = join(dir, "single-driver.creds");
+  const programFile = join(dir, "raw-local.cotal.js");
+  writeFileSync(credsFile, await mintCreds(auth, newIdentity(), "run-driver", {
+    runDriver: { endpoint: EP, runId: "run-raw-cli", takeoverId: newTakeoverId(), instanceId: IID, epoch: EPOCH },
+  }), { mode: 0o600 });
+  writeFileSync(programFile, 'log("local");');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+  env.HOME = dir;
+  env.XDG_CONFIG_HOME = join(dir, "config");
+  const entry = join(dir, "run-cli.mts");
+  writeFileSync(entry, `
+    import ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+    import { registry } from ${JSON.stringify(import.meta.resolve("@cotal-ai/core"))};
+    import { runCli } from ${JSON.stringify(new URL("../../cli/src/command.ts", import.meta.url).href)};
+    await runCli(registry, process.argv.slice(2));
+  `);
+  const result = spawnSync(process.execPath, [
+    "--import", import.meta.resolve("tsx"), entry,
+    "run", "start", "--local", "--server", SERVERS, "--space", S, "--creds", credsFile, "--file", programFile,
+  ], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  c("a single-credential local CLI attempt reaches the named refusal", result.status === 1 && output.includes("single --creds"), output.slice(-1200));
+  c("the local credential refusal gives a concrete next command", output.includes("omit --creds") && output.includes("cotal run start --local --space"), output.slice(-1200));
+  c("the local credential refusal renders without a stack trace", !/^\s+at /m.test(output) && result.status === 1, output.slice(-1200));
+}
 } catch (error) {
   fail++;
   console.log("  ✗ FAIL: the scenario threw before completing", error);
