@@ -4,7 +4,7 @@
   "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/cmux --filter @cotal-ai/tmux --filter @cotal-ai/manager build && pnpm smoke:env-isolate",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/env-isolate.json",
   "why": [
-    "createRuntime(pty) on Linux is now custodial. A dump-then-exit child prints before subscribe. Without replay the capture is empty, withheld cells pass vacuously, and an untimed onExit wait can hang a shard hour."
+    "createRuntime(pty) on Linux is now custodial. childEnvOf waits for handle status() exited before attach so subscribe must replay. Skipping replay or skipping early-buffer accumulation both empty the capture."
   ],
   "mutations": [
     {
@@ -16,6 +16,16 @@
       "expectRed": "capture is valid (child emitted the sentinel)",
       "cell": "capture is valid (child emitted the sentinel)",
       "note": "Replay skipped. The sentinel must fail first, not the twelve env cells."
+    },
+    {
+      "name": "M2 skip early-buffer accumulation",
+      "file": "packages/seat/src/custodian.ts",
+      "find": "    const retainEarlyForSubscribeReplay = d;",
+      "replace": "    const retainEarlyForSubscribeReplay = \"\";",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "capture is valid (child emitted the sentinel)",
+      "cell": "capture is valid (child emitted the sentinel)",
+      "note": "Same-file positive control: subscribe still sends `early`, but `early` never accumulates, so dump-then-exit attach is empty."
     }
   ]
 }

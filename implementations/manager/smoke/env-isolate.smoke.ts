@@ -97,12 +97,32 @@ process.env.COTAL_CODEX_BIN = "/tmp/operator-codex-bin";
 const cwd = process.cwd();
 
 /** Spawn `printenv` under a runtime with a connector-style spec, collect its env output, stop. */
-async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown; stop: (o?: { graceful?: boolean }) => void }, env: Record<string, string>): Promise<string> {
+async function childEnvOf(
+  spawnFn: (spec: LaunchSpec) => {
+    attach: () => unknown;
+    stop: (o?: { graceful?: boolean }) => void;
+    status?: () => "running" | "exited";
+    record?: unknown;
+  },
+  env: Record<string, string>,
+): Promise<string> {
   // Dump the child's env cross-platform — `printenv` is Unix-only; node (always present, and able to
   // start from the inherited env) prints each KEY=value the same way on Windows and POSIX.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
   const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: { ...env, [CAPTURE]: CAPTURE_VALUE } };
   const h = spawnFn(spec);
+  // Custodial dump-then-exit can finish before attach. Waiting for handle status() here (not
+  // waitForExit, which closes SeatClient) forces subscribe to take the early-buffer replay path.
+  // Off Linux the handle has no record and live onData is the capture; do not wait there.
+  if (typeof h.status === "function" && h.record != null) {
+    const readyBy = Date.now() + 8_000;
+    while (h.status() !== "exited" && Date.now() < readyBy) await new Promise((r) => setTimeout(r, 50));
+    if (h.status() !== "exited") {
+      check("child status exited before attach (bounded wait)", false, "timed out after 8000ms waiting for handle status() exited");
+      h.stop({ graceful: false });
+      return "";
+    }
+  }
   const sess = h.attach() as { onData: (fn: (b: Buffer) => void) => () => void; onExit: (fn: () => void) => () => void };
   let buf = "";
   sess.onData((b) => { buf += b.toString("utf8"); });
