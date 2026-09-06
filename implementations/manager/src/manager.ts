@@ -142,6 +142,7 @@ import {
   submissionFingerprint,
   EpEnvelopeError,
   lifecycleBlocked,
+  lifecycleBlockedFrom,
   renderLifecycleBlocked,
   type EpCommandDef,
   type EpServeContext,
@@ -151,7 +152,7 @@ import {
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStaticReconciliationFailure, type ManagerStaticReconciliationStatus, type ManagerStaticReconciliationSweep, type ManagerStatus } from "./manager-service-contract.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -232,6 +233,19 @@ export function credRenewIntervalMs(ttlSeconds: number): number {
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
  * a reuse. */
 const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
+/** One initial terminal entry plus three re-drives. The short first retry absorbs a one-shot
+ *  broker/eviction blip; the wider later spacing avoids hammering a persistently unavailable
+ *  authority. The finite ~36s window is intentionally not a liveness inference: exhausting it
+ *  leaves the durable alias held and requires a later manager start. */
+const STATIC_RECONCILE_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
+const STATIC_RECONCILE_MAX_ATTEMPTS = STATIC_RECONCILE_RETRY_DELAYS_MS.length + 1;
+
+type StaticReconcileItem = ManagerStaticReconciliationFailure & {
+  owner: string;
+  timer?: ReturnType<typeof setTimeout>;
+  flight?: Promise<boolean>;
+  retryFlight?: Promise<void>;
+};
 
 /** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
  *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
@@ -971,6 +985,19 @@ export class Manager {
   /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
    * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
   private readonly reconcilingAliases = new Set<string>();
+  /** Current failed/recovered static reconciliation coordinates. This is an operator snapshot, not
+   *  lifecycle authority: every re-drive re-reads broker KV and re-runs planStaticSlotResume. */
+  private readonly staticReconcileItems = new Map<string, StaticReconcileItem>();
+  private staticReconcileLastSweep?: ManagerStaticReconciliationSweep;
+  private staticReconcileSweepsInFlight = 0;
+  private staticReconcileDrainWaiters: Array<() => void> = [];
+  private staticReconcileStopping = false;
+  /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
+   * already past an earlier shutdown check cannot finish after stop() returns. */
+  private startTask?: Promise<void>;
+  /** Held as an instance field so broker-owning smokes can compress the schedule without changing
+   *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
+  private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
    *  (name, lifecycleUid). The detached freeSlot teardown and every same-name-spawn nudge that
    *  re-drives it JOIN one promise instead of launching a SECOND, concurrent teardown. Without it,
@@ -1120,7 +1147,19 @@ export class Manager {
           `refused outright and writes no creds file.`;
   }
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    if (this.startTask) return this.startTask;
+    const task = this.runStart();
+    let wrapped!: Promise<void>;
+    wrapped = task.finally(() => {
+      if (this.startTask === wrapped) this.startTask = undefined;
+    });
+    this.startTask = wrapped;
+    return wrapped;
+  }
+
+  private async runStart(): Promise<void> {
+    this.staticReconcileStopping = false;
     await this.inspectConnectorsAtBoot();
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
@@ -1252,7 +1291,7 @@ export class Manager {
     // attach THAT alias until its terminal attempt returns.
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
-      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - a later manager start retries any unfinished terminal`));
+      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
     // P2 item 1 (1d): the manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -1268,6 +1307,10 @@ export class Manager {
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
+    // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
+    // terminal drains, start() and stop() resume from the same await boundary; start must observe
+    // the fence before it can publish a fresh service registration after shutdown.
+    if (this.staticReconcileStopping) return;
     // P2 item 1: register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
     // and serve its typed command surface on the ep rails - since 1d the ONLY control door, in
     // EVERY mesh mode. Static + user meshes mint the scoped executor + endpoint-serve credential;
@@ -1275,6 +1318,7 @@ export class Manager {
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
     await this.registerManagerService();
+    if (this.staticReconcileStopping) return;
     // P2 item 2: stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
@@ -1910,6 +1954,15 @@ export class Manager {
   }
 
   async stop(): Promise<void> {
+    this.staticReconcileStopping = true;
+    const starting = this.startTask;
+    for (const item of this.staticReconcileItems.values()) {
+      if (item.timer) clearTimeout(item.timer);
+      item.timer = undefined;
+      item.nextRetryAt = undefined;
+    }
+    await this.awaitStaticReconcileDrain();
+    await starting?.catch(() => {});
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
@@ -2137,7 +2190,7 @@ export class Manager {
       // retiredPrincipals, so a copied JWT is refused). Best-effort + loud: a sweep failure must
       // not fail the finalize (the next non-resume boot re-drives it), but it is never swallowed.
       if (this.auth && !this.userMode)
-        await this.reconcileStaticLifecycles(true).catch((e) => console.error(`! post-resume static reconcile: ${(e as Error).message} - a durable active orphan may still wedge its alias until the next non-resume restart`));
+        await this.reconcileStaticLifecycles(true).catch((e) => console.error(`! post-resume static reconcile: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
       this.resumeFinalized = true;
       this.resumeRequired = false;
       return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
@@ -5144,6 +5197,26 @@ export class Manager {
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+      staticReconciliation: this.staticReconciliationStatus(),
+    };
+  }
+
+  /** Render the current operator snapshot. Recovered rows live until the next sweep starts, then
+   *  clear, so recovery is visible without becoming stale process-lifetime history. */
+  private staticReconciliationStatus(): ManagerStaticReconciliationStatus {
+    const failures = [...this.staticReconcileItems.values()]
+      .map(({ owner: _owner, timer: _timer, flight: _flight, retryFlight: _retryFlight, ...item }) => ({ ...item }))
+      .sort((a, b) => a.alias.localeCompare(b.alias));
+    const state: ManagerStaticReconciliationStatus["state"] =
+      failures.some((item) => item.disposition === "retrying") ? "retrying" :
+      failures.some((item) => item.disposition === "retry-scheduled") ? "retry-wait" :
+      failures.some((item) => item.disposition === "refused" || item.disposition === "refused-foreign" || item.disposition === "retry-exhausted") ? "failed" :
+      this.staticReconcileSweepsInFlight > 0 ? "running" :
+      failures.some((item) => item.disposition === "recovered") ? "recovered" : "idle";
+    return {
+      state,
+      ...(this.staticReconcileLastSweep ? { lastSweep: { ...this.staticReconcileLastSweep } } : {}),
+      failures,
     };
   }
 
@@ -6616,7 +6689,7 @@ export class Manager {
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void> }): Promise<void> {
+  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void> }, surfaceFailure = false): Promise<void> {
     // A renewal that published its flight before the synchronous terminal latch is accepted work.
     // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
     // material; a failed renewal must not block retirement because it may still have staged an id.
@@ -6664,6 +6737,7 @@ export class Manager {
       if (h && h.lifecycleUid === a.lifecycleUid)
         h.lastError = `the static retirement did not complete (${(e as Error).message}); the name stays held - a same-name spawn retries the same terminal (op ${opId})`;
       console.error(`static retirement ${a.name} (${a.id}): ${(e as Error).message}`);
+      if (surfaceFailure) throw e;
     }
   }
 
@@ -6721,68 +6795,333 @@ export class Manager {
    *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
    *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary
    *  spawns) terminalizes any active slot the resume did not claim. */
-  private async reconcileStaticLifecycles(postAdoption = false): Promise<void> {
-    if (!this.auth) return;
+  private staticReconcileKey(row: Pick<StaticManagedSlotRow, "owner" | "alias" | "lifecycleUid">): string {
+    return JSON.stringify([row.owner, row.alias, row.lifecycleUid]);
+  }
+
+  /** Read one retry coordinate from the durable slot store. The status snapshot never authorizes a
+   *  re-drive: every timer comes through this fresh read before the planner and exact terminal. */
+  private async readStaticReconcileSlot(alias: string): Promise<StaticManagedSlotRow | undefined> {
+    if (!this.auth) return undefined;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    const slotRows: StaticManagedSlotRow[] = [];
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     try {
-      const jsm = await jetstreamManager(nc);
-      const kvm = new Kvm(nc);
-      await ensureAuthorityStores(jsm, kvm, this.space);
-      const recordsKv = await kvm.open(recordsBucket(this.space));
-      const t = staticLifecycleTransport(recordsKv, recordsKv /* auth reads unused in the sweep */);
-      const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${DEV_OWNER}.>`);
-      const aliases: string[] = [];
-      for await (const k of keys) aliases.push(k.split(".").slice(2).join("."));
-      for (const alias of aliases) {
-        const slot = await readStaticSlot(t, DEV_OWNER, alias);
-        if (slot !== undefined) slotRows.push(slot.row);
-      }
+      const recordsKv = await new Kvm(nc).open(recordsBucket(this.space));
+      return (await readStaticSlot(staticLifecycleTransport(recordsKv, recordsKv), DEV_OWNER, alias))?.row;
     } finally {
       await nc.drain().catch(() => nc.close());
     }
-    const terminalRows: StaticManagedSlotRow[] = [];
-    for (const row of slotRows) {
-      if (row.phase === "retired") {
-        // A retirement is a GLOBAL refusal fact — seed the F5 index for EVERY retired incarnation
-        // regardless of which instance owned it, so a sibling-retired incarnation's copied credential
-        // is refused at this control surface too. Ownership gates only the DESTRUCTIVE sweep below.
-        this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
-        continue;
+  }
+
+  private scheduleStaticReconcileRetry(key: string, item: StaticReconcileItem): void {
+    if (this.staticReconcileStopping || item.timer || item.attempts >= item.maxAttempts) return;
+    const delay = this.staticReconcileRetryDelaysMs[item.attempts - 1];
+    if (delay === undefined) return;
+    const nextRetryAtMs = Date.now() + delay;
+    item.disposition = "retry-scheduled";
+    item.nextRetryAt = new Date(nextRetryAtMs).toISOString();
+    item.timer = setTimeout(() => {
+      item.timer = undefined;
+      item.nextRetryAt = undefined;
+      const run = async (): Promise<void> => {
+        // The timer may fire while the failed attempt is still unwinding, especially in compressed
+        // smoke schedules. Join that flight before consuming another budget entry; never overlap it.
+        if (item.flight) await item.flight;
+        await this.retryStaticReconcile(key);
+      };
+      void run().catch((error) => {
+        item.lastError = `retry driver failed before the exact terminal: ${(error as Error).message}`;
+        item.disposition = "retry-exhausted";
+        item.remedy = "restart this manager for a fresh per-process retry budget";
+        console.error(`! static reconcile retry-exhausted alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}; NEXT: restart this manager for a fresh per-process retry budget`);
+      });
+    }, delay);
+    item.timer.unref?.();
+    console.error(`! static reconcile retry-scheduled alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid} attempt=${item.attempts + 1}/${item.maxAttempts} nextRetryAt=${item.nextRetryAt}`);
+  }
+
+  private retryStaticReconcile(key: string): Promise<void> {
+    const item = this.staticReconcileItems.get(key);
+    if (!item || this.staticReconcileStopping || item.disposition === "recovered") return Promise.resolve();
+    if (item.retryFlight) return item.retryFlight;
+    const flight = this.driveStaticReconcileRetry(key, item);
+    let wrapped!: Promise<void>;
+    wrapped = flight.finally(() => {
+      if (item.retryFlight === wrapped) item.retryFlight = undefined;
+    });
+    item.retryFlight = wrapped;
+    return wrapped;
+  }
+
+  private async driveStaticReconcileRetry(key: string, item: StaticReconcileItem): Promise<void> {
+    if (item.flight) await item.flight;
+    if (this.staticReconcileStopping || item.disposition === "recovered") return;
+    // A retry trigger consumes one finite budget entry even if the authoritative re-read itself
+    // fails. Otherwise a broker outage before the planner could reschedule forever without ever
+    // incrementing `attempts`, violating the bounded-retry guarantee.
+    item.attempts++;
+    item.disposition = "retrying";
+    item.remedy = undefined;
+    console.error(`static reconcile retrying alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid} attempt=${item.attempts}/${item.maxAttempts}`);
+    let row: StaticManagedSlotRow | undefined;
+    try {
+      row = await this.readStaticReconcileSlot(item.alias);
+    } catch (error) {
+      item.lastError = `durable slot re-read failed: ${(error as Error).message}`;
+      if (item.attempts >= item.maxAttempts) {
+        item.disposition = "retry-exhausted";
+        item.remedy = "restart this manager for a fresh per-process retry budget";
+        console.error(`! static reconcile retry-exhausted alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}; NEXT: restart this manager for a fresh per-process retry budget`);
+      } else {
+        this.scheduleStaticReconcileRetry(key, item);
       }
-      // 3b-2 RECONCILE OWNERSHIP (multi-manager-per-space): a manager adjudicates ONLY the non-retired
-      // rows THIS logical instance owns. A SIBLING manager's active/provisioning row is LEFT UNTOUCHED —
-      // sweep-terminalizing it would destroy the sibling's live agent (the historical all-agents-kill
-      // hazard, now cross-instance). A legacy row (pre-3b-2, no owner recorded) predates multi-manager,
-      // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
-      // sibling row is reclaimed only by an explicit operator CAS takeover (ruling 1), never here.
-      if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) continue;
-      // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
-      // at the SAME uid is never an orphan (empty at boot; exactly the adopted set at the
-      // post-adoption sweep — the fix for the F3 resume hole).
-      const live = this.agents.get(row.alias);
-      const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
-      // Boot sweep with a resume PENDING: an active slot may yet be adopted (the resume path runs
-      // AFTER this boot sweep), so DEFER it — the post-adoption sweep terminalizes any the resume
-      // did not claim. provisioning/terminalizing NEVER defer (they are crashed operations, never
-      // an agent to adopt). At `postAdoption` (or a non-resume boot) nothing defers.
-      if (!postAdoption && row.phase === "active" && !adopted && this.resumeRequired) continue;
-      if (planStaticSlotResume(row, adopted) !== "none") terminalRows.push(row);
+      return;
     }
-    // Mark the complete planned set before the first terminal awaits. The manager may already be
-    // serving by now; this synchronous handoff prevents a spawn from slipping between an alias's
-    // discovery and its later serial exact-op terminal.
-    for (const row of terminalRows) this.reconcilingAliases.add(row.alias);
-    for (let index = 0; index < terminalRows.length; index++) {
-      const row = terminalRows[index]!;
+    if (row === undefined || row.owner !== item.owner || row.actor !== item.actor || row.lifecycleUid !== item.lifecycleUid) {
+      item.disposition = "refused";
+      item.remedy = "inspect the durable slot; reconciliation will not cross incarnations";
+      item.lastError = row === undefined
+        ? "the durable slot vanished; reconciliation never acts from the in-memory snapshot"
+        : `the durable slot moved to actor ${row.actor} uid ${row.lifecycleUid}; reconciliation never crosses incarnations`;
+      console.error(`! static reconcile refused alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}`);
+      return;
+    }
+    item.phase = row.phase;
+    if (row.phase === "retired") {
+      item.disposition = "recovered";
+      item.recoveredAt = new Date().toISOString();
+      item.lastError = undefined;
+      console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
+      return;
+    }
+    if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) {
+      item.disposition = "refused";
+      item.remedy = "the owning manager must reconcile or an operator must perform an explicit CAS takeover";
+      item.lastError = `the durable slot belongs to manager instance ${row.ownerInstanceId}, not ${this.managerInstanceId}`;
+      console.error(`! static reconcile refused alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}`);
+      return;
+    }
+    const live = this.agents.get(row.alias);
+    const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
+    if (planStaticSlotResume(row, adopted) !== "drive-terminal") {
+      item.disposition = "refused";
+      item.remedy = adopted ? "leave the adopted live lifecycle running" : "inspect the fresh durable slot state";
+      item.lastError = adopted
+        ? "the durable lifecycle is now backed by an adopted live managed agent"
+        : `the fresh durable phase ${row.phase} is not terminal-plannable`;
+      console.error(`! static reconcile refused alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}`);
+      return;
+    }
+    await this.attemptStaticReconcile(key, item, row, false);
+  }
+
+  /** Enter one exact terminal at most once per coordinate. Sweep and timer triggers join the same
+   *  promise. A settled failed item keeps its original per-process budget; a restart builds a fresh
+   *  map from the still-authoritative durable row. */
+  private attemptStaticReconcile(key: string, item: StaticReconcileItem, row: StaticManagedSlotRow, countAttempt = true): Promise<boolean> {
+    if (item.flight) return item.flight;
+    if (item.timer) return Promise.resolve(false);
+    // A timer/retry driver increments before its mandatory durable re-read, then calls with
+    // countAttempt=false. Let that already-consumed budget entry enter the terminal. Only a fresh
+    // sweep entry (countAttempt=true) is refused once the per-process budget is exhausted.
+    if (countAttempt && item.attempts >= item.maxAttempts) return Promise.resolve(false);
+    const flight = (async (): Promise<boolean> => {
+      if (countAttempt) item.attempts++;
+      item.phase = row.phase;
+      item.disposition = "retrying";
+      item.nextRetryAt = undefined;
+      this.reconcilingAliases.add(row.alias);
+      console.error(`static reconcile terminal alias=${row.alias} phase=${row.phase} uid=${row.lifecycleUid} attempt=${item.attempts}/${item.maxAttempts}`);
       try {
-        console.error(`static reconcile ${index + 1}/${terminalRows.length} via ${this.servers ?? DEFAULT_SERVER}: ${row.alias} is ${row.phase} with no live managed owner${postAdoption ? " after resume adoption" : ""} - driving its exact-op terminal (uid ${row.lifecycleUid})`);
-        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid });
+        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid }, true);
+        if (item.attempts === 1) {
+          this.staticReconcileItems.delete(key);
+        } else {
+          item.phase = "retired";
+          item.disposition = "recovered";
+          item.recoveredAt = new Date().toISOString();
+          item.lastError = undefined;
+          console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
+        }
+        return true;
+      } catch (error) {
+        item.lastError = (error as Error).message;
+        try {
+          const fresh = await this.readStaticReconcileSlot(item.alias);
+          if (fresh?.lifecycleUid === item.lifecycleUid && fresh.actor === item.actor) item.phase = fresh.phase;
+        } catch { /* the terminal error remains primary; the next retry re-reads authoritatively */ }
+        const blocked = lifecycleBlockedFrom(error);
+        const ownOp = retireOpId(item.lifecycleUid);
+        const foreign = blocked !== undefined && (blocked.blockedOp !== "retirement" || blocked.opId !== ownOp);
+        if (foreign) {
+          item.disposition = "refused-foreign";
+          item.remedy = blocked?.remedy ?? "resolve the foreign durable operation; it is never force-cleared";
+          console.error(`! static reconcile refused-foreign alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}`);
+        } else if (item.attempts >= item.maxAttempts) {
+          item.disposition = "retry-exhausted";
+          item.remedy = "restart this manager for a fresh per-process retry budget";
+          console.error(`! static reconcile retry-exhausted alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}; NEXT: restart this manager for a fresh per-process retry budget`);
+        } else {
+          // The initial serial sweep must publish its complete failed aggregate before any timer can
+          // re-enter a middle row. Mark it now; the sweep arms the timer after its last planned row.
+          if (this.staticReconcileSweepsInFlight > 0) item.disposition = "retry-scheduled";
+          else this.scheduleStaticReconcileRetry(key, item);
+        }
+        return false;
       } finally {
         this.reconcilingAliases.delete(row.alias);
       }
+    })();
+    item.flight = flight.finally(() => {
+      if (item.flight === wrapped) item.flight = undefined;
+    });
+    const wrapped = item.flight;
+    return wrapped;
+  }
+
+  private releaseStaticReconcileSweep(): void {
+    this.staticReconcileSweepsInFlight--;
+    if (this.staticReconcileSweepsInFlight !== 0) return;
+    const waiters = this.staticReconcileDrainWaiters;
+    this.staticReconcileDrainWaiters = [];
+    for (const wake of waiters) wake();
+  }
+
+  /** Shutdown accepts no new static reconciliation work, then drains every sweep and exact-terminal
+   * flight that crossed the fence before stop(). A sweep can discover several rows before its first
+   * await, so the serial loop also consults the fence and never starts a later row after shutdown. */
+  private async awaitStaticReconcileDrain(): Promise<void> {
+    while (true) {
+      if (this.staticReconcileSweepsInFlight > 0)
+        await new Promise<void>((resolve) => this.staticReconcileDrainWaiters.push(resolve));
+      const flights: Array<Promise<boolean> | Promise<void>> = [];
+      for (const item of this.staticReconcileItems.values()) {
+        if (item.flight) flights.push(item.flight);
+        if (item.retryFlight) flights.push(item.retryFlight);
+      }
+      if (flights.length === 0 && this.staticReconcileSweepsInFlight === 0) return;
+      await Promise.allSettled(flights);
+    }
+  }
+
+  private async reconcileStaticLifecycles(postAdoption = false): Promise<void> {
+    if (!this.auth || this.staticReconcileStopping) return;
+    // Admission is synchronous with the shutdown fence. Once this increments, stop() must drain the
+    // whole accepted sweep even if it is still minting its short-lived provisioner credential.
+    this.staticReconcileSweepsInFlight++;
+    try {
+      // Recovered is a transition report, not permanent history. The next sweep clears it before
+      // deriving a fresh plan; failed coordinates keep their per-process budget and are joined.
+      for (const [key, item] of this.staticReconcileItems) {
+        if (item.disposition === "recovered") this.staticReconcileItems.delete(key);
+      }
+      const sweep: ManagerStaticReconciliationSweep = {
+        kind: postAdoption ? "post-adoption" : "startup",
+        startedAt: new Date().toISOString(),
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+      };
+      this.staticReconcileLastSweep = sweep;
+      const identity = newIdentity();
+      const creds = await mintCreds(this.auth, identity, "provisioner");
+      const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+      const slotRows: StaticManagedSlotRow[] = [];
+      try {
+        const jsm = await jetstreamManager(nc);
+        const kvm = new Kvm(nc);
+        await ensureAuthorityStores(jsm, kvm, this.space);
+        const recordsKv = await kvm.open(recordsBucket(this.space));
+        const t = staticLifecycleTransport(recordsKv, recordsKv /* auth reads unused in the sweep */);
+        const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${DEV_OWNER}.>`);
+        const aliases: string[] = [];
+        for await (const k of keys) aliases.push(k.split(".").slice(2).join("."));
+        for (const alias of aliases) {
+          const slot = await readStaticSlot(t, DEV_OWNER, alias);
+          if (slot !== undefined) slotRows.push(slot.row);
+        }
+      } catch (error) {
+        sweep.completedAt = new Date().toISOString();
+        throw error;
+      } finally {
+        await nc.drain().catch(() => nc.close());
+      }
+      const terminalRows: StaticManagedSlotRow[] = [];
+      for (const row of slotRows) {
+        if (row.phase === "retired") {
+          // A retirement is a GLOBAL refusal fact — seed the F5 index for EVERY retired incarnation
+          // regardless of which instance owned it, so a sibling-retired incarnation's copied credential
+          // is refused at this control surface too. Ownership gates only the DESTRUCTIVE sweep below.
+          this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
+          continue;
+        }
+        // 3b-2 RECONCILE OWNERSHIP (multi-manager-per-space): a manager adjudicates ONLY the non-retired
+        // rows THIS logical instance owns. A SIBLING manager's active/provisioning row is LEFT UNTOUCHED —
+        // sweep-terminalizing it would destroy the sibling's live agent (the historical all-agents-kill
+        // hazard, now cross-instance). A legacy row (pre-3b-2, no owner recorded) predates multi-manager,
+        // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
+        // sibling row is reclaimed only by an explicit operator CAS takeover (ruling 1), never here.
+        if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) continue;
+        // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
+        // at the SAME uid is never an orphan (empty at boot; exactly the adopted set at the
+        // post-adoption sweep — the fix for the F3 resume hole).
+        const live = this.agents.get(row.alias);
+        const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
+        // Boot sweep with a resume PENDING: an active slot may yet be adopted (the resume path runs
+        // AFTER this boot sweep), so DEFER it — the post-adoption sweep terminalizes any the resume
+        // did not claim. provisioning/terminalizing NEVER defer (they are crashed operations, never
+        // an agent to adopt). At `postAdoption` (or a non-resume boot) nothing defers.
+        if (!postAdoption && row.phase === "active" && !adopted && this.resumeRequired) continue;
+        if (planStaticSlotResume(row, adopted) !== "none") terminalRows.push(row);
+      }
+      try {
+        // Mark the complete planned set before the first terminal awaits. A timer owns only its own
+        // alias, but the initial serial sweep must close every discovery-to-await gap up front.
+        for (const row of terminalRows) this.reconcilingAliases.add(row.alias);
+        for (const row of terminalRows) {
+          if (this.staticReconcileStopping) break;
+          sweep.attempted++;
+          const key = this.staticReconcileKey(row);
+          let item = this.staticReconcileItems.get(key);
+          if (!item) {
+            item = {
+              owner: row.owner,
+              alias: row.alias,
+              actor: row.actor,
+              lifecycleUid: row.lifecycleUid,
+              phase: row.phase,
+              attempts: 0,
+              maxAttempts: STATIC_RECONCILE_MAX_ATTEMPTS,
+              disposition: "retrying",
+            };
+            this.staticReconcileItems.set(key, item);
+          }
+          const succeeded = await this.attemptStaticReconcile(key, item, row);
+          if (succeeded) sweep.succeeded++;
+          else sweep.failed++;
+          this.reconcilingAliases.delete(row.alias);
+        }
+        sweep.completedAt = new Date().toISOString();
+        for (const row of terminalRows) {
+          const key = this.staticReconcileKey(row);
+          const item = this.staticReconcileItems.get(key);
+          if (item?.disposition === "retry-scheduled" && !item.timer) this.scheduleStaticReconcileRetry(key, item);
+        }
+        const failed = terminalRows.flatMap((row) => {
+          const item = this.staticReconcileItems.get(this.staticReconcileKey(row));
+          return item && item.disposition !== "recovered" ? [`${item.alias}:${item.phase}:${item.disposition}`] : [];
+        });
+        if (sweep.failed === 0) {
+          console.error(`✓ static reconcile completed: ${sweep.attempted} attempted, ${sweep.succeeded} succeeded, 0 failed`);
+        } else {
+          console.error(`! static reconcile completed: ${sweep.attempted} attempted, ${sweep.succeeded} succeeded, ${sweep.failed} failed; failed=${failed.join(",")}`);
+        }
+      } finally {
+        for (const row of terminalRows) this.reconcilingAliases.delete(row.alias);
+      }
+    } finally {
+      this.releaseStaticReconcileSweep();
     }
   }
 

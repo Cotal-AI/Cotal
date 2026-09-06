@@ -607,7 +607,14 @@ async function componentEp(target: MeshTarget): Promise<{ ep: CotalEndpoint; clo
 async function managerServiceHealth(
   target: MeshTarget,
   auth: { creds?: string; caller: { owner: string; actor: string; uid: string } },
-): Promise<{ instanceId?: unknown; runtime?: unknown }> {
+): Promise<{
+  instanceId?: unknown;
+  runtime?: unknown;
+  staticReconciliation?: {
+    state?: unknown;
+    failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
+  };
+}> {
   const nc = await connect({
     servers: target.server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: target.tlsRequired } : { tls: target.tlsRequired }),
@@ -618,7 +625,14 @@ async function managerServiceHealth(
     const response = await invokeCommand(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
       throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
-    return response.reply.data as { instanceId?: unknown; runtime?: unknown };
+    return response.reply.data as {
+      instanceId?: unknown;
+      runtime?: unknown;
+      staticReconciliation?: {
+        state?: unknown;
+        failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
+      };
+    };
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -631,7 +645,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
   // permission to replace it with a network answer.  Name that failed local control surface first.
   if (record.kind === "unattributable" || record.kind === "unknown") {
     facts.push(record.kind === "unattributable" ? "unattributable pidfile" : "pid liveness unestablishable");
-    facts.push("phase not reported by this manager build");
+    facts.push("static reconciliation not reported by this manager build");
     return { name: "manager", verdict: "refused", facts };
   }
   if (record.kind === "dead") facts.push("stale pidfile");
@@ -657,13 +671,23 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
     });
     facts.push(`service instance ${served.instanceId ?? "unreported"}`);
     facts.push(`runtime ${served.runtime ?? "unreported"}`);
-    facts.push("phase not reported by this manager build");
+    const reconcile = served.staticReconciliation;
+    if (!reconcile) {
+      facts.push("static reconciliation not reported by this manager build");
+    } else {
+      facts.push(`static reconciliation ${String(reconcile.state ?? "unreported")}`);
+      for (const failure of reconcile.failures ?? []) {
+        const next = typeof failure.nextRetryAt === "string" ? ` nextRetryAt=${failure.nextRetryAt}` : "";
+        const remedy = typeof failure.remedy === "string" ? ` remedy=${failure.remedy}` : "";
+        facts.push(`static alias=${String(failure.alias ?? "unreported")} phase=${String(failure.phase ?? "unreported")} disposition=${String(failure.disposition ?? "unreported")}${next}${remedy}`);
+      }
+    }
     facts.push("serve reachable");
     // A manager service without its own liveness lease is a contradicted component surface, not a
     // healthy one. It still reports reachability, but cannot claim the required lease holder.
     return { name: "manager", verdict: lease ? "serving" : "not-serving", facts };
   } catch (e) {
-    facts.push("phase not reported by this manager build");
+    facts.push("static reconciliation not reported by this manager build");
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
     // The lease and PID answer whether that missing service belongs to an extant component (not
     // serving) or an absent one; any other failed probe remains a refusal.

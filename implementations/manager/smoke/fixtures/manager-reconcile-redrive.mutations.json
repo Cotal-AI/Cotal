@@ -1,0 +1,54 @@
+{
+  "suite": "implementations/manager/smoke/manager-reconcile-redrive.smoke.ts",
+  "guard": "startup static reconciliation reports a failed sweep and re-drives the same durable exact terminal in process",
+  "command": "pnpm smoke:manager-reconcile-redrive",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/manager-reconcile-redrive.mutations.json",
+  "why": [
+    "The suite starts a real authenticated nats-server through serverConfig and an in-process Manager, then plants three durable orphan lifecycle rows.",
+    "The first mutation changes only the failed aggregate branch. The earliest named cell observes the completed first sweep after all three shipped terminal paths ran, so it reddens because failure became success-shaped reporting rather than because an earlier row short-circuited.",
+    "The second mutation removes only the retry scheduling call after the real middle-row terminal failed. Earlier aggregate, durable hold, and status cells still run; the named re-drive cell is the first one that requires a second exact terminal entry.",
+    "The shutdown mutations remove the accepted-sweep drain, the serial stop fence, and the start-task join. The real broker control gates the first terminal and holds service registration after startup has passed its shutdown fence, so the start-task join has its own deterministic observation before the registration gate is released."
+  ],
+  "mutations": [
+    {
+      "name": "report a failed reconciliation sweep with the clean-success aggregate",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        console.error(`! static reconcile completed: ${sweep.attempted} attempted, ${sweep.succeeded} succeeded, ${sweep.failed} failed; failed=${failed.join(\",\")}`);",
+      "replace": "        console.error(`✓ static reconcile completed: ${sweep.attempted} attempted, ${sweep.attempted} succeeded, 0 failed`);",
+      "expectRed": "the first sweep is non-success and names the failed alias, phase, and disposition",
+      "cell": "the first sweep is non-success and names the failed alias, phase, and disposition"
+    },
+    {
+      "name": "do not schedule an in-process re-drive after the exact terminal fails",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          if (this.staticReconcileSweepsInFlight > 0) item.disposition = \"retry-scheduled\";\n          else this.scheduleStaticReconcileRetry(key, item);",
+      "replace": "          item.disposition = \"retry-exhausted\";\n          item.remedy = \"restart this manager for a fresh per-process retry budget\";",
+      "expectRed": "the same manager process re-drives the failed alias to retired",
+      "cell": "the same manager process re-drives the failed alias to retired"
+    },
+    {
+      "name": "stop returns while accepted startup reconciliation work is still running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
+      "replace": "",
+      "expectRed": "stop waits for an accepted startup reconciliation terminal",
+      "cell": "stop waits for an accepted startup reconciliation terminal"
+    },
+    {
+      "name": "a shutdown sweep starts the next planned alias after the accepted terminal drains",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        for (const row of terminalRows) {\n          if (this.staticReconcileStopping) break;\n          sweep.attempted++;",
+      "replace": "        for (const row of terminalRows) {\n          sweep.attempted++;",
+      "expectRed": "the shutdown fence prevents the serial sweep from starting a later terminal",
+      "cell": "the shutdown fence prevents the serial sweep from starting a later terminal"
+    },
+    {
+      "name": "stop does not join startup after draining reconciliation",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
+      "replace": "    await this.awaitStaticReconcileDrain();",
+      "expectRed": "stop joins startup service registration admitted before shutdown",
+      "cell": "stop joins startup service registration admitted before shutdown"
+    }
+  ]
+}

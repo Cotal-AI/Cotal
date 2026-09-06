@@ -530,8 +530,9 @@ sibling as proof that the component serves. It prints one of `serving`, `absent`
 state wins):
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
-  `status` service reachability from this host. Builds without a startup-phase report say
-  `phase not reported by this manager build`; that is never a blank green state.
+  `status` service reachability from this host. Manager builds that do not report static
+  reconciliation say `static reconciliation not reported by this manager build`; the line stays
+  visible even when the manager is otherwise `serving`.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.json` adoption verdict. A re-signed credential and a
   broker-accepted adoption stay distinct facts.
