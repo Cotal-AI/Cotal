@@ -23,10 +23,11 @@
  * dangling fixture is a loud failure, not a silent skip.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROOF = resolve(dirname(SCRIPT), "mutation-proof.mjs");
@@ -56,15 +57,11 @@ function git(root, argv) {
   return execFileSync("git", argv, { cwd: root, encoding: "utf8" });
 }
 
-function runCommand(command, cwd, env = process.env, { offline = true } = {}) {
-  const commandEnv = { ...env, CI: "true", pnpm_config_frozen_lockfile: "true",
-    pnpm_config_verify_deps_before_run: "false" };
-  if (offline) commandEnv.pnpm_config_offline = "true";
-  else delete commandEnv.pnpm_config_offline;
+function runCommand(command, cwd, env) {
   const run = spawnSync(command, {
     cwd, shell: true, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL",
-    env: commandEnv,
+    env,
   });
   return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 }
@@ -267,6 +264,14 @@ function refusedCommand(output) {
   return { command: matches[0][1], headStatus: matches[0][2] };
 }
 
+function refusedProvenance(output) {
+  const prefix = "MUTATION-PROOF BASELINE PROVENANCE ";
+  const lines = output.replace(ANSI, "").split("\n").filter((line) => line.startsWith(prefix));
+  if (lines.length !== 1) return { error: `expected exactly one baseline provenance record, found ${lines.length}` };
+  try { return JSON.parse(lines[0].slice(prefix.length)); }
+  catch (err) { return { error: `invalid baseline provenance record: ${err.message}` }; }
+}
+
 const snapshots = {
   base: { revision: a.base, path: undefined, error: undefined, prepared: false, preparationError: undefined },
   head: { revision: head, path: undefined, error: undefined, prepared: false, preparationError: undefined },
@@ -305,18 +310,25 @@ const insideRoot = (entry) => {
   const rel = relative(root, resolve(entry));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
-function snapshotEnv() {
-  const env = { ...process.env };
-  for (const key of ["PATH", "NODE_PATH"])
-    if (env[key]) env[key] = env[key].split(delimiter).filter((entry) => !insideRoot(entry)).join(delimiter);
-  return env;
-}
-
-function proofEnv() {
+function comparisonEnv({ offline = true } = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  for (const key of ["PATH", "NODE_PATH"])
+    if (env[key]) env[key] = env[key].split(delimiter).filter((entry) => !insideRoot(entry)).join(delimiter);
+  env.CI = "true";
+  env.pnpm_config_frozen_lockfile = "true";
+  // Load-bearing on both paths: three selftest fixtures assert this value; it prevents pnpm from
+  // installing into the mutation worktree, makes the tool-list pnpm wrapper safe, and prevents the
+  // install result block from entering only one failure signature. It must never inherit a host value.
+  env.pnpm_config_verify_deps_before_run = "false";
+  if (offline) env.pnpm_config_offline = "true";
+  else delete env.pnpm_config_offline;
   return env;
 }
+// Separate call sites are intentional mutation seams. Both delegate to one policy, but the smoke
+// suite proves that neither the root proof child nor snapshot commands may bypass normalization.
+const rootComparisonEnv = () => comparisonEnv();
+const snapshotComparisonEnv = (options) => comparisonEnv(options);
 
 function preparationFailure(label, run) {
   if (run.error) return `${label} could not start: ${run.error.message}`;
@@ -333,92 +345,20 @@ function ensureSnapshotPrepared(snapshot, label) {
   // package manager contract to prepare. Production repositories declare package.json; those always
   // take the frozen-install/full-build path below.
   if (!existsSync(join(snapshot.path, "package.json"))) { snapshot.prepared = true; return; }
-  const install = runCommand("pnpm install --frozen-lockfile", snapshot.path, snapshotEnv(), { offline: false });
+  const install = runCommand("pnpm install --frozen-lockfile", snapshot.path, snapshotComparisonEnv({ offline: false }));
   snapshot.preparationError = preparationFailure(`${label} dependency install`, install);
   if (snapshot.preparationError) return;
-  const build = runCommand("pnpm build", snapshot.path, snapshotEnv());
+  const build = runCommand("pnpm build", snapshot.path, snapshotComparisonEnv());
   snapshot.preparationError = preparationFailure(`${label} build`, build);
   if (!snapshot.preparationError) snapshot.prepared = true;
 }
 
-function unmeasurableBaseRun(run) {
-  if (run.error) return `command could not start: ${run.error.message}`;
-  if (run.status === null || run.signal) return `command did not produce an exit status${run.signal ? ` (signal ${run.signal})` : ""}`;
-  if (run.status === 126 || run.status === 127) return `command was unavailable (exit ${run.status})`;
-  const infrastructureFailure = /(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module|ERR_PNPM[A-Z0-9_]*|Missing script|command not found|\b[^:\s]+: not found\b|is not recognized as an internal or external command)/i
-    .exec(run.output);
-  if (infrastructureFailure) return `command could not run: ${infrastructureFailure[0]}`;
-  if (run.status !== 0 && run.output.trim() === "") return "red command produced no output, so its verdict is ambiguous";
-  return undefined;
-}
-
-function comparableFailure(output, cwd) {
-  const slash = (value) => value.replace(/\\/g, "/");
-  const projectRoot = slash(realpathSync(cwd)).replace(/\/$/, "");
-  const projectPrefix = `${projectRoot}/`;
-  const dependencyPath = /(?:^|[/\\])(?:node_modules|\.pnpm)(?:[/\\]|$)/;
-  const tempRoots = [...new Set([tmpdir(), realpathSync(tmpdir())]
-    .map((entry) => slash(entry).replace(/\/$/, "")))];
-  const classifyLocation = (location) => {
-    const withoutCoordinates = location.replace(/:\d+(?::\d+)?$/, "");
-    const fileUrl = withoutCoordinates.startsWith("file://");
-    let path = withoutCoordinates;
-    if (fileUrl) {
-      try { path = fileURLToPath(withoutCoordinates); }
-      catch { path = withoutCoordinates.slice(7); }
-    }
-    path = slash(path);
-    const pathShaped = fileUrl || path.startsWith("/") || /^[A-Za-z]:\//.test(path);
-    if (!pathShaped) return { kind: "verbatim" };
-    if (path === projectRoot || path.startsWith(projectPrefix)) {
-      if (dependencyPath.test(path)) return { kind: "drop" };
-      const relativePath = path === projectRoot ? "" : path.slice(projectPrefix.length);
-      return { kind: "origin", value: relativePath ? `<ROOT>/${relativePath}` : "<ROOT>" };
-    }
-    if (dependencyPath.test(path)) return { kind: "drop" };
-    for (const tempRoot of tempRoots) {
-      if (!path.startsWith(`${tempRoot}/`)) continue;
-      const remainder = path.slice(tempRoot.length + 1);
-      const separator = remainder.indexOf("/");
-      return { kind: "origin", value: separator === -1 ? "<TMP>" : `<TMP>/${remainder.slice(separator + 1)}` };
-    }
-    return { kind: "origin", value: path };
-  };
-  const signature = [];
-  for (const raw of output.replace(ANSI, "").split("\n")) {
-    const line = raw.trim();
-    if (!line || /^(?:Node\.js v|npm |pnpm |Scope:|Lockfile |Progress:|Packages:|Done in |\[?ELIFECYCLE\]?|Command failed)/i.test(line)) continue;
-    // Real uncaught Node/tsx errors also print a project source header before the snippet. Normalize
-    // its trailing line/column like a frame; retaining the number turns harmless line shifts fatal.
-    if (/^at\s/.test(line)) {
-      const paren = line.match(/^at\s+(.+?)\s+\((.+)\)$/);
-      const bare = line.match(/^at\s+(?:async\s+)?(.+)$/);
-      const location = paren?.[2] ?? bare?.[1];
-      if (!location || location.startsWith("node:")) continue;
-      const classified = classifyLocation(location);
-      if (classified.kind === "origin")
-        signature.push(paren ? `at ${paren[1]} (${classified.value})` : `at ${classified.value}`);
-      else if (classified.kind === "verbatim") signature.push(line);
-      continue;
-    }
-    const header = line.match(/^(file:\/\/)?(.+?):\d+(?::\d+)?$/);
-    if (header) {
-      const classified = classifyLocation(`${header[1] ?? ""}${header[2]}`);
-      if (classified.kind === "origin") signature.push(classified.value);
-      if (classified.kind !== "verbatim") continue;
-    }
-    signature.push(line.split(`file://${projectPrefix}`).join("file://<ROOT>/")
-      .split(projectRoot).join("<ROOT>"));
-  }
-  return signature.length ? signature.join("\n") : undefined;
-}
-
 function compareSnapshots(headRun, baseRun) {
-  const reason = unmeasurableBaseRun(baseRun);
+  const reason = unmeasurableFailure(baseRun);
   if (reason) return { kind: "unmeasured", reason };
   if (baseRun.status === 0) return { kind: "attributable", baseStatus: baseRun.status };
 
-  const headReason = unmeasurableBaseRun(headRun);
+  const headReason = unmeasurableFailure(headRun);
   if (headReason) return { kind: "unmeasured", reason: `head command ${headReason}` };
 
   // A bare non-zero cannot distinguish a suite verdict from broken setup. Only an identical,
@@ -433,6 +373,21 @@ function compareSnapshots(headRun, baseRun) {
   return { kind: "inherited", baseStatus: baseRun.status };
 }
 
+function rootContaminationReason(provenance, cleanHeadRun) {
+  // Infrastructure classification precedes status/signature comparison. Otherwise two unavailable
+  // commands (exit 127 with identical "not found" text) look inherited and earn a false green.
+  const rootInfrastructureReason = provenance.unmeasurableReason;
+  if (rootInfrastructureReason) return rootInfrastructureReason;
+  const headReason = unmeasurableFailure(cleanHeadRun);
+  if (headReason) return `head confirmation ${headReason}`;
+  const cleanHash = failureSignatureHash(cleanHeadRun.output, snapshots.head.path);
+  if (provenance.status !== cleanHeadRun.status || provenance.signatureHash === null
+      || cleanHash === undefined || provenance.signatureHash !== cleanHash) {
+    return "root PRE-RED was not reproduced in the clean head snapshot; root execution-state contamination detected";
+  }
+  return undefined;
+}
+
 const fatal = [];       // SURVIVED / UNGRADABLE / WRONG-RED / ERROR — the gate's real findings
 const preRed = [];      // exit 4 + base RED, or any exit 4 under --all — inherited/non-attributed
 const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head RED
@@ -441,7 +396,7 @@ const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neithe
 for (const { path, command, mutations } of selected) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
-    cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: proofEnv(),
+    cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: rootComparisonEnv(),
   });
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");
@@ -453,6 +408,12 @@ for (const { path, command, mutations } of selected) {
   if (run.status === 4) {
     const refused = refusedCommand(output);
     if (refused.error) { unmeasuredPreRed.push({ path, command: "unknown", reason: refused.error }); continue; }
+    const provenance = refusedProvenance(output);
+    if (provenance.error || provenance.command !== refused.command) {
+      unmeasuredPreRed.push({ path, command: refused.command,
+        reason: provenance.error ?? "baseline provenance did not name the refused command" });
+      continue;
+    }
     const commands = [...new Set([command, ...mutations.map((mutation) => mutation.command)]
       .filter((fixtureCommand) => typeof fixtureCommand === "string"))];
     if (a.all) { preRed.push({ path, ...refused, baseStatus: undefined }); continue; }
@@ -463,21 +424,30 @@ for (const { path, command, mutations } of selected) {
     if (preparationError) { unmeasuredPreRed.push({ path, command: refused.command, reason: preparationError }); continue; }
     const commandMatrix = [];
     for (const fixtureCommand of commands) {
-      const headRun = runCommand(fixtureCommand, snapshots.head.path, snapshotEnv());
-      const baseRun = runCommand(fixtureCommand, snapshots.base.path, snapshotEnv());
+      const headRun = runCommand(fixtureCommand, snapshots.head.path, snapshotComparisonEnv());
+      const baseRun = runCommand(fixtureCommand, snapshots.base.path, snapshotComparisonEnv());
       commandMatrix.push({ command: fixtureCommand, headRun, baseRun });
     }
     const cleanRefusal = commandMatrix.find(({ command: fixtureCommand }) => fixtureCommand === refused.command)?.headRun;
-    if (!cleanRefusal || cleanRefusal.status === 0) unmeasuredPreRed.push({ path, command: refused.command,
-      reason: "root PRE-RED was not reproduced in the clean head snapshot; root execution-state contamination detected" });
+    const refusalReason = cleanRefusal
+      ? rootContaminationReason(provenance, cleanRefusal)
+      : "root PRE-RED was not reproduced in the clean head snapshot; root execution-state contamination detected";
+    if (!cleanRefusal || cleanRefusal.status === 0) {
+      unmeasuredPreRed.push({ path, command: refused.command, reason: refusalReason });
+      continue;
+    }
     const headRedCommands = commandMatrix.filter(({ headRun }) => headRun.status !== 0);
     for (const { command: fixtureCommand, headRun, baseRun } of headRedCommands) {
-      const headReason = unmeasurableBaseRun(headRun);
+      const headReason = unmeasurableFailure(headRun);
       if (headRun.error || headRun.status === null || headRun.signal) {
         unmeasuredPreRed.push({ path, command: fixtureCommand, reason: `head confirmation ${headReason}` });
         continue;
       }
       const transition = compareSnapshots(headRun, baseRun);
+      if (fixtureCommand === refused.command && transition.kind === "inherited" && refusalReason) {
+        unmeasuredPreRed.push({ path, command: fixtureCommand, reason: refusalReason });
+        continue;
+      }
       const finding = { path, command: fixtureCommand, headStatus: headRun.status, ...transition };
       if (transition.kind === "attributable") attributablePreRed.push(finding);
       else if (transition.kind === "inherited") preRed.push(finding);

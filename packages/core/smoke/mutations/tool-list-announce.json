@@ -1,7 +1,7 @@
 {
   "suite": "packages/core/smoke/tool-list-announce.smoke.ts",
   "guard": "a connection-changing op branches on supportsToolListAnnounce, never on a connector name; undeclared is refuse, not a no-op; the refusal names no connector",
-  "command": "tsx packages/core/smoke/tool-list-announce.smoke.ts",
+  "command": "pnpm smoke:tool-list-announce",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/tool-list-announce.json",
   "why": [
     "Issue #1004. The advertised tool list depends on the connection. Some hosts can announce",
@@ -18,7 +18,9 @@
     "NO connector name at all must redden. That is the ruling's own cell.",
     "",
     "NO BUILD STEP: the suite imports ../src, so the mutated source is the source it runs.",
-    "The command calls tsx directly so pnpm does not try to install in this worktree."
+    "The no-install concern is real and is now handled by mutation-proof forcing",
+    "pnpm_config_verify_deps_before_run=false: pnpm resolves tsx from each prepared cwd's own .bin",
+    "without installing into the mutation worktree."
   ],
   "mutations": [
     {
