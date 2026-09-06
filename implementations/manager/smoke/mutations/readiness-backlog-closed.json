@@ -1,0 +1,19 @@
+{
+  "suite": "implementations/manager/smoke/start-model-preflight.smoke.ts",
+  "guard": "awaitReadiness still reports a launch failure when backlog throws because waitForExit already closed the attach stream",
+  "command": "pnpm smoke:start-model",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/readiness-backlog-closed.json",
+  "why": [
+    "waitForExit closes the controller socket in finally. Readiness onExit then snapshots backlog. Without the catch, that throw leaves the launch hanging until the backstop and reports uncertain, or kills the process as an unhandled rejection."
+  ],
+  "mutations": [
+    {
+      "name": "let a closed attach stream fail the readiness onExit snapshot",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          let tail = \"\";\n          try {\n            tail = this.tail(await s.backlog());\n          } catch {\n            /* waitForExit may close the attach stream before this snapshot */\n          }",
+      "replace": "          const tail = this.tail(await s.backlog());",
+      "expectRed": "launch exit still reports failed when backlog throws after the attach stream is closed",
+      "cell": "launch exit still reports failed when backlog throws after the attach stream is closed"
+    }
+  ]
+}

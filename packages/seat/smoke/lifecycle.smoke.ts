@@ -1,12 +1,12 @@
 /**
- * Seven behavior cells plus worker-death survival for one custodial seat.
+ * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat } from "../src/index.js";
+import { adoptSeatSync, launchSeat, SeatClient } from "../src/index.js";
 
 if (process.platform !== "linux") {
   console.log(`SEAT LIFECYCLE COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -206,6 +206,40 @@ try {
       await until(() => fired, 5_000),
       { fired, status: h.status() },
     );
+  }
+
+  {
+    const rec = launchSeat({
+      root,
+      name: "wait-exit-close",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    const client = new SeatClient(rec);
+    handles.push({
+      stop: () => {},
+      close: () => client.close(),
+      record: rec,
+    });
+    await client.connect();
+    check(
+      "wait-exit close race: child has already exited",
+      await until(() => client.info().status === "exited", 5_000),
+      client.info(),
+    );
+    const pending = client.waitExit();
+    client.close();
+    let err = "";
+    try {
+      await pending;
+    } catch (e) {
+      err = (e as Error).message;
+    }
+    check("wait-exit still settles after close once the child has exited", err === "", err);
   }
 
   {
