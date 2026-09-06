@@ -96,12 +96,15 @@ interface HostedRun {
   readonly takeoverId: string;
   readonly epoch: number;
   readonly identity: Identity;
+  readonly mediatorIdentity: Identity;
   /** Set once the connection is up; a slot reserved before that holds neither. */
   nc?: NatsConnection;
+  mediatorNc?: NatsConnection;
   drive?: RunHostDrive;
   /** The current credential, re-minted in place by the renewal loop; the authenticator reads it
    *  on every (re)connect. Undefined on an open mesh. */
   creds?: string;
+  mediatorCreds?: string;
 }
 
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
@@ -304,13 +307,20 @@ export class RunHosting {
     const auth = this.ctx.auth;
     if (!auth) return;
     for (const run of this.runs.values()) {
-      if (run.creds === undefined || inspectCredHealth(run.creds).state === "healthy") continue;
-      try {
-        run.creds = await mintCreds(auth, run.identity, "run-driver", {
-          runDriver: { endpoint: this.ctx.endpoint, runId: run.runId, takeoverId: run.takeoverId, instanceId: this.ctx.instanceId, epoch: run.epoch },
-        });
-      } catch (e) {
-        this.ctx.log(`! run-driver renewal for ${run.runId}: ${(e as Error).message} - the drive dies at this cred's expiry unless the manager restarts`);
+      const pin = { endpoint: this.ctx.endpoint, runId: run.runId, takeoverId: run.takeoverId, instanceId: this.ctx.instanceId, epoch: run.epoch };
+      if (run.creds !== undefined && inspectCredHealth(run.creds).state !== "healthy") {
+        try {
+          run.creds = await mintCreds(auth, run.identity, "run-driver", { runDriver: pin });
+        } catch (e) {
+          this.ctx.log(`! run-driver renewal for ${run.runId}: ${(e as Error).message}`);
+        }
+      }
+      if (run.mediatorCreds !== undefined && inspectCredHealth(run.mediatorCreds).state !== "healthy") {
+        try {
+          run.mediatorCreds = await mintCreds(auth, run.mediatorIdentity, "run-mediator", { runMediator: pin });
+        } catch (e) {
+          this.ctx.log(`! run-mediator renewal for ${run.runId}: ${(e as Error).message}`);
+        }
       }
     }
   }
@@ -329,6 +339,7 @@ export class RunHosting {
       const reached = await Promise.race([run.drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
       if (reached) await run.nc.drain().catch(() => run.nc.close());
       else await run.nc.close();
+      await run.mediatorNc?.close();
     }));
   }
 
@@ -343,7 +354,7 @@ export class RunHosting {
   private claim(runId: string): HostedRun {
     if (this.runs.has(runId)) throw new EpEnvelopeError("conflict", `run ${runId} is being driven by this manager already`);
     const takeoverId = newTakeoverId();
-    const slot: HostedRun = { runId, takeoverId, epoch: 0, identity: newIdentity() };
+    const slot: HostedRun = { runId, takeoverId, epoch: 0, identity: newIdentity(), mediatorIdentity: newIdentity() };
     this.runs.set(runId, slot);
     return slot;
   }
@@ -386,16 +397,21 @@ export class RunHosting {
     req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string },
     slot: HostedRun,
   ): Promise<void> {
-    const { takeoverId, identity } = slot;
+    const { takeoverId, identity, mediatorIdentity } = slot;
     const auth = this.ctx.auth;
     const creds = auth
       ? await mintCreds(auth, identity, "run-driver", {
           runDriver: { endpoint: this.ctx.endpoint, runId: req.runId, takeoverId, instanceId: this.ctx.instanceId, epoch: req.epoch },
         })
       : undefined;
+    const mediatorCreds = auth
+      ? await mintCreds(auth, mediatorIdentity, "run-mediator", {
+          runMediator: { endpoint: this.ctx.endpoint, runId: req.runId, takeoverId, instanceId: this.ctx.instanceId, epoch: req.epoch },
+        })
+      : undefined;
     // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from
     // these, and the epoch is a per-attempt fact.
-    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, ...(creds !== undefined ? { creds } : {}) });
+    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.
@@ -407,41 +423,61 @@ export class RunHosting {
       maxReconnectAttempts: -1,
     });
     let planes: RunHostPlanes;
+    let mediator: RunHostPlanes;
+    let mediatorNc: NatsConnection | undefined;
     try {
       planes = { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, this.ctx.space), space: this.ctx.space };
+      mediatorNc = await connect({
+        servers: this.ctx.servers ?? DEFAULT_SERVER,
+        ...(mediatorCreds !== undefined
+          ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(holder.mediatorCreds!))(nonce), inboxPrefix: `_INBOX_${mediatorIdentity.id}` }
+          : {}),
+        maxReconnectAttempts: -1,
+      });
+      mediator = { nc: mediatorNc, js: jetstream(mediatorNc), jsm: await jetstreamManager(mediatorNc), kv: await openRecordsBucket(mediatorNc, this.ctx.space), space: this.ctx.space };
       // Checked AFTER the last await before the drive starts: a stop that landed during the
       // connect has already cleared the live map, and a drive started now would be nobody's.
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
     } catch (e) {
+      await mediatorNc?.close();
       await nc.drain().catch(() => nc.close());
       throw e;
     }
     const max = nc.info?.max_payload;
     // The holder this attempt activates as: this process AND this attempt (see the header).
     const attemptHolder = { id: `${this.ctx.holder.id}.${takeoverId}`, lifecycleUid: this.ctx.holder.lifecycleUid };
-    const drive = host.drive(planes, {
-      mode: req.mode,
-      endpoint: this.ctx.endpoint,
-      runId: req.runId,
-      source: req.source,
-      ...(req.file !== undefined ? { file: req.file } : {}),
-      lease: { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken, takeoverId },
-      holder: attemptHolder,
-      instanceId: this.ctx.instanceId,
-      epoch: req.epoch,
-      defaultCheckpointTimeout: req.timeout,
-      // The broker's own max_payload, minus headroom for the record envelope around the entry.
-      ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
-    });
+    let drive: RunHostDrive;
+    try {
+      drive = host.drive(planes, {
+        mode: req.mode,
+        endpoint: this.ctx.endpoint,
+        runId: req.runId,
+        source: req.source,
+        ...(req.file !== undefined ? { file: req.file } : {}),
+        lease: { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken, takeoverId },
+        holder: attemptHolder,
+        instanceId: this.ctx.instanceId,
+        epoch: req.epoch,
+        defaultCheckpointTimeout: req.timeout,
+        // The broker's own max_payload, minus headroom for the record envelope around the entry.
+        ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
+      }, mediator);
+    } catch (error) {
+      await nc.close();
+      await mediatorNc?.close();
+      throw error;
+    }
     holder.nc = nc;
+    holder.mediatorNc = mediatorNc;
     holder.drive = drive;
-    const activation = this.activated(planes.kv, req, drive);
+    const activation = this.activated(mediator.kv, req, drive);
     void drive.done.then(async (out) => {
       this.ctx.log(`run ${req.runId}: ${describeOutcome(out)}`);
       this.free(holder);
       // The activation wait reads the record over this connection; it finishes before the drain.
       await activation.catch(() => undefined);
       await nc.drain().catch(() => nc.close());
+      await mediatorNc?.drain().catch(() => mediatorNc?.close());
     });
     try {
       await activation;
@@ -452,7 +488,10 @@ export class RunHosting {
       // Its own end then frees the slot.
       drive.release(`the hosting manager gave up waiting for its activation: ${(e as Error).message}`);
       const reached = await Promise.race([drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
-      if (!reached) await nc.close();
+      if (!reached) {
+        await nc.close();
+        await mediatorNc?.close();
+      }
       throw e;
     }
     this.ctx.log(`run ${req.runId}: ${req.mode === "new" ? "started" : "resumed"} on endpoint ${this.ctx.endpoint} (epoch ${req.epoch}, takeover ${takeoverId})`);

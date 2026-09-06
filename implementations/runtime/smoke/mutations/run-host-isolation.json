@@ -1,0 +1,104 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver-auth.smoke.ts",
+  "guard": "A workflow driver has no cross-run broker authority. Host operations check the current journal, reject copied foreign tokens and forged receipts, and preserve parent-owned cancellation cleanup.",
+  "command": "pnpm smoke:runtime-run-driver-auth",
+  "completionMarker": "run-driver-auth.smoke:",
+  "progressPattern": "  \u2713 ",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-host-isolation.json",
+  "mutations": [
+    {
+      "name": "raw driver gains a stream-wide records read",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "      `$KV.${records}.migration.${endpoint}.${run}.>`,\n      \"$JS.API.INFO\",",
+      "replace": "      `$KV.${records}.migration.${endpoint}.${run}.>`,\n      `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,\n      \"$JS.API.INFO\",",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "run A cannot read run B's program through its records connection",
+      "cell": "run A cannot read run B's program through its records connection"
+    },
+    {
+      "name": "raw driver gains endpoint-wide checkpoint writes",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "      `$KV.${records}.migration.${endpoint}.${run}.>`,\n      \"$JS.API.INFO\",",
+      "replace": "      `$KV.${records}.migration.${endpoint}.${run}.>`,\n      `$KV.${records}.cp.${endpoint}.>`,\n      \"$JS.API.INFO\",",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "run A cannot update another run's checkpoint key",
+      "cell": "run A cannot update another run's checkpoint key"
+    },
+    {
+      "name": "raw driver gains every chat consumer delete",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "      `$KV.${records}.migration.${endpoint}.${run}.>`,\n      \"$JS.API.INFO\",",
+      "replace": "      `$KV.${records}.migration.${endpoint}.${run}.>`,\n      `$JS.API.CONSUMER.DELETE.${chatStream(space)}.>`,\n      \"$JS.API.INFO\",",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "run A cannot delete run B's wait durable",
+      "cell": "run A cannot delete run B's wait durable"
+    },
+    {
+      "name": "a copied foreign token is accepted as owned",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "    return entry.requestId === expected;",
+      "replace": "    return true;",
+      "expectRed": "copying a foreign token into the driver's own journal grants no host access",
+      "cell": "copying a foreign token into the driver's own journal grants no host access"
+    },
+    {
+      "name": "parent cancellation obligations are ignored",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "    return owed;",
+      "replace": "    return new Set<string>();",
+      "expectRed": "a settled race parent authorizes cleanup of its settled losing sleep",
+      "cell": "a settled race parent authorizes cleanup of its settled losing sleep"
+    },
+    {
+      "name": "a settled wait can be reopened",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "      if (operation === \"close\" && cleaning) return entry;\n      if (entry.state === \"pending\" && !cleaning) return entry;",
+      "replace": "      if (operation === \"close\" && cleaning) return entry;\n      if (!cleaning) return entry;",
+      "expectRed": "a settled wait cannot be opened again through the host",
+      "cell": "a settled wait cannot be opened again through the host"
+    },
+    {
+      "name": "an invented receipt can use the first held delivery",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "    const delivery = this.deliveries.get(receipt);",
+      "replace": "    const delivery = this.deliveries.get(this.byWait.get(requestId)?.values().next().value ?? receipt);",
+      "expectRed": "a serialized copy of a receipt cannot acknowledge a delivery",
+      "cell": "a serialized copy of a receipt cannot acknowledge a delivery"
+    },
+    {
+      "name": "the record host accepts another run key",
+      "file": "implementations/runtime/src/run-record-host.ts",
+      "find": "      if (!own(key) || /[*>]/.test(key)) throw new RunScopeDenied(run, key, \"read record\");",
+      "replace": "      if (/[*>]/.test(key)) throw new RunScopeDenied(run, key, \"read record\");",
+      "expectRed": "the record host refuses another run's existing program",
+      "cell": "the record host refuses another run's existing program"
+    },
+    {
+      "name": "a forged conclave plan bypasses source-bound channel ownership",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    assertConclaveOwnership(plan, ctx.requestId, req);",
+      "replace": "",
+      "expectRed": "the host rejects forged ownership of an existing channel",
+      "cell": "the host rejects forged ownership of an existing channel"
+    },
+    {
+      "name": "the single-credential refusal drops its remedy",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": " From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.",
+      "replace": "",
+      "expectRed": "the local credential refusal gives a concrete next command",
+      "cell": "the local credential refusal gives a concrete next command"
+    },
+    {
+      "name": "settled parent history is rejected during child adoption",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "      if (entry.requestId === undefined || entry.state === \"settled\") continue;",
+      "replace": "      if (entry.requestId === undefined) continue;",
+      "expectRed": "a forked child resumes through the host with its inherited settled prefix",
+      "cell": "a forked child resumes through the host with its inherited settled prefix"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/mesh-wait.smoke.ts",
-  "guard": "a branch that loses a race stops parking NOW and its recorded cancellation is DISCHARGED \u2014 the pause claimed, the consumer deleted, the class carried across the engine bridge, and `cancel.issued` flipped true only after the world was swept",
+  "guard": "a branch that loses a race stops parking NOW and its recorded cancellation is DISCHARGED — the pause claimed, the consumer deleted, the class carried across the engine bridge, and `cancel.issued` flipped true only after the world was swept",
   "command": "pnpm smoke:runtime-mesh-wait",
   "completionMarker": "mesh-wait.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/cancel-discharge.json",
@@ -11,17 +11,17 @@
     "broker, and the completed-run journal carried `cancel: { losers, issued: false }` that nothing",
     "in the tree ever flipped or acted on. Two separate halves, separately breakable:",
     "",
-    "THE HANDLER HALF \u2014 MeshHandler ignored `ctx.signal` in all three pause kinds, so a cancelled",
+    "THE HANDLER HALF — MeshHandler ignored `ctx.signal` in all three pause kinds, so a cancelled",
     "branch parked to its own deadline (or forever, with none) while the scope's `allSettled`",
     "waited on it. The cancellation now ends a `wait` on its poll cadence and a `sleep`/`checkpoint`",
     "through a contender in the settle race, claiming the pause so the armed schedule cannot fire",
     "into a branch that is over. And the class must SURVIVE THE ENGINE BRIDGE: thrown on the host",
-    "side of the port and flattened to a plain Error, it settled the loser `failed (L4000)` \u2014 the",
+    "side of the port and flattened to a plain Error, it settled the loser `failed (L4000)` — the",
     "journal recording a failure the program never had. Measured with the message reading",
     "`cancelled: a sibling branch won the race` inside a handler-fault, which is the flattening in",
     "one line.",
     "",
-    "THE DISCHARGE HALF \u2014 `issued` is the record's promise that the world was swept, and the driver",
+    "THE DISCHARGE HALF — `issued` is the record's promise that the world was swept, and the driver",
     "is who keeps it: at completion, each un-issued scope's loser subtrees go to the handler's",
     "`discharge` (claim timers, delete consumers, idempotent), and only then is the entry",
     "re-appended with `issued: true`. The dirty-loser block is the ONLY thing grading the world",
@@ -31,7 +31,8 @@
     "THE TWO BRIDGE MUTANTS REBUILD `@cotal-ai/lang` IN THEIR COMMAND: the v2 engine's worker runs",
     "the compiled artifact, so a source mutation in bridge.ts is invisible to the suite until dist",
     "is rebuilt. Their commands rebuild before the suite; after the proof, rebuild once by hand",
-    "(`pnpm --filter @cotal-ai/lang build`) because the tool's restore verifies source, not dist."
+    "(`pnpm --filter @cotal-ai/lang build`) because the tool's restore verifies source, not dist.",
+    "Bridge mutants rebuild the compiled worker artifact. Restore must rebuild it too: leaving mutated dist bytes made later wait, conclave and monitor baselines fail with cancellation classified as failure even though git was clean. A source-only restore does not restore the code those workers execute."
   ],
   "mutations": [
     {
@@ -43,7 +44,7 @@
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the cancelled wait did not end within 10000ms",
       "cell": "the cancelled wait did not end within 10000ms",
-      "note": "The shipped defect's wait half, restored one condition wide. Measured 2026-09-02 before this entry was written: block 11's deadline cell reds first, followed by the consumer and claim cells, then block 12's whole discharge chain \u2014 the loser's 10m timeout outlives every deadline the suite carries, which is the hang that was reproduced live wearing a bound so it grades red rather than inconclusive."
+      "note": "The shipped defect's wait half, restored one condition wide. Measured 2026-09-02 before this entry was written: block 11's deadline cell reds first, followed by the consumer and claim cells, then block 12's whole discharge chain — the loser's 10m timeout outlives every deadline the suite carries, which is the hang that was reproduced live wearing a bound so it grades red rather than inconclusive."
     },
     {
       "name": "the settle race has no cancel contender, so a cancelled sleep parks to its deadline",
@@ -54,7 +55,7 @@
       "completionMarker": "mesh-sleep.smoke:",
       "expectRed": "the cancelled sleep did not end within 10000ms",
       "cell": "the cancelled sleep did not end within 10000ms",
-      "note": "The same law at the other park \u2014 `sleep` and `checkpoint` share settle(), so one contender serves both and one deletion breaks both. Measured 2026-09-02: mesh-sleep block 4 reds on its deadline cell, then on the claim cell; 18 passed, 3 failed, nothing upstream disturbed."
+      "note": "The same law at the other park — `sleep` and `checkpoint` share settle(), so one contender serves both and one deletion breaks both. Measured 2026-09-02: mesh-sleep block 4 reds on its deadline cell, then on the claim cell; 18 passed, 3 failed, nothing upstream disturbed."
     },
     {
       "name": "the driver never sweeps, so a completed run's recorded cancellation stays un-issued",
@@ -65,7 +66,7 @@
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the recorded cancellation is DISCHARGED: `issued` reads true off the journal once the world is quiet",
       "cell": "the recorded cancellation is DISCHARGED: `issued` reads true off the journal once the world is quiet",
-      "note": "The whole second half of #532 deleted at its one call site. Measured 2026-09-02: block 12's issued cell reds first with `{losers:[\"slow\"],issued:false}` \u2014 the exact bytes every completed run in the tree carried before the sweep existed \u2014 then block 13's consumer and record cells. The runs still complete, which is why nothing upstream of the discharge cells notices."
+      "note": "The whole second half of #532 deleted at its one call site. Measured 2026-09-02: block 12's issued cell reds first with `{losers:[\"slow\"],issued:false}` — the exact bytes every completed run in the tree carried before the sweep existed — then block 13's consumer and record cells. The runs still complete, which is why nothing upstream of the discharge cells notices."
     },
     {
       "name": "adoption never re-issues, so recovery waits for completion to sweep a dead loser",
@@ -76,7 +77,7 @@
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the adoption sweep ends the dead loser's world state and flips the record WHILE the run is still parked",
       "cell": "the adoption sweep ends the dead loser's world state and flips the record WHILE the run is still parked",
-      "note": "The adoption-time call, deletable separately from the completion sweep: a takeover of a run parked past its race decision must re-issue the recorded cancellation BEFORE any new step, or the dead loser's consumer and pause outlive the crash for as long as the run keeps running. Measured 2026-09-03: exactly one cell red \u2014 block 14's WHILE-parked cell reads issued:false with the consumer still live \u2014 and the block's completes cell stays green because the completion sweep still fires at the end, which is precisely the discrimination the cell exists to grade; 53 passed, 1 failed."
+      "note": "The adoption-time call, deletable separately from the completion sweep: a takeover of a run parked past its race decision must re-issue the recorded cancellation BEFORE any new step, or the dead loser's consumer and pause outlive the crash for as long as the run keeps running. Measured 2026-09-03: exactly one cell red — block 14's WHILE-parked cell reads issued:false with the consumer still live — and the block's completes cell stays green because the completion sweep still fires at the end, which is precisely the discrimination the cell exists to grade; 53 passed, 1 failed."
     },
     {
       "name": "the sweep flips the record without sweeping the world",
@@ -87,7 +88,7 @@
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the consumer the dead loser left behind is deleted by the discharge, not by anyone's live cleanup",
       "cell": "the consumer the dead loser left behind is deleted by the discharge, not by anyone's live cleanup",
-      "note": "The lie the flip exists to prevent: `issued: true` over a consumer nobody deleted. Measured 2026-09-02: exactly ONE cell reds \u2014 block 13's consumer cell \u2014 and 50 pass, because the live path cleans up after itself everywhere else. The dirty-loser block is the only thing in the tree that grades the world half, which is precisely why it drives a handler that dies without cleaning."
+      "note": "The lie the flip exists to prevent: `issued: true` over a consumer nobody deleted. Measured 2026-09-02: exactly ONE cell reds — block 13's consumer cell — and 50 pass, because the live path cleans up after itself everywhere else. The dirty-loser block is the only thing in the tree that grades the world half, which is precisely why it drives a handler that dies without cleaning."
     },
     {
       "name": "the bridge flattens a cancellation on the way out, so a bridged loser settles failed",
@@ -96,9 +97,10 @@
       "replace": "  if (false as boolean) {\n    return { domain: \"host\", name: (e as Error).name, message: (e as Error).message, cancelled: (e as Cancelled).reason };\n  }",
       "command": "pnpm --filter @cotal-ai/lang build >/dev/null 2>&1 && pnpm smoke:runtime-mesh-wait",
       "completionMarker": "mesh-wait.smoke:",
-      "expectRed": "the losing wait settled `cancelled` \u2014 the class crossed the engine bridge instead of flattening to a fault",
-      "cell": "the losing wait settled `cancelled` \u2014 the class crossed the engine bridge instead of flattening to a fault",
-      "note": "The host-side half of the crossing. Measured 2026-09-02 (after `pnpm --filter @cotal-ai/lang build`, which the command does first \u2014 the v2 worker runs the compiled artifact): one cell reds, with the journal showing `failed`/`L4000` whose message is `cancelled: a sibling branch won the race` \u2014 the class loss in a single record. The run still completes because a failed loser is out-clocked by the winner, which is why only this cell notices."
+      "expectRed": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
+      "cell": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
+      "note": "The host-side half of the crossing. Measured 2026-09-02 (after `pnpm --filter @cotal-ai/lang build`, which the command does first — the v2 worker runs the compiled artifact): one cell reds, with the journal showing `failed`/`L4000` whose message is `cancelled: a sibling branch won the race` — the class loss in a single record. The run still completes because a failed loser is out-clocked by the winner, which is why only this cell notices.",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
     },
     {
       "name": "PAIRED: the thread side never rebuilds the class, deletable separately from the host side",
@@ -107,9 +109,10 @@
       "replace": "  if (false as boolean) return new Cancelled(w.cancelled as string);",
       "command": "pnpm --filter @cotal-ai/lang build >/dev/null 2>&1 && pnpm smoke:runtime-mesh-wait",
       "completionMarker": "mesh-wait.smoke:",
-      "expectRed": "the losing wait settled `cancelled` \u2014 the class crossed the engine bridge instead of flattening to a fault",
-      "cell": "the losing wait settled `cancelled` \u2014 the class crossed the engine bridge instead of flattening to a fault",
-      "note": "The crossing has two separately deletable halves \u2014 the marker written and the marker read \u2014 and a refactor that drops either reproduces the flattening whole. Measured 2026-09-02 independently of the flatten mutant: the same single red, same failed/L4000 record. After the full proof, rebuild lang dist once by hand: the tool restores source and verifies source, and dist keeps this mutant's bytes until rebuilt."
+      "expectRed": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
+      "cell": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
+      "note": "The crossing has two separately deletable halves — the marker written and the marker read — and a refactor that drops either reproduces the flattening whole. Measured 2026-09-02 independently of the flatten mutant: the same single red, same failed/L4000 record. After the full proof, rebuild lang dist once by hand: the tool restores source and verifies source, and dist keeps this mutant's bytes until rebuilt.",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
     },
     {
       "name": "the adopted engine is seeded from the pre-sweep prefix",

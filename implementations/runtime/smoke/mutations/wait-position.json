@@ -42,17 +42,17 @@
     {
       "name": "the cleanup runs on every exit again, throw included",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (over) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
-      "replace": "      if (true) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
-      "expectRed": "REPAIRED: the wait's position SURVIVES a refused bind \u2014 a throw is not the wait being over",
-      "cell": "REPAIRED: the wait's position SURVIVES a refused bind \u2014 a throw is not the wait being over",
+      "find": "      else if (over) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
+      "replace": "      else if (true) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
+      "expectRed": "REPAIRED: the wait's position SURVIVES a refused bind — a throw is not the wait being over",
+      "cell": "REPAIRED: the wait's position SURVIVES a refused bind — a throw is not the wait being over",
       "note": "The shipped state before the repair, and it passed the whole suite: no cell asked what happened to the position when the bind failed, because no cell could make a bind fail."
     },
     {
       "name": "PARANOID: the position is kept on every exit, so an ENDED wait leaks its consumer",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (over) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
-      "replace": "      if (false) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
+      "find": "      else if (over) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
+      "replace": "      else if (false) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
       "expectRed": "and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
       "cell": "and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
       "note": "The other direction, and the one a fix written from the bug report alone lands on. Keeping every position leaks a durable per wait and re-opens the argument the handler already settled against an inactivity threshold. Aimed at the TIMED-OUT ending rather than the matched one, because the matched ending is pinned by cell 1 and the timeout is the exit the flag is easiest to get wrong on."
@@ -69,8 +69,8 @@
     {
       "name": "the match is ACKED before it is bound, which is the order the comment argues against",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "          await ctx.bind({ chatSeq: m.seq });\n          m.ack();",
-      "replace": "          m.ack();\n          await ctx.bind({ chatSeq: m.seq });",
+      "find": "          await ctx.bind(this.services ? { ...waitBinding, chatSeq: m.seq } : { chatSeq: m.seq });\n          await m.ack();",
+      "replace": "          await m.ack();\n          await ctx.bind(this.services ? { ...waitBinding, chatSeq: m.seq } : { chatSeq: m.seq });",
       "expectRed": "...with the matched message still unacked, which is what makes it recoverable at all",
       "cell": "...with the matched message still unacked, which is what makes it recoverable at all",
       "note": "The claim the handler's own comment makes and that nothing tested: in the other order the match is simply lost. With the ack first, the position survives the refused bind and is already past the message the run needs -- the same loss wearing a healthier shape, which is why the cell asserts the ack state and not merely that the consumer exists."

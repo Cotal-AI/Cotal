@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/run-driver-auth.smoke.ts",
-  "guard": "The run-driver profile (SPEC 14.6) on an enforcing broker: its rows drive a program across the journal, the run and program records, a fired sleep and a channel wait; the records enumeration is a consumer-free walk; the credential is pinned to one run, one takeover attempt and one set of timer coordinates.",
+  "guard": "A narrow workflow driver writes its own journal and records while a separate trusted host performs effects. The program record, host timer epoch and operator record walk are exercised on an enforcing broker.",
   "command": "pnpm smoke:runtime-run-driver-auth",
   "completionMarker": "run-driver-auth.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-driver-auth.json   # --config resolves against the repo root, never the cwd",
@@ -36,8 +36,8 @@
       "replace": "  const bucket: Bucket = kv;\n  if (filter.length > 0) return await liveKvEntries(kv, filter);\n  const subject = `${bucket.prefix}.${filter}`;",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "expectRed": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
-      "cell": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
+      "expectRed": "the operator `ps` walk lists the run over its STREAM.MSG.GET row",
+      "cell": "the operator `ps` walk lists the run over its STREAM.MSG.GET row",
       "note": "The walk exists so a principal with no consumer verb on the records store can list its keys. Routed back through the ordered consumer it works on every open broker and fails on every authed one."
     }
   ]
