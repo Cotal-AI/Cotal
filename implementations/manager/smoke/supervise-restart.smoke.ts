@@ -274,7 +274,7 @@ try {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
   await userMgr?.stop().catch(() => {});
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME;

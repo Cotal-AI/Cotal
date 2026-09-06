@@ -2338,21 +2338,21 @@
       "kind": "derived-output",
       "anchor": "`the manager seat list could not be read (${reply.error ?? \"ps failed\"})`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Manager ps control-path failure when the seat list cannot be read, not a rendered presence status."
     },
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
       "anchor": "`${row.name}: ${stopped.error ?? \"stop failed\"}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Aggregated per-seat lifecycle-stop failure from the manager stop command, not an agent progress claim."
     },
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
       "anchor": "`  ${bits.join(\"  \u00b7  \")}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Leftover/would-reap seat inventory row: name, mode, pid, agent, cwd, and optional manager-reported process status, not an observed work-progress claim."
     }
   ]
 }
