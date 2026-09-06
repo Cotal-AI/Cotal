@@ -26,11 +26,11 @@
     {
       "name": "the usage line loses a verb the gate still routes",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "| ps | journal <runId> |",
-      "replace": "| journal <runId> |",
+      "find": "| ps [--endpoint <ep>] | journal",
+      "replace": "| journal",
       "expectRed": "the usage line names `ps`",
       "cell": "the usage line names `ps`",
-      "note": "The two lists drift independently; this is the drift the loop of verb cells exists to catch. Measured 2026-09-03: exactly one red, the `ps` cell, 9 ok, 1 failed."
+      "note": "The two lists drift independently; this is the drift the loop of verb cells exists to catch. Measured 2026-09-03: exactly one red, the `ps` cell, 9 ok, 1 failed. Re-anchored 2026-09-06 when `ps` grew `[--endpoint <ep>]` in the usage line."
     }
   ]
 }

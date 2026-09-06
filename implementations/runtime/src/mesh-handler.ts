@@ -27,8 +27,6 @@ import {
   readCheckpointSpec,
   reconcileCheckpointSchedule,
   handleCheckpointFire,
-  checkpointSettleSubject,
-  epfStreamName,
   eptStreamName,
   eptSubject,
   chatStream,
@@ -1032,8 +1030,8 @@ export class MeshHandler {
    * and the fact is the thing a resume can still read.
    *
    * `permits`, `supervise` and `onFork` are POLICY, not identity (§6.4): they ride the journalled
-   * request and are enforced where they bind (`permits` at `turn`, `supervise` by `monitor`, an
-   * `onFork` at fork adoption) — nothing about them travels in the submission.
+   * request and are enforced where they bind (`permits` at `turn`, `supervise` as the manager's
+   * restart budget on the spawn submission, an `onFork` at fork adoption).
    */
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
@@ -1051,12 +1049,11 @@ export class MeshHandler {
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
-    // Same rule, for the other policy option. `supervise` is "a declarative restart policy" in the
-    // reference and nothing more: it names no keys, no restart semantics and no code, so there is
-    // nothing here to enforce and no way to invent it without writing language semantics into a
-    // host. Accepting it and restarting nothing is the silent no-op `readPermits` refuses by name.
-    if (req.supervise !== undefined)
-      throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement, and a policy it cannot enforce is refused rather than ignored`);
+    // Same rule, for the other policy option. `supervise` is a declarative restart policy: it
+    // is parsed here (a malformed or unknown-key record is refused before anything is submitted)
+    // and travels on the spawn args so the manager can restart the seat in place. A host that
+    // cannot restart in place refuses at accept rather than accepting a silent no-op.
+    if (req.supervise !== undefined) readSupervise(req.supervise, req.persona);
     // A seat a migration kept for this persona (§11.2): the orphaned spawn's GOAL becomes this
     // step's own, bound with that spawn's floor and the step it came from. From here the two kinds
     // of spawn are one path — the terminal is read under the bound goal, the handle comes from it,
@@ -2135,6 +2132,39 @@ type AskSeat = SeatAddress & { schema: unknown };
  * no turn is admitted. Anything else (tokens, spend) is a budget this host has no meter for, and a
  * budget it cannot enforce is refused loudly rather than accepted as a silent no-op.
  */
+/** The restart budget this host asks the manager to enforce for a spawn. */
+type AgentSupervise = { restarts: number; windowMs: number };
+
+/**
+ * Read a spawn's `supervise` as the restart policy this host can enforce: `restarts`, a positive
+ * integer of in-window process deaths the manager may restart under the same handle, and
+ * `window`, an optional duration (default `10m`) those deaths are counted in. Anything else is a
+ * policy this host has no restart for, and a policy it cannot enforce is refused loudly rather
+ * than accepted as a silent no-op.
+ */
+export function readSupervise(raw: unknown, persona: string): AgentSupervise {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error(`spawn(${persona}): supervise must be a record of { restarts, window? }, got ${JSON.stringify(raw)}`);
+  let restarts: number | undefined;
+  let windowMs: number | undefined;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key === "restarts") {
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
+        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);
+      restarts = value;
+    } else if (key === "window") {
+      if (typeof value !== "string")
+        throw new Error(`spawn(${persona}): supervise.window must be a duration string, got ${JSON.stringify(value)}`);
+      windowMs = parseDuration(value);
+    } else {
+      throw new Error(`spawn(${persona}): supervise.${key} is not a restart policy this host enforces; it takes restarts and window, and a policy it cannot enforce is refused rather than ignored`);
+    }
+  }
+  if (restarts === undefined)
+    throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer`);
+  return { restarts, windowMs: windowMs ?? parseDuration("10m") };
+}
+
 function readPermits(raw: unknown, persona: string): AgentPermits {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new Error(`spawn(${persona}): permits must be a record of budgets, got ${JSON.stringify(raw)}`);
@@ -2200,14 +2230,16 @@ function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {
 const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
 
 /** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
- *  (`name`), `join` becomes the seat's channel subscriptions. Policy fields do not travel. */
-function spawnArgs(req: SpawnRequest): Record<string, unknown> {
+ *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
+ *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
+export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
+    ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
   };
 }
 
@@ -2497,50 +2529,31 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
 /**
  * The settle watcher over EPF, which is where the one-use settle fact lives.
  *
- * An EPHEMERAL consumer filtered to this token's settle subject, created for one wait and removed
- * after it: the fact is written once and read once, so a durable would be a name to collide on and
- * a thing to clean up, for a subscription that outlives nothing. `deliver_policy: all` because the
- * fact may already be there — a settle is a record, not a notification, and a watcher that only saw
- * new messages would wait forever for one that already happened.
+ * It POLLS the fact's subject through the plane's own leader-served read rather than binding a
+ * consumer to it. The earlier shape created an ephemeral consumer per wait, and an ephemeral create
+ * rides the bare `CONSUMER.CREATE.<stream>` form, whose request body is not subject-ACL confinable
+ * and which no minted profile may hold (SPEC 13.9). The run driver's credential holds the
+ * `STREAM.MSG.GET` read on EPF already, for the same fact, so the watcher reads what the driver can
+ * read and nothing more. A settle is a record, not a notification: the fact may already be there
+ * when the wait begins, and the first read answers at once.
+ *
+ * The cadence is the same one the handler already takes its fires on: the deadline is durable and
+ * authoritative, and a poll only bounds how late its observation can be.
  */
 export class EpfSettleWatcher implements SettleWatcher {
   constructor(
-    private readonly js: JetStreamClient,
     private readonly jsm: JetStreamManager,
     private readonly space: string,
-    private readonly pollMs = 30_000,
+    private readonly pollMs = FIRE_POLL_MS,
   ) {}
 
   async awaitSettle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
-    const stream = epfStreamName(this.space);
-    const filter = checkpointSettleSubject(this.space, ref);
-    const created = await this.jsm.consumers.add(stream, {
-      filter_subject: filter,
-      ack_policy: "explicit" as never,
-      deliver_policy: "all" as never,
-      inactive_threshold: 300_000 * 1_000_000,
-    });
-    const name = created.name;
-    try {
-      const consumer = await this.js.consumers.get(stream, name);
-      for (;;) {
-        const batch = await consumer.fetch({ max_messages: 1, expires: this.pollMs });
-        for await (const m of batch) {
-          m.ack();
-          const settled = await readCheckpointSettle(this.jsm, this.space, ref);
-          // Read the fact back through the plane's own parser rather than trusting these bytes: the
-          // subject is one-use, so whatever is on it IS the answer, and the parser is what says the
-          // answer is well formed.
-          if (settled !== undefined) return settled;
-        }
-      }
-    } finally {
-      try {
-        await this.jsm.consumers.delete(stream, name);
-      } catch {
-        // The consumer carries its own inactivity threshold, so a failed delete is reaped rather
-        // than leaked — the case `run-journal` had to learn the hard way.
-      }
+    for (;;) {
+      const settled = await readCheckpointSettle(this.jsm, this.space, ref);
+      if (settled !== undefined) return settled;
+      // Unrefed: a wait that loses its race to a cancellation or a fire must not hold the process
+      // open for one more poll on its way out.
+      await new Promise((r) => setTimeout(r, this.pollMs).unref());
     }
   }
 }

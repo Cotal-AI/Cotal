@@ -143,7 +143,7 @@ const pastDue = async (token: string): Promise<boolean> => {
 const handler = new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId: "r-wait", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-  new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+  new EpfSettleWatcher(jsm, SPACE, 3_000),
   now,
 );
 
@@ -807,7 +807,7 @@ log("released", r.index);
   const brokenHandler = new MeshHandler(
     nc, kv, js, brokenJsm,
     { space: SPACE, endpoint: EP, runId: "r-firefail", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
     now,
   );
   const k = ctx(tok("firefail"));
@@ -848,7 +848,7 @@ log("released", r.index);
   const loudHandler = new MeshHandler(
     nc, kv, brokenJs, jsm,
     { space: SPACE, endpoint: EP, runId: "r-loudcancel", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
     now,
   );
   const said: string[] = [];

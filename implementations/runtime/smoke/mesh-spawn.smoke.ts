@@ -296,7 +296,7 @@ const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
 const mk = (runId: string): MeshHandler => new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-  new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+  new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => Date.now(),
 );
 /** A step context as the interpreter hands it over, with the suite's hand on the cancel signal. */

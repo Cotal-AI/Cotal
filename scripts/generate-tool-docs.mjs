@@ -113,6 +113,13 @@ const ANNOTATIONS = {
     notes:
       "Ending your session turn already yields `done` for every turn you were shown; call this only when blocked or handing off.",
   },
+  cotal_run: {
+    effect: "starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only",
+    availability:
+      "capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive",
+    notes:
+      "`start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.",
+  },
   cotal_persona: {
     effect: "writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`",
     availability: "capability-gated like cotal_spawn",
@@ -190,7 +197,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).",
+  "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]`, and `cotal_run` only for `capabilities: [run]` ([identity & auth](identity-and-auth.md)).",
 );
 lines.push("");
 lines.push(

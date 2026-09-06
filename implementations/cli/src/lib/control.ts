@@ -1,6 +1,4 @@
 import {
-  DEFAULT_SPACE,
-  DEV_OWNER,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   GOAL_BEARING_COMMANDS,
@@ -26,32 +24,17 @@ import {
   type EpInstanceLiveness,
   type EpVerbTarget,
   type Profile,
-  type SpaceAuth,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import {
-  authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
-  pruneStaleMeshes, renderWorkspaceError, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
-} from "@cotal-ai/workspace";
+import { controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth } from "@cotal-ai/workspace";
+import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
 
-/** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
- *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
- *  static mint produced one ({@link askManager}'s ep-rail path rides it). */
-export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller; tls?: boolean };
-
-/** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
- *  only ones the mode peek in {@link resolveControlTarget} may absorb. **Every other code is
- *  NON-ABSENCE and must fail loud** — which is the precise claim, and covers more than one
- *  situation: `stale-auth-root` / `unreadable-auth` / `user-auth-unrecorded` are an entry that
- *  exists and is broken, while `ambiguous-target` can be several perfectly healthy entries and
- *  `default-occupied` an intended local target with no entry at all. What unites them is not
- *  breakage, it is that absence has NOT been established, so falling through to a
- *  credential-less raw-open connect would be unsound. Deliberately a closed allow-list, not a
- *  deny-list: a new code defaults to failing loud. */
-const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["unknown-space", "no-meshes"]);
+/** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
+ *  command surface that addresses the manager: this CLI, `cotal run`, the web dashboard). Re-exported
+ *  so this module's importers keep resolving them from here. */
+export { resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
 
 /** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
  *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
@@ -60,111 +43,6 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
  *  importing the manager's READINESS_TIMEOUT_MS here; the launch-parity smoke enforces the
  *  relation by test. */
 export const START_TIMEOUT_MS = 40_000;
-
-/**
- * Resolve which running mesh a control command (`spawn --detach` / `stop` / `ps` / `attach`)
- * targets. Exactly {@link connectOrExit}'s precedence (--creds raw > --server+unregistered-space
- * open > registry/`current` with mint + preflight + stale-prune) with ONE control-specific delta:
- * on the raw `--creds` path the space defaults to THIS FOLDER's `.cotal/auth` space, not
- * `DEFAULT_SPACE` — a control op addresses the manager of the folder's mesh, which is more
- * correct for a non-default-space project (deliberate, kept from the pre-move manager client).
- * Lived in `@cotal-ai/manager` before stage 2a moved the control clients into the CLI; the
- * duplicated resolution/preflight wrappers collapsed onto `lib/connect.ts`.
- */
-export async function resolveControlTarget(
-  flags: ConnectFlags,
-  profile: Profile,
-  /** `--on <instanceId>`: the instance this invocation addresses. Forwarded to the instrument mint
-   *  so the one-shot credential carries the exact `ep.inst.…` rows for it. Omitted ⇒ class rails
-   *  only, exactly as before. It has to arrive HERE rather than at the invoke: the instrument is
-   *  minted during this resolve, and a credential cannot gain a rail after it is issued. */
-  instanceId?: string,
-  /** `onRefusal: "throw"` makes an unresolvable or unreachable mesh a THROWN
-   *  {@link ConnectRefusal} instead of a printed sentence and `process.exit(1)`. A command that is
-   *  one shot deep wants the exit; a loop that has to survive the broker being briefly gone (the
-   *  attach reconnect) cannot use a path that ends the process, and "no mesh running at X - run
-   *  `cotal up`" is the wrong answer to a link that is coming back. */
-  opts: { onRefusal?: "exit" | "throw" } = {},
-): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth; root?: string }> {
-  const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
-  const withSpace = flags.creds
-    ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
-    : flags;
-  // USER MODE: ledger-scoped bearer is the control surface; there is no instrument mint.
-  // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
-  // bearer does not hold). Route through {@link connectUserControlOrExit}, which takes NO role —
-  // a dummy Profile would be meaningless today and wrong the day the user path starts consulting
-  // it. Declared translation at this layer (the one that knows), not a silent substitute inside
-  // connectOrExit.
-  //
-  // Cost: the target is resolved here for the mode check and again inside the connect helper.
-  // Accepted for this slice so mode choice stays where it is knowable. The two reads are not
-  // atomic; a mesh that flips mode between them is an operator action mid-command.
-  //
-  // This peek reads the MODE and NOTHING ELSE — it must never decide the command's fate. It used
-  // to run through `resolveTargetOrExit`, which EXITS on a WorkspaceTargetError, so it killed a
-  // legitimate input on the way past: `--server` with an UNREGISTERED `--space` is the raw-open
-  // escape hatch, and by definition it has no registry entry to carry a mode. Resolve through the
-  // THROWING form instead and read ABSENCE as "not a registry mesh, therefore not user mode",
-  // leaving that path to `connectOrExit` below, which owns it.
-  //
-  // ABSENCE ONLY. The two absent codes are the entire escape hatch; every other
-  // MeshTargetErrorCode is NON-ABSENCE, and swallowing those is a
-  // fallback, not a restoration. `stale-auth-root` is the one that bites: `targetFromEntry`
-  // PRUNES the entry before throwing it, so absorbing it leaves `connectOrExit` seeing no
-  // registration at all — and with an explicit `--server` it then takes the raw-open arm and
-  // connects with NO CREDENTIALS. A misconfigured AUTH mesh would silently become an OPEN one,
-  // hiding the misconfiguration and switching identity planes under the operator. Those codes
-  // rethrow and the command dies loud, exactly as it did before this peek existed.
-  // Raw `--creds` skips the peek entirely (static/raw path below).
-  if (!withSpace.creds) {
-    // Sweep first when no space is named, exactly as `resolveTargetOrExit` does before ITS
-    // resolve. Without it the peek reads a world `connectOrExit` never sees: a dead entry
-    // alongside a live one makes a bare resolve `ambiguous-target` here while the connect,
-    // having pruned, resolves the single survivor cleanly. Same sweep, same view, one answer.
-    if (!withSpace.space) await pruneStaleMeshes();
-    let mode: MeshTarget["mode"] | undefined;
-    try {
-      mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
-    } catch (e) {
-      // Non-absence propagates and ends the command. It is rethrown rather than rendered-and-exited
-      // here so this function stays composable and testable; the CLI boundary renders every
-      // WorkspaceTargetError through `renderWorkspaceError` (see the dispatcher's catch), which is
-      // what turns "entry X points at a root holding Y" into the removed-fact plus a recovery line.
-      if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
-    }
-    if (mode === "user") {
-      const conn = await connectUserControlOrExit(withSpace);
-      return {
-        space: conn.space,
-        server: conn.server,
-        auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
-        ...(conn.root !== undefined ? { root: conn.root } : {}),
-      };
-    }
-  }
-  // Static / open / raw-creds: mint the requested instrument (or bare open connect).
-  const conn = await connect_(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
-  return {
-    space: conn.space,
-    server: conn.server,
-    auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
-    // The resolved mesh's trust material, carried FORWARD rather than re-loaded from disk by
-    // whoever needs it: {@link scatterManager} re-mints its one-shot instrument against the frozen
-    // instance ids, and a second `loadSpaceAuth` there would be a second answer to "which space's
-    // seed" for one command. Absent for an open mesh (no credential system) and for raw
-    // off-registry creds (no seed to mint from) — both of which simply do not re-mint.
-    ...(conn.auth ? { spaceAuth: conn.auth } : {}),
-    // The ROOT the mesh actually resolved to, and HOW. Carried for the same reason `spaceAuth` is:
-    // a caller that wants to name the root in an error must not re-derive it, or the sentence
-    // describes a different directory than the one the command used. `cotal attach` did exactly
-    // that (issue #722) and printed a refusal about a root it had not connected with.
-    // Both are absent for a RAW off-registry connection (`--creds`, or `--server` with an
-    // unregistered `--space`), which is a real state and not a gap to paper over: there IS no
-    // resolved root then, and a caller rendering one would be inventing it.
-    ...(conn.root !== undefined ? { root: conn.root } : {}),
-  };
-}
 
 /** v0.3 ctl op → v0.4 typed command (P2 item 1, 1c.2b): the wire names the manager REGISTERS
  *  (manager-service-contract ROWS). `start` is creation (`spawn`), a NAMED `stop` is the one
@@ -393,17 +271,9 @@ export async function askManager(
   timeoutMs?: number,
   pin?: ManagerPin,
 ): Promise<ManagerReply> {
-  // A user bearer or a minted static instrument carries its own ep caller triple: ride it.
-  if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerEp(space, server, op, args, auth, reach, timeoutMs, pin);
-  // A raw `--creds` file with NO minted triple is a pre-1c generation's cred (no ep rows). The ctl
-  // rail it used to ride is gone (1d), so refuse loud with the recovery rather than hang.
-  if (auth.creds)
-    return { ok: false, error: `this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder (\`cotal ps\`/\`cotal stop\`) which mints the instrument for you` };
-  // OPEN mesh: no credential system. The manager registered its service under DEV_OWNER and the
-  // broker enforces nothing, so synthesize a fresh DEV_OWNER caller triple and connect bare.
-  const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
-  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs, pin);
+  const who = controlCaller(auth);
+  if ("refusal" in who) return { ok: false, error: who.refusal };
+  return askManagerEp(space, server, op, args, { ...auth, epCaller: who.caller }, reach, timeoutMs, pin);
 }
 
 /** What this CLI established about a silent instance's LIVENESS, as opposed to its answer. Kept
@@ -716,12 +586,9 @@ export async function scatterManager(
   spaceAuth?: SpaceAuth,
   timeoutMs?: number,
 ): Promise<ScatterReply> {
-  if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerScatterEp(space, server, op, auth, spaceAuth, timeoutMs);
-  if (auth.creds)
-    return { ok: false, error: `this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder (\`cotal ps\`) which mints the instrument for you` };
-  const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
-  return askManagerScatterEp(space, server, op, openAuth, spaceAuth, timeoutMs);
+  const who = controlCaller(auth);
+  if ("refusal" in who) return { ok: false, error: who.refusal };
+  return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs);
 }
 
 export function failIfNotOk(reply: ControlReply): void {
