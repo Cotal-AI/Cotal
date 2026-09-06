@@ -49,7 +49,10 @@
     "raw-text owner must red before a module scrub can stop licensing its interpolation spread.",
     "",
     "N10 PROVES INTERPOLATION CONTENTS ARE PARSED RECURSIVELY. Dropping that recursion must red before",
-    "an inner template scrub can be mistaken for containing module code."
+    "an inner template scrub can be mistaken for containing module code.",
+    "",
+    "N11 PROVES EVERY SIBLING INTERPOLATION IS PARSED. Limiting recursion to the final span must red",
+    "before a nested template scrub in one interpolation can clear a spread in its sibling."
   ],
   "mutations": [
     {
@@ -132,6 +135,14 @@
       "replace": "",
       "expectRed": "an unused nested template scrub must not clear a module-code spread",
       "note": "Proves nested literals inside interpolation code are recursively discovered and assigned their own child-script regions."
+    },
+    {
+      "name": "N11 every sibling interpolation receives recursive lexical regions",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "          parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            offset + expressionStart,\n            baseRegion,\n          );\n",
+      "replace": "          if (span === node.templateSpans[node.templateSpans.length - 1]) parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            offset + expressionStart,\n            baseRegion,\n          );\n",
+      "expectRed": "a nested template scrub must not clear a sibling interpolation spread",
+      "note": "Proves recursive parsing covers every interpolation span; parsing only the final span falsely lets a nested scrub clear a spread in an earlier sibling."
     }
   ]
 }
