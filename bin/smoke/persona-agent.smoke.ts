@@ -333,7 +333,7 @@ try {
   console.log(`\npersona-agent 869 reachability smoke: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 } finally {
-  try { await mgr?.stop(); } catch { /* teardown best-effort */ }
+  try { await mgr?.stop({ withAgents: true }); } catch { /* teardown best-effort */ }
   for (const k of kids) k.kill("SIGKILL");
   releaseBroker?.();
 }

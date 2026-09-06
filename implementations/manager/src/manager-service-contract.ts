@@ -217,7 +217,7 @@ const SPAWN_OUTPUT_SCHEMA = {
 
 const GRACEFUL_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
-  properties: { graceful: { type: "boolean" } },
+  properties: { graceful: { type: "boolean" }, waitForExit: { type: "boolean" } },
 } as const;
 
 const STOP_OUTPUT_SCHEMA = {
@@ -690,7 +690,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  12 = the workflow-run family (`run-start`, `run-resume`, `run-answer`, `run-status`, `run-ps`,
  *  SPEC 14.3): the manager hosts a run's driver and serves its operator surface. NEW SERVED
- *  COMMANDS are what a revision is for, and five of them cannot fold into 11. */
+ *  COMMANDS are what a revision is for, and five of them cannot fold into 11.
+ *
+ *  13 = `despawn` / `stop` accept optional `waitForExit`. The mass-reap caller passes it so
+ *  proof of exit is not derived from `graceful`. A changed input contract is a changed described
+ *  surface even though the command names are unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -708,7 +712,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 12,
+    revision: 13,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

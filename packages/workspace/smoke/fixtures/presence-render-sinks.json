@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 312,
+    "total": 315,
     "honest-text": 32,
     "presence-only-glyph/count": 41,
     "command-ack": 10,
-    "non-render/control": 229
+    "non-render/control": 232
   },
   "renderers": [
     {
@@ -2332,6 +2332,27 @@
       "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
       "class": "non-render/control",
       "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the manager seat list could not be read (${reply.error ?? \"ps failed\"})`",
+      "class": "non-render/control",
+      "rationale": "Manager ps control-path failure when the seat list cannot be read, not a rendered presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`${row.name}: ${stopped.error ?? \"stop failed\"}`",
+      "class": "non-render/control",
+      "rationale": "Aggregated per-seat lifecycle-stop failure from the manager stop command, not an agent progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`  ${bits.join(\"  \u00b7  \")}`",
+      "class": "non-render/control",
+      "rationale": "Leftover/would-reap seat inventory row: name, mode, pid, agent, cwd, and optional manager-reported process status, not an observed work-progress claim."
     }
   ]
 }

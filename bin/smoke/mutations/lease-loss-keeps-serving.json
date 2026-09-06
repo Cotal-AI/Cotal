@@ -22,10 +22,10 @@
     "thousand identical lines in `manager.log`, which is how the motivating incident was read: by",
     "searching a log for the one line that mattered.",
     "",
-    "MUTATION 4 IS THE CONTROL AND ALSO A REAL INVARIANT. It makes the ORDINARY shutdown path leave",
+    "MUTATION 4 IS THE CONTROL AND ALSO A REAL INVARIANT. It makes the EXPLICIT reap path leave",
     "the children running. Every lease cell stays green and only the control cell reddens, which proves",
-    "the `stops` counter fires (so the zeros in the graded cells are earned) and that `cotal down` /",
-    "Ctrl-C stay destructive."
+    "the `stops` counter fires (so the zeros in the graded cells are earned) and that `cotal down",
+    "--with-agents` still reaps. Ordinary `stop()` leaving children is the #964 default, not a defect."
   ],
   "mutations": [
     {
@@ -56,13 +56,13 @@
       "note": "Correct decision, unreadable log. A careless edit rather than a malicious one."
     },
     {
-      "name": "CONTROL and invariant: the ordinary shutdown path leaves every agent running",
+      "name": "CONTROL and invariant: the explicit reap path leaves every agent running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      await this.teardownManagedAgents();",
-      "replace": "      this.agents.clear();",
-      "expectRed": "CONTROL: the ordinary stop path stops the child",
-      "cell": "CONTROL: the ordinary stop path stops the child (instrument fires)",
-      "note": "Doubles as the positive control for the `stops` counter and as the guard on the opposite failure: an operator who asked for a shutdown must get one. Anchored on the bare call with no trailing comment, which is unique in the file."
+      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();",
+      "replace": "      if (opts?.withAgents === true) this.agents.clear();",
+      "expectRed": "CONTROL: the explicit reap path stops the child",
+      "cell": "CONTROL: the explicit reap path stops the child (instrument fires)",
+      "note": "Doubles as the positive control for the `stops` counter and as the guard on the opposite failure: an operator who asked for `--with-agents` must get a reap. Anchored on the withAgents true call, which is unique in the file."
     }
   ]
 }

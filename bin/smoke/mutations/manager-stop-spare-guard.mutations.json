@@ -1,0 +1,34 @@
+{
+  "suite": "bin/smoke/manager-stop-spare-guard.smoke.ts",
+  "guard": "skipped live-PTY spare-stops are a frozen #1343 inventory: a new dropped path reds, a stale frozen path reds, and SPARE_COVERAGE is not a hiding place",
+  "command": "pnpm smoke:manager-stop-spare-guard",
+  "completionMarker": "MANAGER-STOP-SPARE-GUARD",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-stop-spare-guard.mutations.json",
+  "why": [
+    "Issue #1343: printing 29 skipped rows still exits green when a NEW skipped live-PTY file",
+    "carries a candidate stop. new Manager( count can rise, the examined floor still holds, and",
+    "admitted hits stay zero. The inventory is the gate. N1 introduces a new dropped candidate",
+    "in a currently skipped live-PTY file that is not on FROZEN_DROPPED. N2 removes the last",
+    "candidate stop from a frozen path and leaves the inventory entry, so the baseline can only shrink.",
+    "",
+    "NO BUILD STEP: the suite reads smoke sources off disk."
+  ],
+  "mutations": [
+    {
+      "name": "N1 a new skipped live-PTY file gains a candidate spare-stop",
+      "file": "implementations/manager/smoke/persona-show-auth.smoke.ts",
+      "find": "const manager = new Manager({ space: \"persona-show-auth\", runtime: \"pty\", workspaceRoot: root });\n",
+      "replace": "const manager = new Manager({ space: \"persona-show-auth\", runtime: \"pty\", workspaceRoot: root });\nawait manager.stop();\n",
+      "expectRed": "a new dropped-with-candidate-stop path is not on the frozen #1343 inventory",
+      "note": "persona-show-auth already constructs a live-PTY Manager with no enumerated spawn shape. Adding a spare stop makes it a new dropped candidate. It is not on FROZEN_DROPPED and is not SPARE_COVERAGE."
+    },
+    {
+      "name": "N2 a frozen dropped path loses its candidate stop and stays on the list",
+      "file": "bin/smoke/persona-announce.smoke.ts",
+      "find": "  await mgr.stop().catch(() => {});",
+      "replace": "  await mgr.stop({ withAgents: true }).catch(() => {});",
+      "expectRed": "frozen #1343 dropped inventory has no stale paths",
+      "note": "persona-announce is on the frozen #1343 inventory. Repairing its only matching spare-stop without deleting the inventory row must red so the baseline can only shrink."
+    }
+  ]
+}

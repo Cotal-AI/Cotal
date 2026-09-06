@@ -305,7 +305,7 @@ try {
   att?.kill();
   onKnock = undefined;
   await closeLink();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   // Kill and remove FIRST, release LAST: `releaseBroker` hands the kill duty back rather than doing
   // it, so releasing before an explicit exit leaves a live broker and its store dir behind (#587).
   srv.kill("SIGKILL");

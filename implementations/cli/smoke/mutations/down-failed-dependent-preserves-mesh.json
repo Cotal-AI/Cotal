@@ -1,0 +1,30 @@
+{
+  "suite": "implementations/cli/smoke/clean.smoke.ts",
+  "guard": "listing seats on a failed down must restore a mesh record that preflight pruned",
+  "command": "pnpm smoke:clean",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/down-failed-dependent-preserves-mesh.json",
+  "why": [
+    "Bare down lists seats for honesty. resolveControlTarget preflight deletes an unreachable broker's registry entry.",
+    "A failed dependent (unsignalable manager, live broker pid) must keep that record, or later clean can proceed under a live process.",
+    "MUTATION 1 restores raw root === matching. Listing then misses a canonically recorded mesh and names a missing record instead of the control plane.",
+    "MUTATION 2 drops the restore. The preserve-registry cell goes red only if listing actually connected and pruned."
+  ],
+  "mutations": [
+    {
+      "name": "listing matches recorded roots by raw string again",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "function meshForContext(context: LocalProcessContext) {\n  const matching = meshesForRoot(context.root).filter((mesh) => mesh.space === context.space);\n  return matching[0] ?? meshesForRoot(context.root)[0];\n}",
+      "replace": "function meshForContext(context: LocalProcessContext) {\n  const matching = loadMeshes().filter((mesh) => mesh.root === context.root && mesh.space === context.space);\n  return matching[0] ?? loadMeshes().find((mesh) => mesh.root === context.root);\n}",
+      "expectRed": "down: listing a failed dependent names the control plane, not a missing record",
+      "cell": "down: listing a failed dependent names the control plane, not a missing record"
+    },
+    {
+      "name": "listing no longer restores a mesh record that preflight pruned",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
+      "replace": "    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
+      "expectRed": "down: a failed dependent preserves the mesh registry",
+      "cell": "down: a failed dependent preserves the mesh registry"
+    }
+  ]
+}

@@ -208,7 +208,7 @@ const M = mgr as unknown as {
   retiring: Map<string, RetirementHold>;
   renewManagedStaticCred(agent: Agent): Promise<void>;
   renewDaemonCreds(): Promise<void>;
-  despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean): { ok: boolean };
+  despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean, requireAuthoritativeExit?: boolean): Promise<{ ok: boolean }>;
 };
 
 async function openLifecycleView(alias: string, actor: string, uid: string): Promise<{
@@ -302,7 +302,7 @@ try {
 
       let terminalEntered = false;
       if (scenario.terminal === "despawn")
-        terminalEntered = M.despawnAuthorized(agent, false, true).ok;
+        terminalEntered = (await M.despawnAuthorized(agent, false, true)).ok;
       else
         terminalEntered = handles.get(name)?.exitNaturally() === true && !M.agents.has(name);
       check(`${name}: ${scenario.terminal} enters the terminal path`, terminalEntered);

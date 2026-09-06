@@ -101,7 +101,9 @@ with the log path and a non-zero exit. It still launches nothing. The control pl
 old-manager preflight → **delivery daemon** (auth mode only) → **manager**, via
 `ensureControlPlane`
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The detached
-processes, all stopped by `cotal down`:
+processes, all stopped by `cotal down` (managed agents stay running unless
+`cotal down --with-agents`). A PTY child may still die when the manager process
+exits. A later manager on the same root may still take leftover seats.
 
 With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker
 address is already held by another root or an unrecorded broker; an explicit `--server` remains
@@ -135,7 +137,8 @@ separate install. Start it with `cotal web`; it records
 Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status card.
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
-the full set and stops it in dependency order; `cotal down manager` (or another component name)
+the full set and stops it in dependency order, leaving managed agents running; `cotal down
+--with-agents` also stops those seats. `cotal down manager` (or another component name)
 selects only that descriptor. Installed extensions cache their contributed registry keys, so the
 base CLI does not hardcode optional package pidfiles.
 

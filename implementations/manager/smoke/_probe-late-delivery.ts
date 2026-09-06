@@ -227,7 +227,7 @@ try {
 } finally {
   try { child?.kill("SIGKILL"); } catch { /* gone */ }
   await closeLink();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();

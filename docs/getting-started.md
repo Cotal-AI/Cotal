@@ -92,7 +92,7 @@ whole loop is three commands:
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
 cotal spawn                # launch your agent here and talk to it (Ctrl-C to leave)
-cotal down                 # stop everything
+cotal down                 # stop the stack; managed agents stay running unless --with-agents
 ```
 
 Open the browser dashboard with `cotal web` (it ships with `cotal-ai`, seeded automatically). Add the
@@ -169,7 +169,7 @@ cotal spawn                          # your agent (edit .cotal/agents/default.md
 cotal spawn david                    # a guided expert, needs `cotal setup --demo` first (also sven, me)
 cotal console --space main           # live mesh view in the terminal (TUI)
 cotal web --space main               # open the browser dashboard
-cotal down                           # stop the background mesh, delivery daemon, and manager
+cotal down                           # stop the stack; managed agents stay running unless --with-agents
 ```
 
 Feedback flows through your agent too: tell it "send feedback: ..." and it reports it for
@@ -201,7 +201,10 @@ npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
 step fails, so an agent or a CI job can check the result (add `--demo` for the guided team).
 `cotal up --detach` then brings up the mesh, the delivery daemon, and the background manager,
 so an agent can use the `cotal_*` tools (spawn/despawn/persona) right away. `cotal down`
-stops the background processes.
+stops those background processes and leaves managed agents running. Pass
+`cotal down --with-agents` to take the agents with the stack. A PTY child may
+still die when the manager process exits. A later manager on the same root may
+still take leftover seats.
 
 ## Troubleshooting
 

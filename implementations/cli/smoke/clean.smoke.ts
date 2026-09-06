@@ -334,19 +334,33 @@ try {
     rmSync(downRoot, { recursive: true, force: true });
 
     const blockedRoot = meshRoot();
+    const blockedCanonical = realpathSync.native(blockedRoot);
+    // A different spelling of the same directory (`path.join` would collapse `/.`). Listing must
+    // match canonical-root-wise; a raw `===` misses this record and names "no recorded mesh".
+    const blockedRecorded = `${blockedCanonical}/.`;
     const blockedBroker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid"), "1");
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid.identity"), `1 ${defaultStartToken(1)}`);
     writeFileSync(join(blockedRoot, ".cotal", "nats.pid"), String(blockedBroker.pid));
-    recordMesh(entry("blocked-down", blockedRoot));
+    recordMesh(entry("blocked-down", blockedRecorded));
     process.exitCode = 0;
+    const blockedErr: string[] = [];
+    const realBlockedErr = console.error;
+    console.error = ((...args: unknown[]) => { blockedErr.push(args.map(String).join(" ")); }) as typeof console.error;
     process.chdir(blockedRoot);
     try {
       await down({ positionals: [], values: {}, raw: [] });
     } finally {
+      console.error = realBlockedErr;
       process.chdir(cwd2);
     }
     check("down: a failed dependent prevents the broker stop", blockedBroker.exitCode === null);
+    check(
+      "down: listing a failed dependent names the control plane, not a missing record",
+      blockedErr.some((line) => /manager control plane could not be reached/.test(line)) &&
+        !blockedErr.some((line) => /no recorded mesh/.test(line)),
+      blockedErr,
+    );
     check("down: a failed dependent preserves the mesh registry", loadMeshes().some((m) => m.space === "blocked-down"));
     blockedBroker.kill("SIGKILL");
     await new Promise((resolve) => blockedBroker.once("exit", resolve));

@@ -371,7 +371,7 @@ try {
 } finally {
   for (const x of started) x.kill();
   for (const p of pipedChildren) p.kill();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await closeLink();
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });

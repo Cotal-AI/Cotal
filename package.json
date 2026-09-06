@@ -219,6 +219,7 @@
     "smoke:attach-auth-root": "tsx bin/smoke/attach-auth-root.smoke.ts",
     "smoke:manager-two-root-renewal": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-two-root-renewal.smoke.ts",
     "smoke:manager-stop-reap": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-stop-reaps-agents.smoke.ts",
+    "smoke:manager-stop-spare-guard": "tsx bin/smoke/manager-stop-spare-guard.smoke.ts",
     "smoke:control-transport-dial": "tsx bin/smoke/control-transport-dial.smoke.ts && pnpm smoke:control-transport-cleanup",
     "smoke:control-transport-cleanup": "tsx bin/smoke/fixtures/control-transport-cleanup.mts",
     "smoke:control-transport-crash-cleanup": "tsx bin/smoke/fixtures/control-transport-crash-cleanup.mts",

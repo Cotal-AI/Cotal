@@ -26,10 +26,9 @@
  *   8. MISSED-EXIT REAP (issue #159 B1, review hardening) — an agent that joins presence (→ started) then
  *      dies just as watchExit subscribes (onExit never fires for a late subscriber) is still reaped:
  *      watchExit re-checks status() right after subscribing and removes the leaked agent.
- *   9. SHUTDOWN TEARDOWN (issue #159 B2, review blocker) — Manager.stop() reaps EVERY managed agent (hard-
- *      stops the child + clears the map), not just the lease/endpoints, so a manager shutdown doesn't
- *      orphan their footprints. (The broker-side deprovision is a no-op in open mode — proven under auth in
- *      deprovision-agent-auth.smoke — so this covers the stop() wiring.)
+ *   9. SHUTDOWN TEARDOWN (issue #159 B2 / #964) — Manager.stop({ withAgents: true }) reaps EVERY managed agent (hard-
+ *      stops the child + clears the map), not just the lease/endpoints. Bare stop() leaves agents (#964);
+ *      cell 9b is the spare path on the same fake runtime.
  *  10. BEST-EFFORT TEARDOWN (issue #159 B2, review re-check) — teardownManagedAgents() attempts every
  *      child and empties the map even when one hard-stop throws, so stop() can't exit leaving footprints.
  *  11. BEST-EFFORT STOP ON REAP (issue #159 B2, review round 5) — stopHandle() (the single stop chokepoint)
@@ -70,7 +69,7 @@ const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnect
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
 mkdirSync(agentsDir, { recursive: true });
-for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2", "dead1", "missed1", "shut1", "shut2", "lease1", "lease2", "unc1"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
+for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2", "dead1", "missed1", "shut1", "shut2", "spare1", "lease1", "lease2", "unc1"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
 // rec3 carries an explicit access policy — its frontmatter ACL must thread through to LaunchOpts.
 writeFileSync(join(agentsDir, "rec3.md"), `---\nname: rec3\nsubscribe: [team]\nallowSubscribe: [team, team.>]\nallowPublish: [team]\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
@@ -400,11 +399,11 @@ registry.register(recNoResumeCon);
   check("missed-exit: watchExit status-check reaps the leaked agent (not left in the map)", agentCount() === before, agentCount());
 }
 
-// 9 — SHUTDOWN TEARDOWN (#159 B2, review blocker): Manager.stop() must reap every managed agent — not just
-// release the lease + stop endpoints — or a manager Ctrl-C/SIGTERM orphans their footprints (creds/durables/
-// ACL). Spawn two survivors, then stop(): both children must be hard-stopped and the managed-agents map
-// emptied. Broker deprovision is a no-op in open mode (its footprint teardown is proven under auth in
-// deprovision-agent-auth.smoke); this proves the stop() wiring. Stub ep/attach so stop() has no live mesh.
+// 9 — SHUTDOWN TEARDOWN (#159 B2 / #964): Manager.stop({ withAgents: true }) must reap every managed
+// agent — not just release the lease + stop endpoints. Spawn two survivors, then stop with the
+// explicit reap: both children must be hard-stopped and the managed-agents map emptied. Bare stop()
+// is the #964 spare path, proven in bin/smoke/manager-stop-reaps-agents.smoke.ts. Broker deprovision
+// is a no-op in open mode. Stub ep/attach so stop() has no live mesh.
 {
   agentsMap().clear();
   const stopped: string[] = [];
@@ -424,10 +423,34 @@ registry.register(recNoResumeCon);
   await mgr.startAgent({ name: "shut1", agent: "smoke-rec" });
   await mgr.startAgent({ name: "shut2", agent: "smoke-rec" });
   check("shutdown: two managed agents present before stop", agentCount() >= 2, agentCount());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   check("shutdown: stop() hard-stops every managed child", stopped.includes("shut1") && stopped.includes("shut2"), stopped);
   check("shutdown: stop() proves every managed child exited before releasing manager authority", exitProofs.has("shut1") && exitProofs.has("shut2"), [...exitProofs]);
   check("shutdown: stop() empties the managed-agents map (no orphaned footprint)", agentCount() === 0, agentCount());
+}
+
+// 9b — SPARE PATH (#964): a plain Manager.stop() empties the table and does not hard-stop the child.
+{
+  agentsMap().clear();
+  const stopped: string[] = [];
+  const exited = new Set<string>();
+  const liveHandle = (name: string): AgentHandle => ({
+    name, kind: "fake", status: () => exited.has(name) ? "exited" : "running",
+    stop: () => { stopped.push(name); exited.add(name); },
+    waitForExit: async () => { if (!exited.has(name)) throw new Error("still running"); },
+    interrupt: () => {}, attach: () => fakeSession,
+  });
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => liveHandle(name),
+  };
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, stop: async () => {} });
+  (mgr as unknown as { attach: { stop: () => Promise<void> } }).attach = { stop: async () => {} };
+  await mgr.startAgent({ name: "spare1", agent: "smoke-rec" });
+  check("spare: one managed agent present before stop", agentCount() === 1, agentCount());
+  await mgr.stop();
+  check("spare: a plain stop does not hard-stop the child", !stopped.includes("spare1"), stopped);
+  check("spare: a plain stop empties the managed-agents map", agentCount() === 0, agentCount());
 }
 
 // 10 — BEST-EFFORT TEARDOWN (#159 B2, review re-check): `teardownManagedAgents()` is the helper stop()

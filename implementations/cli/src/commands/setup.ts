@@ -176,13 +176,13 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
         `${ok("✓")} drive a session     ${dim(`${cmd} spawn me`)}`,
         `${ok("✓")} ask the experts     ${dim(`${cmd} spawn david · ${cmd} spawn sven`)}`,
         `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
-        `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
+        `${ok("✓")} stop the stack      ${dim(`${cmd} down`)} ${dim("(agents stay unless --with-agents)")}`,
       ]
     : [
         `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
         `${ok("✓")} talk to your agent  ${dim(`${cmd} spawn`)}`,
         `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
-        `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
+        `${ok("✓")} stop the stack      ${dim(`${cmd} down`)} ${dim("(agents stay unless --with-agents)")}`,
       ];
   const tail = demo
     ? [dim(`Visual dashboard: ${cmd} web`)]

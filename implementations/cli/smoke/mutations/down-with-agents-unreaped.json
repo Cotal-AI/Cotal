@@ -1,0 +1,30 @@
+{
+  "suite": "implementations/cli/smoke/down-target.smoke.ts",
+  "guard": "--with-agents against an unlistable manager still stops the stack, reaps none, and exits non-zero; listing never process.exit",
+  "command": "pnpm smoke:down-target",
+  "completionMarker": "down target-addressed smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/down-with-agents-unreaped.json",
+  "why": [
+    "The suite imports down.ts from source, so a mutation on the command is live with no dist in the path.",
+    "MUTATION 1 restores the F4 false-success: --with-agents that cannot list seats prints a dim leftover warning and exits 0 after stopping the stack.",
+    "MUTATION 2 restores connectOrExit on listing. The down-manager cell stubs process.exit so an uncatchable refusal cannot hide: the planted manager stays running."
+  ],
+  "mutations": [
+    {
+      "name": "the defect restored: --with-agents that cannot list still claims success",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "    } else if (withAgents) {\n      printWithAgentsUnreaped(listed.reason);\n      withAgentsUnreaped = true;\n    } else {",
+      "replace": "    } else if (withAgents) {\n      printCouldNotList(listed.reason);\n    } else {",
+      "expectRed": "--with-agents against an unreachable manager still stops the stack AND exits non-zero naming that no seats were reaped",
+      "cell": "--with-agents against an unreachable manager still stops the stack AND exits non-zero naming that no seats were reaped"
+    },
+    {
+      "name": "listing again process.exit on an unreachable broker",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, \"control-caller-privileged\", undefined, { onRefusal: \"throw\" });\n  } catch (e) {\n    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
+      "replace": "    target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, \"control-caller-privileged\");\n  } catch (e) {\n    if (!findMesh(mesh.space)) recordMesh(mesh);\n    return { ok: false, reason: `the manager control plane could not be reached (${(e as Error).message})` };",
+      "expectRed": "down manager against a recorded unreachable broker still stops the manager and does not process.exit",
+      "cell": "down manager against a recorded unreachable broker still stops the manager and does not process.exit"
+    }
+  ]
+}

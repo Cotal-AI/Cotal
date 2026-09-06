@@ -457,6 +457,12 @@ export interface ManagerPreserveOptions {
   persistInventory(inventory: ManagerResumeInventory): Promise<void>;
 }
 
+/** Options for {@link Manager.stop}. Preservation still always stops retained children. */
+export interface ManagerStopOptions {
+  /** Reap every managed agent (hard-stop + deprovision). Default false leaves them running. */
+  withAgents?: boolean;
+}
+
 export interface ManagerResumeResult {
   ok: boolean;
   agents: Array<{ name: string; reply: ControlReply }>;
@@ -830,6 +836,9 @@ export class Manager {
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
+  /** Seats released by a sparing {@link stop} so their runtime handles are not GC'd while this
+   *  process is still exiting. Not listed by `ps`. Not stopped. Not deprovisioned. */
+  private readonly detached: ManagedAgent[] = [];
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
   private readonly reserved = new Set<string>();
@@ -1851,8 +1860,21 @@ export class Manager {
     };
   }
 
-  /** Tear down every managed agent's footprint on a graceful {@link stop} (#159 B2). A manager exit is
-   *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
+  /** Drop every managed seat from the table without stopping or deprovisioning it (#964). A later
+   *  `ps` is empty; the OS processes and their footprints stay. Handles are retained on
+   *  {@link detached} so a still-running manager process does not GC a PTY and kill the child.
+   *  When this process itself exits, a PTY master close may still SIGHUP those children. */
+  private detachManagedAgents(): void {
+    const managed = [...this.agents.values()];
+    for (const a of managed) {
+      a.suppressCleanup = true;
+      this.agents.delete(a.name);
+      this.detached.push(a);
+    }
+  }
+
+  /** Tear down every managed agent's footprint on {@link stop} with `withAgents: true` (#159 B2). A
+   *  manager exit is a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
@@ -1909,12 +1931,13 @@ export class Manager {
       throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
   }
 
-  async stop(): Promise<void> {
+  async stop(opts?: ManagerStopOptions): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     if (this.maintenanceState === "active" && !this.resumeRequired) {
-      await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)
+      if (opts?.withAgents === true) await this.teardownManagedAgents();
+      else this.detachManagedAgents();
     } else {
       // A signal after a partial preservation must never fall back into destructive teardown.
       await this.stopRetainedAgentsOnExit();
@@ -2436,7 +2459,8 @@ export class Manager {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
-        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
+        const graceful = args(ctx).graceful !== false;
+        return unwrap(await this.despawnAuthorized(a, graceful, true, args(ctx).waitForExit === true));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -5034,7 +5058,7 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    return this.despawnCore(a, caller, admin, args.graceful !== false);
+    return this.despawnCore(a, caller, admin, args.graceful !== false, args.waitForExit === true);
   }
 
   /** The ONE named-terminal core both doors share (P2 item 1, checklist 8): the ctl named `stop`
@@ -5042,18 +5066,27 @@ export class Manager {
    *  ({@link authorizeNamed}: own-child / owner-domain on privileged, any on admin), stop, track.
    *  The ep door runs the SAME two pieces separately so a policy denial surfaces as the §13.3
    *  `permission-denied` (never a generic failure). */
-  private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean): Promise<ControlReply> {
+  private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean, requireAuthoritativeExit = false): Promise<ControlReply> {
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    return this.despawnAuthorized(a, graceful, !admin);
+    return this.despawnAuthorized(a, graceful, !admin, requireAuthoritativeExit);
   }
 
   /** The post-authorization terminal effect (both doors). `trackNonAdmin` mirrors the ctl door's
-   *  `trackStoppedHandle(a, !admin)` disposition. */
-  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean): ControlReply {
+   *  `trackStoppedHandle(a, !admin)` disposition. `requireAuthoritativeExit` is passed by the
+   *  mass-reap caller (`cotal down --with-agents` sends `waitForExit: true`); it is not derived
+   *  from `graceful`. Ordinary `cotal stop` / `cotal_despawn` stay acceptance-not-exit. */
+  private async despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, requireAuthoritativeExit = false): Promise<ControlReply> {
     this.stopHandle(a, graceful);
-    this.trackStoppedHandle(a, trackNonAdmin);
+    this.trackStoppedHandle(a, trackNonAdmin, requireAuthoritativeExit);
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // M4: cancel a live spawn goal
+    if (requireAuthoritativeExit) {
+      try {
+        await this.awaitHandleExit(a.handle);
+      } catch (e) {
+        return { ok: false, error: `stop requested but exit was not proven: ${(e as Error).message}` };
+      }
+    }
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }
 

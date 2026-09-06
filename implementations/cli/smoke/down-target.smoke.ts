@@ -5,9 +5,10 @@
  * `cotal web` (target-resolved) claimed `<mesh-root>/.cotal/web.pid` but `cotal down web` only
  * looked under the folder it ran in and reported "Nothing running for web".
  *
- * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
- * into the registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh
- * root's web.pid. Run: pnpm smoke:down-target
+ * Hermetic: COTAL_HOME and the temp root are sandboxed, meshes are recorded straight into the
+ * registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh root's
+ * web.pid. The unreaped `--with-agents` cell boots its own nats-server (needs it on PATH) with
+ * no manager responder. Run: pnpm smoke:down-target
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -15,7 +16,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
-import { probeLiveness, defaultStartToken, type LocalProcess } from "@cotal-ai/workspace";
+import { isReachable } from "@cotal-ai/core";
+import { probeLiveness, defaultStartToken, MANAGER_PIDFILE, localProcessPath, type LocalProcess } from "@cotal-ai/workspace";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
@@ -43,6 +46,7 @@ try {
   ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down } = await import("../src/commands/down.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
+  await import("@cotal-ai/cli"); // registers manager/delivery/nats so a bare down can stop a planted manager
 } catch (e) { cleanScratch(e); }
 
 let pass = 0;
@@ -148,8 +152,127 @@ try {
   await assert.rejects(run(["web"], { space: "nosuch" }), /no mesh named/);
   check("--space with an unknown mesh fails loud", true);
 
-  console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
+  // Guardrails: --with-agents is bare whole-stack only and cannot mix with preserve-state.
+  await assert.rejects(run([], { "preserve-state": true, "with-agents": true }), /--preserve-state cannot be combined with --with-agents/);
+  check("--preserve-state with --with-agents is refused", true);
+  await assert.rejects(run(["web"], { "with-agents": true }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with a component is refused", true);
+  await assert.rejects(run([], { "with-agents": true, file: "cotal.yaml" }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --file is refused", true);
+  await assert.rejects(run([], { "with-agents": true, run: "abc" }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --run is refused", true);
+  await assert.rejects(run([], { "with-agents": true, space: "teamA" }), /--with-agents is bare-whole-stack only/);
+  check("--with-agents with --space is refused", true);
+  const realExit = process.exit;
+  let dryCombo: string | undefined;
+  (process as { exit: (code?: number) => never }).exit = ((code?: number) => {
+    throw new Error(`exit ${code ?? 0}`);
+  }) as typeof process.exit;
+  try {
+    await run([], { "with-agents": true, "dry-run": true });
+  } catch (e) {
+    dryCombo = (e as Error).message;
+  } finally {
+    process.exit = realExit;
+  }
+  check(
+    "--with-agents with --dry-run is allowed (preview, not a combination refusal)",
+    dryCombo !== undefined && !/--with-agents is bare-whole-stack only/.test(dryCombo),
+    dryCombo,
+  );
+
+  // `--with-agents` against a live broker with no manager responder: still stop the stack, do not
+  // claim the reap. Listing must THROW (onRefusal) rather than process.exit, or this cell never
+  // reaches the stop loop. Both halves live in one assertion: a mutant that restores
+  // printCouldNotList without the exit code reddens here, and so does a mutant that re-exits.
+  {
+    const folder = mkdtempSync(join(scratch, "with-agents-unreaped-"));
+    mkdirSync(join(folder, ".cotal"), { recursive: true });
+    const store = mkdtempSync(join(scratch, "with-agents-js-"));
+    const port = await pickFreePort();
+    const server = `nats://127.0.0.1:${port}`;
+    const broker = spawn("nats-server", ["-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+    spawnedChildren.push(broker);
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      if (await isReachable(server)) { up = true; break; }
+      await sleep(50);
+    }
+    if (!up) throw new Error(`fixture broker never came up on ${server}`);
+    recordMesh({ space: "main", server, root: folder, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+    const child = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
+    spawnedChildren.push(child);
+    child.unref();
+    const pidPath = localProcessPath(MANAGER_PIDFILE, { root: folder, space: "main" });
+    writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+    writeFileSync(`${pidPath}.identity`, `${child.pid} ${defaultStartToken(child.pid ?? 0)}`, { mode: 0o600 });
+    const prevCode = process.exitCode;
+    process.exitCode = 0;
+    const err: string[] = [];
+    const realErr = console.error;
+    console.error = ((...args: unknown[]) => { err.push(args.map(String).join(" ")); }) as typeof console.error;
+    const prevDir = process.cwd();
+    const realExit = process.exit;
+    (process as { exit: (code?: number) => never }).exit = ((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as typeof process.exit;
+    try {
+      process.chdir(folder);
+      await run([], { "with-agents": true });
+    } finally {
+      process.exit = realExit;
+      console.error = realErr;
+      process.chdir(prevDir);
+      try { broker.kill("SIGKILL"); } catch { /* gone */ }
+    }
+    for (let i = 0; i < 100 && alive(child.pid!); i++) await sleep(50);
+    const loud = err.some((line) => /no seats were reaped/.test(line) && /--with-agents/.test(line));
+    check(
+      "--with-agents against an unreachable manager still stops the stack AND exits non-zero naming that no seats were reaped",
+      !alive(child.pid!) && !existsSync(pidPath) && process.exitCode === 1 && loud,
+      { alive: alive(child.pid!), pidfile: existsSync(pidPath), exitCode: process.exitCode, err },
+    );
+    process.exitCode = prevCode;
+  }
+
+  // `cotal down manager` against a recorded mesh whose broker is down must still SIGTERM the
+  // manager. Listing throws; the catch is a dim leftover warning; the stop loop still runs.
+  {
+    const folder = mkdtempSync(join(scratch, "down-manager-dead-broker-"));
+    mkdirSync(join(folder, ".cotal"), { recursive: true });
+    recordMesh({ space: "main", server: "nats://127.0.0.1:1", root: folder, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+    const child = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
+    spawnedChildren.push(child);
+    child.unref();
+    const pidPath = localProcessPath(MANAGER_PIDFILE, { root: folder, space: "main" });
+    writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+    writeFileSync(`${pidPath}.identity`, `${child.pid} ${defaultStartToken(child.pid ?? 0)}`, { mode: 0o600 });
+    const prevCode = process.exitCode;
+    process.exitCode = 0;
+    const realExit = process.exit;
+    let exitCalled: number | undefined;
+    (process as { exit: (code?: number) => never }).exit = ((code?: number) => {
+      exitCalled = code ?? 0;
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as typeof process.exit;
+    const prevDir = process.cwd();
+    try {
+      process.chdir(folder);
+      await run(["manager"]);
+    } finally {
+      process.exit = realExit;
+      process.chdir(prevDir);
+    }
+    for (let i = 0; i < 100 && alive(child.pid!); i++) await sleep(50);
+    check(
+      "down manager against a recorded unreachable broker still stops the manager and does not process.exit",
+      !alive(child.pid!) && !existsSync(pidPath) && (process.exitCode ?? 0) === 0 && exitCalled === undefined,
+      { alive: alive(child.pid!), pidfile: existsSync(pidPath), exitCode: process.exitCode, exitCalled },
+    );
+    process.exitCode = prevCode;
+  }
 } finally {
+  console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
   process.chdir(prevCwd);
   // Only the ones that were actually created — a throw partway through leaves the rest undefined,
   // and `finally` has to cope with a half-built fixture rather than assume a complete one.

@@ -1010,7 +1010,9 @@ let openInventory: ManagerResumeAgent;
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["general"] };
 }
 
-// Regression: active-mode stop remains the existing destructive shutdown path.
+// Regression: active-mode stop leaves managed agents running (#964). The previous reap is
+// `stop({ withAgents: true })`. Both halves stay covered: a mutant that restores always-reap
+// reddens the spare cells; a mutant that drops the explicit reap reddens the counterpart pair.
 {
   const manager = managerWith((name) => fakeHandle(name));
   const handle = fakeHandle("normal");
@@ -1019,8 +1021,20 @@ let openInventory: ManagerResumeAgent;
   let deprovisions = 0;
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
   await manager.stop();
-  check("normal stop still hard-stops managed agents", handle.stops === 1, handle.stops);
-  check("normal stop still deprovisions managed agents", deprovisions === 1, deprovisions);
+  check("normal stop leaves managed agents running", handle.stops === 0, handle.stops);
+  check("normal stop does not deprovision managed agents", deprovisions === 0, deprovisions);
+}
+
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const handle = fakeHandle("reap");
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("reap", managed("reap", "reap_id", handle, "persona"));
+  let deprovisions = 0;
+  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  await manager.stop({ withAgents: true });
+  check("stop({ withAgents: true }) hard-stops managed agents", handle.stops === 1, handle.stops);
+  check("stop({ withAgents: true }) deprovisions managed agents", deprovisions === 1, deprovisions);
 }
 
 // Regression: an accepted control stop frees the slot AT ONCE — `stop` replying ✓ has to mean `ps`

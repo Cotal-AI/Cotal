@@ -423,17 +423,21 @@ try {
   );
   ok(
     "the attached-session subprocess does not reconcile connector payloads before exercising attach",
-    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload)/.test(o)),
+    ![fromFossil, fromBare, fromCorrupt].some((o) =>
+      /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload|✗ refusing to reconcile the operator-global seed store)/.test(o),
+    ),
   );
 
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
-  if (fail) process.exitCode = 1;
 } finally {
   // BOUNDED, and the bound is the point: the brokers this file started are killed below, and a
   // manager stop that hangs must not be able to keep that from happening. Measured once: a leaked
   // `nats-server` from this rig outlived its run by half an hour, and the reaper attributes a leak
   // like that to whichever suite was running.
-  await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
+  // Reap the supervised seat. A plain stop leaves the PTY child, and node-pty's waitpid worker
+  // then holds this process open after the banner (CI shards 0/2 hit the 60m timeout that way).
+  await Promise.race([mgr?.stop({ withAgents: true }).catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   releaseBroker?.();
 }
+process.exit(fail ? 1 : 0);
