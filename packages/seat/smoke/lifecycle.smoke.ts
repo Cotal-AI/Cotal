@@ -233,10 +233,13 @@ try {
     sess.onData((b) => {
       buf += b.toString("utf8");
     });
-    await new Promise<void>((resolve) => sess.onExit(() => resolve()));
-    await wait(50);
+    let exited = false;
+    sess.onExit(() => {
+      exited = true;
+    });
+    await until(() => exited, 5_000);
     const seen = buf.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    check("fast-exit print reaches onData before onExit", seen.includes("FAST_MARK=1"), seen);
+    check("fast-exit print reaches onData before onExit", exited && seen.includes("FAST_MARK=1"), { exited, seen });
   }
 
   {
