@@ -50,7 +50,15 @@ const SPARE_STOP = /(?:await\s+)?(?:manager|mgr|mgr[0-9A-Z]|m[0-9]|adopting|open
 
 function livePty(text: string): boolean {
   if (!/\bnew\s+Manager\s*\(/.test(text)) return false;
-  if (!/\.startAgent\s*\(/.test(text) && !/\bspawnSeat\s*\(/.test(text)) return false;
+  if (
+    !/\.startAgent\s*\(/.test(text) &&
+    !/\bspawnSeat\s*\(/.test(text) &&
+    !/cmd\(\s*"spawn"\s*\)/.test(text) &&
+    !/\bspawnTool\.run\s*\(/.test(text) &&
+    !/\bMeshHandler\b/.test(text) &&
+    !/\.startByName\s*\(/.test(text) &&
+    !/invokeService\(\s*"manager"\s*,\s*"spawn"/.test(text)
+  ) return false;
   if (/\bkind:\s*"fake"/.test(text)) return false;
   return /\bruntime:\s*"pty"/.test(text) || /\bpty\.spawn\s*\(/.test(text);
 }

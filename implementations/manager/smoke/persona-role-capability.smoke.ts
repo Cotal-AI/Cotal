@@ -298,8 +298,11 @@ try {
 } finally {
   await definer?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
-  await mgr.stop().catch(() => {});
+  // Reap leftover PTY seats. A plain stop leaves node-pty's waitpid worker holding this
+  // process open after the banner (Linux CI shard 2 hung that way after this suite).
+  await mgr.stop({ withAgents: true }).catch(() => {});
   if (brokerPid) try { process.kill(brokerPid, "SIGKILL"); } catch { /* already gone */ }
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
+process.exit(0);
