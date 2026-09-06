@@ -218,6 +218,30 @@ try {
   {
     const rec = launchSeat({
       root,
+      name: "fast-print",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('FAST_MARK=1\\n'); process.exit(0)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    const h = adoptSeatSync(rec);
+    handles.push(h);
+    const sess = h.attach();
+    let buf = "";
+    sess.onData((b) => {
+      buf += b.toString("utf8");
+    });
+    await new Promise<void>((resolve) => sess.onExit(() => resolve()));
+    await wait(50);
+    const seen = buf.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    check("fast-exit print reaches onData before onExit", seen.includes("FAST_MARK=1"), seen);
+  }
+
+  {
+    const rec = launchSeat({
+      root,
       name: "grace",
       spec: {
         command: process.execPath,

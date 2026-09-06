@@ -88,6 +88,10 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     },
     attach: () => {
       const sessionUnsubs = new Set<() => void>();
+      // Fast-exit children print and die before hello. onData must replay the
+      // screen, and onExit must wait for that replay so a dump-then-exit spawn
+      // is not observed as an empty attach (env-isolate printenv).
+      let pendingOutput = Promise.resolve();
       return {
         get cols() {
           return cols;
@@ -105,8 +109,16 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
         onData: (fn) => {
           let unsub: () => void = () => {};
           let cancelled = false;
-          later((c) =>
-            c.subscribeOutput(fn).then((u) => {
+          let releaseOutput = (): void => {};
+          const outputReady = new Promise<void>((resolve) => {
+            releaseOutput = resolve;
+          });
+          pendingOutput = pendingOutput.then(() => outputReady);
+          later(async (c) => {
+            try {
+              const snap = await c.snapshot();
+              if (!cancelled && snap.data) fn(Buffer.from(snap.data, "utf8"));
+              const u = await c.subscribeOutput(fn);
               unsub = u;
               if (cancelled) {
                 u();
@@ -114,8 +126,10 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
               }
               sessionUnsubs.add(u);
               liveUnsubs.add(u);
-            }),
-          );
+            } finally {
+              releaseOutput();
+            }
+          });
           return () => {
             cancelled = true;
             unsub();
@@ -126,7 +140,8 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
         onExit: (fn) => {
           let unsub: () => void = () => {};
           let cancelled = false;
-          later((c) => {
+          later(async (c) => {
+            await pendingOutput;
             if (cancelled) return;
             unsub = c.onExit(fn);
             sessionUnsubs.add(unsub);

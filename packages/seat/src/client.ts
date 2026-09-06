@@ -30,6 +30,7 @@ export class SeatClient {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private output = new Map<number, (data: Buffer) => void>();
+  private pendingSubscribe: ((data: Buffer) => void) | undefined;
   private exits = new Set<() => void>();
   private helloInfo: HelloInfo | undefined;
   private pendingExit = false;
@@ -90,14 +91,19 @@ export class SeatClient {
   }
 
   async subscribeOutput(fn: (data: Buffer) => void): Promise<() => void> {
-    const reply = await this.request({ op: "subscribe-output" });
-    if (!reply.ok || reply.op !== "subscribe-output") throw new Error(reply.ok ? "unexpected subscribe reply" : reply.error);
-    this.output.set(reply.sub, fn);
-    const sub = reply.sub;
-    return () => {
-      this.output.delete(sub);
-      void this.request({ op: "unsubscribe-output", sub }).catch(() => undefined);
-    };
+    this.pendingSubscribe = fn;
+    try {
+      const reply = await this.request({ op: "subscribe-output" });
+      if (!reply.ok || reply.op !== "subscribe-output") throw new Error(reply.ok ? "unexpected subscribe reply" : reply.error);
+      this.output.set(reply.sub, fn);
+      const sub = reply.sub;
+      return () => {
+        this.output.delete(sub);
+        void this.request({ op: "unsubscribe-output", sub }).catch(() => undefined);
+      };
+    } finally {
+      if (this.pendingSubscribe === fn) this.pendingSubscribe = undefined;
+    }
   }
 
   onExit(fn: () => void): () => void {
@@ -169,7 +175,7 @@ export class SeatClient {
     const msg = raw as ServerReply | ServerEvent;
     if ("event" in msg) {
       if (msg.event === "output") {
-        const fn = this.output.get(msg.sub);
+        const fn = this.output.get(msg.sub) ?? this.pendingSubscribe;
         if (fn) fn(Buffer.from(msg.data, "base64"));
         return;
       }

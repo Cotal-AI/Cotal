@@ -45,6 +45,16 @@
       "expectRed": "onExit fires for a child that exits before hello",
       "cell": "onExit fires for a child that exits before hello",
       "note": "A child that exits before attach must still fire onExit. Manager readiness uses that path without an output subscription."
+    },
+    {
+      "name": "M5 skip subscribe output replay",
+      "file": "packages/seat/src/custodian.ts",
+      "find": "        if (early) send(sock, { event: \"output\", sub, data: Buffer.from(early, \"utf8\").toString(\"base64\") });",
+      "replace": "        void early;",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "fast-exit print reaches onData before onExit",
+      "cell": "fast-exit print reaches onData before onExit",
+      "note": "launchSeat returns after the child pid exists, so dump-then-exit bytes are already written. Live subscribe without replay is the env-isolate empty capture."
     }
   ]
 }

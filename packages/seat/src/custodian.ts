@@ -12,6 +12,7 @@ import {
   FrameReader,
   GRACE_MS,
   MAX_CONFIRMS,
+  MAX_FRAME_SIZE,
   PROTOCOL_VERSION,
   SCROLLBACK_ROWS,
   encodeFrame,
@@ -76,6 +77,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const waiters = new Map<Socket, Set<number>>();
   const controllers = new Set<Socket>();
   let nextSub = 1;
+  let early = "";
   let confirmTimer: ReturnType<typeof setInterval> | undefined;
 
   if (launch.confirm) {
@@ -126,6 +128,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   proc.onData((d) => {
     term.write(d);
+    if (early.length < MAX_FRAME_SIZE) {
+      early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;
+    }
     const encoded = Buffer.from(d, "utf8").toString("base64");
     for (const [sub, socks] of dataSubs) {
       for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
@@ -266,6 +271,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         dataSubs.set(sub, socks);
         session.owned.add(sub);
         send(sock, { id: req.id, ok: true, op: "subscribe-output", sub });
+        if (early) send(sock, { event: "output", sub, data: Buffer.from(early, "utf8").toString("base64") });
         if (!alive) send(sock, { event: "exit", sub });
         return;
       }
