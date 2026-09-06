@@ -349,9 +349,12 @@ function spawnAuthService(): ChildProcess {
   // Re-exec THIS file (tsx) → the self-dispatch runs the real `auth-service` command. cwd=root so the
   // daemon's findCotalRoot() resolves the space-scoped state dir; ephemeral port (it writes its bound
   // url+pid+cap into the discovery file).
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  env.COTAL_HOME = home;
   return spawn(process.execPath, [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home },
+    env,
     stdio: process.env.SMOKE_AUTH_SERVICE_DEBUG ? ["ignore", "inherit", "inherit"] : "ignore",
   });
 }

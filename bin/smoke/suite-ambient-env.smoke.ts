@@ -14,9 +14,10 @@
  * only shape that can fail a future suite which reintroduces the spread is a static census over the
  * suite sources, which is what this is. The idea is a reviewer's, not mine.
  *
- * THE RULE. Every suite file that spreads `...process.env` into a child environment must either
- * strip the `COTAL_` variables from the copy first, or appear in {@link EXEMPT} with a measured
- * reason. Exempt is not "we looked away": each entry names why that file's child cannot capture an
+ * THE RULE. Every `...process.env` spread into a child environment must either strip the `COTAL_`
+ * variables from that copy first, or the file must appear in {@link REVIEWED} with a measured
+ * reason. A strip on a different child in the same file does not clear an unstripped spread.
+ * Exempt is not "we looked away": each entry names why that file's child cannot capture an
  * identity, and adding one is a conscious edit in a file a reviewer reads.
  *
  * Run: `pnpm smoke:suite-ambient-env`
@@ -46,11 +47,113 @@ function* suiteSources(dir: string): Generator<string> {
 }
 
 /** The spread, written the way people write it. */
-const SPREAD = /\.\.\.process\.env\b/;
+const SPREAD = /\.\.\.process\.env\b/g;
 /** A strip: a loop that deletes the `COTAL_` keys from a copy before the copy is spread. Matched on
  *  the two halves together, so a file that merely MENTIONS the prefix does not pass. */
 const STRIP = /startsWith\(["']COTAL_["']\)/;
 const DELETE = /\bdelete\b/;
+/** A file that mutates `process.env` itself, then later spreads it, has already dropped the ambient
+ *  keys from what the child will inherit. The mutation has to be a keys-loop that deletes `COTAL_`,
+ *  not a mention of those tokens in a comment or a different object. */
+const PROCESS_ENV_STRIP =
+  /for\s*\(\s*const\s+\w+\s+of\s+Object\.keys\(\s*process\.env\s*\)\)[\s\S]{0,160}?startsWith\(\s*["']COTAL_["']\s*\)[\s\S]{0,80}?delete\s+process\.env/;
+
+/** Comments are not child env. The census used to treat a `delete` in prose plus a `startsWith("COTAL_")`
+ *  on a different child as a strip of every spread in the file. */
+function codeWithoutComments(src: string): string {
+  let out = "";
+  let i = 0;
+  let state: "code" | "sq" | "dq" | "bt" | "line" | "block" = "code";
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (state === "line") {
+      if (c === "\n") {
+        state = "code";
+        out += c;
+      } else out += " ";
+      i++;
+      continue;
+    }
+    if (state === "block") {
+      if (c === "*" && n === "/") {
+        state = "code";
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += c === "\n" ? "\n" : " ";
+      i++;
+      continue;
+    }
+    if (state === "sq" || state === "dq") {
+      if (c === "\\") {
+        out += c + (n ?? "");
+        i += 2;
+        continue;
+      }
+      out += c;
+      if ((state === "sq" && c === "'") || (state === "dq" && c === '"')) state = "code";
+      i++;
+      continue;
+    }
+    if (state === "bt") {
+      if (c === "\\") {
+        out += c + (n ?? "");
+        i += 2;
+        continue;
+      }
+      if (c === "`") state = "code";
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === "/" && n === "/") {
+      state = "line";
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (c === "/" && n === "*") {
+      state = "block";
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (c === "'") state = "sq";
+    else if (c === '"') state = "dq";
+    else if (c === "`") state = "bt";
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+function lineOf(src: string, index: number): number {
+  return src.slice(0, index).split("\n").length;
+}
+
+function windowAfter(src: string, index: number, lines: number): string {
+  let end = index;
+  for (let n = 0; n < lines; n++) {
+    const nl = src.indexOf("\n", end + 1);
+    if (nl < 0) return src.slice(index);
+    end = nl;
+  }
+  return src.slice(index, end);
+}
+
+function spreadIndexes(code: string): number[] {
+  return [...code.matchAll(SPREAD)].map((m) => m.index ?? -1).filter((i) => i >= 0);
+}
+
+/** True when THIS spread is followed by a COTAL_ delete on the copy, or `process.env` was already
+ *  stripped in this file. A strip attached to a different spread does not count. */
+function spreadStripped(code: string, index: number): boolean {
+  const after = windowAfter(code, index, 12);
+  if (STRIP.test(after) && DELETE.test(after)) return true;
+  return PROCESS_ENV_STRIP.test(code.slice(0, index));
+}
 
 /**
  * Files that spread the ambient environment and are graded SAFE, each with the measurement.
@@ -66,7 +169,6 @@ const REVIEWED: Record<string, string> = {
     "same ext-update shape: self-reentered node helpers reading COTAL_UPDATE_* / XDG_CONFIG_HOME, no connection material read",
   "bin/smoke/herdr-e2e-live.smoke.ts":
     "spawns herdr-e2e-manager-child.mjs, which builds its OWN stub identity from HE2E_* and sets the COTAL_ vars itself rather than reading the inherited ones",
-  "bin/smoke/suite-ambient-env.smoke.ts": "this census itself: it reads suite sources and spawns nothing",
 };
 
 /**
@@ -144,12 +246,15 @@ const exempted: string[] = [];
 for (const file of suiteSources(repoRoot)) {
   const rel = relative(repoRoot, file).split("\\").join("/");
   const body = readFileSync(file, "utf8");
-  if (!SPREAD.test(body)) continue;
+  const code = codeWithoutComments(body);
+  const spreads = spreadIndexes(code);
+  if (spreads.length === 0) continue;
   if (rel in REVIEWED) {
     exempted.push(rel);
     continue;
   }
-  if (STRIP.test(body) && DELETE.test(body)) {
+  const unstripped = spreads.filter((index) => !spreadStripped(code, index));
+  if (unstripped.length === 0) {
     stripped.push(rel);
     continue;
   }
@@ -157,7 +262,9 @@ for (const file of suiteSources(repoRoot)) {
     frozen.push(rel);
     continue;
   }
-  offenders.push(rel);
+  offenders.push(
+    `${rel} (unstripped spread at line ${unstripped.map((i) => lineOf(code, i)).join(", ")})`,
+  );
 }
 
 console.log(
