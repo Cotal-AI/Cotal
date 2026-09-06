@@ -417,8 +417,12 @@ function proveOne(m, opts) {
     // fail-fast suite with no line common to both outcomes should not declare one at all.
     const marker = m.completionMarker ?? opts.completionMarker;
     if (marker !== undefined && !r.output.includes(marker)) {
+      // The run happened and its output is the evidence of WHERE it stopped, so it travels with
+      // this verdict like every other post-run return. Omitting it here made the reporter print
+      // "(no run: ...)" for a run that did execute and did print (found on the #1328 re-grade).
       return {
         label,
+        transcript,
         verdict: "INCONCLUSIVE",
         why: r.output.trim() === ""
           // Named apart from the general case on purpose. Folded together it reads "your assertion

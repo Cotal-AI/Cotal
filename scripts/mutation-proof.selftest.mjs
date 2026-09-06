@@ -339,6 +339,15 @@ execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm completi
 r = runTool(["--config", "completion-optin.json"]);
 check("a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
   r.status !== 0 && verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("SELFTEST SUITE DONE"), r.stdout.slice(-400));
+// The unfinished run DID execute and DID print, and where it stopped is the evidence a reader needs.
+// The first excerpt release dropped `transcript` from this one return, so the report said
+// "(no run: ...)" about a run that had printed the red and the crash. Pinned here.
+{
+  const out = stripAnsi(r.stdout);
+  check("...and the echo shows WHERE the unfinished run stopped, instead of claiming there was no run",
+    out.includes("|   ✗ FAIL: the guard refuses an oversized value") && out.includes("and then a crash") && !out.includes("(no run:"),
+    out.slice(-900));
+}
 r = runTool(["--config", "completion-control.json"]);
 check("...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
   r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
