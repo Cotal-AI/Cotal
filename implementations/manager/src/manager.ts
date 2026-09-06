@@ -4949,12 +4949,11 @@ export class Manager {
         // └──────────────────────────────────────────────────────────────────────────────────────┘
         const deliberate = a.terminalizing === true;
         void (async () => {
+          // waitForExit may close the attach stream before this snapshot
           let tail = "";
           try {
             tail = this.tail(await s.backlog());
-          } catch {
-            /* waitForExit may close the attach stream before this snapshot */
-          }
+          } catch {}
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
