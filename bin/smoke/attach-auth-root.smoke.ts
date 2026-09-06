@@ -76,6 +76,7 @@ const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx")
 
 let pass = 0;
 let fail = 0;
+let exitCode = 1;
 const kids: ChildProcess[] = [];
 let releaseBroker: (() => void) | undefined;
 /** A graded cell. It RECORDS rather than throws, so every cell runs and the banner below always
@@ -427,7 +428,7 @@ try {
   );
 
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
-  if (fail) process.exitCode = 1;
+  if (!fail) exitCode = 0;
 } finally {
   // BOUNDED, and the bound is the point: the brokers this file started are killed below, and a
   // manager stop that hangs must not be able to keep that from happening. Measured once: a leaked
@@ -436,4 +437,7 @@ try {
   await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   releaseBroker?.();
+  // Manager.stop keeps NATS clients alive after the race returns. That pinned this
+  // process past a green banner until the shard hour cap.
+  process.exit(exitCode);
 }
