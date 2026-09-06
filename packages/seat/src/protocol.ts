@@ -7,6 +7,10 @@ export const SCROLLBACK_ROWS = 1000;
 export const CONFIRM_INTERVAL_MS = 1_000;
 export const MAX_CONFIRMS = 5;
 export const GRACE_MS = 3_000;
+/** Max JSON body the local protocol accepts in one frame. */
+export const MAX_FRAME_SIZE = 1_048_576;
+/** Max undecoded bytes a FrameReader may hold. Must cover one max frame plus its 4-byte header. */
+export const MAX_BUFFER_SIZE = MAX_FRAME_SIZE + 4;
 
 export type StopMode = "graceful" | "hard";
 
@@ -60,6 +64,9 @@ export type ServerMessage = ServerReply | ServerEvent;
 
 export function encodeFrame(value: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(value), "utf8");
+  if (body.length > MAX_FRAME_SIZE) {
+    throw new Error(`frame length ${body.length} exceeds ${MAX_FRAME_SIZE} bytes`);
+  }
   const header = Buffer.allocUnsafe(4);
   header.writeUInt32BE(body.length, 0);
   return Buffer.concat([header, body]);
@@ -69,10 +76,18 @@ export class FrameReader {
   private buf: Buffer = Buffer.alloc(0);
 
   push(chunk: Buffer): unknown[] {
+    if (chunk.length > MAX_BUFFER_SIZE || this.buf.length + chunk.length > MAX_BUFFER_SIZE) {
+      this.buf = Buffer.alloc(0);
+      throw new Error(`frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`);
+    }
     this.buf = Buffer.concat([this.buf, chunk]);
     const out: unknown[] = [];
     while (this.buf.length >= 4) {
       const size = this.buf.readUInt32BE(0);
+      if (size > MAX_FRAME_SIZE) {
+        this.buf = Buffer.alloc(0);
+        throw new Error(`frame length ${size} exceeds ${MAX_FRAME_SIZE} bytes`);
+      }
       if (this.buf.length < 4 + size) break;
       const body = this.buf.subarray(4, 4 + size);
       this.buf = this.buf.subarray(4 + size);

@@ -1,0 +1,29 @@
+{
+  "suite": "packages/seat/smoke/protocol.smoke.ts",
+  "guard": "FrameReader refuses a client-claimed length above MAX_FRAME_SIZE and refuses undrained bytes above MAX_BUFFER_SIZE, before hello and before the body arrives",
+  "command": "pnpm smoke:seat-protocol",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/protocol-frame-bounds.json",
+  "why": [
+    "An unauthenticated local peer can send a 4-byte header claiming hundreds of megabytes. Without the per-frame cap the custodian waits for that body; without the total-buffer cap many small frames still grow RSS. Both cells import src through tsx and the live custodian loads dist, so the command builds first and afterRestore rebuilds."
+  ],
+  "mutations": [
+    {
+      "name": "M1 drop the per-frame size rejection",
+      "file": "packages/seat/src/protocol.ts",
+      "find": "      if (size > MAX_FRAME_SIZE) {\n        this.buf = Buffer.alloc(0);\n        throw new Error(`frame length ${size} exceeds ${MAX_FRAME_SIZE} bytes`);\n      }",
+      "replace": "      if (false && size > MAX_FRAME_SIZE) {\n        this.buf = Buffer.alloc(0);\n        throw new Error(`frame length ${size} exceeds ${MAX_FRAME_SIZE} bytes`);\n      }",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "a claimed 500MB frame is refused before the body arrives",
+      "cell": "a claimed 500MB frame is refused before the body arrives"
+    },
+    {
+      "name": "M2 drop the total-buffer bound",
+      "file": "packages/seat/src/protocol.ts",
+      "find": "    if (chunk.length > MAX_BUFFER_SIZE || this.buf.length + chunk.length > MAX_BUFFER_SIZE) {\n      this.buf = Buffer.alloc(0);\n      throw new Error(`frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`);\n    }",
+      "replace": "    if (false && (chunk.length > MAX_BUFFER_SIZE || this.buf.length + chunk.length > MAX_BUFFER_SIZE)) {\n      this.buf = Buffer.alloc(0);\n      throw new Error(`frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`);\n    }",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "undrained bytes cannot grow past the total buffer bound",
+      "cell": "undrained bytes cannot grow past the total buffer bound"
+    }
+  ]
+}
