@@ -13,7 +13,9 @@ in-process node-pty fallback here. The manager's `pty` runtime still spawns in-p
 Linux and only `adopt` throws that named error.
 
 The Linux `SO_PEERCRED` helper is compiled at package build / `prepublishOnly` and shipped as
-`build/Release/peercred.node`. Customer `npm i` does not compile it. A host without a C compiler
+`build/Release/peercred.node`. The compile uses the `include/node` directory next to the running
+Node binary, not a hardcoded `/usr/include/node`. There is no `binding.gyp`, so `pnpm install` does
+not infer `node-gyp rebuild`. Customer `npm i` does not compile it. A host without a C compiler
 installs the prebuilt binary; a missing helper at load time throws rather than compiling in place.
 
 The package.json has no `os` / `cpu` / libc fields. Manager depends on this package on every

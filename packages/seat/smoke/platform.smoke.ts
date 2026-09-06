@@ -4,7 +4,7 @@
  * No top-of-file skip. References #1297.
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,10 @@ if (process.platform !== "linux") {
   };
   check("customer install does not compile: package.json has no install script", manifest.scripts?.install === undefined, manifest.scripts);
   check(
+    "no binding.gyp so npm/pnpm will not infer node-gyp rebuild on install",
+    !existsSync(join(pkgRoot, "binding.gyp")),
+  );
+  check(
     "published files list is the prebuilt output, not the compiler sources",
     JSON.stringify(manifest.files) === JSON.stringify(["dist", "build"]),
     manifest.files,
@@ -99,6 +103,49 @@ if (process.platform !== "linux") {
       );
     } finally {
       rmSync(blocked, { recursive: true, force: true });
+    }
+  }
+
+  {
+    const reloc = mkdtempSync(join(tmpdir(), "cotal-seat-reloc-"));
+    try {
+      const bin = join(reloc, "bin");
+      const includeDir = join(reloc, "include", "node");
+      const ccDir = join(reloc, "cc");
+      mkdirSync(bin);
+      mkdirSync(includeDir, { recursive: true });
+      mkdirSync(ccDir);
+      copyFileSync(process.execPath, join(bin, "node"));
+      writeFileSync(join(includeDir, "node_api.h"), "");
+      const argvLog = join(reloc, "cc-argv.txt");
+      writeFileSync(
+        join(ccDir, "cc"),
+        `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvLog)}\nexit 0\n`,
+      );
+      chmodSync(join(ccDir, "cc"), 0o755);
+      const helper = join(pkgRoot, "build", "Release", "peercred.node");
+      const saved = existsSync(helper) ? join(reloc, "peercred.node") : undefined;
+      if (saved) copyFileSync(helper, saved);
+      const compile = spawnSync(join(bin, "node"), [join(pkgRoot, "scripts", "build-native.mjs")], {
+        cwd: pkgRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${ccDir}:${process.env.PATH ?? ""}` },
+      });
+      if (saved) copyFileSync(saved, helper);
+      const argv = existsSync(argvLog) ? readFileSync(argvLog, "utf8") : "";
+      const expectedInclude = join(dirname(realpathSync(join(bin, "node"))), "..", "include", "node");
+      check("relocated-node source compile ran cc", compile.status === 0, {
+        status: compile.status,
+        stdout: compile.stdout,
+        stderr: compile.stderr,
+      });
+      check(
+        "source compile uses the running Node include dir, not /usr/include/node",
+        argv.split("\n").includes(`-I${expectedInclude}`) && !argv.includes("-I/usr/include/node"),
+        argv,
+      );
+    } finally {
+      rmSync(reloc, { recursive: true, force: true });
     }
   }
 

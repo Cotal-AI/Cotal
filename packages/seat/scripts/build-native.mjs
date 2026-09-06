@@ -6,7 +6,7 @@
  * and have no `install` script, so a host without a compiler still installs.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +20,14 @@ if (process.platform !== "linux") {
 
 const src = join(root, "native", "peercred.c");
 const out = join(outDir, "peercred.node");
-const args = ["-shared", "-fPIC", "-D_GNU_SOURCE", "-o", out, src, "-I/usr/include/node"];
+const include = join(dirname(process.execPath), "..", "include", "node");
+if (!existsSync(join(include, "node_api.h"))) {
+  console.error(
+    `@cotal-ai/seat: node_api.h not found at ${include} (from ${process.execPath}). A source build needs the Node headers that ship next to that binary.`,
+  );
+  process.exit(1);
+}
+const args = ["-shared", "-fPIC", "-D_GNU_SOURCE", "-o", out, src, `-I${include}`];
 const cc = spawnSync("cc", args, { cwd: root, encoding: "utf8" });
 if (cc.status !== 0 || cc.error) {
   const detail = cc.error
