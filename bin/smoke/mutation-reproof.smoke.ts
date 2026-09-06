@@ -1059,6 +1059,181 @@ try {
       `status=${status} offenders=${JSON.stringify(offenderPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
     );
   }
+
+  // 20. Exact refused provenance, not merely the status: root fails X while both independently
+  //     committed snapshots fail Y with the same exit code. This was the live false green at d2427c51.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "root-only-marker\n");
+        writeFileSync(join(r, "xyy.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "xyy.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-only-marker')) console.error('root contamination failure X');\nelse console.error('clean snapshot failure Y');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "xyy.mutations.json"), JSON.stringify({ suite: "xyy.suite.mjs", command: "node xyy.suite.mjs", mutations: [{ name: "xyy", file: "xyy.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "clean snapshot failure Y" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "xyy.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    writeFileSync(join(root, "root-only-marker"), "root X\n");
+    const { status, out } = scan(root, base, head);
+    check(
+      "a different root refusal signature cannot clear as inherited merely because both snapshots are red with the same status",
+      status === 1
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/xyy.mutations.json"])
+        && out.includes("root execution-state contamination detected")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 21. Snapshot-side COTAL_ normalization is independently guarded. Root-side normalization has
+  //     its own green-baseline cell above, where snapshots never run. The caller injects its own
+  //     sentinel so this MATCH arm cannot pass merely because the ambient runner happened to be clean.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "env-match.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "env-match.suite.mjs"), "console.error(process.env.COTAL_MUTATION_REPROOF_SENTINEL ? 'snapshot inherited COTAL sentinel' : 'normalized env red'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "env-match.mutations.json"), JSON.stringify({ suite: "env-match.suite.mjs", command: "node env-match.suite.mjs", mutations: [{ name: "env match", file: "env-match.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "normalized env red" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "env-match.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    const { status, out } = scan(root, base, head, { ...cleanAmbientEnv(), COTAL_MUTATION_REPROOF_SENTINEL: "opposite-host-value" });
+    check(
+      "clean snapshot commands strip injected parent COTAL_ material independently of the root proof child",
+      status === 0
+        && eq(preRedPaths(out), ["smoke/mutations/env-match.mutations.json"])
+        && !out.includes("snapshot inherited COTAL sentinel"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 22. SOLE GUARD for classification ordering. An unavailable command has matching status and text
+  //     at both endpoints, so the unmeasurable call AND return must precede signature comparison.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "unavailable.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "smoke", "mutations", "unavailable.mutations.json"), JSON.stringify({ command: "definitely-not-a-real-binary-1344 unavailable.suite.mjs", mutations: [{ name: "unavailable", file: "unavailable.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "unavailable" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "unavailable.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "an unresolvable command is UNMEASURED with its unavailable reason and exits 1 before signature matching can clear it",
+      status === 1
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/unavailable.mutations.json"])
+        && out.includes("UNMEASURED (command was unavailable (exit 127))")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 23. Provenance introduces a root-vs-clean-head pair. Root deliberately lacks node_modules while
+  //     snapshot preparation installs it. Pnpm's anchored environment warning must not alter the
+  //     stable signature, while semantic [WARN] text later in a suite line remains part of the verdict.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        mkdirSync(join(r, "vendor", "probe"), { recursive: true });
+        writeFileSync(join(r, "vendor", "probe", "package.json"), JSON.stringify({ name: "probe-dep", version: "1.0.0" }, null, 2));
+        // A committed lockfile makes frozen preparation satisfiable. The local dependency is
+        // deliberate: without a dependency, pnpm has no missing-node_modules environment to warn
+        // about and this cell would exercise the filter without guarding it.
+        writeFileSync(join(r, "package.json"), JSON.stringify({ private: true, scripts: { build: "node -e \"\"", red: "node stale.suite.mjs" }, dependencies: { "probe-dep": "file:vendor/probe" } }, null, 2));
+        writeFileSync(join(r, "stale.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "stale.suite.mjs"), "console.error('not ok 1 - semantic [WARN] flag remains suite evidence'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "stale.mutations.json"), JSON.stringify({ suite: "stale.suite.mjs", command: "pnpm red", mutations: [{ name: "stale", file: "stale.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "semantic [WARN] flag remains suite evidence" }] }, null, 2));
+        execFileSync("pnpm", ["install", "--lockfile-only"], { cwd: r, stdio: "ignore" });
+      },
+      (r) => writeFileSync(join(r, "stale.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    rmSync(join(root, "node_modules"), { recursive: true, force: true });
+    const { status, out } = scan(root, base, head);
+    check(
+      "a pinned root lacking node_modules matches the prepared clean-head verdict instead of false-blocking on pnpm's environment warning",
+      status === 0
+        && eq(preRedPaths(out), ["smoke/mutations/stale.mutations.json"])
+        && !out.includes("root execution-state contamination detected"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 24. Line-initial [WARN] can be suite verdict text. Root X and clean-head Y share the same stable
+  //     sibling lines, so dropping the warning token broadly recreates the exact-signature false green.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "root-warn-marker\n");
+        writeFileSync(join(r, "warn-differ.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "warn-differ.suite.mjs"), "import { existsSync } from 'node:fs';\nconsole.error(existsSync('root-warn-marker') ? '[WARN] semantic root X' : '[WARN] semantic snapshot Y');\nconsole.error('not ok 1 - same assertion');\nconsole.error('FAILED 1 of 1');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "warn-differ.mutations.json"), JSON.stringify({ suite: "warn-differ.suite.mjs", command: "node warn-differ.suite.mjs", mutations: [{ name: "warn differ", file: "warn-differ.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "same assertion" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "warn-differ.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    writeFileSync(join(root, "root-warn-marker"), "root warning\n");
+    const { status, out } = scan(root, base, head);
+    check(
+      "different line-initial semantic [WARN] failures remain different when stable sibling assertion lines match",
+      status === 1
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/warn-differ.mutations.json"])
+        && out.includes("root execution-state contamination detected"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 25. Root provenance can be infrastructure-only while both clean snapshots produce a measurable
+  //     suite failure. This independently guards the narrow rootContaminationReason seam rather than
+  //     relying on the snapshot-vs-snapshot unavailable-command ordering cell.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "root-infra-marker\n");
+        writeFileSync(join(r, "root-infra.mjs"), "export const value = 1;\n");
+        // The root-only line is infrastructure to unmeasurableFailure and pnpm chrome to the stable
+        // signature. Removing the root classification therefore makes the otherwise identical
+        // measurable suite failure clear as inherited, isolating this seam from signature mismatch.
+        writeFileSync(join(r, "root-infra.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-infra-marker')) console.error('pnpm Missing script root-only-infrastructure');\nconsole.error('measurable clean suite failure');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "root-infra.mutations.json"), JSON.stringify({ suite: "root-infra.suite.mjs", command: "node root-infra.suite.mjs", mutations: [{ name: "root infra", file: "root-infra.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "measurable clean suite failure" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "root-infra.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    writeFileSync(join(root, "root-infra-marker"), "root infrastructure\n");
+    const { status, out } = scan(root, base, head);
+    check(
+      "root-only infrastructure output is UNMEASURED even when clean head and base have a measurable inherited failure",
+      status === 1
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/root-infra.mutations.json"])
+        && out.includes("command could not run: Missing script")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 26. Clean-head confirmation must run in the clean snapshot, not merely under a normalized env.
+  //     The first command refuses identically everywhere; mutation-proof stops there. A later command
+  //     is green in both snapshots but red only from ignored root cwd state. Reusing root makes that
+  //     later command falsely attributable, so this cell guards cwd isolation independently of PATH.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "root-cwd-marker\n");
+        writeFileSync(join(r, "cwd-isolation.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "inherited-red.suite.mjs"), "console.error('inherited first command red'); process.exit(1);\n");
+        writeFileSync(join(r, "root-cwd.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-cwd-marker')) { console.error('root cwd leaked into head confirmation'); process.exit(1); }\nconsole.log('clean snapshot cwd');\n");
+        writeFileSync(join(r, "smoke", "mutations", "cwd-isolation.mutations.json"), JSON.stringify({ suite: "inherited-red.suite.mjs", command: "node inherited-red.suite.mjs", mutations: [{ name: "first", file: "cwd-isolation.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "inherited first command red" }, { name: "later", file: "cwd-isolation.mjs", find: "export const value = 1;", replace: "export const value = 3;", command: "node root-cwd.suite.mjs", expectRed: "root cwd leaked into head confirmation" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "cwd-isolation.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    writeFileSync(join(root, "root-cwd-marker"), "ignored root state\n");
+    const { status, out } = scan(root, base, head);
+    check(
+      "clean-head command confirmation uses the snapshot cwd rather than ignored root execution state",
+      status === 0
+        && eq(preRedPaths(out), ["smoke/mutations/cwd-isolation.mutations.json"])
+        && attributablePreRedPaths(out).length === 0
+        && !out.includes("root cwd leaked into head confirmation"),
+      `status=${status}\n${out}`,
+    );
+  }
 } finally {
   for (const r of repos) rmSync(r, { recursive: true, force: true });
 }
