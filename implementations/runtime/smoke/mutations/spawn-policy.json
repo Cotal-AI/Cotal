@@ -1,0 +1,45 @@
+{
+  "suite": "implementations/runtime/smoke/spawn-policy.smoke.ts",
+  "guard": "spawn's supervise policy is parsed as { restarts, window? }, defaults the window to 10m, refuses an unknown key or a malformed value, and travels on the manager spawn args as restarts plus windowMs",
+  "command": "pnpm smoke:runtime-spawn-policy",
+  "completionMarker": "spawn-policy.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/spawn-policy.json",
+  "why": [
+    "SPEC 14 supervise on spawn: a policy this host cannot enforce must be refused before submit,",
+    "and a well-formed policy must travel so the manager can restart in place."
+  ],
+  "mutations": [
+    {
+      "name": "an unknown supervise key is skipped",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      throw new Error(`spawn(${persona}): supervise.${key} is not a restart policy this host enforces; it takes restarts and window, and a policy it cannot enforce is refused rather than ignored`);",
+      "replace": "      continue;",
+      "expectRed": "an unknown supervise key is refused, never accepted and ignored",
+      "cell": "an unknown supervise key is refused, never accepted and ignored"
+    },
+    {
+      "name": "a string restarts is coerced",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (typeof value !== \"number\" || !Number.isInteger(value) || value < 1)\n        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);\n      restarts = value;",
+      "replace": "      if (typeof value === \"string\" && /^[0-9]+$/.test(value)) restarts = Number(value);\n      else if (typeof value !== \"number\" || !Number.isInteger(value) || value < 1)\n        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);\n      else restarts = value;",
+      "expectRed": "a string restarts is refused",
+      "cell": "a string restarts is refused"
+    },
+    {
+      "name": "an omitted window is not the 10m default",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  return { restarts, windowMs: windowMs ?? parseDuration(\"10m\") };",
+      "replace": "  return { restarts, windowMs: windowMs ?? parseDuration(\"1m\") };",
+      "expectRed": "an omitted window defaults to 10m",
+      "cell": "an omitted window defaults to 10m"
+    },
+    {
+      "name": "spawnArgs drops supervise",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),",
+      "replace": "    ...(false ? { supervise: readSupervise(req.supervise, req.persona) } : {}),",
+      "expectRed": "spawnArgs carries restarts and windowMs",
+      "cell": "spawnArgs carries restarts and windowMs"
+    }
+  ]
+}

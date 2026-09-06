@@ -13,7 +13,7 @@ import {
   createSpaceAuth, mintCreds, newIdentity,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
-  epBaselineGrantRows, spawnCallerCapabilities, operatorInstrumentCapabilities, permissionsFor,
+  epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, permissionsFor,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
 
@@ -109,13 +109,22 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
-c("the privileged instrument set: reads + spawn + define-persona, NOTHING targeted",
-  operatorInstrumentCapabilities("privileged").length === 8
+c("the privileged instrument set: reads + spawn + define-persona + the run family, NOTHING targeted",
+  operatorInstrumentCapabilities("privileged").length === 13
   && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,spawn,define-persona");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+// The `run` capability (SPEC 14.3): the five untargeted run-* rows PLUS the whole spawn set, and
+// nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
+// caller gains no run row.
+c("the run capability set: run-start/run-resume/run-answer/run-status/run-ps untargeted + the spawn set",
+  runCallerCapabilities("u_abc").length === 12
+  && runCallerCapabilities("u_abc").slice(0, 5).map((cap) => cap.command).join(",") === "run-start,run-resume,run-answer,run-status,run-ps"
+  && runCallerCapabilities("u_abc").slice(0, 5).every((cap) => cap.target === undefined)
+  && JSON.stringify(runCallerCapabilities("u_abc").slice(5)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
+  && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 22
+  adminCaps.length === 27
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

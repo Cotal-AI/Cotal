@@ -63,6 +63,7 @@ import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
+import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
@@ -162,6 +163,10 @@ import {
   recordSlotCredential,
   appendStaticCredentialRow,
   planStaticSlotResume,
+  observeStaticSlot,
+  renderStaticSlotObservation,
+  StaticSlotReadError,
+  STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
@@ -348,6 +353,8 @@ export type FreeSlotCause =
   | "process-exit"
   | "pi-crash-loop"
   | "pi-recovery-failed"
+  | "supervise-crash-loop"
+  | "supervise-recovery-failed"
   | "session-bind-failed"
   | "resume-session-rebind-failed";
 
@@ -358,6 +365,8 @@ const FREE_SLOT_CAUSE_TEXT: Record<FreeSlotCause, string> = {
   "process-exit": "its own process exited and this manager did not stop it",
   "pi-crash-loop": "this manager retired it after a Pi crash loop",
   "pi-recovery-failed": "this manager retired it after Pi session recovery failed",
+  "supervise-crash-loop": "this manager retired it after its supervise restart budget was spent",
+  "supervise-recovery-failed": "this manager retired it after a supervised restart failed",
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
 };
@@ -507,6 +516,11 @@ export interface StartAgentOpts {
   /** `--share-tools` selection narrowing which of the operator's configured MCP servers this
    *  agent gets (absent → all declared for the connector — the pre-merge manager behavior). */
   shareTools?: string;
+  /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
+   *  the process under the same name, lifecycle uid, persona, worktree and permits until
+   *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
+   *  (pi) arms the existing session-recovery constants. */
+  supervise?: { restarts: number; windowMs: number };
   /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
    *  `startAgent` takes identity/role/ACLs/capabilities/model from here — NOT from a persona file —
    *  and `config` points at the materialized transient persona the connector reads. The persona file
@@ -585,9 +599,19 @@ interface ManagedAgent {
   control?: { path: string; token: string };
   launch: ManagedLaunch;
   /** In-memory process-recovery input. It is never persisted with secret values: preservation
-   * reconstructs it from the validated inventory and current config. Only connectors explicitly
-   * declaring same-session continuation receive it. */
-  restart?: { opts: LaunchOpts; sessionStatePath?: string; crashes: number[]; recovering: boolean; armed: boolean };
+   * reconstructs it from the validated inventory and current config. Continuation-capable
+   * connectors (pi) receive it by default; any connector receives it when spawn carries
+   * `supervise`. */
+  restart?: {
+    opts: LaunchOpts;
+    sessionStatePath?: string;
+    crashes: number[];
+    recovering: boolean;
+    armed: boolean;
+    /** Present when spawn carried `supervise`; recoverManagedSession takes its budget from it.
+     *  Absent on the pi path without a policy, which keeps SESSION_RESTART_LIMIT / WINDOW_MS. */
+    policy?: { restarts: number; windowMs: number };
+  };
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
   /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
@@ -862,6 +886,10 @@ export class Manager {
    *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
    *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
   private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
+  /** The workflow-run host (SPEC 14.3): the drives this incarnation holds, each on its own
+   *  per-run credential and connection. Absent under a remote authority, which mints no driver
+   *  credentials, so the `run-*` family refuses there rather than connecting on a weaker identity. */
+  private runHosting?: RunHosting;
   /** P2 item 2 must-5 (b): the STABLE goal-writer identity (auth mode) — minted once at
    *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
@@ -1258,6 +1286,25 @@ export class Manager {
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
     await this.reconcileGoalIndex();
+    // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
+    // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh
+    // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
+    // The serve surface is already live by here, so the family itself holds the gate: `runHost()`
+    // refuses `run-start`/`run-resume` as `unavailable` until the host exists and `RunHosting`
+    // refuses them until its reconcile has returned. A user-auth mesh stands no host up at all
+    // (`runHost()` names why); a remote-authority manager holds no signer to mint with.
+    if (!this.remoteAuthority && !this.userMode) {
+      this.runHosting = new RunHosting({
+        space: this.space,
+        servers: this.servers,
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: this.managerInstanceId,
+        holder: { id: this.ep.ref().id, lifecycleUid: this.managerLifecycleUid },
+        auth: this.auth,
+        log: (line) => console.error(line),
+      });
+      await this.runHosting.reconcile();
+    }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -1385,6 +1432,9 @@ export class Manager {
       // scoped executor. Without this the standing session-ledger connection dies at its TTL and
       // `attach` stops establishing sessions until a restart. The connection's authenticator presents
       // the refreshed credential on its next (re)connect.
+      // SPEC 14.6: every hosted drive's per-run `run-driver` credential is the manager's to renew
+      // for the same nkey; a run parked in a pause for days must not die at the credential's TTL.
+      await this.runHosting?.renew();
       if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
         const sw = this.sessionLedgerConn;
         try {
@@ -1876,6 +1926,10 @@ export class Manager {
     // in-flight command can write a status back onto the record it just removed.
     const registered = this.serviceServe !== undefined;
     await this.stopServiceServe();
+    // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
+    // released run's status write is the last thing this incarnation says about it.
+    await this.runHosting?.stop();
+    this.runHosting = undefined;
     if (registered) await this.deregisterServiceOnStop();
     await this.stopGoalWriter();
     await this.stopSessionPlane();
@@ -2281,6 +2335,34 @@ export class Manager {
    *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
    *  Both are least-privilege reductions, never widenings. */
+  /** The run host, or one of three refusals. A remote-authority manager holds no space signer, so
+   *  it cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
+   *  identity would be the fallback this tree does not take: `unimplemented`, for good. A
+   *  user-auth mesh is `unimplemented` too, for a different reason it names: a hosted run's seats
+   *  are spawned, turned and despawned by a caller derived from the run id under the static
+   *  owner, which the user-mode spawn door refuses (no `u_` owner), so a program would fail at
+   *  its first seat; no path to `--local` is offered there since a user bearer holds no run rows
+   *  either. An ordinary manager whose host is not standing yet is still booting (the serve
+   *  surface comes up before the host): `unavailable`, retry. The three are told apart, since
+   *  the first sentence steers a caller to `--local` and the others must not. */
+  private runHost(): RunHosting {
+    if (this.runHosting) return this.runHosting;
+    if (this.remoteAuthority)
+      throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
+    if (this.userMode)
+      throw new EpEnvelopeError("unimplemented", `user-auth space "${this.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
+    throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
+  }
+
+  /** The answerer a `run-answer` records (SPEC 14.5): the caller as this manager knows them. A
+   *  managed seat is named by its persona name; any other authenticated caller (an operator
+   *  instrument, a logged-in user) by its principal. Never the request body's word. */
+  private runAnswerer(ctx: EpServeContext): string {
+    const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return a.name;
+    return caller;
+  }
+
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -2314,7 +2396,33 @@ export class Manager {
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
         const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);
-        if (!row) throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        if (!row) {
+          // The live hit above stays entirely local. Only a miss widens into durable static state,
+          // where `not-found` is honest only after the slot read itself succeeds and returns absent.
+          // User-mode lifecycles have no manager-local mgrslot row; their per-name projection remains
+          // the live map until the auth service exposes an equivalent mediated reader.
+          if (this.auth && !this.userMode) {
+            const recordsKv = this.goalWriter?.ctx.kv;
+            if (!recordsKv)
+              throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while inspecting "${name}"`, [
+                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: "slot", operation: "read" },
+              ]);
+            let observed;
+            try {
+              observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);
+            } catch (error) {
+              throw new EpEnvelopeError("unavailable", `the durable static slot state for "${name}" could not be read: ${(error as Error).message}`, [
+                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "read" },
+              ]);
+            }
+            // A retired row affirms that no agent exists now, so it keeps the old `not-found`
+            // result. The changed refusal is reserved for durable NONTERMINAL state that contradicts
+            // the live-map miss and needs operator attention.
+            if (observed !== undefined && observed.slotPhase !== "retired")
+              throw new EpEnvelopeError("failed-precondition", `no live agent "${name}"; durable state contradicts absence ${renderStaticSlotObservation(observed)}`, [observed]);
+          }
+          throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        }
         return row;
       }),
       models: (ctx) => this.serveGated(ctx, async () => {
@@ -2387,6 +2495,13 @@ export class Manager {
       resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
       commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
+      // The workflow-run family (SPEC 14.3): the manager hosts the driver. Reach is the broker's
+      // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
+      runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(args(ctx) as { source: string; file?: string; timeout?: string })),
+      runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
+      runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, this.runAnswerer(ctx))),
+      runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),
+      runPs: (ctx) => this.serveGated(ctx, () => this.runHost().list(args(ctx) as { endpoint?: string })),
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
@@ -2632,7 +2747,7 @@ export class Manager {
     // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
-    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
     // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
     // user-mode spawn reads the callout material from it — the same store the auth-store kinds
     // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.
@@ -3157,21 +3272,25 @@ export class Manager {
     throw new Error(`replacement did not prove session ${expected} (${last})`);
   }
 
-  /** Restart one continuation-capable managed process in place. Identity, lifecycle, credentials,
-   *  durables, children, and the manager row remain owned; only the process handle/control endpoint
-   *  change. A fourth crash inside two minutes is a loop and falls through to normal retirement. */
+  /** Restart one managed process in place. Identity, lifecycle, credentials, durables, children,
+   *  and the manager row remain owned; only the process handle/control endpoint change. Budget
+   *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
+   *  constants. Spending the budget falls through to normal retirement. */
   private recoverManagedSession(a: ManagedAgent): void {
     const restart = a.restart;
     if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
     const release = this.beginLifecycle();
     if (!release) return; // preservation owns the cut once the lifecycle fence closes
     const now = Date.now();
-    restart.crashes = restart.crashes.filter((at) => now - at < SESSION_RESTART_WINDOW_MS);
+    const limit = restart.policy?.restarts ?? SESSION_RESTART_LIMIT;
+    const windowMs = restart.policy?.windowMs ?? SESSION_RESTART_WINDOW_MS;
+    const supervised = restart.policy !== undefined;
+    restart.crashes = restart.crashes.filter((at) => now - at < windowMs);
     restart.crashes.push(now);
-    if (restart.crashes.length > SESSION_RESTART_LIMIT) {
-      console.error(`! ${a.name}: Pi crash loop (${restart.crashes.length} crashes in ${SESSION_RESTART_WINDOW_MS / 1000}s) - retiring the managed seat`);
+    if (restart.crashes.length > limit) {
+      console.error(`! ${a.name}: ${supervised ? "supervised" : "Pi"} crash loop (${restart.crashes.length} crashes in ${windowMs / 1000}s) - retiring the managed seat`);
       restart.armed = false;
-      this.freeSlot(a, true, "pi-crash-loop");
+      this.freeSlot(a, true, supervised ? "supervise-crash-loop" : "pi-crash-loop");
       this.reapChildrenOf(this.managedPrincipal(a));
       release();
       return;
@@ -3180,21 +3299,38 @@ export class Manager {
     void (async () => {
       let replacement: AgentHandle | undefined;
       try {
-        const sessionId = this.readManagedSession(a);
         const connector = await this.resolveConnector(a.agent);
-        if (!connector.supportsSessionContinuation)
-          throw new Error(`connector ${connector.name} no longer declares same-session continuation`);
-        const opts: LaunchOpts = {
-          ...restart.opts,
-          resume: undefined,
-          prompt: undefined,
-          continueSession: sessionId,
-        };
+        const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
+        const opts: LaunchOpts = continueSession !== undefined
+          ? { ...restart.opts, resume: undefined, prompt: undefined, continueSession }
+          : { ...restart.opts, resume: undefined, prompt: undefined };
         const spec = connector.buildLaunch(opts);
+        const wanted = this.managedPrincipal(a);
+        const joinedAfter = this.ep.getRoster()
+          .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)
+          .reduce((max, p) => Math.max(max, p.ts), 0) + 1;
         const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
-        await this.awaitRecoveredSession(a, sessionId, handle, spec.control);
+        if (continueSession !== undefined)
+          await this.awaitRecoveredSession(a, continueSession, handle, spec.control);
+        else {
+          const previousHandle = a.handle;
+          const previousControl = a.control;
+          a.handle = handle;
+          a.control = spec.control;
+          try {
+            const readiness = await this.awaitReadiness(a, connector.readinessTimeoutMs ?? this.readinessTimeoutMs, {
+              reapOnExit: false,
+              joinedAfter,
+            });
+            if (!readiness.ok) throw new Error(readiness.detail);
+          } catch (error) {
+            a.handle = previousHandle;
+            a.control = previousControl;
+            throw error;
+          }
+        }
         if (this.agents.get(a.name) !== a || a.terminalizing) {
           try { handle.stop({ graceful: false }); } catch { /* terminal path owns cleanup */ }
           return;
@@ -3204,18 +3340,21 @@ export class Manager {
         replacement = undefined;
         restart.opts = opts;
         restart.recovering = false;
-        console.error(`! ${a.name}: recovered Pi session ${sessionId} after crash (${restart.crashes.length}/${SESSION_RESTART_LIMIT})`);
+        if (continueSession !== undefined)
+          console.error(`! ${a.name}: recovered Pi session ${continueSession} after crash (${restart.crashes.length}/${limit})`);
+        else
+          console.error(`! ${a.name}: restarted under the same lifecycle after crash (${restart.crashes.length}/${limit})`);
         this.watchExit(a);
       } catch (error) {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
         try { tail = this.tail(await (replacement ?? a.handle).attach().backlog()); } catch { /* runtime has no readable tail */ }
-        console.error(`! ${a.name}: Pi session recovery failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
-        // The replacement may be alive but unable to prove the expected session. Stop it BEFORE
+        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
+        // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
         try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
-        this.freeSlot(a, true, "pi-recovery-failed");
+        this.freeSlot(a, true, supervised ? "supervise-recovery-failed" : "pi-recovery-failed");
         this.reapChildrenOf(this.managedPrincipal(a));
       } finally {
         release();
@@ -3224,12 +3363,21 @@ export class Manager {
   }
 
   /** A managed agent's process exited on its own (crash, /exit, finished). Continuation-capable Pi
-   *  seats restart in place after readiness; every other exit follows the existing terminal path. */
+   *  seats restart in place after readiness; a spawn carrying `supervise` restarts any connector
+   *  the same way, without classifying a session-state file. Every other exit follows the existing
+   *  terminal path. */
   private onAgentExit(a: ManagedAgent): void {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
     if (this.maintenanceState !== "active") return;
+    // A replacement is proving readiness under this row. Its own wait owns a failed
+    // relaunch; treating that exit as a seat death would free the slot mid-recovery.
+    if (a.restart?.recovering && !a.terminalizing) return;
     if (a.restart?.armed && !a.terminalizing) {
+      if (a.restart.policy !== undefined) {
+        this.recoverManagedSession(a);
+        return;
+      }
       try {
         if (this.readManagedSessionState(a).status === "running") {
           this.recoverManagedSession(a);
@@ -3320,6 +3468,21 @@ export class Manager {
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
       return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
+    let supervise: { restarts: number; windowMs: number } | undefined;
+    if (args.supervise !== undefined) {
+      const raw = args.supervise;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+        return Promise.resolve({ ok: false, error: "supervise: expected { restarts, windowMs }" });
+      const rec = raw as Record<string, unknown>;
+      const extra = Object.keys(rec).filter((k) => k !== "restarts" && k !== "windowMs");
+      if (extra.length > 0)
+        return Promise.resolve({ ok: false, error: `supervise: unknown key ${extra[0]}; it takes restarts and windowMs` });
+      if (typeof rec.restarts !== "number" || !Number.isInteger(rec.restarts) || rec.restarts < 1)
+        return Promise.resolve({ ok: false, error: "supervise.restarts: expected a positive integer" });
+      if (typeof rec.windowMs !== "number" || !Number.isInteger(rec.windowMs) || rec.windowMs < 1)
+        return Promise.resolve({ ok: false, error: "supervise.windowMs: expected a positive integer" });
+      supervise = { restarts: rec.restarts, windowMs: rec.windowMs };
+    }
     // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
     // not something to coerce (no fallbacks).
     const strList = (v: unknown, flag: string): string[] | undefined => {
@@ -3355,6 +3518,7 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
+        ...(supervise !== undefined ? { supervise } : {}),
       },
       caller,
       hooks,
@@ -3666,6 +3830,16 @@ export class Manager {
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
     if (opts.resume && !connector.supportsResume)
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
+    // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
+    // External runtimes (tmux/cmux/orca/herdr) attach to a process they do not own and stream no
+    // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
+    // keeps the incarnation owned across a process death, so the same refusal applies there.
+    if (opts.supervise !== undefined) {
+      if (this.runtime.kind !== "pty")
+        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.runtime.kind}" cannot respawn a name in place` };
+      if (this.userMode)
+        return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
+    }
 
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
     // + model/variant. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
@@ -4084,8 +4258,17 @@ export class Manager {
               ? Object.keys(opts.launchOptions).sort()
               : undefined,
         },
-        ...(connector.supportsSessionContinuation
-          ? { restart: { opts: launchOpts, sessionStatePath: spec.sessionStatePath, crashes: [], recovering: false, armed: false } }
+        ...(connector.supportsSessionContinuation || opts.supervise !== undefined
+          ? {
+              restart: {
+                opts: launchOpts,
+                sessionStatePath: spec.sessionStatePath,
+                crashes: [],
+                recovering: false,
+                armed: false,
+                ...(opts.supervise !== undefined ? { policy: opts.supervise } : {}),
+              },
+            }
           : {}),
       };
       // Unit B: the DURABLE slot takes the `active` phase before the in-memory row takes the
@@ -4122,15 +4305,19 @@ export class Manager {
         return { ok: false, error: readiness.detail };
       }
       if (managed.restart) {
-        try {
-          await this.armSessionRecovery(managed);
-          managed.launch.sessionId = this.readManagedSession(managed);
-        } catch (error) {
-          const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
-          this.stopHandle(managed, false);
-          this.freeSlot(managed, true, "session-bind-failed");
-          await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
-          return { ok: false, error: detail };
+        if (connector.supportsSessionContinuation) {
+          try {
+            await this.armSessionRecovery(managed);
+            managed.launch.sessionId = this.readManagedSession(managed);
+          } catch (error) {
+            const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
+            this.stopHandle(managed, false);
+            this.freeSlot(managed, true, "session-bind-failed");
+            await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
+            return { ok: false, error: detail };
+          }
+        } else {
+          managed.restart.armed = true;
         }
       }
       this.watchExit(managed);
@@ -4680,7 +4867,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -4701,17 +4888,26 @@ export class Manager {
     // claims. The manager threads the uid into EVERY mode's launch (open included), so the child
     // adopts it over a self-mint and publishes it in presence; the uid is absent only from a peer
     // the manager never launched (a pure operator/daemon connection that never registers).
+    // A supervised restart keeps the same principal+uid, so a SIGKILL'd child's still-live
+    // presence row would otherwise satisfy this equality. `joinedAfter` is one millisecond
+    // past that row's last heartbeat: only a later heartbeat counts as THIS replacement joining.
     const joined = (): boolean =>
-      this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid);
+      this.ep.getRoster().some((p) =>
+        p.card.id === wanted
+        && p.status !== "offline"
+        && p.lifecycleUid === a.lifecycleUid
+        && (opts.joinedAfter === undefined || p.ts >= opts.joinedAfter));
 
     return await new Promise((resolve) => {
       let done = false;
       let timer: ReturnType<typeof setTimeout>;
       let unsubExit = (): void => {};
+      let joinedPoll: ReturnType<typeof setInterval> | undefined;
       const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        if (joinedPoll !== undefined) clearInterval(joinedPoll);
         this.ep.off("presence", onPresence);
         unsubExit();
         resolve(r);
@@ -4719,6 +4915,11 @@ export class Manager {
       const onPresence = (): void => {
         if (joined()) finish({ ok: true });
       };
+      if (opts.joinedAfter !== undefined) {
+        // Heartbeats bump roster.ts without emitting "presence" (same status/uid/activity).
+        // A supervised restart needs that bump, so poll joined() rather than waiting on the event.
+        joinedPoll = setInterval(onPresence, 50);
+      }
       // Process exit → failed. Clear the backstop FIRST (synchronously) so it can't resolve UNCERTAIN while
       // the backlog reads async — the process is known dead, that's a failure, not an unknown. Reap through
       // onAgentExit so a child the launcher spawned in the window is reaped too.
@@ -4750,7 +4951,7 @@ export class Manager {
         const deliberate = a.terminalizing === true;
         void (async () => {
           const tail = this.tail(await s.backlog());
-          this.onAgentExit(a);
+          if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
           // caller the agent died on launch when in fact an operator cancelled it. The process

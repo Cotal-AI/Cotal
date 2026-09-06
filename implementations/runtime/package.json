@@ -20,7 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.check.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/run-command-usage.smoke.ts",
+    "test": "tsx smoke/run-command-usage.smoke.ts && tsx smoke/spawn-policy.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
