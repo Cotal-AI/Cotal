@@ -473,6 +473,7 @@
     "smoke:clean": "tsx implementations/cli/smoke/clean.smoke.ts",
     "smoke:multi-space": "tsx implementations/cli/smoke/multi-space.smoke.ts",
     "smoke:up-multi-space-render:live": "tsx implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
+    "smoke:up-refresh-identity:live": "tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
     "smoke:up-resume-render-lock:live": "tsx implementations/cli/smoke/up-resume-render-lock-live.smoke.ts",
     "smoke:up-adopt-resume-lock:live": "tsx implementations/cli/smoke/up-adopt-resume-lock-live.smoke.ts",
     "smoke:up-restore-reentry:live": "tsx implementations/cli/smoke/up-restore-reentry-live.smoke.ts",
