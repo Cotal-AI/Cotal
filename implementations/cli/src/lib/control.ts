@@ -246,6 +246,7 @@ async function askManagerEp(
           ok: false,
           error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}`,
           ...(info.reply.error?.code ? { code: info.reply.error.code } : {}),
+          ...(info.reply.error?.details ? { details: info.reply.error.details } : {}),
         };
       const row = info.reply.data as { id: string; lifecycleUid: string };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
