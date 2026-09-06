@@ -236,7 +236,9 @@ const A = await driver(RUN_A, TK_A);
   const otherTk = await replayRunJournal(A.js, A.jsm, S, RUN_A, newTakeoverId())
     .then(() => "allowed", (e: unknown) => (denied(e) ? "denied" : short(e)));
   c("a second takeover attempt is a second credential: this one is refused a replay durable it was not minted for", otherTk === "denied", otherTk);
-  const laterEpoch = await A.hostPlanes.js.publish(eptSubject(S, EP, IID, EPOCH + 1, "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ", "schedule"), new Uint8Array(0))
+  const laterEpoch = await A.hostPlanes.js.publish(eptSubject(S, EP, IID, EPOCH + 1, "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ", "schedule"), new TextEncoder().encode(JSON.stringify({
+    v: 1, timerId: "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ", generation: 1, deadline: Date.now() + 60_000,
+  })))
     .then(() => "allowed", (e: unknown) => (denied(e) ? "denied" : short(e)));
   c("a schedule request under any other epoch is refused: the timer coordinates are this attempt's own", laterEpoch === "denied", laterEpoch);
   const chat = await A.js.publish(chatSubject(S, DEV_OWNER, "wf", CHANNEL), new Uint8Array(0))
