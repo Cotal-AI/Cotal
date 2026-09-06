@@ -167,9 +167,11 @@ try {
       && aggregate["continue-on-error"] !== true,
   );
   const gate = aggregate?.steps.find((step: { name?: string }) => step.name === "Gate");
+  const shellEnv = { ...process.env };
+  for (const key of Object.keys(shellEnv)) if (key.startsWith("COTAL_")) delete shellEnv[key];
   for (const result of ["success", "failure", "cancelled", "skipped"]) {
     const status = typeof gate?.run === "string" ? spawnSync("bash", ["-c", gate.run], {
-      encoding: "utf8", env: { ...process.env, SHARD_RESULT: result },
+      encoding: "utf8", env: { ...shellEnv, SHARD_RESULT: result },
     }).status : null;
     check(
       `the aggregate shell ${result === "success" ? "accepts" : "rejects"} shard result ${result}`,

@@ -84,6 +84,15 @@
       "replace": "          test \"$SHARD_RESULT\" = success || test \"$SHARD_RESULT\" = skipped",
       "expectRed": "the aggregate shell rejects shard result skipped",
       "cell": "the aggregate shell rejects shard result skipped"
+    },
+    {
+      "name": "aggregate subprocesses inherit the live Cotal session environment",
+      "file": "bin/smoke/mutation-reproof.smoke.ts",
+      "find": "  for (const key of Object.keys(shellEnv)) if (key.startsWith(\"COTAL_\")) delete shellEnv[key];\n",
+      "replace": "",
+      "command": "pnpm smoke:suite-ambient-env",
+      "expectRed": "these suite files spread the ambient environment into a child without stripping COTAL_ first:",
+      "cell": "these suite files spread the ambient environment into a child without stripping COTAL_ first:"
     }
   ]
 }
