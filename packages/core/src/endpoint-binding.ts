@@ -21,7 +21,7 @@ import {
 } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
 import type { Kvm } from "@nats-io/kv";
-import { spacePrefix, token, assertInboxConnId } from "./subjects.js";
+import { spacePrefix, token, assertInboxConnId, chatStream, chatSubject, assertValidChannel, isConcreteChannel } from "./subjects.js";
 import {
   endpointToken,
   assertIdToken,
@@ -1022,6 +1022,48 @@ export function runDriverJournalGrants(space: string, runId: string, takeoverId:
   // So the takeover id belongs to the CREDENTIAL: the rows are minted for the one attempt that will
   // use them, exactly as pinned as a per-run name was, and unique the way a shared name was not.
   return [wfjSubject(space, runId), ...runJournalReplayGrants(space, runId, takeoverId)];
+}
+
+/**
+ * The durable that holds one `wait`'s position on a channel. Derived from the step's own request id,
+ * which is why a resumed run finds the consumer its earlier attempt created rather than starting
+ * again from "now", and why nothing about the wait has to be remembered across a crash.
+ */
+export function waitConsumerName(requestId: string): string {
+  return `wfw_${assertIdToken(requestId, "requestId")}`;
+}
+
+/**
+ * The one definition of a wait's consumer, shared by the handler, by anything that has to recreate
+ * it, and by the grant row that admits it (SPEC 14.6): a §13.9 family builder, so the create row
+ * embeds exactly this filter and a body-selected one is refused at the broker.
+ *
+ * `deliver_policy: "new"` applies only to the FIRST create: an existing durable keeps its own
+ * position, which is what a resume needs, and events from before the program asked are not this
+ * wait's to see.
+ */
+export function waitConsumerConfig(space: string, requestId: string, channel: string): Partial<ConsumerConfig> {
+  assertValidChannel(channel);
+  if (!isConcreteChannel(channel)) throw new Error(`a wait's consumer names one concrete channel, not "${channel}"`);
+  return family(chatStream(space), {
+    durable_name: waitConsumerName(requestId),
+    filter_subject: chatSubject(space, "*", "*", channel),
+    ack_policy: AckPolicy.Explicit,
+    deliver_policy: DeliverPolicy.New,
+  });
+}
+
+/** One wait's rows on the chat stream: create (filter pinned to its channel), bind, ack, delete. */
+export function waitConsumerGrants(space: string, requestId: string, channel: string): string[] {
+  const stream = chatStream(space);
+  const cfg = waitConsumerConfig(space, requestId, channel);
+  return [consumeCreateRow(stream, cfg), ...consumeBindRows(stream, cfg.durable_name!), consumeDeleteRow(stream, cfg.durable_name!)];
+}
+
+/** The delete row alone: what a discharge holds for a cancelled wait whose channel it no longer
+ *  knows. A position nothing will read again is released, never re-read. */
+export function waitConsumerReleaseGrant(space: string, requestId: string): string {
+  return consumeDeleteRow(chatStream(space), waitConsumerName(requestId));
 }
 
 /** The READ half of {@link runDriverJournalGrants}: one takeover attempt's replay durable, create

@@ -28,6 +28,8 @@ import {
   dialerFor,
   invokeCommand,
   newTakeoverId,
+  newIdentity,
+  mintCreds,
   openRecordsBucket,
   readRunProgram,
   readRunRecord,
@@ -45,11 +47,15 @@ import {
   type RunListRow,
   type RunStatusValue,
   type RunStatusView,
+  type RunHostPlanes,
+  type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
-import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type ControlAuth } from "@cotal-ai/workspace";
+import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type Connection, type ControlAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
-import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
+import { createRunEffectHost } from "./run-effect-host.js";
+import { createRunScopeAuthority } from "./run-scope-authority.js";
+import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
@@ -69,6 +75,7 @@ interface RunValues {
 }
 
 interface Planes {
+  connection: Connection;
   nc: NatsConnection;
   js: JetStreamClient;
   jsm: JetStreamManager;
@@ -93,6 +100,7 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
   const kv = await openRecordsBucket(nc, conn.space);
   const max = nc.info?.max_payload;
   return {
+    connection: conn,
     nc,
     js,
     jsm,
@@ -106,6 +114,21 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
       await nc.drain().catch(() => {});
     },
   };
+}
+
+/** Mint from the same resolved target as the driver, preserving its broker and TLS intent. */
+async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<RunHostPlanes> {
+  const conn = driver.connection;
+  if (conn.creds !== undefined && conn.auth === undefined)
+    throw new Error("run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles");
+  const creds = conn.auth === undefined ? undefined : await mintCreds(conn.auth, newIdentity(), "run-mediator", { runMediator: pin });
+  const nc = await connect({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }) });
+  try {
+    return { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, conn.space), space: conn.space };
+  } catch (error) {
+    await nc.close();
+    throw error;
+  }
 }
 
 /**
@@ -226,38 +249,31 @@ async function drive(
   a: { endpoint: string; runId: string; source: string; who: ReturnType<typeof cliHolder>; epoch: number; fencingToken: number; takeoverId: string; mode: "new" | "existing" },
 ): Promise<void> {
   const { endpoint, runId, source, who, epoch, fencingToken, takeoverId } = a;
-  const handler = new MeshHandler(
-    planes.nc,
-    planes.kv,
-    planes.js,
-    planes.jsm,
-    {
+  const mediator = await openMediator(planes, { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch });
+  try {
+    const authority = createRunScopeAuthority(mediator, runId, { holder: who.id, epoch, fencingToken, takeoverId });
+    const handler = createRunEffectHost(mediator, {
+      space: planes.space, endpoint, runId, caller: runDriverCaller(runId), instanceId: who.instanceId,
+      epoch, holder: { id: who.id, lifecycleUid: who.lifecycleUid },
+      defaultCheckpointTimeout: values.timeout ?? "1h",
+    }, authority);
+    const req = {
       space: planes.space,
       endpoint,
       runId,
-      caller: runDriverCaller(runId),
-      instanceId: who.instanceId,
-      epoch,
-      holder: { id: who.id, lifecycleUid: who.lifecycleUid },
-      defaultCheckpointTimeout: values.timeout ?? "1h",
-    },
-    new EpfSettleWatcher(planes.jsm, planes.space),
-    () => Date.now(),
-  );
-  const req = {
-    space: planes.space,
-    endpoint,
-    runId,
-    source,
-    kv: planes.kv,
-    lease: { holder: who.id, epoch, fencingToken, takeoverId },
-    handler,
-    ...(values.file !== undefined ? { file: values.file } : {}),
-    ...(planes.resultBytes !== undefined ? { resultBytes: planes.resultBytes } : {}),
-  };
-  if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
-  const out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
-  reportOutcome(runId, out);
+      source,
+      kv: runRecordView(planes.kv, createRunRecordHost(mediator, endpoint, runId), planes.space),
+      lease: { holder: who.id, epoch, fencingToken, takeoverId },
+      handler,
+      ...(values.file !== undefined ? { file: values.file } : {}),
+      ...(planes.resultBytes !== undefined ? { resultBytes: planes.resultBytes } : {}),
+    };
+    if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
+    const out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
+    reportOutcome(runId, out);
+  } finally {
+    await mediator.nc.drain().catch(() => mediator.nc.close());
+  }
 }
 
 async function ps(values: RunValues, planes: Planes): Promise<void> {

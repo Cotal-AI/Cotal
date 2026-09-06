@@ -48,7 +48,7 @@ import {
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   createSpaceAuth, mintCreds, newIdentity, permissionsFor, DEV_OWNER, mintLifecycleUid,
-  runDriverGrants, runDriverCaller, runOperatorGrants,
+  runDriverGrants, runMediatorGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -755,29 +755,50 @@ console.log("5. the endpoint-evictor profile (P2 item 3): a re-registration's ve
     && !ev.pub.some((r) => r.includes("CONSUMER.") || r.startsWith("$KV.") || r.includes(".chat.") || r.includes(".inst.") || r.includes(".svc.") || r.toUpperCase().includes("LEASE") || r.includes(".presence.")));
 }
 
-// ---- 6. the run-driver profile (SPEC 14.6): one run, one takeover attempt, pinned EXACTLY --------
-// Its OWN section, like the two above, and not a `gen` entry, for a reason the rows make plain: a
-// `wait` holds its channel position in a durable named per STEP (`wfw_<requestId>`), and the
-// presence read is the ordered consumer every agent uses, whose name the client picks at watch time.
-// Neither name exists at mint, so the CHAT and presence consumer rows are stream-scoped (`.>` in the
-// name token) and would fail (2a)'s literalness grep. They are the observer/admin rows on the same
-// two world-readable resources, minus the bare create form; the residual is named in the builder and
-// pinned here so it is a reviewed shape and not an escape. The AUTHORITY-stream claim survives in
-// full: this profile holds NO consumer verb on the records or auth store, and NO read of WFJ except
-// through its own filtered replay durable.
-console.log("6. the run-driver profile (SPEC 14.6): per run, per takeover attempt");
+// ---- 6. raw driver: one journal and run-owned writes, no broker-wide reads ------------------
+console.log("6. the raw run-driver credential");
 {
   const RUN = "run-aa11", TK = "tk0001", IID = "i".repeat(26), EPOCH = 3;
-  const g = runDriverGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
+  const pin = { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH };
+  const g = runDriverGrants(S, pin, CONN);
+  c("the raw driver holds exactly its own journal/replay and record writes",
+    JSON.stringify(g) === JSON.stringify({
+      publish: [
+        `cotal.${S}.wfj.${RUN}`,
+        `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
+        `$JS.API.CONSUMER.INFO.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$JS.ACK.WFJ_${S}.wfj_${RUN}_${TK}.>`,
+        `$JS.API.CONSUMER.DELETE.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$KV.cotal_records_${S}.run.${EP}.${RUN}.>`,
+        `$KV.cotal_records_${S}.program.${EP}.${RUN}`,
+        `$KV.cotal_records_${S}.notice.${EP}.${RUN}.>`,
+        `$KV.cotal_records_${S}.migration.${EP}.${RUN}.>`,
+        "$JS.API.INFO",
+      ],
+      subscribe: [`_INBOX_${CONN}.>`],
+    }), g);
+  c("no raw driver row holds a point read, checkpoint write, chat consumer or registry authority",
+    g.publish.every((row) => !row.includes("STREAM.MSG.GET") && !row.includes("DIRECT.GET")
+      && !row.includes(".cp.") && !row.includes("CHAT_") && !row.includes("cotal_channels_") && !row.includes("cotal_members_")), g);
+  const minted = decode(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: pin }));
+  c("mintCreds(run-driver) emits the narrow builder and only its own reply inbox",
+    JSON.stringify(minted.pub) === JSON.stringify(g.publish) && minted.sub.length === 1 && minted.sub[0]!.startsWith("_INBOX_"), minted);
+}
+
+// Host residuals are explicit here; the driver receives no connection carrying these rows.
+console.log("6b. the trusted run-mediator profile: operations stay on the host");
+{
+  const RUN = "run-aa11", TK = "tk0001", IID = "i".repeat(26), EPOCH = 3;
+  const g = runMediatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
   // The caller triple is DERIVED from the run id; spell the derivation out rather than call it.
   const h = createHash("sha256").update(RUN, "utf8").digest("hex");
   const cO = DEV_OWNER, cA = `wf_${h.slice(0, 12)}`, cU = h.slice(12, 38);
   c("the run-driver caller triple is the run id's own digest (owner local, actor wf_<12 hex>, uid <26 hex>)",
     JSON.stringify(runDriverCaller(RUN)) === JSON.stringify({ owner: cO, actor: cA, uid: cU }), runDriverCaller(RUN));
-  c("the run-driver mint is EXACTLY its journal + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + its own manager rails + the store fetch, and nothing else",
+  c("the run-mediator mint is EXACTLY its journal replay + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + its own manager rails + the store fetch, and nothing else",
     JSON.stringify(g) === JSON.stringify({
       publish: [
-        `cotal.${S}.wfj.${RUN}`,
         `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
         `$JS.API.CONSUMER.INFO.WFJ_${S}.wfj_${RUN}_${TK}`,
         `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
@@ -827,22 +848,22 @@ console.log("6. the run-driver profile (SPEC 14.6): per run, per takeover attemp
     !rows.some((r) => /^\$JS\.API\.(?:STREAM\.MSG\.GET|DIRECT\.GET)\.WFJ_/.test(r)), rows);
   c("NO destructive stream verb, NO auth-store read, NO goal fact publish, NO epj submission, NO chat publish",
     !rows.some((r) => DESTRUCTIVE_JS.test(r) || r.includes("KV_cotal_auth_") || /\.epf\.[^.]+\.goal\./.test(r) || r.includes(".epj.") || /\.chat\./.test(r)), rows);
-  const other = runDriverGrants(S, { endpoint: EP, runId: "run-bb22", takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
+  const other = runMediatorGrants(S, { endpoint: EP, runId: "run-bb22", takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
   const runPinned = (rs: string[]) => rs.filter((r) => r.includes(RUN) || r.includes("run-bb22"));
   c("a second run's credential shares NO run-pinned row (journal, replay durable, run/program/notice/migration records, caller rails) with the first",
     runPinned(other.publish).every((r) => !g.publish.includes(r)) && runPinned([...other.subscribe]).every((r) => !g.subscribe.includes(r))
-    && !other.publish.some((r) => r.includes(cA)) && runPinned(g.publish).length === 10,
+    && !other.publish.some((r) => r.includes(cA)) && runPinned(g.publish).length === 9,
     { mine: runPinned(g.publish), theirs: runPinned(other.publish) });
   c("the takeover id is pinned: a different attempt names a different replay durable and this one is refused a foreign one",
-    !runDriverGrants(S, { endpoint: EP, runId: RUN, takeoverId: "tk0002", instanceId: IID, epoch: EPOCH }, CONN).publish.some((r) => r.includes(`wfj_${RUN}_${TK}`)));
+    !runMediatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: "tk0002", instanceId: IID, epoch: EPOCH }, CONN).publish.some((r) => r.includes(`wfj_${RUN}_${TK}`)));
   c("the timer schedule row is pinned to THIS attempt's instance and epoch (a resumed attempt mints its own)",
     g.publish.filter((r) => r.includes(".ept.")).length === 1 && g.publish.some((r) => r === `cotal.${S}.ept.${EP}.${IID}.${EPOCH}.*.schedule`)
-    && !runDriverGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH + 1 }, CONN).publish.includes(`cotal.${S}.ept.${EP}.${IID}.${EPOCH}.*.schedule`));
-  const minted = decode(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH } }));
-  c("mintCreds(run-driver) emits exactly the builder's rows (the inbox keyed on the connection nkey)",
+    && !runMediatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH + 1 }, CONN).publish.includes(`cotal.${S}.ept.${EP}.${IID}.${EPOCH}.*.schedule`));
+  const minted = decode(await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH } }));
+  c("mintCreds(run-mediator) emits exactly the builder's rows (the inbox keyed on the connection nkey)",
     JSON.stringify(minted.pub) === JSON.stringify(g.publish) && minted.sub.length === 2 && minted.sub[0] === g.subscribe[0] && minted.sub[1]!.startsWith("_INBOX_"), minted);
-  const refused = await mintCreds(auth, newIdentity(), "run-driver", {}).then(() => undefined, (e: Error) => e.message);
-  c("and refuses to mint without the run/takeover/instance pin", typeof refused === "string" && refused.includes("opts.runDriver"), refused);
+  const refused = await mintCreds(auth, newIdentity(), "run-mediator", {}).then(() => undefined, (e: Error) => e.message);
+  c("and refuses to mint without the run/takeover/instance pin", typeof refused === "string" && refused.includes("opts.runMediator"), refused);
   c("the driver holds NO write on the answer record: an answer is filed by a resolver under the operator profile, and the driver only reads the one a settle names",
     !g.publish.some((r) => r.includes(`.answer.`)), g.publish);
 }
