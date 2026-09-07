@@ -171,7 +171,17 @@ async function askManagerEp(
   } catch (e) {
     return epRailFailure(e, pin);
   } finally {
-    await nc.drain().catch(() => nc.close());
+    // Drain waits for in-flight NATS work. A dead broker never finishes that, and
+    // attach-auth-root hung here after spawn once nats-server exited.
+    await Promise.race([
+      nc.drain().catch(() => nc.close()),
+      new Promise<void>((resolve) => setTimeout(resolve, 2_000).unref()),
+    ]);
+    try {
+      nc.close();
+    } catch {
+      /* already closed */
+    }
   }
 }
 

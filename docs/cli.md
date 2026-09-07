@@ -120,8 +120,9 @@ After disk reconciliation, `update` reads the selected running manager. A manage
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
 for every seat. This report sends no stop, preservation-commit, or replacement command.
-It does not preserve a running PTY. Custody transfer is not available until the custody runtime is
-implemented. Even after compatible custody generations exist, an incompatible native
+It does not preserve a running PTY on a legacy manager. On Linux a detached custodian
+owns each PTY, so a manager-worker death no longer closes the seat and `status` reports
+`custodied`. Other platforms still spawn in-process and report `legacy`. An incompatible native
 `@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
 
 With `--self`, the selected running manager is reported before any global install. When a newer

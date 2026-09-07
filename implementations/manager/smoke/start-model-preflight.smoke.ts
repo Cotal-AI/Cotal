@@ -70,7 +70,7 @@ const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnect
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
 mkdirSync(agentsDir, { recursive: true });
-for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2", "dead1", "missed1", "shut1", "shut2", "lease1", "lease2", "unc1"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
+for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2", "dead1", "dead2", "missed1", "shut1", "shut2", "lease1", "lease2", "unc1"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
 // rec3 carries an explicit access policy — its frontmatter ACL must thread through to LaunchOpts.
 writeFileSync(join(agentsDir, "rec3.md"), `---\nname: rec3\nsubscribe: [team]\nallowSubscribe: [team, team.>]\nallowPublish: [team]\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
@@ -369,6 +369,47 @@ registry.register(recNoResumeCon);
   check("early-exit surfaces the child's last output as the cause", /No conversation found/.test(reply.error ?? ""), reply.error);
   check("early-exit strips ANSI from the surfaced output", !/\x1b\[/.test(reply.error ?? ""), reply.error);
   check("dead-on-arrival records no live agent", agentCount() === before, agentCount());
+}
+
+{
+  const closedSession = {
+    cols: 80, rows: 24,
+    backlog: async () => {
+      throw new Error("seat client is closed");
+    },
+    onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
+  };
+  const closedHandle = (name: string): AgentHandle => ({
+    name, kind: "fake", status: () => "exited", stop: () => {}, interrupt: () => {}, attach: () => closedSession,
+  });
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => closedHandle(name),
+  };
+  const priorUnhandled = process.listeners("unhandledRejection").slice() as Array<(reason: unknown, promise: Promise<unknown>) => void>;
+  for (const listener of priorUnhandled) process.removeListener("unhandledRejection", listener);
+  process.on("unhandledRejection", () => {});
+  const keep = setInterval(() => {}, 250);
+  const beforeClosed = agentCount();
+  let closedReply: { ok: boolean; error?: string };
+  try {
+    closedReply = await Promise.race([
+      mgr.startAgent({ name: "dead2", agent: "smoke-rec" }),
+      new Promise<{ ok: boolean; error?: string }>((resolve) =>
+        setTimeout(() => resolve({ ok: false, error: "readiness did not settle" }), 800),
+      ),
+    ]);
+  } finally {
+    clearInterval(keep);
+    process.removeAllListeners("unhandledRejection");
+    for (const listener of priorUnhandled) process.on("unhandledRejection", listener);
+  }
+  check(
+    "launch exit still reports failed when backlog throws after the attach stream is closed",
+    closedReply.ok === false && /exited on launch/.test(closedReply.error ?? "") && !/uncertain|did not settle/.test(closedReply.error ?? ""),
+    closedReply,
+  );
+  check("closed-stream launch exit records no live agent", agentCount() === beforeClosed, agentCount());
 }
 
 // 8 — MISSED-EXIT REAP (#159 B1, review hardening): an agent that joins presence (→ started) then dies in

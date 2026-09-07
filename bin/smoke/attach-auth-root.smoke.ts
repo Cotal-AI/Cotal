@@ -76,6 +76,7 @@ const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx")
 
 let pass = 0;
 let fail = 0;
+let exitCode = 1;
 const kids: ChildProcess[] = [];
 let releaseBroker: (() => void) | undefined;
 /** A graded cell. It RECORDS rather than throws, so every cell runs and the banner below always
@@ -226,6 +227,7 @@ const detectorSays = (resolvedRoot: string, cwd: string): string => {
 
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
+  console.log("attach-auth-root: first-line");
   // ---- 1. the measurement is only valid in the selected unanchored tree -------------------------
   const walked = findCotalRoot(base);
   must(
@@ -423,17 +425,24 @@ try {
   );
   ok(
     "the attached-session subprocess does not reconcile connector payloads before exercising attach",
-    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload)/.test(o)),
+    ![fromFossil, fromBare, fromCorrupt].some((o) =>
+      /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload|✗ refusing to reconcile the operator-global seed store)/.test(o),
+    ),
   );
 
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
-  if (fail) process.exitCode = 1;
+  if (!fail) exitCode = 0;
 } finally {
   // BOUNDED, and the bound is the point: the brokers this file started are killed below, and a
   // manager stop that hangs must not be able to keep that from happening. Measured once: a leaked
   // `nats-server` from this rig outlived its run by half an hour, and the reaper attributes a leak
   // like that to whichever suite was running.
   await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
+  console.log("attach-auth-root: manager-stop-returned");
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   releaseBroker?.();
+  console.log("attach-auth-root: finally-complete");
+  // Manager.stop keeps NATS clients alive after the race returns. That pinned this
+  // process past a green banner until the shard hour cap.
+  process.exit(exitCode);
 }

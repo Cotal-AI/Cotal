@@ -1,7 +1,8 @@
 import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import type { AgentHandle, AttachSession, LaunchSpec, Runtime } from "@cotal-ai/core";
+import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReference } from "@cotal-ai/core";
+import { unsupportedTransport } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
@@ -22,12 +23,13 @@ const MAX_CONFIRMS = 5;
 const GRACE_MS = 3_000;
 
 /**
- * The default runtime: the manager spawns the agent in a pseudo-terminal it owns
- * via `@lydell/node-pty`. A real native TUI — the manager keeps full OS-signal
- * control, and `cotal attach` streams the same PTY. Terminal I/O stays off the
- * mesh; the agent's own plugin still talks to NATS directly.
+ * In-process node-pty ownership. The worker is the child's parent, so killing
+ * the worker kills the seat. Production Linux pty goes through
+ * `CustodialPtyRuntime`. Off Linux, `createRuntime("pty")` still spawns here;
+ * `adopt` throws until that platform's custody transport lands. `legacy-pty-custody`
+ * also instantiates this class on Linux as the honest M1 residual.
  */
-export class PtyRuntime implements Runtime {
+export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
@@ -206,4 +208,11 @@ export class PtyRuntime implements Runtime {
       }),
     };
   }
+
+  adopt(_reference: RuntimeReference): AgentHandle {
+    throw unsupportedTransport();
+  }
 }
+
+/** @deprecated Use LegacyPtyRuntime. Kept so existing isolated fixtures keep compiling. */
+export { LegacyPtyRuntime as PtyRuntime };

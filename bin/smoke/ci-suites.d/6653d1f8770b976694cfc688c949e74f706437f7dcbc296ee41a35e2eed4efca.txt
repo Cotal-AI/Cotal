@@ -1,0 +1,2 @@
+# Seat custody: launch, adopt, worker-death survival, graceful and hard stop.
+smoke:seat-lifecycle

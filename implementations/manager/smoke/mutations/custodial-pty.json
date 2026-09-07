@@ -1,0 +1,47 @@
+{
+  "suite": "implementations/manager/smoke/custodial-pty.smoke.ts",
+  "guard": "the production pty runtime adopts a live proxy and a runtime without adopt still refuses by name",
+  "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && pnpm smoke:custodial-pty",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/custodial-pty.json",
+  "why": [
+    "The refusal cell is the earliest expectRed and is reached through production requireRuntimeAdopt. The production adopt cell is a later, separate observation of a live proxy from CustodialPtyRuntime.adopt."
+  ],
+  "mutations": [
+    {
+      "name": "M1 swallow the absent-adopt refusal",
+      "file": "implementations/manager/src/runtime/index.ts",
+      "find": "if (typeof runtime.adopt !== \"function\")\n    throw new Error(`runtime \"${runtime.kind}\" does not support adopt`);",
+      "replace": "if (typeof runtime.adopt !== \"function\")\n    return runtime.spawn(\"unused\", { command: \"true\", args: [] }, \".\");",
+      "expectRed": "absent adopt refuses by runtime name",
+      "cell": "absent adopt refuses by runtime name",
+      "note": "Code-only unique anchor on the production refusal. Fixture spawn still throws, so the named cell reddens because the adopt message is gone."
+    },
+    {
+      "name": "M2 return a dead handle from production adopt",
+      "file": "implementations/manager/src/runtime/custodial-pty.ts",
+      "find": "return adoptSeatSync(loadSeat(this.root, reference.id)) as unknown as AgentHandle;",
+      "replace": "return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } } as unknown as AgentHandle;",
+      "expectRed": "production adopt returns a live proxy",
+      "cell": "production adopt returns a live proxy",
+      "note": "The mutation is only the adopt return. Spawn still launches a real seat; the successor proxy is what must stay live."
+    },
+    {
+      "name": "M3 swallow in-process adopt throw",
+      "file": "implementations/manager/src/runtime/pty.ts",
+      "find": "  adopt(_reference: RuntimeReference): AgentHandle {\n    throw unsupportedTransport();\n  }",
+      "replace": "  adopt(_reference: RuntimeReference): AgentHandle {\n    return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } };\n  }",
+      "expectRed": "in-process pty adopt throws custody transport unsupported on linux",
+      "cell": "in-process pty adopt throws custody transport unsupported on linux",
+      "note": "Linux still constructs LegacyPtyRuntime in this cell. A silent handle would drop the named transport error."
+    },
+    {
+      "name": "M4 drop custodied from the status enum",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "custody: { enum: [\"legacy\", \"custodied\"] },",
+      "replace": "custody: { enum: [\"legacy\"] },",
+      "expectRed": "status output accepts custodied",
+      "cell": "status output accepts custodied",
+      "note": "The compiled status output is the required enum pin. Dropping custodied must redden that cell."
+    }
+  ]
+}
