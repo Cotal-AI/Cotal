@@ -1,0 +1,31 @@
+{
+  "suite": "implementations/cli/smoke/console-render.smoke.tsx",
+  "guard": "the membership pill paints four distinct states and the status bar's sparkline scales a real series, both at the component level rather than by inspecting the model",
+  "command": "pnpm smoke:console-render",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-render.json",
+  "why": [
+    "The suite renders the real Ink components from src through tsx, so a mutation is seen without a build and needs no rebuild after the restore.",
+    "MEMBERSHIP_STALE_MS is deliberately NOT mutated: the suite imports that same constant to build its fixtures, so moving it would move both sides of the comparison and prove nothing.",
+    "Each mutation is compile-clean and its anchor occurs exactly once in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "R1 the freshness comparison is inverted, so live and stale swap",
+      "file": "implementations/cli/src/console/ui/topo/model.ts",
+      "find": "  return age < MEMBERSHIP_STALE_MS ? { label: \"live\", color: \"green\" } : { label: \"stale\", color: \"yellow\" };",
+      "replace": "  return age > MEMBERSHIP_STALE_MS ? { label: \"live\", color: \"green\" } : { label: \"stale\", color: \"yellow\" };",
+      "expectRed": "live is painted in the header",
+      "cell": "live is painted in the header",
+      "note": "A fresh membership would paint stale and a stale one live; the operator reads the pill exactly backwards."
+    },
+    {
+      "name": "R2 an unreadable membership is reported as traffic-only",
+      "file": "implementations/cli/src/console/ui/topo/model.ts",
+      "find": "  if (m.unreadable !== undefined) return { label: \"unreadable\", color: \"red\", reason: m.unreadable };",
+      "replace": "  if (false) return { label: \"unreadable\", color: \"red\", reason: m.unreadable ?? \"\" };",
+      "expectRed": "unreadable is painted in the header",
+      "cell": "unreadable is painted in the header",
+      "note": "unreadable is checked first precisely because traffic-only is a claim about the mesh while unreadable is a claim about our own read; collapsing them hides a failure to read as a fact about the mesh."
+    }
+  ]
+}
