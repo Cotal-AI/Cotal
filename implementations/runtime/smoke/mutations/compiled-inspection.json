@@ -72,7 +72,7 @@
       "name": "inspection completion forgets a stop suppressed by finally return",
       "file": "packages/lang/src/engine/worker-entry.ts",
       "find": "    if (seam.journal instanceof InspectionJournal && seam.journal.stop !== undefined)\n      throw seam.journal.stop;",
-      "replace": "    if (false && seam.journal instanceof InspectionJournal && seam.journal.stop !== undefined)\n      throw seam.journal.stop;",
+      "replace": "",
       "expectRed": "compiled finally-return cut stops before its frontier and excludes later history",
       "cell": "compiled finally-return cut stops before its frontier and excludes later history",
       "afterRestore": "pnpm --filter @cotal-ai/lang build"
