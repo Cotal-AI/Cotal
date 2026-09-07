@@ -592,7 +592,10 @@
     "smoke:console-control": "tsx implementations/cli/smoke/console-control.smoke.ts",
     "smoke:console-gaps": "tsx implementations/cli/smoke/console-gaps.smoke.ts",
     "smoke:console-participant": "tsx implementations/cli/smoke/console-participant.smoke.ts",
-    "smoke:console-attach": "tsx implementations/cli/smoke/console-attach.smoke.ts"
+    "smoke:console-attach": "tsx implementations/cli/smoke/console-attach.smoke.ts",
+    "smoke:console-render": "tsx implementations/cli/smoke/console-render.smoke.tsx",
+    "smoke:console-managed-rows": "tsx implementations/cli/smoke/console-managed-rows.smoke.ts",
+    "smoke:console-status-row": "tsx implementations/cli/smoke/console-status-row.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
