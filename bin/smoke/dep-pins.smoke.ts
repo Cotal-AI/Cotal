@@ -47,7 +47,7 @@ const QUARANTINE: { dep: string; why: string }[] = [
 ];
 
 /** Every workspace package that is published, so every package whose ranges a user re-resolves. */
-const PUBLISHED = ["packages/core", "packages/lang", "packages/workspace", "implementations/cli"];
+const PUBLISHED = ["packages/core", "packages/lang", "packages/seat", "packages/workspace", "implementations/cli"];
 
 const DEP_FIELDS = ["dependencies", "peerDependencies", "optionalDependencies"] as const;
 

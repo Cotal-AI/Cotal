@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 
 const originalHome = process.env.HOME ?? homedir();
 const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");
@@ -85,16 +86,90 @@ try {
     const meta = JSON.parse(readFileSync(join(repo, dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
     for (const [dep, range] of Object.entries(meta.dependencies ?? {})) if (range.startsWith("workspace:")) queue.push(dep);
   }
+  const linuxArches = ["x64", "arm64"] as const;
+  type LinuxArch = (typeof linuxArches)[number];
+  const hostArch: LinuxArch | undefined =
+    process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64") ? process.arch : undefined;
+  assert.ok(
+    hostArch,
+    `unsupported fixture host ${process.platform}/${process.arch}: neither linux-x64 nor linux-arm64`,
+  );
+  const nonHostArch: LinuxArch = hostArch === "x64" ? "arm64" : "x64";
+  const elfMachine: Record<LinuxArch, number> = { x64: 62, arm64: 183 };
+  const realHelper = (arch: LinuxArch) =>
+    join(repo, "packages", "seat", "build", "Release", `linux-${arch}`, "peercred.node");
+  const helperSnapshot = () => {
+    const snapshot: Record<LinuxArch, { present: boolean; sha256: string | null }> = {
+      x64: { present: false, sha256: null },
+      arm64: { present: false, sha256: null },
+    };
+    for (const arch of linuxArches) {
+      const path = realHelper(arch);
+      const present = existsSync(path);
+      snapshot[arch] = {
+        present,
+        sha256: present ? createHash("sha256").update(readFileSync(path)).digest("hex") : null,
+      };
+    }
+    return snapshot;
+  };
+  const helpersBefore = helperSnapshot();
+  const hostHelper = realHelper(hostArch);
+  assert.ok(helpersBefore[hostArch].present, `required real-tree host helper missing at ${hostHelper}`);
+  const seatPackRoot = (dir: string): string => {
+    // prepack refuses a host-only tree. Pack a clone so packages/seat/build/Release
+    // is never written. A leftover synthetic helper there would ship on a later genuine pack.
+    const clone = join(base, "seat-pack");
+    cpSync(join(repo, dir), clone, {
+      recursive: true,
+      filter: (src) => !src.split(sep).includes("node_modules"),
+    });
+    const cloneHost = join(clone, "build", "Release", `linux-${hostArch}`, "peercred.node");
+    mkdirSync(dirname(cloneHost), { recursive: true });
+    cpSync(hostHelper, cloneHost);
+    const dest = join(clone, "build", "Release", `linux-${nonHostArch}`, "peercred.node");
+    mkdirSync(dirname(dest), { recursive: true });
+    const buf = Buffer.alloc(20);
+    buf[0] = 0x7f;
+    buf.write("ELF", 1);
+    buf.writeUInt16LE(elfMachine[nonHostArch], 18);
+    writeFileSync(dest, buf);
+    return clone;
+  };
   for (const name of needed) {
     const dir = workspacePackages.get(name)!;
-    const packed = run(pnpm, ["-C", join(repo, dir), "pack", "--pack-destination", packs], repo);
+    const packRoot = name === "@cotal-ai/seat" ? seatPackRoot(dir) : join(repo, dir);
+    const packed = run(pnpm, ["-C", packRoot, "pack", "--pack-destination", packs], repo);
     assert.equal(packed.status, 0, `packed ${dir}: ${packed.stdout}\n${packed.stderr}`);
   }
+  const hostOnlyDest = join(base, "host-only-pack");
+  mkdirSync(hostOnlyDest);
+  const hostOnly = run(pnpm, ["-C", join(repo, "packages", "seat"), "pack", "--pack-destination", hostOnlyDest], repo);
+  assert.notEqual(
+    hostOnly.status,
+    0,
+    `host-only real-tree pack SUCCEEDED (expected refusal): ${hostOnly.stdout}\n${hostOnly.stderr}`,
+  );
   const tarballs = readdirSync(packs).filter((name) => name.endsWith(".tgz")).map((name) => join(packs, name));
   assert.equal(tarballs.length, needed.size, `packed ${tarballs.length} tarball(s) for ${needed.size} closure member(s): ${[...needed].join(", ")}`);
   writeFileSync(join(current, "package.json"), JSON.stringify({ name: "current-fixture", private: true }));
   const install = run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], current);
   assert.equal(install.status, 0, `installed current packaged closure: ${install.stdout}\n${install.stderr}`);
+  const installedHost = join(
+    current,
+    "node_modules",
+    "@cotal-ai",
+    "seat",
+    "build",
+    "Release",
+    `linux-${hostArch}`,
+    "peercred.node",
+  );
+  assert.ok(existsSync(installedHost), `installed host helper missing at ${installedHost}`);
+  assert.ok(
+    readFileSync(installedHost).equals(readFileSync(hostHelper)),
+    "installed host helper is not byte-identical to the real-tree host helper",
+  );
   // The guard is PROVENANCE, and deliberately not `--offline`. Forbidding the registry outright was
   // tried and is wrong here: this fixture installs under an isolated HOME whose npm cache starts
   // empty, so `--offline` fails on legitimate third-party dependencies -- `@cotal-ai/lang` needs
@@ -152,6 +227,11 @@ setInterval(() => {}, 1000);
   for (const [name, continuity] of [["pi_seat", "exact"], ["claude_seat", "fork"], ["open_seat", "fresh"], ["jcode_seat", "drain-only"]]) assert.match(output, new RegExp(`${name}: ${continuity}`), output);
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "legacy report killed neither the old manager nor its counter child");
   console.log("legacy packaged manager smoke OK");
+  assert.deepEqual(
+    helperSnapshot(),
+    helpersBefore,
+    "real-tree linux-x64 and linux-arm64 helpers changed during the fixture",
+  );
 } finally {
   if (legacy?.pid && alive(legacy.pid)) legacy.kill("SIGKILL");
   if (broker?.pid && alive(broker.pid)) broker.kill("SIGKILL");

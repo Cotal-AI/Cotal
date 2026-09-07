@@ -20,7 +20,48 @@
     "spread away must therefore go RED on the stale-baseline assertion, not quietly pass.",
     "",
     "NO BUILD STEP: the suite reads source files off disk and imports nothing from a built package, so",
-    "there is no dist/ copy that could disagree with the mutation."
+    "there is no dist/ copy that could disagree with the mutation.",
+    "",
+    "N3 IS THE MIXED-FILE CASE. A file can strip one child and still spread ambient identity into another.",
+    "Per-file STRIP+DELETE treated that as clean, including when `delete` only appeared in comments.",
+    "Removing the auth-service strip while the CLI child still filters COTAL_ must redden user-spawn.",
+    "",
+    "N4 PROVES THE REAL POPULATION IS ENUMERATED. Embedded examples can pass while the repository scan",
+    "quietly grades only the first spread in every file. Truncating spreadIndexes must red at the real",
+    "spread-count sentinel because real multi-spread files contain more spreads than classified files.",
+    "",
+    "N5 PROVES OWNERSHIP IS STRUCTURAL, NOT INDENTATION. A process.env scrub at column zero can still",
+    "be nested inside an uncalled function or conditional block. Replacing brace-depth zero with a",
+    "column-zero test must red on the adversarial nested controls.",
+    "",
+    "N6 PROVES LEXICAL-REGION OWNERSHIP. A scrub embedded in an unused child-script template cannot",
+    "license a later module-code spread, and a module scrub cannot license a spread in another literal.",
+    "Removing the same-region check must red on the unused-template control.",
+    "",
+    "N7 PROVES REGEX LITERALS ARE TOKENIZED. Braces inside /{/, /}/, and /[{}]/ are data, while a",
+    "division slash remains code. Removing regex-region handling must red on the close-brace nested",
+    "control before a regex can collapse structural depth.",
+    "",
+    "N8 PROVES TEMPLATE RAW TEXT HAS ITS OWN OWNER. Flattening raw text into interpolation code must",
+    "red before a raw-template scrub can license an interpolation spread.",
+    "",
+    "N9 PROVES INTERPOLATION EXECUTES IN THE CONTAINING CODE REGION. Assigning it to the template's",
+    "raw-text owner must red before a module scrub can stop licensing its interpolation spread.",
+    "",
+    "N10 PROVES INTERPOLATION CONTENTS ARE PARSED RECURSIVELY. Dropping that recursion must red before",
+    "an inner template scrub can be mistaken for containing module code.",
+    "",
+    "N11 PROVES EVERY SIBLING INTERPOLATION IS PARSED. Limiting recursion to the final span must red",
+    "before a nested template scrub in one interpolation can clear a spread in its sibling.",
+    "",
+    "N12 PROVES COOKED CHILD-SCRIPT MATCHES KEEP SOURCE COORDINATES. Replacing the mapping with",
+    "linear cooked offsets must red where an earlier escape would move a top-level scrub inside a brace.",
+    "",
+    "N13 PROVES TEMPLATE-HEAD COOKED TEXT KEEPS SOURCE COORDINATES. Replacing the mapper with",
+    "raw offsets must red where an earlier escape would move a top-level scrub inside a brace.",
+    "",
+    "N14 PROVES TEMPLATE-SPAN COOKED TEXT KEEPS SOURCE COORDINATES. Replacing the mapper with",
+    "raw offsets must red where an earlier escape would move a top-level scrub inside a brace."
   ],
   "mutations": [
     {
@@ -39,6 +80,102 @@
       "allowMultiple": true,
       "expectRed": "FROZEN still lists file(s) that no longer spread",
       "note": "Proves the baseline can only shrink. Without this the frozen list would be a permanent waiver that no assertion ever revisits."
+    },
+    {
+      "name": "N3 user-spawn auth-service child loses its COTAL_ strip while another child in the same file still strips",
+      "file": "implementations/auth/smoke/user-spawn.smoke.ts",
+      "find": "  const env = { ...process.env };\n  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_\")) delete env[key];\n  env.COTAL_HOME = home;\n",
+      "replace": "  const env = { ...process.env, COTAL_HOME: home };\n",
+      "expectRed": "implementations/auth/smoke/user-spawn.smoke.ts (unstripped spread",
+      "note": "The mixed-file regression: one stripped child plus a comment containing delete used to clear this file. The census must fail on the remaining unstripped spread."
+    },
+    {
+      "name": "N4 real suite population loses every spread after the first per file",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "  return [...code.matchAll(SPREAD)].map((m) => m.index ?? -1).filter((i) => i >= 0);\n",
+      "replace": "  return [...code.matchAll(SPREAD)].slice(0, 1).map((m) => m.index ?? -1).filter((i) => i >= 0);\n",
+      "expectRed": "spread enumeration was truncated or the multi-spread population disappeared",
+      "note": "Proves the shipped census enumerates the real multi-spread repository population, rather than only satisfying embedded classifier examples."
+    },
+    {
+      "name": "N5 process.env ownership regresses from structural depth to column zero",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "  return lexical.processEnvStrips.some(\n    (strip) =>\n      strip.end <= index &&\n      strip.region === region &&\n      lexical.regions[strip.start] === region &&\n      lexical.regions[strip.deleteStart] === region &&\n      braceDepthAt(code, lexical.regions, strip.start, region) === 0,\n  );\n",
+      "replace": "  return lexical.processEnvStrips.some(\n    (strip) =>\n      strip.end <= index &&\n      strip.region === region &&\n      lexical.regions[strip.start] === region &&\n      lexical.regions[strip.deleteStart] === region &&\n      code.lastIndexOf(\"\\n\", strip.start) + 1 === strip.start,\n  );\n",
+      "expectRed": "a regex close brace must not hide nested scrub depth",
+      "note": "Proves structural brace depth remains part of ownership after regex-region tokenization: replacing it with a column-zero test falsely accepts the nested close-brace control."
+    },
+    {
+      "name": "N6 process.env ownership loses its lexical-region boundary",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "      strip.region === region &&\n      lexical.regions[strip.start] === region &&\n      lexical.regions[strip.deleteStart] === region &&\n",
+      "replace": "      true &&\n",
+      "expectRed": "an unused nested template scrub must not clear a module-code spread",
+      "note": "Proves scrub ownership cannot cross from a nested or top-level string/template region into module code or another child-script literal."
+    },
+    {
+      "name": "N7 regex literal braces regain structural meaning",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "      if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) {\n        mark(sourceOffsets[node.getStart(file)], sourceOffsets[node.end], nextRegion++);\n        return;\n      }\n",
+      "replace": "",
+      "expectRed": "a regex close brace must not hide nested scrub depth",
+      "note": "Proves regex-literal tokenization excludes brace data from structural depth while the separate division control remains green at baseline."
+    },
+    {
+      "name": "N8 template raw text loses its separate lexical region",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "        const childRegion = nextRegion++;\n        const headStart = node.head.getStart(file);\n        mark(sourceOffsets[headStart], sourceOffsets[node.head.end], childRegion);\n",
+      "replace": "        const childRegion = baseRegion;\n        const headStart = node.head.getStart(file);\n        mark(sourceOffsets[headStart], sourceOffsets[node.head.end], childRegion);\n",
+      "expectRed": "a raw-template scrub must not clear a spread inside interpolation code",
+      "note": "Proves template raw text has a distinct child-script owner while interpolation code keeps the containing region; flattening the two falsely lets raw scrub text license interpolation."
+    },
+    {
+      "name": "N9 interpolation expressions inherit the template raw-text region",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "            baseRegion,\n          );\n",
+      "replace": "            childRegion,\n          );\n",
+      "expectRed": "a module scrub must clear a spread inside template interpolation code",
+      "note": "Proves interpolation expressions inherit the containing code owner instead of the template raw-text owner."
+    },
+    {
+      "name": "N10 interpolation contents stop receiving recursive lexical regions",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "          parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            sourceOffsets.slice(expressionStart, span.expression.end + 1),\n            baseRegion,\n          );\n",
+      "replace": "",
+      "expectRed": "an unused nested template scrub must not clear a module-code spread",
+      "note": "Proves nested literals inside interpolation code are recursively discovered and assigned their own child-script regions."
+    },
+    {
+      "name": "N11 every sibling interpolation receives recursive lexical regions",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "          parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            sourceOffsets.slice(expressionStart, span.expression.end + 1),\n            baseRegion,\n          );\n",
+      "replace": "          if (span === node.templateSpans[node.templateSpans.length - 1]) parseRegion(\n            text.slice(expressionStart, span.expression.end),\n            sourceOffsets.slice(expressionStart, span.expression.end + 1),\n            baseRegion,\n          );\n",
+      "expectRed": "a nested template scrub must not clear a sibling interpolation spread",
+      "note": "Proves recursive parsing covers every interpolation span; parsing only the final span falsely lets a nested scrub clear a spread in an earlier sibling."
+    },
+    {
+      "name": "N12 child-script source mapping regresses to linear cooked offsets",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "          const cookedSourceOffsets = sourceOffsetsForCookedText(rawText, node.text, rawSourceOffsets);\n",
+      "replace": "          const cookedSourceOffsets = rawSourceOffsets.slice(0, node.text.length + 1);\n",
+      "expectRed": "an escaped child-script scrub must retain its source brace depth",
+      "note": "Proves cooked child-script matches retain original source coordinates: a linear cooked offset lands before the closing brace and falsely treats this top-level scrub as nested."
+    },
+    {
+      "name": "N13 template-head source mapping is bypassed",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "            sourceOffsetsForCookedText(rawText, node.head.text, rawSourceOffsets),\n",
+      "replace": "            rawSourceOffsets,\n",
+      "expectRed": "an escaped template-head scrub must retain its source brace depth",
+      "note": "Proves escaped cooked text in a template head retains original source coordinates instead of using raw offsets directly."
+    },
+    {
+      "name": "N14 template-span source mapping is bypassed",
+      "file": "bin/smoke/suite-ambient-env.smoke.ts",
+      "find": "              sourceOffsetsForCookedText(rawText, span.literal.text, rawSourceOffsets),\n",
+      "replace": "              rawSourceOffsets,\n",
+      "expectRed": "an escaped template-span scrub must retain its source brace depth",
+      "note": "Proves escaped cooked text in a template span retains original source coordinates instead of using raw offsets directly."
     }
   ]
 }

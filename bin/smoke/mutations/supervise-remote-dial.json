@@ -1,0 +1,53 @@
+{
+  "suite": "bin/smoke/supervise-remote-dial.smoke.ts",
+  "guard": "Remote supervision and `cotal run --local` dial the recorded broker URL with the recorded TLS requirement, and the registration resolves its cluster digests against the store's key form",
+  "command": "pnpm build && pnpm smoke:supervise-remote-dial",
+  "completionMarker": "supervise remote dial:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/supervise-remote-dial.json",
+  "why": [
+    "The broker is a real authenticated nats-server serving the same account over a TCP listener and a websocket listener. Cell A drives the registration the supervisor runs first, over the ws:// URL read back out of the mesh registry through the shipped superviseTarget. Handing that URL to the raw node transport fails with the refusal that names wsconnect, so the cell turns red while the suite still reaches its completion banner.",
+    "Cell B is the transport negative control for the first mutation only: the same registration over nats://. Under that mutant A goes red and B stays green, so killing A cannot be explained by the suite being unable to register at all. The third mutation is not a transport mutant and does not discriminate: the cluster artifact read runs on both paths, so it reddens B alongside the A it is named on.",
+    "Cell C re-records the same plaintext broker as TLS-required and requires the dial to demand TLS of it. A dial that hardcodes tls: false connects anyway and sends the prepare credential in the clear, which is the failure this cell exists to catch; the mutation below reintroduces exactly that.",
+    "The registration also reads back the cluster artifacts it just published. registerServiceInstance reports those digests as sha256:<hex> references while the content-addressed store is keyed by the bare hex, so the third mutation restores the unnormalized read and cell A goes red on the ws:// path for that second, independent reason.",
+    "Cell E drives the shipped `cotal run ps --local` verb over a ws:// mesh record. The verb opens its own planes on the server the registry resolved, so it is a second, independent command handed a registry URL, and the raw node transport refuses a websocket one there with the same wsconnect message. The cell asserts the exact line the verb prints for an empty space, so a refusal, a usage error, and a silent no-op are all red.",
+    "The thirteen manager dials and the CLI control dials moved onto dialerFor in the same change are not claimed here. Each needs a live manager or a live control plane rather than this compact rig, so this fixture records the boundary instead of registering a mutation that would SURVIVE."
+  ],
+  "mutations": [
+    {
+      "cell": "A",
+      "name": "the remote manager-authority registration uses raw TCP connect for a websocket URL",
+      "file": "implementations/manager/src/remote-register.ts",
+      "find": "  const nc = await dialerFor(args.server)({\n    servers: args.server,",
+      "replace": "  const nc = await (await import(\"@nats-io/transport-node\")).connect({\n    servers: args.server,",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "FAIL: A: the remote manager-authority registration completes over the recorded ws:// broker"
+    },
+    {
+      "cell": "C",
+      "name": "the registration hardcodes tls: false instead of reading the mesh record",
+      "file": "implementations/manager/src/remote-register.ts",
+      "find": "...standaloneConnectOpts({ creds: args.prepareCreds, tls: args.tlsRequired }),",
+      "replace": "...standaloneConnectOpts({ creds: args.prepareCreds, tls: false }),",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "FAIL: C: a TLS-required record makes the registration demand TLS of the broker"
+    },
+    {
+      "cell": "A",
+      "name": "the cluster artifact read keeps the sha256: prefix the store is not keyed by",
+      "file": "implementations/manager/src/remote-register.ts",
+      "find": "await fetchContractArtifact(store, contractRefToHex(digest));",
+      "replace": "await fetchContractArtifact(store, digest);",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "FAIL: A: the remote manager-authority registration completes over the recorded ws:// broker"
+    },
+    {
+      "cell": "E",
+      "name": "`cotal run --local` opens its run planes with raw TCP connect for a websocket URL",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  const nc = await dialerFor(conn.server)({\n    servers: conn.server,",
+      "replace": "  const nc = await (await import(\"@nats-io/transport-node\")).connect({\n    servers: conn.server,",
+      "afterRestore": "pnpm --filter @cotal-ai/runtime build",
+      "expectRed": "FAIL: E: `cotal run ps --local` opens its run planes over the recorded ws:// broker"
+    }
+  ]
+}

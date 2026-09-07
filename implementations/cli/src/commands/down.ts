@@ -36,9 +36,10 @@ import {
   type JsonValue,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import type { NatsConnection } from "@nats-io/transport-node";
 import {
   DEV_OWNER,
+  dialerFor,
   isReachable,
   LEASE_TTL_MS,
   MANAGER_LEASE_KEY,
@@ -658,9 +659,9 @@ async function directKvValue<T>(
 async function assertControlPlaneQuiesced(space: string, server: string): Promise<void> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
-  const nc = await connect({
+  const nc = await dialerFor(server)({
     servers: server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -701,9 +702,9 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
 export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
-  const nc = await connect({
+  const nc = await dialerFor(server)({
     servers: server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
     maxReconnectAttempts: 0,
   });
   try {

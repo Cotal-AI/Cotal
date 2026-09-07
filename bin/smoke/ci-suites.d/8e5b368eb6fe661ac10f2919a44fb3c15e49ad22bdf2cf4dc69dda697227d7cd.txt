@@ -1,0 +1,2 @@
+# Seat custody: platform loud-fail plus the published prebuilt helper (no compile-on-install).
+smoke:seat-platform

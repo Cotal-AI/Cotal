@@ -1053,5 +1053,30 @@ let openInventory: ManagerResumeAgent;
   );
 }
 
+{
+  let waitCalls = 0;
+  const handle: AgentHandle = {
+    name: "late",
+    kind: "tmux",
+    status: () => "exited",
+    stop: () => {},
+    waitForExit: async () => {
+      waitCalls++;
+    },
+    interrupt: () => {},
+    attach: () => {
+      throw new Error("late observer has no attach stream");
+    },
+  };
+  const manager = managerWith(() => handle);
+  (manager as unknown as { agents: Map<string, unknown> }).agents.set(
+    "late",
+    managed("late", "late_id", handle, "persona"),
+  );
+  const result = await manager.preserveState({ attemptId: "late-observer", persistInventory: async () => {} });
+  check("late observer still invokes waitForExit after the child already reports exited", waitCalls === 1, waitCalls);
+  check("late observer cut still completes on a non-seat runtime", result.ok && result.state === "preserved", result);
+}
+
 console.log(`\nPRESERVE-STATE SMOKE ${failures === 0 ? "OK" : "FAILED"} (${failures} failures)`);
 process.exit(failures === 0 ? 0 : 1);

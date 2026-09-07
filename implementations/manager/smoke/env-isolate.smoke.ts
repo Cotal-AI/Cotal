@@ -24,7 +24,7 @@ import type { LaunchSpec } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
-  console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
+  console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra === undefined ? "" : typeof extra === "string" ? extra : JSON.stringify(extra)}`}`);
   if (!cond) failures++;
 }
 function skip(label: string, why: string): void {
@@ -57,6 +57,10 @@ const SENTINEL = "COTAL_P3_SENTINEL_UNRELATED";
 const OPERATOR_SECRET = "P3_OPERATOR_SECRET";
 const OPERATOR_VALUE = "withhold-marker-xyz";
 const EXPLICIT = "P3_EXPLICIT_CAPABILITY";
+/** Known KEY=VALUE the child must emit. Withheld cells pass on an empty
+ *  capture, so this is asserted first. */
+const CAPTURE = "P3_CAPTURE_SENTINEL";
+const CAPTURE_VALUE = "p3-capture-visible";
 const PATH_SEP = process.platform === "win32" ? ";" : ":";
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
 if (!HOME) throw new Error("env-isolate: HOME/USERPROFILE is unset, so ~/.local/bin cannot be formed and the PATH cell cannot run");
@@ -93,16 +97,44 @@ process.env.COTAL_CODEX_BIN = "/tmp/operator-codex-bin";
 const cwd = process.cwd();
 
 /** Spawn `printenv` under a runtime with a connector-style spec, collect its env output, stop. */
-async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown; stop: (o?: { graceful?: boolean }) => void }, env: Record<string, string>): Promise<string> {
+async function childEnvOf(
+  spawnFn: (spec: LaunchSpec) => {
+    attach: () => unknown;
+    stop: (o?: { graceful?: boolean }) => void;
+    status?: () => "running" | "exited";
+    record?: unknown;
+  },
+  env: Record<string, string>,
+): Promise<string> {
   // Dump the child's env cross-platform — `printenv` is Unix-only; node (always present, and able to
   // start from the inherited env) prints each KEY=value the same way on Windows and POSIX.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
-  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env };
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: { ...env, [CAPTURE]: CAPTURE_VALUE } };
   const h = spawnFn(spec);
+  // Custodial dump-then-exit can finish before attach. Waiting for handle status() here (not
+  // waitForExit, which closes SeatClient) forces subscribe to take the early-buffer replay path.
+  // Off Linux the handle has no record and live onData is the capture; do not wait there.
+  if (typeof h.status === "function" && h.record != null) {
+    const readyBy = Date.now() + 8_000;
+    while (h.status() !== "exited" && Date.now() < readyBy) await new Promise((r) => setTimeout(r, 50));
+    if (h.status() !== "exited") {
+      check("child status exited before attach (bounded wait)", false, "timed out after 8000ms waiting for handle status() exited");
+      h.stop({ graceful: false });
+      return "";
+    }
+  }
   const sess = h.attach() as { onData: (fn: (b: Buffer) => void) => () => void; onExit: (fn: () => void) => () => void };
   let buf = "";
   sess.onData((b) => { buf += b.toString("utf8"); });
-  await new Promise<void>((resolve) => sess.onExit(() => resolve()));
+  let exited = false;
+  sess.onExit(() => { exited = true; });
+  const deadline = Date.now() + 8_000;
+  while (!exited && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  if (!exited) {
+    check("child exit observed (bounded wait)", false, "timed out after 8000ms waiting for seat onExit");
+    h.stop({ graceful: false });
+    return buf;
+  }
   await new Promise((r) => setTimeout(r, 150)); // drain
   h.stop({ graceful: false });
   return buf;
@@ -116,6 +148,9 @@ function stripPty(raw: string): string {
 function assertBoundary(label: string, out: string, opts: { explicit: boolean }): void {
   out = unwrapCapture(out);
   console.log(`${label}:`);
+  const captured = out.includes(`${CAPTURE}=${CAPTURE_VALUE}`);
+  check("capture is valid (child emitted the sentinel)", captured, "capture empty/invalid");
+  if (!captured) return;
   check("ordinary operator variable was withheld", !out.includes(`${OPERATOR_SECRET}=${OPERATOR_VALUE}`));
   if (opts.explicit) check("explicit spawn.env value reached child", out.includes(`${EXPLICIT}=explicit-value`));
   else check("explicit spawn.env value did NOT leak onto the default path", !out.includes(`${EXPLICIT}=explicit-value`));
@@ -164,7 +199,7 @@ if (tmuxOk) {
   // and a line-oriented PATH= match would miss ~/.local/bin on the continuation. sleep keeps the
   // window alive long enough to capture-pane.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
-  const spec: LaunchSpec = { command: process.execPath, args: ["-e", `${dumpEnv}; setTimeout(()=>{}, 5000)`], env: launchEnv({ envAllow: [EXPLICIT] }) };
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", `${dumpEnv}; setTimeout(()=>{}, 5000)`], env: { ...launchEnv({ envAllow: [EXPLICIT] }), [CAPTURE]: CAPTURE_VALUE } };
   const h = runtime.spawn("p3-tmux", spec, cwd);
   await new Promise((r) => setTimeout(r, 900)); // let printenv run + render
   let out = "";
