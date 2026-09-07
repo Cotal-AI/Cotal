@@ -311,7 +311,7 @@ try {
 
 if (fail > 0) {
   console.log(`\nMANAGER-STOP-REAPS-AGENTS SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
+  process.exitCode = 1;
 } else {
   console.log(`\nMANAGER-STOP-REAPS-AGENTS SMOKE OK ✅  (${pass} passed, ${fail} failed)`);
 }
-process.exit(fail ? 1 : 0);
