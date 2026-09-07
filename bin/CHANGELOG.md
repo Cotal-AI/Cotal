@@ -1,5 +1,34 @@
 # cotal-ai
 
+## 0.47.0
+
+### Minor Changes
+
+- e6d3c96: Split Linux PTY ownership out of the manager worker: a one-shot launcher starts one detached custodian process per seat, and `Runtime.adopt` returns a live proxy over a permissioned Unix socket. Off Linux, pty spawn stays in-process and `adopt` throws a named custody-transport error.
+- 30cf300: Ship linux-x64 and linux-arm64 SO_PEERCRED helpers from native builder jobs, assembled before pack and publish. `waitForExit` drops the controller socket so a manager worker can exit after the child is gone.
+
+### Patch Changes
+
+- 0855cb7: Grade each ambient `process.env` spread on its own, and strip `COTAL_` from the user-spawn auth-service child.
+- f3103b3: Refresh an explicitly named local space from its matching same-server registry record instead of a record chosen by registry order.
+- 4ea4257: Gate `@cotal-ai/seat` pack with `prepack` (not `prepare`) so a host-only tree cannot pack, and assert the native linux-x64/arm64 builder wiring in CI and Changesets from the workflow files.
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+- Updated dependencies [0855cb7]
+- Updated dependencies [8ec22cb]
+- Updated dependencies [f3103b3]
+- Updated dependencies [e6d3c96]
+- Updated dependencies [cf294e7]
+- Updated dependencies [8ec22cb]
+- Updated dependencies [8aee1c0]
+  - @cotal-ai/auth@0.47.0
+  - @cotal-ai/cli@0.47.0
+  - @cotal-ai/manager@0.47.0
+  - @cotal-ai/connector-core@0.47.0
+  - @cotal-ai/runtime@0.47.0
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+  - @cotal-ai/delivery@0.47.0
+
 ## 0.46.0
 
 ### Minor Changes
