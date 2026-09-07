@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "cotal",
+  "version": "1.0.0",
+  "description": "COTAL: the open protocol that lets AI agents from any vendor work as one team. Skills for putting an agent on a Cotal mesh and coordinating with peers; the cotal.ai product MCP server lives at https://cotal.ai/mcp.",
+  "author": { "name": "COTAL", "email": "hello@cotal.ai", "url": "https://cotal.ai" },
+  "homepage": "https://cotal.ai",
+  "repository": "https://github.com/Cotal-AI/Cotal",
+  "license": "Apache-2.0",
+  "keywords": ["ai-agents", "multi-agent", "agent-coordination", "agent-mesh", "mcp", "protocol", "nats"]
+}
