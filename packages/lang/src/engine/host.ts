@@ -133,6 +133,7 @@ export async function runOnEngine(source: string, module: string, options: Engin
     journal,
     handler: options.handler,
     pins,
+    ...(options.migration !== undefined ? { migration: options.migration } : {}),
     ...(options.onLog !== undefined ? { onLog: options.onLog } : {}),
     ...(options.shouldStop !== undefined ? { shouldStop: options.shouldStop } : {}),
   });

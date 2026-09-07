@@ -122,6 +122,7 @@ export interface EngineRun {
   readonly journal: Journal;
   readonly handler: EffectHandler;
   readonly pins: RunPins;
+  readonly migration?: boolean;
   readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
   readonly shouldStop?: () => string | undefined;
 }
@@ -251,6 +252,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       handler: run.handler,
       journal: run.journal,
       pins: run.pins,
+      ...(run.migration !== undefined ? { migration: run.migration } : {}),
       ...(run.onLog !== undefined ? { onLog: run.onLog } : {}),
       ...(run.shouldStop !== undefined ? { shouldStop: run.shouldStop } : {}),
     } as RunOptions,
@@ -1041,6 +1043,7 @@ const UNCATCHABLE_NAMES: ReadonlySet<string> = new Set([
   "RunDivergence",
   "ScopeBranchMissing",
   "UnwalkableScope",
+  "InspectionStopped",
 ]);
 
 function isUncatchable(e: unknown): boolean {

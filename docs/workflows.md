@@ -109,6 +109,12 @@ the child shares the parent's agent (the manager shows that seat one turn at a t
 runs); `"respawn"`, the default, would mint a fresh identity the copied turns do not address, so
 this host refuses that cut (L5019) rather than rewriting the parent's history.
 
+Fork planning and migration inspection use the recorded language version. Version-1 history uses
+the interpreter. Version-2 history is inspected inside a locked-down worker with a read-only
+journal, without a live effect handler or durable store. Inspection stops before the fork's cut
+step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
+The recorded pins are preserved.
+
 ## Operating a run
 
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh

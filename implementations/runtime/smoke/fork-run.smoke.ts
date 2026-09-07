@@ -31,6 +31,7 @@ import {
   openRecordsBucket,
   readRunRecord,
   RunAlreadyStarted,
+  replayRunJournal,
 } from "@cotal-ai/core";
 import { jetstream } from "@nats-io/jetstream";
 import {
@@ -39,6 +40,8 @@ import {
   journalEntryKeyString,
   resolvePins,
   WALKER_LANGUAGE_VERSION,
+  ENGINE_LANGUAGE_VERSION,
+  type RunPins,
   run as runProgram,
   SimHandler,
   type JournalEntry,
@@ -47,7 +50,7 @@ import {
   stepKeyString,
   type JournalStore,
 } from "@cotal-ai/lang";
-import { planFork, commitFork, ForkNotAdmissible, CutJournal, CutReached, RunJournalStore } from "../src/index.js";
+import { planFork, commitFork, ForkNotAdmissible, CutJournal, CutReached, RunJournalStore, startRun, driveRun, migrateRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "forkrun";
@@ -780,6 +783,164 @@ const plan = async (
     keys((await plan({ parent: "r-log", entries: [...j.entries()], source: FLAT, fromStepKey: "/sleep:three#0" })).cut)
       .join() === "/sleep:one#0,/sleep:two#0",
     keys((await plan({ parent: "r-log", entries: [...j.entries()], source: FLAT, fromStepKey: "/sleep:three#0" })).cut));
+}
+
+try {
+// A real driver records version-2 pins and an append log on the broker.
+{
+  const runId = "r-compiled-parent";
+  const source = 'await sleep("1m", { name: "before" }); await sleep("2m", { name: "after" });';
+  const completed = await startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId, source,
+    lease: { holder: "compiled-parent", epoch: 1, fencingToken: 1, takeoverId: "compiled-parent-start" },
+    handler: new SimHandler({ clock: { start: NOW } }),
+  });
+  c("the real compiled parent completes before planning", completed.status === "completed", completed.status);
+  const record = await readRunRecord(kv, EP, runId);
+  const pins = record!.spec.value.pins as unknown as RunPins;
+  c("the planner receives version-2 pins read from the broker", pins.languageVersion === ENGINE_LANGUAGE_VERSION, pins);
+  const replay = await replayRunJournal(js, jsm, SPACE, runId, "compiled-parent-read");
+  const entries = replay.records.flatMap((r) => r.record.kind === "step" ? [r.record.entry as JournalEntry] : []);
+  const request = {
+    parent: runId, child: "r-compiled-child", source, fromStepKey: "/sleep:after#0",
+    entries, pins, actor: "fork-control", now: () => NOW,
+  };
+  const forked = await planFork(request).then((value) => ({ value }), (error: Error) => ({ error: error.message }));
+  c("a broker-recorded version-2 run can plan a fork without changing its pins",
+    "value" in forked && forked.value.admissible
+      && keys(forked.value.cut).join() === "/sleep:before#0"
+      && JSON.stringify(forked.value.pins) === JSON.stringify(pins), forked);
+  const migrated = await migrateRun({
+    runId, endpoint: EP, kv, source, entries, pins, actor: "migration-control", now: () => NOW,
+  }).then((value) => ({ value }), (error: Error) => ({ error: error.message }));
+  c("a broker-recorded version-2 run can be inspected for migration",
+    "value" in migrated && migrated.value.admissible && migrated.value.orphans.length === 0, migrated);
+  const divergent = await migrateRun({
+    runId, endpoint: EP, kv, source: source.replace('"1m"', '"3m"'), entries, pins,
+    actor: "migration-control", now: () => NOW,
+  });
+  c("compiled migration retains the divergence step and both input hashes",
+    !divergent.admissible && divergent.divergence?.step === "/sleep:before#0"
+      && divergent.divergence.recordedHash !== divergent.divergence.programHash, divergent);
+  const removed = await migrateRun({
+    runId, endpoint: EP, kv, source: 'await sleep("1m", { name: "before" });', entries, pins,
+    actor: "migration-control", now: () => NOW,
+  });
+  c("compiled migration reports only the removed recorded effect",
+    removed.consumedThrough === 1 && removed.orphans.length === 1
+      && removed.orphans[0]?.step === "/sleep:after#0", removed);
+  const frontier = await migrateRun({
+    runId, endpoint: EP, kv,
+    source: 'await sleep("1m", { name: "before" }); await sleep("1m", { name: "new" }); await sleep("2m", { name: "after" });',
+    entries, pins, actor: "migration-control", now: () => NOW,
+  });
+  c("compiled inspection stops at a new effect without consuming later history",
+    frontier.consumedThrough === 1 && frontier.orphans[0]?.step === "/sleep:after#0", frontier);
+  const afterInspection = await replayRunJournal(js, jsm, SPACE, runId, "compiled-parent-after-inspect");
+  c("compiled planning leaves the broker journal unchanged",
+    JSON.stringify(afterInspection.records) === JSON.stringify(replay.records));
+  if ("value" in forked && forked.value.admissible) {
+    const child = await activateRun(js, jsm, {
+      space: SPACE, runId: "r-compiled-child", holder: "fork-copy", epoch: 1, fencingToken: 1,
+      takeoverId: "compiled-child-copy", at: NOW, expect: "new",
+    });
+    await commitFork(kv, EP, forked.value, new RunJournalStore(child));
+    const performed: string[] = [];
+    class ChildHandler extends SimHandler {
+      override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: EffectContext) {
+        performed.push(req.duration);
+        return super.sleep(req, ctx);
+      }
+    }
+    const resumed = await driveRun(js, jsm, {
+      space: SPACE, endpoint: EP, kv, runId: "r-compiled-child", source,
+      lease: { holder: "compiled-child", epoch: 2, fencingToken: 2, takeoverId: "compiled-child-resume" },
+      handler: new ChildHandler({ clock: { start: NOW } }),
+    });
+    c("a compiled fork child replays its prefix and performs only the frontier effect",
+      resumed.status === "completed" && performed.join() === "2m", performed);
+  }
+
+}
+
+// Inspect nested compiled scopes and cuts protected by program catch/finally blocks.
+{
+  const cases = [
+    { id: "nested", source: SCOPED, cut: "/parallel:pair#0/b:b/sleep:b#0", expected: "/parallel:pair#0/b:a/sleep:a#0" },
+    { id: "caught", source: 'try { await sleep("1m", { name: "before" }); await sleep("2m", { name: "cut" }); } catch (e) { await sleep("3m", { name: "recovery" }); } await sleep("4m", { name: "after" });', cut: "/sleep:cut#0", expected: "/sleep:before#0" },
+    { id: "finalized", source: 'try { await sleep("1m", { name: "before" }); await sleep("2m", { name: "cut" }); } finally { await sleep("3m", { name: "cleanup" }); } await sleep("4m", { name: "after" });', cut: "/sleep:cut#0", expected: "/sleep:before#0" },
+    { id: "finally-return", source: 'async function work() { try { await sleep("1m", { name: "before" }); await sleep("2m", { name: "cut" }); } finally { return 4; } } await work();', cut: "/sleep:cut#0", expected: "/sleep:before#0" },
+  ];
+  for (const test of cases) {
+    const runId = `r-v2-${test.id}`;
+    const outcome = await startRun(js, jsm, {
+      space: SPACE, endpoint: EP, kv, runId, source: test.source,
+      lease: { holder: runId, epoch: 1, fencingToken: 1, takeoverId: `${test.id}-start` },
+      handler: new SimHandler({ clock: { start: NOW } }),
+    });
+    if (outcome.status !== "completed") throw new Error(`compiled parent ${runId} did not complete`);
+    const record = await readRunRecord(kv, EP, runId);
+    const replay = await replayRunJournal(js, jsm, SPACE, runId, `${test.id}-read`);
+    const entries = replay.records.flatMap((r) => r.record.kind === "step" ? [r.record.entry as JournalEntry] : []);
+    const p = await planFork({
+      parent: runId, child: `${runId}-child`, source: test.source, fromStepKey: test.cut,
+      entries, pins: record!.spec.value.pins as unknown as RunPins, actor: "fork-control", now: () => NOW,
+    });
+    c(`compiled ${test.id} cut stops before its frontier and excludes later history`,
+      p.admissible && keys(p.cut).join() === test.expected, { keys: keys(p.cut), refusals: p.refusals });
+    if (test.id === "nested") {
+      const missing = await migrateRun({
+        runId, endpoint: EP, kv, entries, pins: record!.spec.value.pins as unknown as RunPins,
+        source: test.source.replace("b: async", "renamed: async"), actor: "migration-control", now: () => NOW,
+      });
+      c("compiled migration preserves a missing recorded branch refusal",
+        !missing.admissible && missing.unwalkable?.step === "/parallel:pair#0"
+          && missing.unwalkable.why.includes("b"), missing);
+    }
+
+  }
+}
+
+// Inspect a live parked driver without resuming or settling its pending effect.
+{
+  const runId = "r-compiled-pending";
+  const source = 'await sleep("1m", { name: "before" }); await sleep("2m", { name: "pending" });';
+  const calls: string[] = [];
+  let reached!: () => void;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { reached = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  class PendingHandler extends SimHandler {
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: EffectContext) {
+      calls.push(req.duration);
+      if (req.duration === "2m") { reached(); await gate; }
+      return super.sleep(req, ctx);
+    }
+  }
+  const driving = startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId, source,
+    lease: { holder: runId, epoch: 1, fencingToken: 1, takeoverId: "pending-start" },
+    handler: new PendingHandler({ clock: { start: NOW } }),
+  });
+  await pending;
+  const record = await readRunRecord(kv, EP, runId);
+  const replay = await replayRunJournal(js, jsm, SPACE, runId, "pending-read");
+  const entries = replay.records.flatMap((r) => r.record.kind === "step" ? [r.record.entry as JournalEntry] : []);
+  c("the compiled parent leaves its real pending broker record", entries.at(-1)?.state === "pending", entries.map((entry) => ({ key: journalEntryKeyString(entry), state: entry.state })));
+  const inspected = await migrateRun({ runId, endpoint: EP, kv, source, entries,
+    pins: record!.spec.value.pins as unknown as RunPins, actor: "migration-control", now: () => NOW })
+    .then((value) => ({ value }), (error: Error) => ({ error: error.message }));
+  const after = await replayRunJournal(js, jsm, SPACE, runId, "pending-after");
+  c("compiled inspection stops at a pending effect without resuming or settling it",
+    "value" in inspected && inspected.value.consumedThrough === 2 && calls.join() === "1m,2m"
+      && JSON.stringify(after.records) === JSON.stringify(replay.records), inspected);
+  release();
+  const outcome = await driving;
+  c("the inspected pending driver can finish normally", outcome.status === "completed");
+}
+
+} catch (error) {
+  c("compiled inspection regression finishes without an unexpected failure", false, String(error));
 }
 
 console.log(`fork-run.smoke: ${ok} passed, ${fail} failed`);

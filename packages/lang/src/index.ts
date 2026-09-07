@@ -185,3 +185,5 @@ export {
   type WorkerRunResult,
 } from "./engine/worker.js";
 export { NODE_FLOOR, assertNodeFloor } from "./engine/host.js";
+
+export type { InspectionExit, InspectionSnapshot } from "./engine/inspection.js";

@@ -2711,6 +2711,32 @@ let n = 1;
     ok("and so do the optional fields a resume adds: file, pins, entries", again.ok === true, JSON.stringify(again).slice(0, 140));
   }
 
+  // Read-only inspection carries a cut key in and its consumed-history snapshot out.
+  {
+    const source = 'await sleep("1s", { name: "first" }); await sleep("2s", { name: "last" });';
+    const module = transform(source).module;
+    const recorded = await runWorker(source, module).done;
+    if (!recorded.ok) throw new Error("inspection control run did not complete");
+    const cut = await runWorker(source, module, {
+      handler: "inspection", pins: recorded.pins, entries: recorded.entries, cutAt: "/sleep:last#0",
+    }).done;
+    ok("the inspection cut crosses into the worker before its key is consumed",
+      !cut.ok && cut.inspection?.exit?.kind === "cut" && cut.inspection.exit.step === "/sleep:last#0"
+        && cut.inspection.orphans.length === 1 && cut.inspection.orphans[0]?.name === "last", cut);
+    const complete = await runWorker(source, module, {
+      handler: "inspection", pins: recorded.pins, entries: recorded.entries,
+    }).done;
+    ok("a complete inspection returns its empty orphan set", complete.ok && complete.inspection?.orphans.length === 0, complete);
+    const frontier = await runWorker(source, module, { handler: "inspection", pins: recorded.pins, entries: [] }).done;
+    ok("inspection stops at the frontier without dispatching a handler",
+      !frontier.ok && frontier.inspection?.exit?.kind === "frontier"
+        && frontier.inspection.exit.step === "/sleep:first#0", frontier);
+    const missingPins = await caught(() => runWorker(source, module, { handler: "inspection" }).done);
+    ok("inspection refuses to invent missing recorded pins", missingPins instanceof Error && missingPins.message.includes("recorded run pins"));
+    const wrongRoute = await caught(() => runWorker(source, module, { cutAt: "/sleep:last#0" }).done);
+    ok("a cut key is refused on the normal worker execution route", wrongRoute instanceof Error && wrongRoute.message.includes("inspection route"));
+  }
+
   // ---- crossing 2: LOG LINES, OUT. A log line is DATA on this engine, and the rule is held once, in
   // the engine's own log sink (section 20b grades it in-process), so no transport ever sees code -
   // which is what makes this a language refusal here rather than a structured-clone failure naming a
@@ -2860,7 +2886,7 @@ let n = 1;
     // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
     // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
     const KINDS = ["log", "result"];
-    const REQUEST_FIELDS = ["effectCeiling", "entries", "file", "handler", "module", "pins", "runId", "seed", "source", "stepBudget"];
+    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
