@@ -16,10 +16,11 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCAN = join(ROOT, "scripts", "mutation-reproof.mjs");
@@ -29,7 +30,12 @@ const check = (name: string, ok: unknown, detail = ""): void => {
   if (ok) { passed++; console.log(`  ✓ ${name}`); }
   else { failed++; console.log(`  ✗ FAIL: ${name}\n      ${detail}`); }
 };
-const git = (root: string, args: string[]): string => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+const childEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+};
+const git = (root: string, args: string[]): string => execFileSync("git", args, { cwd: root, encoding: "utf8", env: childEnv() }).trim();
 const eq = (a: string[], b: string[]): boolean => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 
 /** Parse the "selected fixture paths:" block the scan prints before it runs any proof. */
@@ -59,8 +65,10 @@ const okCounts = (out: string): { discriminated: number; preRed: number; inconcl
   return m ? { discriminated: Number(m[1]), preRed: Number(m[2]), inconclusive: Number(m[3]) } : null;
 };
 
-const scan = (root: string, base: string, head: string): { status: number | null; out: string } => {
-  const run = spawnSync(process.execPath, [SCAN, "--root", root, "--base", base, "--head", head], { encoding: "utf8" });
+const scan = (root: string, base: string, head: string, shard?: string): { status: number | null; out: string } => {
+  const args = [SCAN, "--root", root, "--base", base, "--head", head];
+  if (shard !== undefined) args.push("--shard", shard);
+  const run = spawnSync(process.execPath, args, { encoding: "utf8", env: childEnv() });
   return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 };
 
@@ -69,13 +77,13 @@ const scan = (root: string, base: string, head: string): { status: number | null
  * does to the first source (`a.mjs`); the second (`b.mjs`) is never touched, so a correct selector
  * never picks its fixture.
  */
-function makeRepo(mutate: (root: string) => void): { root: string; base: string; head: string } {
+function makeRepo(mutate: (root: string) => void, names = ["a", "b"]): { root: string; base: string; head: string } {
   const root = mkdtempSync(join(tmpdir(), "mutation-reproof-smoke-"));
   git(root, ["init", "--quiet"]);
   git(root, ["config", "user.email", "smoke@example.test"]);
   git(root, ["config", "user.name", "Smoke"]);
   mkdirSync(join(root, "smoke", "mutations"), { recursive: true });
-  for (const name of ["a", "b"]) {
+  for (const name of names) {
     writeFileSync(join(root, `${name}.mjs`), [
       `export function capped_${name}(input) {`,
       "  const normalized = input;",
@@ -110,8 +118,8 @@ function makeRepo(mutate: (root: string) => void): { root: string; base: string;
 }
 
 const repos: string[] = [];
-const build = (mutate: (root: string) => void): { root: string; base: string; head: string } => {
-  const r = makeRepo(mutate);
+const build = (mutate: (root: string) => void, names?: string[]): { root: string; base: string; head: string } => {
+  const r = makeRepo(mutate, names);
   repos.push(r.root);
   return r;
 };
@@ -142,7 +150,125 @@ function makeSingle(
   return { root, base, head };
 }
 
+const previousSentinel = process.env.COTAL_REPROOF_SENTINEL;
 try {
+  process.env.COTAL_REPROOF_SENTINEL = "synthetic-session-secret";
+  const shards = Array.from({ length: 12 }, (_, i) => i);
+  const workflow = parse(readFileSync(join(ROOT, ".github/workflows/mutation-reproof.yml"), "utf8"));
+  const job = workflow.jobs.changed_shard;
+  const aggregate = workflow.jobs.changed;
+  const reprove = job?.steps.find((step: { name?: string }) => step.name === "Re-prove fixtures for changed guarded sources");
+  check(
+    "the changed workload runs every configured shard without fail-fast cancellation",
+    JSON.stringify(job?.strategy?.matrix?.shard) === JSON.stringify(shards)
+      && job?.strategy?.["fail-fast"] === false
+      && job?.if === "github.event_name != 'schedule'"
+      && reprove?.["continue-on-error"] !== true
+      && job?.["continue-on-error"] !== true
+      && reprove?.run.includes('--shard "${{ matrix.shard }}/12"'),
+  );
+  check(
+    "the aggregate changed check waits for all shards even after a failed or cancelled shard",
+    aggregate?.if === "github.event_name != 'schedule' && always()"
+      && JSON.stringify(aggregate.needs) === JSON.stringify(["changed_shard"])
+      && aggregate["continue-on-error"] !== true,
+  );
+  const gate = aggregate?.steps.find((step: { name?: string }) => step.name === "Gate");
+  let aggregateEnvClean = true;
+  for (const result of ["success", "failure", "cancelled", "skipped"]) {
+    const command = `if [ "\${COTAL_REPROOF_SENTINEL+x}" ]; then echo SESSION_LEAK; fi\n${gate?.run}`;
+    const run = typeof gate?.run === "string" ? spawnSync("bash", ["-c", command], {
+      encoding: "utf8", env: { ...childEnv(), SHARD_RESULT: result },
+    }) : undefined;
+    const status = run?.status ?? null;
+    aggregateEnvClean &&= run !== undefined && !run.stdout.includes("SESSION_LEAK");
+    check(
+      `the aggregate shell ${result === "success" ? "accepts" : "rejects"} shard result ${result}`,
+      gate?.env?.SHARD_RESULT === "${{ needs.changed_shard.result }}"
+        && gate?.["continue-on-error"] !== true
+        && status !== null && (result === "success" ? status === 0 : status !== 0),
+      `status=${status}`,
+    );
+  }
+
+  check("aggregate probes do not inherit Cotal session credentials", aggregateEnvClean);
+
+  // Exercise the shipped selector on every shard, including execution of the selected fixtures.
+  // The unsharded run is the control set; a fixture must occur once across the shard results.
+  {
+    const names = Array.from({ length: 24 }, (_, i) => String.fromCharCode(97 + i));
+    const { root, base, head } = build((r) => {
+      for (const name of names) {
+        const file = join(r, `${name}.mjs`);
+        writeFileSync(file, readFileSync(file, "utf8") + "// changed guarded source\n");
+      }
+      git(r, ["add", "."]);
+      git(r, ["commit", "--quiet", "-m", "touch all guarded sources"]);
+    }, names);
+    const whole = scan(root, base, head);
+    const expected = names.map((name) => `smoke/mutations/${name}.mutations.json`);
+    check("the unsharded control executes the complete selected fixture set",
+      whole.status === 0 && eq(selectedPaths(whole.out), expected)
+        && okCounts(whole.out)?.discriminated === names.length, whole.out);
+    const parts = shards.map((index) => scan(root, base, head, `${index}/${shards.length}`));
+    const paths = parts.flatMap((part) => selectedPaths(part.out));
+    check("fixture shards partition the selected set without omission or overlap",
+      parts.every((part) => part.status === 0)
+        && eq(paths, selectedPaths(whole.out)) && new Set(paths).size === paths.length,
+      JSON.stringify(parts.map((part) => ({ status: part.status, paths: selectedPaths(part.out) }))));
+    check("the partition control exercises every configured shard with a discriminating fixture",
+      parts.every((part) => selectedPaths(part.out).length > 0
+        && okCounts(part.out)?.discriminated === selectedPaths(part.out).length));
+    for (const shard of ["-1/12", "12/12", "0/0", "invalid"]) {
+      const refused = scan(root, base, head, shard);
+      check(`invalid shard ${shard} is refused before executing fixtures`,
+        refused.status === 2 && selectedPaths(refused.out).length === 0 && refused.out.includes("invalid --shard"), refused.out);
+    }
+  }
+
+  // A real fixture child reads the injected parent value across scan and proof processes.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "probe.env\n");
+        writeFileSync(join(r, "env.mjs"), "export const cap = (input) => Math.min(input, 32);\n");
+        writeFileSync(join(r, "env.suite.mjs"), [
+          "import { writeFileSync } from 'node:fs';",
+          "import { cap } from './env.mjs';",
+          "writeFileSync('probe.env', process.env.COTAL_REPROOF_SENTINEL ?? 'CLEAN');",
+          "if (process.env.COTAL_REPROOF_SENTINEL !== undefined) { console.error('session value reached fixture child'); process.exit(1); }",
+          "if (cap(100) !== 32) { console.error('FAIL: fixture cap holds'); process.exit(1); }",
+          "console.log('✓ fixture cap holds');",
+          "",
+        ].join("\n"));
+        writeFileSync(join(r, "smoke/mutations/env.mutations.json"), JSON.stringify({
+          command: "node env.suite.mjs",
+          mutations: [{ name: "remove fixture cap", file: "env.mjs", find: "Math.min(input, 32)",
+            replace: "input", expectRed: "fixture cap holds" }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "env.mjs"), "export const cap = (input) => Math.min(input, 32); // changed source\n"),
+    );
+    const probe = scan(root, base, head);
+    const observed = readFileSync(join(root, "probe.env"), "utf8");
+    check("fixture children do not inherit Cotal session credentials",
+      observed === "CLEAN" && probe.status === 0 && okCounts(probe.out)?.discriminated === 1,
+      JSON.stringify({ observed, status: probe.status, counts: okCounts(probe.out) }));
+    let gitEnvClean = false;
+    try {
+      git(root, ["-c", 'alias.env-probe=!test -z "${COTAL_REPROOF_SENTINEL+x}"', "env-probe"]);
+      gitEnvClean = true;
+    } catch { /* the git alias refuses the inherited sentinel */ }
+    check("git children do not inherit Cotal session credentials", gitEnvClean);
+    const empty = [scan(root, base, head, "0/12"), scan(root, base, head, "1/12")]
+      .find((part) => selectedPaths(part.out).length === 0);
+    check("an empty shard reports its own assignment without claiming a globally empty diff",
+      selectedPaths(probe.out).length === 1 && empty?.status === 0
+        && empty.out.includes("No selected mutation fixtures are assigned to shard ")
+        && !empty.out.includes("no fixture config, suite, or guarded source intersects the diff"),
+      empty?.out ?? "neither probe found an empty shard");
+  }
+
   // 1. Known survivor: a.mjs gains an upstream cap so its anchored mutant no longer kills. The gate
   //    must re-prove a.mjs (and ONLY a.mjs), watch the survivor, and fail naming exactly a's fixture.
   {
@@ -390,6 +516,8 @@ try {
     );
   }
 } finally {
+  if (previousSentinel === undefined) delete process.env.COTAL_REPROOF_SENTINEL;
+  else process.env.COTAL_REPROOF_SENTINEL = previousSentinel;
   for (const r of repos) rmSync(r, { recursive: true, force: true });
 }
 
