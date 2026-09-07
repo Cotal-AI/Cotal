@@ -151,6 +151,13 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   console.log(`  ✓ ${name}`);
 };
 
+/** Force-exit cannot drop a named failure: drain the pipe after the assertion has been printed. */
+const drain = (s: NodeJS.WriteStream): Promise<void> =>
+  new Promise((r) => {
+    if (s.writableEnded || s.destroyed) return r();
+    s.write("", () => r());
+  });
+
 try {
   let up = false;
   for (let i = 0; i < 60; i++) {
@@ -297,14 +304,26 @@ try {
 
   console.log(`\n  ${pass} checks passed`);
   code = 0;
+} catch (e) {
+  // process.exit in finally pre-empts Node's uncaught-exception report. Print the named
+  // assertion here so mutation-proof can see it, leave code = 1, then still force-exit
+  // after drain so Manager.stop cannot pin the event loop.
+  console.log(`  ✗ FAIL: ${e instanceof Error ? e.message : String(e)}`);
 } finally {
-  await definer?.stop().catch(() => {});
-  await provisioner?.stop().catch(() => {});
-  // Reap leftover PTY seats. A plain stop leaves node-pty's waitpid worker holding this
-  // process open after the banner (Linux CI shard 2 hung that way after this suite).
-  await mgr.stop({ withAgents: true }).catch(() => {});
+  await Promise.race([
+    (async () => {
+      await definer?.stop().catch(() => {});
+      await provisioner?.stop().catch(() => {});
+      // Reap leftover PTY seats. A plain stop leaves node-pty's waitpid worker holding this
+      // process open after the banner (Linux CI shard 2 hung that way after this suite).
+      await mgr.stop({ withAgents: true }).catch(() => {});
+    })(),
+    sleep(10_000),
+  ]);
   if (brokerPid) try { process.kill(brokerPid, "SIGKILL"); } catch { /* already gone */ }
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
+  await Promise.all([drain(process.stdout), drain(process.stderr)]);
+  process.exit(code);
 }
 process.exit(code);

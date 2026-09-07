@@ -42,7 +42,7 @@
  * relaxation instead of one being refused.
  */
 import { randomBytes } from "node:crypto";
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
@@ -52,6 +52,7 @@ import {
   LANG_PROBLEM_DETAIL_KIND,
   RUN_ACTIVATION_WAIT_MS,
   RUN_HOST_KIND,
+  dialerFor,
   inspectCredHealth,
   mintCreds,
   newIdentity,
@@ -399,7 +400,7 @@ export class RunHosting {
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.
-    const nc = await connect({
+    const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
       servers: this.ctx.servers ?? DEFAULT_SERVER,
       ...(creds !== undefined
         ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(holder.creds!))(nonce), inboxPrefix: `_INBOX_${identity.id}` }
@@ -492,7 +493,7 @@ export class RunHosting {
     const takeoverId = newTakeoverId();
     const endpoint = scope.endpoint ?? this.ctx.endpoint;
     const auth = this.ctx.auth;
-    const nc = await connect({
+    const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
       servers: this.ctx.servers ?? DEFAULT_SERVER,
       ...(auth
         ? standaloneConnectOpts({

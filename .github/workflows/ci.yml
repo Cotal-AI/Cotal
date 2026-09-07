@@ -226,13 +226,171 @@ jobs:
       - name: OpenCode cooperative-stop smoke test
         run: pnpm smoke:opencode-coop
 
+  # Native linux-x64 and linux-arm64 SO_PEERCRED helpers, then one pack on x64
+  # that assembles BOTH into the tarball the ARM load job consumes unchanged.
+  # The ARM load job must not rebuild. A queued-never-started job is not a measurement.
+  seat-native-linux-x64:
+    name: seat native (linux-x64)
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build host native
+        run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: packages/seat/build/Release/linux-x64/peercred.node
+          if-no-files-found: error
+          retention-days: 7
+
+  seat-native-linux-arm64:
+    name: seat native (linux-arm64)
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build host native
+        run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: packages/seat/build/Release/linux-arm64/peercred.node
+          if-no-files-found: error
+          retention-days: 7
+
+  seat-pack:
+    name: seat pack (assembled)
+    timeout-minutes: 20
+    needs: [seat-native-linux-x64, seat-native-linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: TypeScript dist only
+        run: pnpm --filter @cotal-ai/seat exec tsc -p tsconfig.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: ${{ runner.temp }}/seat-native-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: ${{ runner.temp }}/seat-native-linux-arm64
+      - name: Assemble natives and pack
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          SEAT_PACK_DEST: ${{ runner.temp }}/seat-pack
+        run: sh scripts/ci-seat-pack.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-npm-pack
+          path: ${{ runner.temp }}/seat-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  seat-linux-arm64:
+    name: seat load (linux-arm64, same artifact)
+    timeout-minutes: 15
+    needs: [seat-pack]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-npm-pack
+          path: ${{ runner.temp }}/seat-pack
+      - name: Toolchain-less npm install of the packed seat
+        run: |
+          set -eu
+          echo "host=$(uname -m)"
+          echo "platform-arch=$(node -p 'process.platform + "-" + process.arch')"
+          tarball="$(find "${RUNNER_TEMP}/seat-pack" -maxdepth 1 -name '*.tgz' | head -n 1)"
+          test -n "$tarball" || { echo "downloaded artifact had no tarball"; exit 2; }
+          echo -n "load_sha256="
+          sha256sum "$tarball"
+          prefix="${RUNNER_TEMP}/seat-prefix"
+          mkdir -p "$prefix"
+          block="${RUNNER_TEMP}/blocked-cc"
+          mkdir -p "$block"
+          for name in cc gcc g++ c++ make node-gyp; do
+            printf '%s\n' '#!/bin/sh' 'echo blocked compiler >&2' 'exit 127' > "$block/$name"
+            chmod 0755 "$block/$name"
+          done
+          PATH="${block}:${PATH}" npm install --no-audit --no-fund --prefix "$prefix" "$tarball"
+      - name: Load native addon through the shipped package path
+        run: |
+          set -eu
+          cd "${RUNNER_TEMP}/seat-prefix"
+          node --input-type=module <<'EOF'
+          import { existsSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+          import { join } from "node:path";
+          import { pathToFileURL } from "node:url";
+
+          const pkg = join(process.cwd(), "node_modules", "@cotal-ai", "seat");
+          const native = join(pkg, "build", "Release", `linux-${process.arch}`, "peercred.node");
+          const loader = join(pkg, "dist", "peercred.js");
+          const fileOut = spawnSync("file", [native], { encoding: "utf8" });
+          console.log(`SEAT_SHIPPED_NATIVE host=${process.platform}-${process.arch}`);
+          console.log(`SEAT_SHIPPED_NATIVE native_path=${native}`);
+          console.log(`SEAT_SHIPPED_NATIVE native_exists=${existsSync(native)}`);
+          console.log(`SEAT_SHIPPED_NATIVE file=${(fileOut.stdout || "").trim()}`);
+          console.log(`SEAT_SHIPPED_NATIVE loader_exists=${existsSync(loader)}`);
+          if (!existsSync(loader)) {
+            console.log("SEAT_SHIPPED_NATIVE RESULT=FAIL missing dist/peercred.js");
+            process.exit(1);
+          }
+          let err;
+          try {
+            const mod = await import(pathToFileURL(loader).href);
+            try {
+              mod.peerCredentials({});
+            } catch (e) {
+              err = e;
+            }
+          } catch (e) {
+            err = e;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
+          if (err && /unix socket has no file descriptor/.test(message)) {
+            console.log("SEAT_SHIPPED_NATIVE RESULT=PASS native loaded via dist/peercred.js");
+            process.exit(0);
+          }
+          console.log(`SEAT_SHIPPED_NATIVE RESULT=FAIL code=${code} message=${message}`);
+          if (err instanceof Error && err.stack) console.log(err.stack);
+          process.exit(1);
+          EOF
+
   ci-ok:
-    # Single required status. It owns the explicit live diagnosis too: adding a separate dependent
-    # job was measured on PR #1043 and left a superseded run queued through TWO later runner jobs,
-    # which held the replacement run behind it. One existing aggregate is the minimal queue shape.
+    # Single required status. It owns the explicit live diagnosis too: adding a separate
+    # always-running dependent job was measured on PR #1043 and left a superseded run queued
+    # through TWO later runner jobs, which held the replacement run behind it. ARM validation
+    # jobs may sit on ci-ok's needs as long as they are not always-running aggregates.
     name: ci-ok (live outcome classified)
     if: always()
-    needs: [unit, smoke, live]
+    needs: [unit, smoke, live, seat-pack, seat-linux-arm64]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -259,5 +417,5 @@ jobs:
           --head-ref "$HEAD_REF"
       - name: Gate
         run: |
-          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }}"
-          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ]
+          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }} seat-pack=${{ needs.seat-pack.result }} seat-linux-arm64=${{ needs.seat-linux-arm64.result }}"
+          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ] && [ "${{ needs.seat-pack.result }}" = "success" ] && [ "${{ needs.seat-linux-arm64.result }}" = "success" ]

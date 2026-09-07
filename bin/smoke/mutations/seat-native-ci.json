@@ -1,0 +1,85 @@
+{
+  "suite": "bin/smoke/seat-native-ci.smoke.ts",
+  "guard": "PR pack and Changesets version/snapshot keep both native linux builders on needs, download both artifacts, and invoke the shared assembler",
+  "command": "pnpm smoke:seat-native-ci",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-native-ci.json",
+  "why": [
+    "Assembler and runtime smokes cannot see a deleted needs edge or a removed download-artifact step.",
+    "Those are the edits that silently ship one arch. The mutations below are those edits, one per named cell."
+  ],
+  "mutations": [
+    {
+      "name": "PR pack drops the arm64 builder from needs",
+      "file": ".github/workflows/ci.yml",
+      "find": "  seat-pack:\n    name: seat pack (assembled)\n    timeout-minutes: 20\n    needs: [seat-native-linux-x64, seat-native-linux-arm64]\n",
+      "replace": "  seat-pack:\n    name: seat pack (assembled)\n    timeout-minutes: 20\n    needs: [seat-native-linux-x64]\n",
+      "expectRed": "ci.yml seat-pack needs both native linux builders",
+      "cell": "ci.yml seat-pack needs both native linux builders"
+    },
+    {
+      "name": "PR pack stops downloading the arm64 artifact",
+      "file": ".github/workflows/ci.yml",
+      "find": "      - uses: actions/download-artifact@v4\n        with:\n          name: seat-native-linux-arm64\n          path: ${{ runner.temp }}/seat-native-linux-arm64\n      - name: Assemble natives and pack\n",
+      "replace": "      - name: Assemble natives and pack\n",
+      "expectRed": "ci.yml seat-pack downloads both native linux artifacts",
+      "cell": "ci.yml seat-pack downloads both native linux artifacts"
+    },
+    {
+      "name": "PR pack stops calling the shared pack assembler",
+      "file": ".github/workflows/ci.yml",
+      "find": "        run: sh scripts/ci-seat-pack.sh\n",
+      "replace": "        run: echo skip-assemble\n",
+      "expectRed": "ci.yml seat-pack runs the shared seat pack assembler",
+      "cell": "ci.yml seat-pack runs the shared seat pack assembler"
+    },
+    {
+      "name": "Changesets version drops the arm64 builder from needs",
+      "file": ".github/workflows/changesets.yml",
+      "find": "  version:\n    if: github.event_name == 'push' || inputs.snapshot == ''\n    needs: [seat-native-linux-x64, seat-native-linux-arm64]\n",
+      "replace": "  version:\n    if: github.event_name == 'push' || inputs.snapshot == ''\n    needs: [seat-native-linux-x64]\n",
+      "expectRed": "changesets.yml version needs both native linux builders",
+      "cell": "changesets.yml version needs both native linux builders"
+    },
+    {
+      "name": "Changesets version stops downloading the arm64 artifact",
+      "file": ".github/workflows/changesets.yml",
+      "find": "      - uses: actions/download-artifact@v4\n        with:\n          name: seat-native-linux-arm64\n          path: ${{ runner.temp }}/seat-native-linux-arm64\n\n      - name: Create versions and publish\n",
+      "replace": "      - name: Create versions and publish\n",
+      "expectRed": "changesets.yml version downloads both native linux artifacts",
+      "cell": "changesets.yml version downloads both native linux artifacts"
+    },
+    {
+      "name": "Changesets version publish skips the shared assembler",
+      "file": "package.json",
+      "find": "    \"ci:publish\": \"node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "replace": "    \"ci:publish\": \"pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "expectRed": "changesets.yml version publish path runs the shared assembler",
+      "cell": "changesets.yml version publish path runs the shared assembler"
+    },
+    {
+      "name": "Changesets snapshot drops the arm64 builder from needs",
+      "file": ".github/workflows/changesets.yml",
+      "find": "  snapshot:\n    if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''\n    needs: [seat-native-linux-x64, seat-native-linux-arm64]\n",
+      "replace": "  snapshot:\n    if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''\n    needs: [seat-native-linux-x64]\n",
+      "expectRed": "changesets.yml snapshot needs both native linux builders",
+      "cell": "changesets.yml snapshot needs both native linux builders"
+    },
+    {
+      "name": "Changesets snapshot stops downloading the arm64 artifact",
+      "file": ".github/workflows/changesets.yml",
+      "find": "      - uses: actions/download-artifact@v4\n        with:\n          name: seat-native-linux-arm64\n          path: ${{ runner.temp }}/seat-native-linux-arm64\n\n      - name: Version snapshot\n",
+      "replace": "      - name: Version snapshot\n",
+      "expectRed": "changesets.yml snapshot downloads both native linux artifacts",
+      "cell": "changesets.yml snapshot downloads both native linux artifacts"
+    },
+    {
+      "name": "Changesets snapshot stops calling the shared assembler",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          pnpm build\n          node scripts/seat-assemble-natives.mjs\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
+      "replace": "          pnpm build\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
+      "expectRed": "changesets.yml snapshot runs the shared assembler",
+      "cell": "changesets.yml snapshot runs the shared assembler"
+    }
+  ]
+}

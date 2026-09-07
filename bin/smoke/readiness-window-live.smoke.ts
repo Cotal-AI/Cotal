@@ -147,6 +147,7 @@ let mgr: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
 let ep: InstanceType<typeof CotalEndpoint> | undefined;
 try {
+  console.log("readiness:live first-line");
   const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}readiness-js-`));
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", brokerStore], { stdio: "ignore" });
   kids.push(broker);
