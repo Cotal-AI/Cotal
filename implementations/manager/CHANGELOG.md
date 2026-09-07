@@ -1,5 +1,34 @@
 # @cotal-ai/manager
 
+## 0.47.0
+
+### Minor Changes
+
+- e6d3c96: Split Linux PTY ownership out of the manager worker: a one-shot launcher starts one detached custodian process per seat, and `Runtime.adopt` returns a live proxy over a permissioned Unix socket. Off Linux, pty spawn stays in-process and `adopt` throws a named custody-transport error.
+
+### Patch Changes
+
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+- 8ec22cb: `cotal supervise` on a registered remote mesh now dials the broker URL the registry actually
+  holds. A remote broker is commonly published over a `wss://` edge, and the manager-authority
+  registration the supervisor runs first handed that URL to the raw node transport, which refuses a
+  websocket URL outright, so supervision stopped before a manager was ever constructed. That
+  registration and every other control dial this audit found can be handed a registry server URL now
+  select the transport from the scheme, including the planes `cotal run --local` opens, which failed
+  on such a mesh for the same reason. The registration also carries the record's TLS requirement
+  instead of assuming a plaintext broker, so a participant no longer downgrades its prepare
+  credential exchange on a mesh the registry describes as TLS-required. On the same path, the cluster
+  artifacts the registration reads back are now looked up by the key form the content-addressed store
+  uses, which a remote registration reached with a prefixed digest reference and could not resolve.
+- Updated dependencies [e6d3c96]
+- Updated dependencies [30cf300]
+- Updated dependencies [f43d842]
+- Updated dependencies [4ea4257]
+- Updated dependencies [cf294e7]
+  - @cotal-ai/seat@0.47.0
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+
 ## 0.46.0
 
 ### Minor Changes
