@@ -1,5 +1,7 @@
 # @cotal-ai/connector-jcode
 
+## 0.47.0
+
 ## 0.46.0
 
 ## 0.45.0
