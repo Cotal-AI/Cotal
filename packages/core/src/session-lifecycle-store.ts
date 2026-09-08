@@ -195,7 +195,8 @@ export async function lookupNativeLifecycleBindingsForManager(
       // pending, refusal or indeterminate records all mean this binding may still be live.
       const release = await queryOperation(kv, binding.resourceKey, binding.operationId);
       if (release.state !== "terminal-success" || release.record.action !== "release"
-        || release.record.bindingId !== binding.bindingId) bindings.push(binding);
+        || release.record.bindingId !== binding.bindingId
+        || release.proofOrigin?.proves !== "native-effect") bindings.push(binding);
     }
     return { status: "known", bindings: Object.freeze(bindings) };
   } catch (e) {
