@@ -9,7 +9,7 @@ import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { createSpaceAuth, serverConfig, permissionsFor, isReachable, chatStream, chatSubject, channelBucket } from "@cotal-ai/core";
+import { createSpaceAuth, serverConfig, permissionsFor, isReachable, chatStream, chatSubject, channelBucket, epcStreamName } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
@@ -57,6 +57,8 @@ try {
   const stream = chatStream(space);
   const jsm = await jetstreamManager(operator);
   await jsm.streams.add({ name: stream, subjects: [`cotal.${space}.chat.>`] });
+  const epc = epcStreamName(space);
+  await jsm.streams.add({ name: epc, subjects: [`cotal.${space}.epc.>`], allow_direct: true });
   const channels = await new Kvm(operator).create(channelBucket(space));
   await channels.put("public", enc(JSON.stringify({ description: "channel registry row" })));
 
@@ -152,12 +154,34 @@ try {
     assert.equal(frame.subject, rail, "measured: the KV read response arrives under the victim rail subject");
   });
 
+  await check("a DIRECT.GET reply delivers raw stored bytes under the rail subject", async () => {
+    // DIRECT.GET returns the stored body itself, not an API envelope. Its content is bounded by
+    // what the grant can read: the agent cannot publish into EPC, so it cannot choose these bytes.
+    const artifact = `epc-artifact-${randomBytes(6).toString("hex")}`;
+    const artifactSubject = `cotal.${space}.epc.contract.v1`;
+    operator.publish(artifactSubject, enc(artifact));
+    await operator.flush();
+    for (let i = 0; i < 60 && (await jsm.streams.info(epc)).state.messages === 0; i++) await wait(20);
+    const canWriteEpc = (perms.pub.allow as string[]).some((row) => row.startsWith(`cotal.${space}.epc.`));
+    const before = frames.length;
+    agent.publish(`$JS.API.DIRECT.GET.${epc}.${artifactSubject}`, new Uint8Array(0), { reply: rail });
+    await agent.flush();
+    let frame: Frame | undefined;
+    for (let i = 0; i < 60 && !frame; i++) { frame = frames.slice(before).find((f) => f.body.includes(artifact)); if (!frame) await wait(20); }
+    observations.push({ vector: "DIRECT.GET reply subject", reachedServeShape: !!frame, attackerControlsBytes: canWriteEpc, frame: frame ?? null });
+    assert.ok(frame, "a DIRECT.GET response reached the endpoint's real serve subscription");
+    assert.equal(frame.subject, rail, "measured: raw stored bytes arrive under the victim rail subject");
+    assert.equal(canWriteEpc, false, "the stock agent cannot write the bytes this path replays");
+    assert.ok(frame.headerKeys.some((key) => key.toLowerCase().startsWith("nats-")), "measured: the DIRECT.GET response carries Nats- headers");
+  });
+
   await check("a deputy frame on the rail subject carries no JetStream marker at ingress", async () => {
     const onRail = observations
       .filter((o) => o.reachedServeShape && (o.frame as Frame | null)?.subject === rail)
       .map((o) => o.frame as Frame);
     assert.ok(onRail.length >= 1, "the claim needs a frame that arrived under the rail subject");
     for (const frame of onRail) {
+      if (frame.headerKeys.length > 0) continue; // the DIRECT.GET path is marked; measured above
       const marked = frame.headerKeys.some((key) => key.toLowerCase().startsWith("nats-")) || frame.reply?.startsWith("$JS.ACK.") === true;
       observations.push({ railFrameMarker: { reply: frame.reply ?? null, headerKeys: frame.headerKeys, marked } });
       // MEASURED, and the reason a subject- or header-derived ingress rule is not sufficient here.

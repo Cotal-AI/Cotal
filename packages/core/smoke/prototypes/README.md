@@ -173,11 +173,23 @@ uses (wildcard filter, queue-qualified). Measured on NATS 2.14.5:
 - A KV `STREAM.MSG.GET` whose reply is the rail reaches that subscription UNDER the
   rail subject, with no headers and an empty reply.
 
-The last frame carries no JetStream marker, so an ingress rule keyed on subject shape
-or delivery headers cannot refuse it. The bytes are a JetStream API envelope and would
-fail envelope validation, but a later schema miss is not an origin proof. The paths
-that matter here are the raw `STREAM.MSG.GET` reads the v0.3 agent binding still holds
-(SPEC 3151-3152 places their remediation in scope for v0.4).
+- A `DIRECT.GET` whose reply is the rail reaches that subscription under the rail
+  subject carrying the raw stored bytes, with `Nats-Stream`, `Nats-Subject`,
+  `Nats-Sequence` and `Nats-Time-Stamp` headers. The stock agent holds this read only
+  on `EPC`, a stream it cannot publish to, so it does not choose those bytes.
+
+Read together, no granted path delivers attacker-chosen request-shaped bytes under the
+rail subject without a marker. The frame that arrives unmarked on the rail carries a
+JetStream API envelope the agent cannot shape; the frame that carries raw bytes to the
+rail carries `Nats-` headers and replays a stream the agent cannot write; the frame whose
+bytes the agent does control arrives under its original captured subject.
+
+That is a property of the current grant set, not an invariant. It closes the moment one
+credential can both write a stream and `DIRECT.GET` it, which would put attacker-chosen
+raw bytes under an arbitrary subject. Treat the present result as exposure measurement,
+not as the origin defense; a later schema or subject miss is not an origin proof. The
+raw `STREAM.MSG.GET` and `DIRECT.GET` reads the v0.3 agent binding still holds are what
+SPEC 3151-3152 places in scope for v0.4 remediation.
 
 This suite measures broker behavior, not first-party logic, so no mutation proof applies
 to it. Its negatives are meaningful because each runs beside a positive control: a
