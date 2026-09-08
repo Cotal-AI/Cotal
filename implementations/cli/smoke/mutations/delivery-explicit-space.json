@@ -1,0 +1,24 @@
+{
+  "suite": "implementations/cli/smoke/delivery-explicit-space.smoke.ts",
+  "guard": "the shipped control-plane ensure resolves signer trust for the explicitly selected space while an implicit call still refuses a multi-space root",
+  "command": "pnpm smoke:delivery-explicit-space",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/delivery-explicit-space.json",
+  "mutations": [
+    {
+      "name": "delivery credential refresh falls back to the sole-space lookup and discards the explicit selection",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "  const auth = (await getSpaceAuth(credsStore(), space))!;",
+      "replace": "  const auth = (await (await import(\"@cotal-ai/workspace\")).getSoleSpaceAuth(credsStore(), authDir(findCotalRoot())))!;",
+      "expectRed": "the real ensureControlPlane path accepts an explicit space on a two-account root",
+      "cell": "the explicit selected space reaches the signer lookup instead of a root-wide sole-space lookup"
+    },
+    {
+      "name": "the control-plane wrapper drops its resolved space before delivery credential refresh",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "  await ensureDelivery({ ...o, space });",
+      "replace": "  await ensureDelivery({ ...o, space: undefined });",
+      "expectRed": "the real ensureControlPlane path accepts an explicit space on a two-account root",
+      "cell": "the resolved space is explicitly propagated from ensureControlPlane into ensureDelivery"
+    }
+  ]
+}

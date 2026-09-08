@@ -649,11 +649,12 @@ log("winner", out.index);
   const committed = await commitMigration(kv, EP, report, "driver-10", { entries, handler: mk("sp-10x") });
   c("the migration is filed and applied", committed.created === true && committed.released.length === 0, committed);
   // The parked driver is superseded by the migrated program's driver: a resume under the edited
-  // source, whose `spawn("keeper")` must receive the recorded seat.
+  // source, whose `spawn("keeper")` must receive the recorded seat. The new handler
+  // is still bound to sp-10; its run id cannot be renamed to label a second process.
   const invokesBefore = spawnInvokes.length;
   const allocBefore = allocations.length;
   const resumed = await withDeadline(driveRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "sp-10", source: EDITED, lease: lease(), handler: mk("sp-10r"),
+    space: SPACE, endpoint: EP, kv, runId: "sp-10", source: EDITED, lease: lease(), handler: mk("sp-10"),
   }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 160) })), 60_000, "the migrated resume");
   const outcome = await withDeadline(parked, 60_000, "the superseded driver");
   c("the migrated program completes under its new driver, and the parked driver is released when its sleep ends",
