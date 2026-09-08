@@ -56,7 +56,6 @@ const fixtureBin = join(base, "bin");
 mkdirSync(fixtureBin);
 for (const name of ["node", "npm", "nats-server", "sh", "tar", "gzip", "which"])
   symlinkSync(locate(name), join(fixtureBin, name));
-symlinkSync(locate("pnpm"), join(fixtureBin, "pnpm"));
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
