@@ -83,6 +83,8 @@ pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --proven
 - `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
   when a partial retry publishes only the packages still missing.
 - `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.
+- Seat's pack and publish hooks assert both native artifacts and compile its JavaScript and type
+  entrypoints without rebuilding the native helpers.
 - `-r`: recursively publish all workspace packages.
 - `--provenance`: emit SLSA provenance attestations (a no-op without OIDC, automatic with it).
 - `--access=public`: required for scoped packages on first publish.

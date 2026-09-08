@@ -200,7 +200,7 @@ const CONFIG_KEYS = new Set([
   // Read by `mutation-coverage.mjs`, which grades the same configs from the other side. The
   // allowlist is the union across the toolchain, because a key this file ignores is not thereby
   // unused, and rejecting one would break the sibling rather than catch a typo.
-  "suite", "guard", "grades", "kind", "unkillable", "why", "proveWith",
+  "suite", "guard", "grades", "kind", "unkillable", "why", "proveWith", "assembles",
   // Read by NOTHING, on purpose: prose an operator leaves for the next reader. Listed rather than
   // tolerated, so that "no tool reads this" is a stated property instead of the thing you discover
   // when you wonder why setting it changed nothing.
