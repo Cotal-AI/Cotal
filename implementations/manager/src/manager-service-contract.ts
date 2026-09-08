@@ -70,10 +70,11 @@ const STATUS_OUTPUT_SCHEMA = {
     nativeLifecycle: {
       type: "object",
       additionalProperties: false,
-      required: ["status", "liveBindings"],
+      required: ["status", "liveBindings", "liveBindingIds"],
       properties: {
         status: { enum: ["known", "unknown"] },
         liveBindings: { type: "integer", minimum: 0 },
+        liveBindingIds: { type: "array", items: { type: "string" } },
         reason: { type: "string" },
       },
     },
@@ -146,7 +147,7 @@ export interface ManagerStatus {
   runtime: string;
   custody: "legacy" | "custodied";
   agentCount: number;
-  nativeLifecycle: { status: "known" | "unknown"; liveBindings: number; reason?: string };
+  nativeLifecycle: { status: "known" | "unknown"; liveBindings: number; liveBindingIds: string[]; reason?: string };
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
   staticReconciliation: ManagerStaticReconciliationStatus;

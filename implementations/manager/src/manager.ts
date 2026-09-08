@@ -5363,8 +5363,8 @@ export class Manager {
       custody: process.platform === "linux" && this.runtime.kind === "pty" ? "custodied" : "legacy",
       agentCount: this.agents.size,
       nativeLifecycle: native.status === "known"
-        ? { status: "known", liveBindings: native.bindings.length }
-        : { status: "unknown", liveBindings: 0, reason: native.reason },
+        ? { status: "known", liveBindings: native.bindings.length, liveBindingIds: native.bindings.map((binding) => binding.bindingId) }
+        : { status: "unknown", liveBindings: 0, liveBindingIds: [], reason: native.reason },
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
       staticReconciliation: this.staticReconciliationStatus(),

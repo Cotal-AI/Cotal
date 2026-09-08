@@ -25,7 +25,7 @@ import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { deliveryLiveness, deliveryUp, stopDelivery } from "../src/lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
+import { assertNativeLifecycleShutdownStatus, managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
 
 const ALPHA = "segrec-alpha", BETA = "segrec-beta", GAMMA = "segrec-gamma";
 const root = mkdtempSync(join(tmpdir(), "cotal-segrec-"));
@@ -63,6 +63,30 @@ async function waitDead(pid: number): Promise<void> {
 }
 
 try {
+  console.log("0) operator-visible native lifecycle outcomes are distinct");
+  let missingAuthority = "", liveBinding = "";
+  try {
+    assertNativeLifecycleShutdownStatus(
+      { status: "unknown", liveBindings: 0, liveBindingIds: [], reason: "missing session-binding-reader authority" },
+      "cotal down manager", ALPHA,
+    );
+  } catch (e) { missingAuthority = (e as Error).message; }
+  try {
+    assertNativeLifecycleShutdownStatus(
+      { status: "known", liveBindings: 1, liveBindingIds: ["binding-live-17"] },
+      "cotal down manager", ALPHA,
+    );
+  } catch (e) { liveBinding = (e as Error).message; }
+  check("authorized empty native inventory permits legacy shutdown unchanged", (() => {
+    try { assertNativeLifecycleShutdownStatus({ status: "known", liveBindings: 0, liveBindingIds: [] }, "cotal down manager", ALPHA); return true; }
+    catch { return false; }
+  })());
+  check("missing reader authority is an explicit authorization result",
+    /missing session-binding-reader authority/.test(missingAuthority) && !/binding-live-17/.test(missingAuthority), missingAuthority);
+  check("authorized live binding refusal names the exact binding and release remedy",
+    /binding-live-17/.test(liveBinding) && /Release or explicitly stop/.test(liveBinding), liveBinding);
+  check("missing authority and live binding have different operator messages", missingAuthority !== liveBinding);
+
   console.log("1) two managers, one root: each space reads its own process");
   const a = daemon(), b = daemon();
   const aPid = a.pid!, bPid = b.pid!;

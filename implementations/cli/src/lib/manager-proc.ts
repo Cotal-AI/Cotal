@@ -41,11 +41,22 @@ export async function assertManagerShutdownAdmitted(
   const reply = await askManager(target.space, target.server, "managerStatus", undefined, target.auth, "owner", 10_000);
   if (!reply.ok)
     throw new Error(`${operation} refused before signalling: the manager could not prove native lifecycle state (${reply.error ?? "status failed"}). Release or explicitly stop native bindings through their authorized binding operation, then retry.`);
-  const native = (reply.data as { nativeLifecycle?: { status?: string; liveBindings?: number; reason?: string } } | undefined)?.nativeLifecycle;
+  const native = (reply.data as { nativeLifecycle?: { status?: string; liveBindings?: number; liveBindingIds?: string[]; reason?: string } } | undefined)?.nativeLifecycle;
+  assertNativeLifecycleShutdownStatus(native, operation, target.space);
+}
+
+/** Decide from the manager's authenticated native lifecycle status. Kept pure so the three required
+ * operator outcomes are graded separately from transport setup: known-empty proceeds, missing read
+ * authority says authorization, and known-live names the bindings and release remedy. */
+export function assertNativeLifecycleShutdownStatus(
+  native: { status?: string; liveBindings?: number; liveBindingIds?: string[]; reason?: string } | undefined,
+  operation: string,
+  space: string,
+): void {
   if (!native || native.status !== "known" || !Number.isSafeInteger(native.liveBindings) || native.liveBindings! < 0)
     throw new Error(`${operation} refused before signalling: native lifecycle state is ${native?.status ?? "unreported"}${native?.reason ? ` (${native.reason})` : ""}. Unknown is not safe-to-stop.`);
   if (native.liveBindings! > 0)
-    throw new Error(`${operation} refused before signalling: manager in space "${target.space}" holds ${native.liveBindings} live native lifecycle binding${native.liveBindings === 1 ? "" : "s"}. Legacy down is not a hot update. Release or explicitly stop each binding through its authorized operation. The only planned running-update entrypoint is \`cotal manager replace --apply <plan-digest>\`.`);
+    throw new Error(`${operation} refused before signalling: manager in space "${space}" holds ${native.liveBindings} live native lifecycle binding${native.liveBindings === 1 ? "" : "s"}${native.liveBindingIds?.length ? ` (${native.liveBindingIds.join(", ")})` : ""}. Legacy down is not a hot update. Release or explicitly stop each binding through its authorized operation. The only planned running-update entrypoint is \`cotal manager replace --apply <plan-digest>\`.`);
 }
 
 /** The exact logfile the detached-manager writer opens. Exported so operator guidance names the
