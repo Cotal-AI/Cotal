@@ -128,3 +128,30 @@ uses a fresh generation. The transport wrapper is proof machinery, with extra
 per-request handler setup; production still needs a direct prepared-response and
 mandatory release interface, authenticated discovery, renewal and complete revoker
 integration. No shipped handler, option or normative encoding changed here.
+
+## Current profile census
+
+The census constructs every `Profile` and covers the generic callout views. Its
+option variants are explicit representatives. `manager-service` is tested as a
+refused generic view; the two system-account credential kinds are listed outside
+the data-account matrix. Endpoint-serve uses its raw row builder, rather than a
+fenced mint. These limits remain open for full migration acceptance.
+
+Publication and subscription are checked separately. A conservative intersection
+checks the whole candidate namespace; native probes check one concrete request
+and reply in both directions. Positive, deny-all and asymmetric native controls
+keep absence results meaningful. Queue-qualified serve subscriptions are reported
+as unsupported by the current permission component, without flattening their rights.
+
+```sh
+pnpm --filter @cotal-ai/core build
+pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts
+pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-profile-census-prototype.json
+pnpm --filter @cotal-ai/core build
+```
+
+The package exports compiled core, so the proof rebuilds it for each mutation.
+Rebuild once more after mutation proof restores the sources, before running other
+work. This census records the current legacy grants; it must be revised deliberately
+when production issuance moves to the versioned namespace. It does not authorize
+a compatibility fallback.

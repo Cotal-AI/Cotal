@@ -1,0 +1,50 @@
+{
+  "suite": "implementations/auth/smoke/issued-profile-census.smoke.ts",
+  "guard": "Every Profile and generic callout view is represented in a direction-specific census. Native controls detect broad publication in the real operator builder. These are baseline migration observations; representative variants are not all option combinations and endpoint-serve uses raw grant rows.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-profile-census-prototype.json",
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "one declared profile is omitted",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "supervisor: () => one(\"supervisor\"),",
+      "replace": "",
+      "expectRed": "profile and view producers cover their declared sets",
+      "cell": "profile and view producers cover their declared sets"
+    },
+    {
+      "name": "one generic callout view is omitted",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "for (const view of USER_TOKEN_VIEWS) {",
+      "replace": "for (const view of USER_TOKEN_VIEWS.filter((view) => view !== \"deployer\")) {",
+      "expectRed": "profile and view producers cover their declared sets",
+      "cell": "profile and view producers cover their declared sets"
+    },
+    {
+      "name": "broad subject tails are ignored",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "if (pattern[i] === \">\") return true;",
+      "replace": "if (pattern[i] === \">\") return false;",
+      "expectRed": "namespace detector recognizes broad grants and honors explicit deny-all",
+      "cell": "namespace detector recognizes broad grants and honors explicit deny-all"
+    },
+    {
+      "name": "read grants are replaced with publish grants",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "const value = permissions[direction] as",
+      "replace": "const value = permissions.pub as",
+      "expectRed": "namespace detector recognizes broad grants and honors explicit deny-all",
+      "cell": "namespace detector recognizes broad grants and honors explicit deny-all"
+    },
+    {
+      "name": "production operator publication is widened",
+      "file": "packages/core/src/provision.ts",
+      "find": "if (profile === \"operator\") return operatorPermissions(space, pr);",
+      "replace": "if (profile === \"operator\") return { ...operatorPermissions(space, pr), pub: { allow: [\">\"] } };",
+      "expectRed": "current profile excludes issued namespace: operator/default",
+      "cell": "current profile excludes issued namespace: operator/default"
+    }
+  ]
+}
