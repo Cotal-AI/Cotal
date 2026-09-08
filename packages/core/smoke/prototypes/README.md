@@ -72,3 +72,30 @@ reader; bearer expiry remains in seconds. No production expiry or credential
 behavior changed. The source touch preserves the original row bytes and adds no
 new credential identity or gate. Re-reading a newer revision for that touch would
 revive revoked source state, which has its own named mutation control.
+
+## Static connection binding
+
+`issued-static-connection.ts` extracts one candidate signed metadata tag and returns
+its frozen reference only after native broker authentication. Metadata extraction
+and the authenticator share a private copy of the presented credential bytes.
+Replacing a credentials file takes effect only on a new explicit binding. A native
+reconnect keeps the original snapshot and generation.
+
+The auth smoke signs actual NATS user credentials, persists their permission
+evidence and runs the existing agent-mint finalizer before returning the bytes.
+It compares the recorded ceiling with the signed claims and exercises actual
+request substitution denials, separate channel ceilings and native reconnect.
+A Buffer input exposed shared bytes through `slice()`; copying with the Uint8Array
+constructor fixed the reproduced reconnect failure.
+
+```sh
+pnpm exec tsx implementations/auth/smoke/issued-static-binding.smoke.ts
+pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-static-binding-prototype.json
+pnpm exec tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node implementations/auth/smoke/issued-static-binding.smoke.ts
+```
+
+This uses a candidate metadata tag and native JWT encoding, with an operator test
+connection. It does not attach to shipped `mintCreds`, registration, endpoint
+serving or auth callout. Same-credential reconnect does not prove callout remint
+under changed policy. The full profile census and production integration remain
+open. Generated credential files stay in the test's private temporary directory.
