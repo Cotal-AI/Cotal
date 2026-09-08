@@ -1,0 +1,45 @@
+{
+  "suite": "implementations/auth/smoke/native-binding-scanner.smoke.ts",
+  "guard": "the auth-owned sealed records scanner exposes one closed manager-scoped native-binding query, proves known-empty distinctly, rejects malformed state, and never hands a records credential, filter, connection, or consumer to runtime callers",
+  "command": "pnpm smoke:native-binding-scanner:auth",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/native-binding-scanner.json",
+  "why": [
+    "The suite reaches the real sealed scanner over an isolated broker with no injected reader at the consuming operation.",
+    "The exact scanner grant census permits only oblig.> and sessionbinding.* enumeration on the one literal pull consumer, with no records writes or other records families.",
+    "Known-empty, another manager's binding, malformed principal, malformed row, and post-construction method swap are separate named cells."
+  ],
+  "mutations": [
+    {
+      "name": "native query silently widens to the records root",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "const NATIVE_BINDING_FILTER = \"sessionbinding.*\";",
+      "replace": "const NATIVE_BINDING_FILTER = \">\";",
+      "expectRed": "scanner grants enumerate only oblig and sessionbinding families",
+      "cell": "scanner grants enumerate only oblig and sessionbinding families"
+    },
+    {
+      "name": "native query returns another manager's binding",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "          if (binding.managerPrincipal === managerPrincipal && binding.state !== \"released\") bindings.push(binding);",
+      "replace": "          if (binding.state !== \"released\") bindings.push(binding);",
+      "expectRed": "closed query returns only THIS manager principal's live binding",
+      "cell": "closed query returns only THIS manager principal's live binding"
+    },
+    {
+      "name": "malformed binding row is skipped as empty",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "          const binding = parseBinding(row.data, row.key);",
+      "replace": "          let binding; try { binding = parseBinding(row.data, row.key); } catch { continue; }",
+      "expectRed": "malformed binding row is explicit unknown, not empty",
+      "cell": "malformed binding row is explicit unknown, not empty"
+    },
+    {
+      "name": "scanner handle is not frozen",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "  const scanner: RecordsScanner = Object.freeze({",
+      "replace": "  const scanner: RecordsScanner = ({",
+      "expectRed": "sealed scanner handle is frozen against a silent-empty method swap",
+      "cell": "sealed scanner handle is frozen against a silent-empty method swap"
+    }
+  ]
+}
