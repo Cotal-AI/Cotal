@@ -626,11 +626,10 @@ interface ManagedAgent {
   authorityParent?: string;
   startedAt: number;
   handle: AgentHandle;
-  /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
-   *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
-   *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
-   *  kill that would deny the agent its clean mesh-leave. */
-  control?: { path: string; token: string };
+  /** This agent's complete connector-defined local control endpoint. Kept in memory only (never
+   *  persisted — token hygiene), including any separately fenced manager credential carried by a
+   *  native-lifecycle launch. Legacy launches retain only path + hook token. */
+  control?: LaunchSpec["control"];
   launch: ManagedLaunch;
   /** In-memory process-recovery input. It is never persisted with secret values: preservation
    * reconstructs it from the validated inventory and current config. Continuation-capable
@@ -3468,7 +3467,7 @@ export class Manager {
     a: ManagedAgent,
     expected: string,
     handle: AgentHandle = a.handle,
-    control: { path: string; token: string } | undefined = a.control,
+    control: LaunchSpec["control"] = a.control,
   ): Promise<void> {
     const deadline = Date.now() + 15_000;
     let last = "control endpoint not ready";
