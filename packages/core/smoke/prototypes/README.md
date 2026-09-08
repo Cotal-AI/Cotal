@@ -150,6 +150,13 @@ connection to its original answer after the credential file is replaced. The cal
 the issuer bind a generation different from the client proposal; discovery reports the issuer's,
 and the proposed rail is natively denied.
 
+An auto-reconnecting callout client is measured too. The connection name is fixed at connect
+time, so a reconnect re-proposes the same generation, the issuance lifecycle refuses to prepare
+it a second time, and the transport closes with an authorization error rather than acquiring a
+new ceiling in place. The original attempt stays active and no second issuance appears. That
+outcome rests on the same fresh-generation-only rule the reuse cell names, and the named
+mutation for it is attached to that cell.
+
 Discovery establishes what the broker enforces for this connection. It does not establish that
 a durable issuance record exists; that remains the issuer-side lifecycle evidence. The static
 discovery mints grant `_INBOX.>`, wider than the production per-connection inbox confinement,
