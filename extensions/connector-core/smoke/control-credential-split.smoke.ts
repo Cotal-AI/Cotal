@@ -138,6 +138,16 @@ try {
 
   assert.throws(() => startControlServer(stubAgent, controlEndpoint("credential-split", "blocked"), async () => ({}), { onShutdown: () => {} }), /control plane BLOCKED: management handlers require/);
   check("legacy single-token management setup fails BLOCKED", true);
+  assert.throws(
+    () => startControlServer(
+      stubAgent,
+      { ...controlEndpoint("credential-split", "no-oracle"), managementVerifier: endpoint.managementVerifier },
+      async () => ({}),
+      { onShutdown: () => {} },
+    ),
+    /control plane BLOCKED: management handlers require.*revocation-aware authorizeManagement/,
+  );
+  check("default management path without a trusted revocation oracle fails BLOCKED", true);
   const sameDigest = createHash("sha256").update("same-secret").digest("base64url");
   assert.throws(() => startControlServer(stubAgent, { ...controlEndpoint("credential-split", "same", "same-secret"), managementVerifier: { tokenDigest: sameDigest, fence } }, async () => ({}), { onShutdown: () => {}, authorizeManagement: () => true }), /hook and management credentials resolve to the same secret/);
   check("identical hook and management secrets fail BLOCKED", true);
