@@ -78,6 +78,13 @@ try {
   check("ordinary hook event still succeeds with the hook credential", hookReply.trim() === JSON.stringify({ handled: true }));
   check("ordinary hook event reaches the hook handler intact", events.length === 1);
 
+  const digestAsBearer = await sendFrame(endpoint.path, {
+    ...managementFrame,
+    token: endpoint.managementVerifier!.tokenDigest,
+    op: "shutdown",
+  });
+  check("child-held management digest is a verifier, never a usable credential", digestAsBearer === "" && shutdowns === 0);
+
   check("current management credential can query the bound session", (await sendFrame(endpoint.path, { ...managementFrame, op: "session" })).includes("session-credential-split"));
   check("management session query never reaches the hook handler", events.length === 1);
   check("current management credential can invoke shutdown on its exact binding fence", (await sendFrame(endpoint.path, { ...managementFrame, op: "shutdown" })).trim() === JSON.stringify({ ok: true }));

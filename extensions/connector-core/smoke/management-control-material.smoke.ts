@@ -24,6 +24,13 @@ for (const connector of connectors) {
   assert.ok(materialPath, `${connector.name}: launch material path exists`);
   const material = readLaunchMaterial(materialPath);
   const rawMaterial = readFileSync(materialPath, "utf8");
+  const childFacingLaunchBytes = JSON.stringify({
+    command: spec.command,
+    args: spec.args,
+    env: spec.env,
+    confirm: spec.confirm,
+    sessionStatePath: spec.sessionStatePath,
+  });
   assert.equal(material.controlToken, spec.control.token, `${connector.name}: hook token crosses through launch material`);
   assert.deepEqual(
     material.managementControl && {
@@ -36,10 +43,11 @@ for (const connector of connectors) {
   );
   assert.notEqual(material.managementControl?.tokenDigest, spec.control.management.token, `${connector.name}: raw management bearer is absent from child material`);
   assert.ok(!rawMaterial.includes(spec.control.management.token), `${connector.name}: raw management bearer does not occur anywhere in child material bytes`);
+  assert.ok(!childFacingLaunchBytes.includes(spec.control.management.token), `${connector.name}: raw management bearer does not occur in command, argv, env, confirm, or session-state path`);
   const parsed = controlFromEnv(spec.env);
   assert.equal(parsed?.managementVerifier?.tokenDigest, material.managementControl?.tokenDigest, `${connector.name}: connector server reconstructs the verifier digest`);
   assert.equal(parsed?.managementVerifier?.fence.resourceId, fence.resourceId, `${connector.name}: connector server reconstructs resourceId`);
-  pass += 7;
+  pass += 8;
   console.log(`  ✓ ${connector.name}: raw bearer manager-only, digest + exact fence reach the connector`);
 }
 console.log(`\nMANAGEMENT CONTROL MATERIAL TESTS PASSED ✅  (${pass} checks)`);
