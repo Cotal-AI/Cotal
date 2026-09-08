@@ -123,9 +123,9 @@
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "  if (code === \"not-found\") return \"gone\";",
       "replace": "  if (code === \"not-found\") return \"transient\";",
-      "expectRed": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
-      "cell": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
-      "note": "THE REACHABILITY PROOF for the classifier. This is one line in a pure function, and the cell it reddens is a full end-to-end run: a real `cotal stop` despawns the seat while the client is reconnecting, the manager answers `not-found` on the wire, the CLI's inspect resolution carries that code, and the loop turns it into a clean exit. A kill here is the evidence that cell F is grading a function the product actually calls, rather than one the suite happens to import.",
+      "expectRed": "refusal: not-found means the seat is gone",
+      "cell": "refusal: not-found means the seat is gone",
+      "note": "This mutation grades the classifier's direct assertion in cell F. The end-to-end cell E remains unchanged and still proves the real binary reaches `attachRefusal(\"not-found\")`: it despawns the seat mid-reconnect and observes the clean gone-seat exit. Under this mutation E can fail elsewhere first under load, so naming E made a real classifier red grade WRONG-RED whenever E's own green line survived. Binding the mutant to F names the line it deterministically changes without weakening or removing the separate end-to-end reachability guard.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -135,7 +135,7 @@
       "replace": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, reconnect ? { onRefusal: \"throw\" } : {});",
       "expectRed": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
       "cell": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
-      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `✗ ${message}` over a sentence that already opens with `✗`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
+      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `\u2717 ${message}` over a sentence that already opens with `\u2717`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
