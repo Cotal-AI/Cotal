@@ -135,6 +135,12 @@ check(
   { versionHasCiPublish: /pnpm ci:publish/.test(version), ciPublish },
 );
 
+check(
+  "Changesets publish builds dependencies before assembly and publication on every retry",
+  ciPublish.startsWith("pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r "),
+  ciPublish,
+);
+
 console.log("\nC. Changesets snapshot path");
 check("changesets.yml declares job snapshot", snapshot.length > 0);
 hasBoth(needsList(snapshot), "changesets.yml snapshot needs both native linux builders");
