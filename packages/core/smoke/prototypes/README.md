@@ -47,6 +47,13 @@ pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-authori
 pnpm exec tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node implementations/auth/smoke/issued-authority-lifecycle.smoke.ts
 ```
 
+Revocation is carried by the attempt row's state, separate from the immutable evidence
+record, so absence of a revocation is a readable `active` state rather than a missing key.
+The linearization point for a resolution is the second attempt read: the resolver reads the
+state, awaits source authorization, then reads again and refuses unless the state is still
+`active` at the same revision. A read failure on that row is refused, never taken as absence
+of a revocation; a named mutation turns the failure into `active` and the cell goes red.
+
 Static issuance, callout success delivery, reconnect, complete credential-source
 revocation and hosted run admission remain outside this prototype. A fresh
 generation is required for every stage here; existing-generation redemption is
