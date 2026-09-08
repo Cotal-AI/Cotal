@@ -1,0 +1,74 @@
+{
+  "suite": "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+  "guard": "The test-only issued lifecycle stages source indexes before the existing agent-mint fence, activates only at the original prepared revision and refuses resolution after revocation. This is a localhost gate-composition proof, without production issuer or barrier attachment.",
+  "command": "pnpm exec tsx implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-authority-lifecycle-prototype.json",
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "existing finalizer is not awaited",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "await finalizeExisting();",
+      "replace": "void finalizeExisting();",
+      "expectRed": "release waits for the pending existing finalizer before activation",
+      "cell": "release waits for the pending existing finalizer before activation"
+    },
+    {
+      "name": "source index writes are omitted",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "await kv.create(sourceIndexKey(source, evidence.ref), bytes({ source, ref: evidence.ref }));",
+      "replace": "void source;",
+      "expectRed": "release runs the existing finalizer after durable evidence and indexes",
+      "cell": "release runs the existing finalizer after durable evidence and indexes"
+    },
+    {
+      "name": "source index omits the permission generation",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "return sourcePrefix(source) + evidenceKey(ref).slice(3);",
+      "replace": "return sourcePrefix(source) + callerTokens(ref).join(\".\");",
+      "expectRed": "two issuances of one root credential retain distinct generation indexes",
+      "cell": "two issuances of one root credential retain distinct generation indexes"
+    },
+    {
+      "name": "activation takes a fresh revision after abort",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "bytes({ version: 1, state: \"active\", digest: snap.digest }), snap.revision",
+      "replace": "bytes({ version: 1, state: \"active\", digest: snap.digest }), (await kv.get(`attempt.${handle.key}`))!.revision",
+      "expectRed": "a winning source fence followed by prepared retirement loses activation",
+      "cell": "a winning source fence followed by prepared retirement loses activation"
+    },
+    {
+      "name": "retirement skips prepared attempts",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "if (row.state === \"aborted\" || row.state === \"revoked\") return row.state;",
+      "replace": "if (row.state === \"prepared\" || row.state === \"aborted\" || row.state === \"revoked\") return row.state;",
+      "expectRed": "source freeze before finalization releases nothing and aborts the attempt",
+      "cell": "source freeze before finalization releases nothing and aborts the attempt"
+    },
+    {
+      "name": "resolution ignores source revocation",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "if (!await sourceIsLive(source)) throw new Error(\"issued source is not live\");",
+      "replace": "await sourceIsLive(source);",
+      "expectRed": "activation before the source walk is irreversibly revoked",
+      "cell": "activation before the source walk is irreversibly revoked"
+    },
+    {
+      "name": "resolution skips its final state check",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "if (after.state !== \"active\" || after.revision !== before.revision)",
+      "replace": "if (false)",
+      "expectRed": "resolution rechecks revocation after awaiting source authorization",
+      "cell": "resolution rechecks revocation after awaiting source authorization"
+    },
+    {
+      "name": "attempt digest no longer binds immutable evidence",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "row.digest !== digest",
+      "replace": "false",
+      "expectRed": "modified evidence fails its attempt digest before returning permissions",
+      "cell": "modified evidence fails its attempt digest before returning permissions"
+    }
+  ]
+}
