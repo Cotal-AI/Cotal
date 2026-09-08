@@ -1,0 +1,198 @@
+/**
+ * Store operations for native session lifecycle records.
+ *
+ * This is storage CAS and idempotency, not provider-effect sequencing. The manager/provider executor
+ * decides transitions and supplies the expected record revision. This module only preserves §4's
+ * operation-id fence, epoch floor, retired binding ids, and rollback read-only invariant.
+ */
+import type { KV } from "@nats-io/kv";
+import type { KvEntry } from "@nats-io/kv";
+import { canonicalJson } from "./canonical.js";
+import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { createRecordEntry, updateRecordEntry } from "./endpoint-records.js";
+import { liveKvEntries } from "./kv-scan.js";
+import {
+  parseBinding,
+  parseSessionOperation,
+  parseSessionTrustedState,
+  resourceKeyId,
+  sessionOperationInput,
+  sessionOperationInputDigest,
+  sessionOperationKey,
+  sessionTrustStateKey,
+  type ResourceKey,
+  type Binding,
+  type SessionOperationRecord,
+  type SessionTrustedState,
+} from "./session-lifecycle-records.js";
+
+export type NativeLifecycleBindingLookup =
+  | { readonly status: "known"; readonly bindings: readonly Binding[] }
+  | { readonly status: "unknown"; readonly bindings: readonly []; readonly reason: string };
+
+export type QueryOperationResult =
+  | { readonly state: "absent" }
+  | { readonly state: SessionOperationRecord["state"]; readonly result?: unknown; readonly proofOrigin?: SessionOperationRecord["proofOrigin"]; readonly record: SessionOperationRecord };
+
+function encoded(value: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(value));
+}
+
+async function rawPut(kv: KV, key: string, value: unknown, expectedRevision?: number): Promise<number> {
+  return expectedRevision === undefined
+    ? await createRecordEntry(kv, key, value)
+    : await updateRecordEntry(kv, key, value, expectedRevision);
+}
+
+/** Read one operation. An absent row is the only `absent` answer. Tombstones and malformed rows fail. */
+export async function queryOperation(kv: KV, resourceKey: ResourceKey, operationId: string): Promise<QueryOperationResult> {
+  const key = sessionOperationKey(resourceKey, operationId);
+  const entry = await kv.get(key);
+  if (!entry) return { state: "absent" };
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `session operation ${key} carries a ${entry.operation} marker; operation fences are never garbage-collected automatically`);
+  const record = parseSessionOperation(entry.value, key, resourceKey);
+  return {
+    state: record.state,
+    ...(record.result !== undefined ? { result: record.result } : {}),
+    ...(record.proofOrigin !== undefined ? { proofOrigin: record.proofOrigin } : {}),
+    record,
+  };
+}
+
+/**
+ * Create the prepared operation fence. Retrying the exact same input returns the recorded row;
+ * reusing its operationId with different input refuses and never overwrites the first transition.
+ */
+export async function prepareSessionOperation(
+  kv: KV,
+  value: Omit<SessionOperationRecord, "inputDigest" | "state" | "result" | "proofOrigin">,
+): Promise<{ readonly created: boolean; readonly record: SessionOperationRecord }> {
+  const input = sessionOperationInput(value);
+  const record: SessionOperationRecord = { ...value, inputDigest: sessionOperationInputDigest(input), state: "prepared" };
+  const key = sessionOperationKey(value.resourceKey, value.operationId);
+  try {
+    await createRecordEntry(kv, key, record);
+    return { created: true, record };
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+    const existing = await queryOperation(kv, value.resourceKey, value.operationId);
+    if (existing.state === "absent")
+      throw new EpEnvelopeError("internal", `session operation ${key} lost its create CAS but is not readable; reconcile the store`);
+    if (existing.record.inputDigest !== record.inputDigest)
+      throw new EpEnvelopeError("conflict", `operationId ${value.operationId} is already bound to different transition input for resource ${resourceKeyId(value.resourceKey)}`);
+    return { created: false, record: existing.record };
+  }
+}
+
+/** Revision-pinned state update. Immutable input and digest cannot move between phases. */
+export async function updateSessionOperation(
+  kv: KV,
+  value: SessionOperationRecord,
+  expectedRevision: number,
+): Promise<number> {
+  const parsed = parseSessionOperation(encoded(value), sessionOperationKey(value.resourceKey, value.operationId), value.resourceKey);
+  const inputDigest = sessionOperationInputDigest(sessionOperationInput(parsed));
+  if (inputDigest !== parsed.inputDigest) throw new EpEnvelopeError("conflict", "session operation immutable input changed across phases");
+  return await updateRecordEntry(kv, sessionOperationKey(parsed.resourceKey, parsed.operationId), parsed, expectedRevision);
+}
+
+export async function readSessionTrustedState(kv: KV, resourceKey: ResourceKey): Promise<(SessionTrustedState & { readonly revision: number }) | undefined> {
+  const key = sessionTrustStateKey(resourceKey);
+  const entry = await kv.get(key);
+  if (!entry) return undefined;
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `session trust state ${key} carries a ${entry.operation} marker; epoch floors and retired binding ids have no automatic tombstone GC`);
+  return { ...parseSessionTrustedState(entry.value, key, resourceKey), revision: entry.revision };
+}
+
+/**
+ * Persist the monotonic trusted state. A lower floor is a restored/rolled-back view and forces the
+ * record into management-recovery-read-only rather than resetting native authority. Retired ids are
+ * unioned forever in this implementation, including across release and re-adoption.
+ */
+export async function advanceSessionTrustedState(
+  kv: KV,
+  resourceKey: ResourceKey,
+  requested: { readonly epochFloor: number; readonly retireBindingIds?: readonly string[]; readonly restoredEpochFloor?: number },
+): Promise<SessionTrustedState & { readonly revision: number }> {
+  const current = await readSessionTrustedState(kv, resourceKey);
+  const priorFloor = current?.epochFloor ?? 0;
+  const rollbackObserved = requested.restoredEpochFloor !== undefined && requested.restoredEpochFloor < priorFloor;
+  const epochFloor = Math.max(priorFloor, requested.epochFloor);
+  const retiredBindingIds = [...new Set([...(current?.retiredBindingIds ?? []), ...(requested.retireBindingIds ?? [])])].sort();
+  const value: SessionTrustedState = {
+    resourceKey,
+    epochFloor,
+    retiredBindingIds,
+    managementMode: rollbackObserved || current?.managementMode === "management-recovery-read-only"
+      ? "management-recovery-read-only"
+      : "writable",
+  };
+  const key = sessionTrustStateKey(resourceKey);
+  const revision = await rawPut(kv, key, value, current?.revision);
+  return { ...value, revision };
+}
+
+export function assertSessionManagementWritable(state: SessionTrustedState): void {
+  if (state.managementMode !== "writable")
+    throw new EpEnvelopeError("failed-precondition", `native session management is recovery-read-only for resource ${resourceKeyId(state.resourceKey)}; reconcile native epochs and outstanding operations before writes`);
+}
+
+/** Refuse stale work before any provider effect. A known retry may instead be answered by its receipt. */
+export function assertCurrentSessionFence(
+  state: SessionTrustedState,
+  bindingId: string,
+  controllerEpoch: number,
+  recordedReceipt?: QueryOperationResult,
+): QueryOperationResult | undefined {
+  assertSessionManagementWritable(state);
+  if (state.retiredBindingIds.includes(bindingId) || controllerEpoch < state.epochFloor) {
+    if (recordedReceipt !== undefined && recordedReceipt.state !== "absent") return recordedReceipt;
+    throw new EpEnvelopeError("conflict", `stale native session operation: binding ${bindingId} is retired or epoch ${controllerEpoch} is below floor ${state.epochFloor}; it cannot act on a new binding`);
+  }
+  return undefined;
+}
+
+/** Exact equality helper used by tests/executors when reconciling an existing operation. */
+export function sameSessionOperationInput(a: SessionOperationRecord, b: SessionOperationRecord): boolean {
+  return canonicalJson(sessionOperationInput(a)) === canonicalJson(sessionOperationInput(b));
+}
+
+/**
+ * Complete durable lookup of native lifecycle bindings held by one manager. Only the registered
+ * `sessionbinding.*` family is scanned, so legacy managed seats retain their existing shutdown
+ * behavior. Any scan failure or malformed row returns `unknown`, never a confident empty set.
+ */
+export async function lookupNativeLifecycleBindingsForManager(
+  kv: KV,
+  managerPrincipal: string,
+  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = liveKvEntries,
+): Promise<NativeLifecycleBindingLookup> {
+  try {
+    const entries = await scan(kv, "sessionbinding.*");
+    const bindings: Binding[] = [];
+    for (const entry of entries) {
+      if (entry.operation !== "PUT")
+        throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${entry.key} carries a ${entry.operation} marker`);
+      const binding = parseBinding(entry.value, entry.key);
+      if (binding.managerPrincipal === managerPrincipal && binding.state !== "released") bindings.push(binding);
+    }
+    return { status: "known", bindings: Object.freeze(bindings) };
+  } catch (e) {
+    return { status: "unknown", bindings: [], reason: (e as Error).message };
+  }
+}
+
+/**
+ * Shutdown guard predicate. `true` means a native binding exists OR the durable answer could not be
+ * proven. This fail-closed direction is intentional: callers may signal only on a proven `false`.
+ */
+export async function hasLiveNativeLifecycleBindingsForManager(
+  kv: KV,
+  managerPrincipal: string,
+  scan?: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]>,
+): Promise<boolean> {
+  const result = await lookupNativeLifecycleBindingsForManager(kv, managerPrincipal, scan);
+  return result.status === "unknown" || result.bindings.length > 0;
+}

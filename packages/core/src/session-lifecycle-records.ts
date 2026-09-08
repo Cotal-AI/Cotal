@@ -84,6 +84,45 @@ export interface Binding {
   readonly desiredRevision: number;
 }
 
+export type SessionOperationState =
+  | "prepared"
+  | "executing"
+  | "terminal-success"
+  | "terminal-refusal"
+  | "indeterminate";
+
+/** A journal receipt proves only that the transition was journalled. It is impossible to present
+ *  one as native-effect proof because the distinction is a discriminated wire type. */
+export type OperationProofOrigin =
+  | { readonly kind: "journal-receipt"; readonly journalRevision: number; readonly proves: "journal-transition-only" }
+  | { readonly kind: "receiver-receipt"; readonly receiver: string; readonly highestEpoch: number; readonly proves: "native-effect" }
+  | { readonly kind: "native-readback"; readonly provider: string; readonly evidence: unknown; readonly proves: "native-effect" }
+  | { readonly kind: "provider-refusal"; readonly provider: string; readonly evidence: unknown; readonly proves: "no-native-effect" };
+
+/** Immutable operation input plus its recoverable state. `inputDigest` binds operation-id reuse. */
+export interface SessionOperationRecord {
+  readonly operationId: string;
+  readonly resourceKey: ResourceKey;
+  readonly incarnationProof: IncarnationProof;
+  readonly bindingId: string;
+  readonly expectedBindingRevision: number;
+  readonly expectedControllerEpoch: number;
+  readonly authenticatedActor: string;
+  readonly action: SessionManageAction;
+  readonly intendedResult: unknown;
+  readonly inputDigest: string;
+  readonly state: SessionOperationState;
+  readonly result?: unknown;
+  readonly proofOrigin?: OperationProofOrigin;
+}
+
+export interface SessionTrustedState {
+  readonly resourceKey: ResourceKey;
+  readonly epochFloor: number;
+  readonly retiredBindingIds: readonly string[];
+  readonly managementMode: "writable" | "management-recovery-read-only";
+}
+
 const RESOURCE_FIELDS = new Set([
   "hostIdentity", "provider", "nativeOwnerNamespace", "stableSessionId", "resourceGeneration",
 ]);
@@ -91,6 +130,15 @@ const PROOF_FIELDS = new Set(["nativeHostIncarnation", "sessionIncarnation", "ev
 const BINDING_FIELDS = new Set([
   "bindingId", "resourceKey", "incarnationProof", "controllerEpoch", "managerPrincipal", "mode",
   "rights", "state", "operationId", "desiredRevision",
+]);
+const OPERATION_FIELDS = new Set([
+  "operationId", "resourceKey", "incarnationProof", "bindingId", "expectedBindingRevision",
+  "expectedControllerEpoch", "authenticatedActor", "action", "intendedResult", "inputDigest",
+  "state", "result", "proofOrigin",
+]);
+const TRUST_FIELDS = new Set(["resourceKey", "epochFloor", "retiredBindingIds", "managementMode"]);
+const OPERATION_STATES: ReadonlySet<string> = new Set<SessionOperationState>([
+  "prepared", "executing", "terminal-success", "terminal-refusal", "indeterminate",
 ]);
 const BINDING_STATES: ReadonlySet<string> = new Set<BindingState>([
   "adopt-prepared", "managed", "release-prepared", "draining", "fence-dispatched",
@@ -209,4 +257,113 @@ export function parseBinding(raw: Uint8Array, key: string, expectedResourceKey?:
     operationId,
     desiredRevision: value.desiredRevision,
   };
+}
+
+/** The immutable input whose digest makes one operation id idempotent rather than ambiguous. */
+export function sessionOperationInput(record: Omit<SessionOperationRecord, "inputDigest" | "state" | "result" | "proofOrigin">): object {
+  return {
+    operationId: record.operationId,
+    resourceKey: record.resourceKey,
+    incarnationProof: record.incarnationProof,
+    bindingId: record.bindingId,
+    expectedBindingRevision: record.expectedBindingRevision,
+    expectedControllerEpoch: record.expectedControllerEpoch,
+    authenticatedActor: record.authenticatedActor,
+    action: record.action,
+    intendedResult: record.intendedResult,
+  };
+}
+
+export function sessionOperationInputDigest(input: ReturnType<typeof sessionOperationInput>): string {
+  return createHash("sha256").update(canonicalJson(input), "utf8").digest("base64url").slice(0, 43);
+}
+
+function parseProofOrigin(value: unknown, label: string): OperationProofOrigin {
+  if (!isRec(value) || typeof value.kind !== "string") return fail(label, "is not a proof-origin object");
+  if (value.kind === "journal-receipt") {
+    closed(value, new Set(["kind", "journalRevision", "proves"]), label);
+    if (!pos(value.journalRevision) || value.proves !== "journal-transition-only") return fail(label, "does not validate as journal-only proof");
+    return { kind: "journal-receipt", journalRevision: value.journalRevision, proves: "journal-transition-only" };
+  }
+  if (value.kind === "receiver-receipt") {
+    closed(value, new Set(["kind", "receiver", "highestEpoch", "proves"]), label);
+    if (!nonEmpty(value.receiver) || !pos(value.highestEpoch) || value.proves !== "native-effect") return fail(label, "does not validate as receiver proof");
+    return { kind: "receiver-receipt", receiver: value.receiver, highestEpoch: value.highestEpoch, proves: "native-effect" };
+  }
+  if (value.kind === "native-readback" || value.kind === "provider-refusal") {
+    closed(value, new Set(["kind", "provider", "evidence", "proves"]), label);
+    const expected = value.kind === "native-readback" ? "native-effect" : "no-native-effect";
+    if (typeof value.provider !== "string" || value.evidence === undefined || value.proves !== expected)
+      return fail(label, "does not validate as provider proof");
+    try { endpointToken(value.provider); canonicalJson(value.evidence); }
+    catch { return fail(label, "carries malformed provider evidence"); }
+    return value.kind === "native-readback"
+      ? { kind: "native-readback", provider: value.provider, evidence: value.evidence, proves: "native-effect" }
+      : { kind: "provider-refusal", provider: value.provider, evidence: value.evidence, proves: "no-native-effect" };
+  }
+  return fail(label, `carries unknown proof kind ${JSON.stringify(value.kind)}`);
+}
+
+export function parseSessionOperation(raw: Uint8Array, key: string, expectedResourceKey?: ResourceKey): SessionOperationRecord {
+  const value = parseJson(raw, `session operation ${key}`);
+  if (!isRec(value)) return fail(`session operation ${key}`, "is not an object");
+  closed(value, OPERATION_FIELDS, `session operation ${key}`);
+  const operationId = id(value.operationId, `session operation ${key}.operationId`);
+  const bindingId = id(value.bindingId, `session operation ${key}.bindingId`);
+  const resourceKey = parseResourceKey(value.resourceKey, `session operation ${key}.resourceKey`);
+  const incarnationProof = parseIncarnationProof(value.incarnationProof, `session operation ${key}.incarnationProof`);
+  const authenticatedActor = principal(value.authenticatedActor, `session operation ${key}.authenticatedActor`);
+  if (!uint(value.expectedBindingRevision) || !pos(value.expectedControllerEpoch)
+    || typeof value.action !== "string" || !ACTIONS.has(value.action)
+    || value.intendedResult === undefined || typeof value.inputDigest !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/.test(value.inputDigest)
+    || typeof value.state !== "string" || !OPERATION_STATES.has(value.state))
+    return fail(`session operation ${key}`, "does not validate");
+  try { canonicalJson(value.intendedResult); if (value.result !== undefined) canonicalJson(value.result); }
+  catch { return fail(`session operation ${key}`, "carries non-JSON intended/result data"); }
+  const input = sessionOperationInput({
+    operationId, resourceKey, incarnationProof, bindingId,
+    expectedBindingRevision: value.expectedBindingRevision,
+    expectedControllerEpoch: value.expectedControllerEpoch,
+    authenticatedActor, action: value.action as SessionManageAction, intendedResult: value.intendedResult,
+  });
+  if (sessionOperationInputDigest(input) !== value.inputDigest)
+    return fail(`session operation ${key}`, "inputDigest does not bind its transition input");
+  if (key !== sessionOperationKey(resourceKey, operationId))
+    return fail(`session operation ${key}`, "does not match its embedded ResourceKey and operationId");
+  if (expectedResourceKey !== undefined && resourceKeyId(expectedResourceKey) !== resourceKeyId(resourceKey))
+    return fail(`session operation ${key}`, "does not match the ResourceKey requested by the consumer");
+  const proofOrigin = value.proofOrigin === undefined ? undefined : parseProofOrigin(value.proofOrigin, `session operation ${key}.proofOrigin`);
+  if ((value.state === "terminal-success" || value.state === "terminal-refusal") && (value.result === undefined || proofOrigin === undefined))
+    return fail(`session operation ${key}`, "is terminal without result and proof origin");
+  if (value.state === "terminal-success" && proofOrigin?.proves !== "native-effect")
+    return fail(`session operation ${key}`, "claims terminal success without native-effect proof");
+  if (value.state === "terminal-refusal" && proofOrigin?.proves !== "no-native-effect")
+    return fail(`session operation ${key}`, "claims terminal refusal without no-native-effect proof");
+  return {
+    operationId, resourceKey, incarnationProof, bindingId,
+    expectedBindingRevision: value.expectedBindingRevision,
+    expectedControllerEpoch: value.expectedControllerEpoch,
+    authenticatedActor, action: value.action as SessionManageAction, intendedResult: value.intendedResult,
+    inputDigest: value.inputDigest, state: value.state as SessionOperationState,
+    ...(value.result !== undefined ? { result: value.result } : {}),
+    ...(proofOrigin !== undefined ? { proofOrigin } : {}),
+  };
+}
+
+export function parseSessionTrustedState(raw: Uint8Array, key: string, expectedResourceKey?: ResourceKey): SessionTrustedState {
+  const value = parseJson(raw, `session trust state ${key}`);
+  if (!isRec(value)) return fail(`session trust state ${key}`, "is not an object");
+  closed(value, TRUST_FIELDS, `session trust state ${key}`);
+  const resourceKey = parseResourceKey(value.resourceKey, `session trust state ${key}.resourceKey`);
+  if (!uint(value.epochFloor) || !Array.isArray(value.retiredBindingIds)
+    || value.retiredBindingIds.some((v) => typeof v !== "string")
+    || new Set(value.retiredBindingIds).size !== value.retiredBindingIds.length
+    || (value.managementMode !== "writable" && value.managementMode !== "management-recovery-read-only"))
+    return fail(`session trust state ${key}`, "does not validate");
+  const retiredBindingIds = value.retiredBindingIds.map((v) => id(v, `session trust state ${key}.retiredBindingIds`));
+  if (key !== sessionTrustStateKey(resourceKey)) return fail(`session trust state ${key}`, "does not match its embedded ResourceKey");
+  if (expectedResourceKey !== undefined && resourceKeyId(expectedResourceKey) !== resourceKeyId(resourceKey))
+    return fail(`session trust state ${key}`, "does not match the ResourceKey requested by the consumer");
+  return { resourceKey, epochFloor: value.epochFloor, retiredBindingIds: Object.freeze(retiredBindingIds), managementMode: value.managementMode };
 }
