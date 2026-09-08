@@ -1,0 +1,63 @@
+{
+  "grades": "tool",
+  "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
+  "command": "node scripts/mutation-coverage.selftest.mjs",
+  "progressPattern": "^  ✓ ",
+  "minTicks": 18,
+  "completionMarker": "MUTATION-COVERAGE SELF-TEST:",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
+  "why": [
+    "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
+    "The continuation mutation restores the first-error abort. The subprocess mutation restores the false refusal for declared entrypoints. The two parser mutations restore the completed-but-ungraded outputs reproduced by real suites. The final mutation makes incomplete grading look green again."
+  ],
+  "mutations": [
+    {
+      "name": "a refused config aborts the process before later configs are examined",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    refusals.push([path, reason]);\n    console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
+      "replace": "    throw new Error(`REFUSED ${path}: ${reason}`);",
+      "expectRed": "one bad config does not hide later configs",
+      "cell": "one bad config does not hide later configs"
+    },
+    {
+      "name": "declared subprocess entrypoints are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (executedWitness(cfg.suite, source, cfg.command, mutation, cfg.executes ?? [])) return;",
+      "replace": "  void executedWitness(cfg.suite, source, cfg.command, mutation, cfg.executes ?? []);",
+      "expectRed": "a spawned repo entrypoint plus target-package build is gradable",
+      "cell": "a spawned repo entrypoint plus target-package build is gradable"
+    },
+    {
+      "name": "completed all-passed fractions are not parsed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };",
+      "replace": "    void fraction;",
+      "expectRed": "a completed all-passed fraction supplies the executed total",
+      "cell": "a completed all-passed fraction supplies the executed total"
+    },
+    {
+      "name": "completed progress-marker suites are not parsed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };",
+      "replace": "    void completed; void executed;",
+      "expectRed": "anchored progress plus an explicit completion marker supplies a total",
+      "cell": "anchored progress plus an explicit completion marker supplies a total"
+    },
+    {
+      "name": "incomplete aggregate grading exits successfully",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "if (refused || unparsed || failed || examined !== configs.length || graded !== configs.length) process.exitCode = 1;",
+      "replace": "void refused; void unparsed; void failed; void examined; void graded;",
+      "expectRed": "zero failures without a total stays unparsed",
+      "cell": "zero failures without a total stays unparsed"
+    },
+    {
+      "name": "the audit summary omits the checkout tree",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  `MUTATION COVERAGE SUMMARY head=${head} enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
+      "replace": "  `MUTATION COVERAGE SUMMARY head=unknown enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
+      "expectRed": "the audit summary names the exact checkout tree",
+      "cell": "the audit summary names the exact checkout tree"
+    }
+  ]
+}
