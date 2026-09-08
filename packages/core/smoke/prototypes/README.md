@@ -137,6 +137,16 @@ refused generic view; the two system-account credential kinds are listed outside
 the data-account matrix. Endpoint-serve uses its raw row builder, rather than a
 fenced mint. These limits remain open for full migration acceptance.
 
+The census also measures which profiles hold both a write and a raw stream read
+(`$JS.API.DIRECT.GET` or `$JS.API.STREAM.MSG.GET`) on one stream, the condition that
+would let a credential place bytes of its own choosing under any subject. Today that
+pairing appears only in trusted infrastructure and operator profiles; the four
+peer-held profiles are asserted to have none. `agent` and `observer` do hold raw
+reads, on streams they cannot write, so their zero is a measurement rather than an
+absence of grants. A positive control requires the detector to keep finding the known
+trusted overlaps, and a named mutation adds a profile with a known overlap to the
+peer-held list.
+
 Publication and subscription are checked separately. A conservative intersection
 checks the whole candidate namespace; native probes check one concrete request
 and reply in both directions. Positive, deny-all and asymmetric native controls
@@ -189,7 +199,9 @@ credential can both write a stream and `DIRECT.GET` it, which would put attacker
 raw bytes under an arbitrary subject. Treat the present result as exposure measurement,
 not as the origin defense; a later schema or subject miss is not an origin proof. The
 raw `STREAM.MSG.GET` and `DIRECT.GET` reads the v0.3 agent binding still holds are what
-SPEC 3151-3152 places in scope for v0.4 remediation.
+SPEC 3151-3152 places in scope for v0.4 remediation. The census now asserts that closing
+condition against every peer-held profile, so a future grant change that introduces the
+pairing fails there rather than silently invalidating this measurement.
 
 This suite measures broker behavior, not first-party logic, so no mutation proof applies
 to it. Its negatives are meaningful because each runs beside a positive control: a
