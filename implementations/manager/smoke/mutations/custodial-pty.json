@@ -19,7 +19,7 @@
     {
       "name": "M2 return a dead handle from production adopt",
       "file": "implementations/manager/src/runtime/custodial-pty.ts",
-      "find": "return adoptSeatSync(loadSeat(this.root, reference.id)) as unknown as AgentHandle;",
+      "find": "return this.proxy(adoptSeatSync(loadSeat(this.root, reference.id)));",
       "replace": "return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } } as unknown as AgentHandle;",
       "expectRed": "production adopt returns a live proxy",
       "cell": "production adopt returns a live proxy",
