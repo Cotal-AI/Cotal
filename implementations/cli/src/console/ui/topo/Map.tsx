@@ -66,7 +66,7 @@ export function RingMap({
       if (key.downArrow || input === "j") setSelIdx((s) => (s + 1) % n);
       else if (key.upArrow || input === "k") setSelIdx((s) => (s <= 0 ? n - 1 : s - 1));
       else if (key.return && sel?.kind === "agent") {
-        const p = agents.find((a) => a.card.name === sel.name);
+        const p = agents.find((a) => a.card.id === sel.id);
         if (p) onOpenAgent(p);
       }
     },

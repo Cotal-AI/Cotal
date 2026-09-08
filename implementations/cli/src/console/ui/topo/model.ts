@@ -10,11 +10,13 @@ import type { FeedDelivery, FeedEntry, MembershipView } from "../../mesh.js";
 export type TopoNodeKind = "agent" | "channel" | "service";
 
 export interface TopoNode {
-  /** Kind-prefixed name: "a:alice" | "c:general" | "s:planner". */
+  /** Kind-prefixed identity: "a:<endpoint id>" | "c:general" | "s:planner". */
   key: string;
   kind: TopoNodeKind;
   /** Display name — renderers add the #/@ prefix. */
   name: string;
+  /** Authoritative endpoint identity (agents only). */
+  id?: string;
   status?: PresenceStatus; // agents only
   role?: string;
   /** Last involvement inside the window (0 = present but silent). */
@@ -68,7 +70,7 @@ export const MEMBERSHIP_STALE_MS = 45_000; // mirror the web dashboard's FEED_ST
 const isWild = (pat: string): boolean => pat.includes("*") || pat.includes(">");
 
 /** The target node(s) a feed entry talks to — the single place delivery → node mapping lives. */
-export function targetsOf(e: FeedEntry): { key: string; kind: TopoNodeKind; name: string }[] {
+export function targetsOf(e: FeedEntry): { key: string; kind: TopoNodeKind; name: string; id?: string }[] {
   if (e.delivery === "multicast") {
     const name = e.channel ?? "?";
     return [{ key: "c:" + name, kind: "channel", name }];
@@ -77,8 +79,11 @@ export function targetsOf(e: FeedEntry): { key: string; kind: TopoNodeKind; name
     const name = e.toService ?? "?";
     return [{ key: "s:" + name, kind: "service", name }];
   }
-  if (e.delivery === "unicast")
-    return (e.toNames ?? []).map((name) => ({ key: "a:" + name, kind: "agent" as const, name }));
+  if (e.delivery === "unicast") {
+    if (!e.toIds || e.toIds.length !== (e.toNames?.length ?? 0))
+      throw new Error("foldTopo: unicast entry target ids and names disagree");
+    return e.toIds.map((id, i) => ({ key: "a:" + id, kind: "agent" as const, id, name: e.toNames![i] }));
+  }
   throw new Error(`foldTopo: unknown delivery "${(e as { delivery: string }).delivery}"`);
 }
 
@@ -103,12 +108,13 @@ export function foldTopo(
   const byKey = new Map<string, TopoNode>();
   // Roster agents stay visible even when silent — silence is itself a signal.
   for (const p of agents) {
-    const key = "a:" + p.card.name;
+    const key = "a:" + p.card.id;
     if (!byKey.has(key))
       byKey.set(key, {
         key,
         kind: "agent",
         name: p.card.name,
+        id: p.card.id,
         status: p.status,
         role: p.card.role,
         lastTs: 0,
@@ -128,7 +134,8 @@ export function foldTopo(
   const edges = new Map<string, TopoEdge>();
   for (const e of feed) {
     if (e.ts < now - windowMs) continue;
-    const src = touch("a:" + e.from.name, "agent", e.from.name, e.ts);
+    const src = touch("a:" + e.from.id, "agent", e.from.name, e.ts);
+    src.id = e.from.id;
     if (e.from.role && !src.role) src.role = e.from.role;
     const mult = e.count ?? 1; // coalesced unicast burst multiplicity
     const w = Math.exp(-(now - e.ts) / RATE_TAU_MS) * mult;
@@ -147,8 +154,8 @@ export function foldTopo(
   }
 
   // Overlay broker-authoritative membership: silent subscribers become nodes, subscriptions become
-  // resting spokes. Resolve id→name against the roster so a member that ALSO has traffic merges onto
-  // the same node (no double-count), keeping the fold otherwise unchanged when membership is absent.
+  // resting spokes. The endpoint id is the node identity; the roster only supplies its display name,
+  // so same-name principals stay separate and a member that also has traffic still merges once.
   const memberships: TopoMembership[] = [];
   const rosterById = new Map(agents.map((p) => [p.card.id, p.card.name]));
   const nameFor = opts?.nameOf ?? ((id: string) => rosterById.get(id) ?? id.slice(0, 8));
@@ -162,7 +169,8 @@ export function foldTopo(
       ...(opts?.knownChannels ?? []),
     ]);
     for (const m of membership.members) {
-      const node = touch("a:" + nameFor(m.id), "agent", nameFor(m.id), 0);
+      const node = touch("a:" + m.id, "agent", nameFor(m.id), 0);
+      node.id = m.id;
       node.member = true;
       // Which channels this agent subscribes, and whether it's a wide reader.
       const chans = new Map<string, "live" | "durable">();
@@ -182,7 +190,7 @@ export function foldTopo(
   }
 
   // Agents keep roster order (traffic-only senders appended by name); hubs alphabetical.
-  const rosterOrder = new Map(agents.map((p, i) => ["a:" + p.card.name, i]));
+  const rosterOrder = new Map(agents.map((p, i) => ["a:" + p.card.id, i]));
   const all = [...byKey.values()];
   const agentNodes = all
     .filter((n) => n.kind === "agent")
@@ -244,7 +252,7 @@ export function edgeEntries(feed: FeedEntry[], edge: TopoEdge, graph: TopoGraph)
   return feed.filter(
     (e) =>
       e.ts >= graph.now - graph.windowMs &&
-      "a:" + e.from.name === edge.src &&
+      "a:" + e.from.id === edge.src &&
       targetsOf(e).some((t) => t.key === edge.dst),
   );
 }

@@ -4,7 +4,7 @@
   "command": "pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/topo-membership.json",
   "why": [
-    "A fold that draws a snapshot the viewer could not re-read shows a stale skeleton as live truth; an absent bucket reported as unreadable makes every daemon-less mesh look broken; a pill that checks the snapshot before the failure hides a failed read behind traffic-only.",
+    "A fold that draws a snapshot the viewer could not re-read shows a stale skeleton as live truth; an absent bucket reported as unreadable makes every daemon-less mesh look broken; a pill that checks the snapshot before the failure hides a failed read behind traffic-only; display-name keys collapse distinct principals and union their subscriptions.",
     "Each mutation is compile-clean and unique in the named file, and the suite imports src directly, so no build is involved."
   ],
   "mutations": [
@@ -31,6 +31,14 @@
       "replace": "  const s = m.snapshot;\n  if (!s || (s.asOf === undefined && s.members.length === 0)) return { label: \"traffic-only\" };\n  if (m.unreadable !== undefined) return { label: \"unreadable\", color: \"red\", reason: m.unreadable };",
       "expectRed": "...and the pill says unreadable",
       "cell": "...and the pill says unreadable"
+    },
+    {
+      "name": "M4 key authoritative members by display name instead of endpoint id",
+      "file": "implementations/cli/src/console/ui/topo/model.ts",
+      "find": "const node = touch(\"a:\" + m.id, \"agent\", nameFor(m.id), 0);",
+      "replace": "const node = touch(\"a:\" + nameFor(m.id), \"agent\", nameFor(m.id), 0);",
+      "expectRed": "two principals with one display name remain two topology nodes",
+      "cell": "two principals with one display name remain two topology nodes"
     }
   ]
 }

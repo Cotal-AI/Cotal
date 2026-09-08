@@ -24,6 +24,7 @@ export interface FeedEntry {
   delivery: FeedDelivery;
   channel?: string; // multicast
   toService?: string; // anycast
+  toIds?: string[]; // unicast targets, authoritative endpoint ids
   toNames?: string[]; // unicast targets, resolved off the roster
   count?: number; // burst multiplicity for coalesced unicast
   /** This row arrived on an agent's structured-event channel rather than a chat channel.
@@ -393,6 +394,7 @@ export class MeshView extends EventEmitter {
       ts: b.ts,
       from: b.from,
       delivery: "unicast",
+      toIds: [...b.ids],
       toNames: b.ids.map((id) => this.nameOf(id)),
       count: b.ids.length,
       text: b.body,

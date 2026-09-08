@@ -35,7 +35,7 @@ export interface CommandCtx {
   startAttach: (name: string) => void;
   /** Put the operator on the roster on its first send (presence, so agents can reply). Idempotent,
    *  canWrite-gated; open mesh only, a one-way notice elsewhere. Await before the send. */
-  ensureParticipant: () => Promise<void>;
+  ensureParticipant: () => Promise<boolean>;
 }
 
 export interface ConsoleCommand {
@@ -91,7 +91,7 @@ export const COMMANDS: ConsoleCommand[] = [
         text = m[2];
       }
       if (!text.trim()) return ctx.notify("usage: msg [#channel] <text>");
-      await ctx.ensureParticipant();
+      if (!(await ctx.ensureParticipant())) return;
       await ctx.ep.multicast(text, { channel, mentions: mentionsIn(text) });
       ctx.notify(`→ #${channel}`);
     },
@@ -112,7 +112,7 @@ export const COMMANDS: ConsoleCommand[] = [
         throw e;
       }
       if (!id) return ctx.notify(`no agent "${m[1]}"`);
-      await ctx.ensureParticipant();
+      if (!(await ctx.ensureParticipant())) return;
       await ctx.ep.unicast(id, m[2]);
       ctx.notify(`→ ${m[1].replace(/^@/, "")}`);
     },
@@ -132,7 +132,7 @@ export const COMMANDS: ConsoleCommand[] = [
         throw e;
       }
       if (!id) return ctx.notify(`no agent "${name}"`);
-      await ctx.ensureParticipant();
+      if (!(await ctx.ensureParticipant())) return;
       await ctx.ep.unicast(id, "👋 ping");
       ctx.setMode("dm");
       ctx.notify(`called ${name}`);
@@ -146,7 +146,7 @@ export const COMMANDS: ConsoleCommand[] = [
     run: async (ctx, rest) => {
       const m = rest.match(/^@?(\S+)\s+([\s\S]+)/);
       if (!m) return ctx.notify("usage: ask <@role> <text>");
-      await ctx.ensureParticipant();
+      if (!(await ctx.ensureParticipant())) return;
       await ctx.ep.anycast(m[1], m[2]);
       ctx.notify(`→ @${m[1]}`);
     },

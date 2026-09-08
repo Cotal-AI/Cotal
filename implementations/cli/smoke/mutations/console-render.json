@@ -1,14 +1,22 @@
 {
   "suite": "implementations/cli/smoke/console-render.smoke.tsx",
-  "guard": "the membership pill paints four distinct states and the status bar's sparkline scales a real series, both at the component level rather than by inspecting the model",
+  "guard": "the rendered console preserves truthful topology identity, membership freshness, activity, and first-send participant failures",
   "command": "pnpm smoke:console-render",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-render.json",
   "why": [
-    "The suite renders the real Ink components from src through tsx, so a mutation is seen without a build and needs no rebuild after the restore.",
+    "The suite renders the real Ink components and App from src through tsx, so a mutation is seen without a build; a refused participant start must remain visible without sending or painting success.",
     "MEMBERSHIP_STALE_MS is deliberately NOT mutated: the suite imports that same constant to build its fixtures, so moving it would move both sides of the comparison and prove nothing.",
     "Each mutation is compile-clean and its anchor occurs exactly once in the named file."
   ],
   "mutations": [
+    {
+      "name": "R0 continue the send after participant startup was refused",
+      "file": "implementations/cli/src/console/app.tsx",
+      "find": "      if (!ready) return;",
+      "replace": "      if (!ready) void 0;",
+      "expectRed": "the message is not sent when the reply path could not start",
+      "cell": "the message is not sent when the reply path could not start"
+    },
     {
       "name": "R1 the freshness comparison is inverted, so live and stale swap",
       "file": "implementations/cli/src/console/ui/topo/model.ts",

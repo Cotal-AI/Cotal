@@ -14,8 +14,10 @@
  */
 import { render } from "ink";
 import React from "react";
-import { Writable } from "node:stream";
-import type { Presence } from "@cotal-ai/core";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
+import type { CotalEndpoint, Presence } from "@cotal-ai/core";
+import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
 import { Topo } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
@@ -110,6 +112,58 @@ console.log("3. the topology header draws the membership pill, in each of its fo
   // A pill that printed one constant would pass every cell above taken singly.
   const labels = [live, stale, trafficOnly, unreadable].map((s) => s.match(/membership:\s*([a-z-]+)/)?.[1]);
   check("the four states paint four DIFFERENT labels", new Set(labels).size === 4, labels);
+}
+
+console.log("4. a refused participant start does not send or paint success");
+{
+  class Observer extends EventEmitter {
+    space = "participant-refusal";
+    card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
+    sent: string[] = [];
+    async start() {}
+    async stop() {}
+    getRoster(): Presence[] { return []; }
+    tap() {}
+    async listChannels() { return [{ channel: "general", messages: 0 }]; }
+    async channelHistory() { return []; }
+    async dmHistory() { return []; }
+    ref() { return this.card; }
+    async readMembership() { return { asOf: undefined, members: [] }; }
+    async watchMembership() { return { stop: async () => {} }; }
+    async multicast(text: string) { this.sent.push(text); }
+  }
+  class RefusedParticipant extends EventEmitter {
+    async start() { throw new Error("participant-start-refused"); }
+    async stop() {}
+  }
+  const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => stdin;
+  stdin.ref = () => stdin;
+  stdin.unref = () => stdin;
+  let buf = "";
+  const stdout = new Writable({ write(c, _e, cb) { buf += String(c); cb(); } }) as unknown as NodeJS.WriteStream;
+  stdout.columns = 120;
+  stdout.rows = 32;
+  stdout.isTTY = true;
+  const ep = new Observer();
+  const app = render(
+    <App ep={ep as unknown as CotalEndpoint} canWrite canControl={false}
+      makeParticipant={() => new RefusedParticipant() as unknown as CotalEndpoint} />,
+    { stdin, stdout, patchConsole: false, exitOnCtrlC: false },
+  );
+  await wait(250);
+  stdin.write("c");
+  await wait(150);
+  stdin.write("hello");
+  await wait(100);
+  stdin.write("\r");
+  await wait(500);
+  app.unmount();
+  const painted = strip(buf);
+  check("the message is not sent when the reply path could not start", ep.sent.length === 0, ep.sent);
+  check("the participant refusal remains visible", painted.includes("participant-start-refused"), painted.slice(-300));
+  check("send success is not painted over the refusal", !painted.includes("\n → #general\n"), painted.slice(-300));
 }
 
 console.log(`\n${fail === 0 ? "CONSOLE-RENDER SMOKE OK ✅" : "CONSOLE-RENDER SMOKE FAILED ❌"} (${fail} failed)`);

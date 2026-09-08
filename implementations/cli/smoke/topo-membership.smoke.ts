@@ -50,23 +50,45 @@ const snapshot: MembershipSnapshot = {
 const knownChannels = ["general", "backend", "team.build", "team.qa"];
 const nameOf = (id: string) => id.replace(/^ID_/, "");
 const g = foldTopo(feed, agents, { membership: { snapshot }, knownChannels, now: NOW, nameOf });
-const node = (name: string) => g.byKey.get("a:" + name);
-const links = (name: string) => g.memberships.filter((m) => m.agent === "a:" + name);
-check("silent subscriber becomes a node (member, lastTs 0)", node("bea")?.member === true && node("bea")?.lastTs === 0);
-check("silent subscriber gets a live link to its channel", links("bea").some((l) => l.channel === "c:general" && l.state === "live"));
+const node = (id: string) => g.byKey.get("a:" + id);
+const links = (id: string) => g.memberships.filter((m) => m.agent === "a:" + id);
+check("silent subscriber becomes a node (member, lastTs 0)", node("ID_bea")?.member === true && node("ID_bea")?.lastTs === 0);
+check("silent subscriber gets a live link to its channel", links("ID_bea").some((l) => l.channel === "c:general" && l.state === "live"));
 check("silent channel hub materialized", g.byKey.has("c:general"));
-check("durable-offline member gets a durable link", links("cid").some((l) => l.channel === "c:backend" && l.state === "durable"));
+check("durable-offline member gets a durable link", links("ID_cid").some((l) => l.channel === "c:backend" && l.state === "durable"));
 check("durable channel hub materialized", g.byKey.has("c:backend"));
-check("wide reader flagged, no per-hub spoke", node("wide")?.wide === true && links("wide").length === 0);
+check("wide reader flagged, no per-hub spoke", node("ID_wide")?.wide === true && links("ID_wide").length === 0);
 check("bounded wildcard expands to both concretes (live)", (() => {
-  const l = links("team").map((m) => m.channel).sort();
-  return l.length === 2 && l[0] === "c:team.build" && l[1] === "c:team.qa" && links("team").every((m) => m.state === "live");
+  const l = links("ID_team").map((m) => m.channel).sort();
+  return l.length === 2 && l[0] === "c:team.build" && l[1] === "c:team.qa" && links("ID_team").every((m) => m.state === "live");
 })());
-const aliceNodes = g.nodes.filter((n) => n.key === "a:alice");
+const aliceNodes = g.nodes.filter((n) => n.key === "a:ID_alice");
 check("a member with traffic is one node, member:true", aliceNodes.length === 1 && aliceNodes[0].member === true);
-check("a member with traffic keeps its traffic edge", g.edges.some((e) => e.src === "a:alice" && e.dst === "c:general"));
+check("a member with traffic keeps its traffic edge", g.edges.some((e) => e.src === "a:ID_alice" && e.dst === "c:general"));
 
-console.log("2. the fold withholds an overlay it could not read, and degrades cleanly when there is none");
+console.log("2. same-name principals remain separate authoritative members");
+const sameNameAgents: Presence[] = [agent("ID_sam_1", "sam"), agent("ID_sam_2", "sam")];
+const sameNameSnapshot: MembershipSnapshot = {
+  asOf: NOW,
+  members: [
+    { id: "ID_sam_1", live: ["red"], durable: [], observedAt: NOW },
+    { id: "ID_sam_2", live: ["blue"], durable: [], observedAt: NOW },
+  ],
+};
+const sameName = foldTopo([], sameNameAgents, {
+  membership: { snapshot: sameNameSnapshot },
+  knownChannels: ["red", "blue"],
+  now: NOW,
+});
+const sameNameNodes = sameName.nodes.filter((n) => n.kind === "agent" && n.name === "sam");
+check("two principals with one display name remain two topology nodes", sameNameNodes.length === 2, sameNameNodes);
+check(
+  "same-name principals keep separate membership spokes",
+  sameName.memberships.length === 2 && new Set(sameName.memberships.map((m) => m.agent)).size === 2,
+  sameName.memberships,
+);
+
+console.log("3. the fold withholds an overlay it could not read, and degrades cleanly when there is none");
 const disowned = foldTopo(feed, agents, { membership: { snapshot, unreadable: "permissions violation" }, knownChannels, now: NOW, nameOf });
 check("an unreadable feed draws NO membership links, even with a last snapshot in hand", disowned.memberships.length === 0);
 check("...and adds no phantom nodes", disowned.nodes.filter((n) => n.kind === "agent").length === 1);
@@ -96,7 +118,7 @@ check(
   fresh({ unreadable: "permissions violation" }),
 );
 
-console.log("4. MeshView classifies what its endpoint answers (the error path driven for real)");
+console.log("5. MeshView classifies what its endpoint answers (the error path driven for real)");
 /** The smallest endpoint MeshView.start() touches, with the two membership calls scripted. */
 class StubEndpoint extends EventEmitter {
   space = "stub";

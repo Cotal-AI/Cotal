@@ -340,10 +340,13 @@ export function App({
   const participant = useRef<CotalEndpoint | null>(null);
   const activatedRef = useRef(false);
   const [onRoster, setOnRoster] = useState(false);
-  const ensureParticipant = useCallback(async () => {
-    if (activatedRef.current || !canWrite) return;
+  const ensureParticipant = useCallback(async (): Promise<boolean> => {
+    if (activatedRef.current || !canWrite) return true;
     activatedRef.current = true;
-    if (!makeParticipant) return setNotice("sent one-way: under this credential replies cannot land in the console");
+    if (!makeParticipant) {
+      setNotice("sent one-way: under this credential replies cannot land in the console");
+      return true;
+    }
     const peer = makeParticipant();
     // The status bar's "on roster" is a claim about a LIVE presence peer, so it follows the peer's
     // own connection state rather than being set once and left. `error` only says something went
@@ -363,6 +366,7 @@ export function App({
       await peer.start();
       participant.current = peer;
       setOnRoster(true);
+      return true;
     } catch (e) {
       // A peer that never started is dropped, so it must not keep this component's handlers or a
       // half-open connection behind it. The next send builds a fresh one.
@@ -372,6 +376,7 @@ export function App({
       void peer.stop().catch(() => undefined);
       activatedRef.current = false; // let the next send retry
       setNotice("participant: " + (e as Error).message);
+      return false;
     }
   }, [canWrite, makeParticipant]);
   // The peer leaves with the console (an offline record, like the observer's own stop in useMesh).
@@ -399,7 +404,8 @@ export function App({
     if (!text) return;
     const ok = (label: string) => () => setNotice(label);
     const fail = (e: unknown) => setNotice("send: " + (e as Error).message);
-    void ensureParticipant().then(() => {
+    void ensureParticipant().then((ready) => {
+      if (!ready) return;
       if (c.kind === "channel")
         void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
       else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok("→ " + c.toName)).catch(fail);

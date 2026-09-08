@@ -50,6 +50,7 @@ interface FeedEntry {           // one feed row
   delivery: "multicast" | "unicast" | "anycast";
   channel?: string;             // multicast target
   toService?: string;           // anycast target
+  toIds?: string[];             // unicast: authoritative target endpoint ids
   toNames?: string[];           // unicast: targets resolved off the roster
   count?: number;               // unicast: burst multiplicity for a coalesced entry
   text: string;                 // parts joined, plain; the surface colours it
@@ -73,8 +74,11 @@ interface MeshSnapshot {
 - **Classification.** `deliveryOf(subject)` returns chat / unicast / anycast (chat renders as
   multicast); control, presence, and trace frames return `null` and drop out of the feed.
 - **Coalescing.** A same-sender/same-text unicast burst within 400 ms collapses to one entry, with
-  a deterministic `id` (the first message's), `ts` (the earliest), and `count` (the multiplicity).
+  a deterministic `id` (the first message's), `ts` (the earliest), `count` (the multiplicity), and
+  parallel `toIds`/`toNames` arrays so renderers keep identity separate from labels.
 - **Roster.** A status-sorted snapshot plus an id→name map; agents split from other endpoints.
+- **Topology identity.** Agent nodes use endpoint ids as keys and names only as labels, so two
+  principals with the same display name keep separate traffic and membership links.
 - **History prefill.** A one-shot per-channel backlog (multicast; plus DM backlog when DMs are
   visible), deduped against the live tap by `id`.
 - **Windowing.** The feed is capped (~300 entries) with a rolling `msgs/s` rate.
