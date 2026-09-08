@@ -37,16 +37,30 @@ const locate = (name: string): string => {
   return found;
 };
 const npm = locate("npm");
-const pnpm = locate("pnpm");
+const systemPnpm = locate("pnpm");
 const natsServer = locate("nats-server");
+// pnpm/action-setup installs a launcher that resolves its payload relative to $0. Reproduce that
+// shape on every host so this fixture does not depend on the local pnpm installation method.
+const pnpmRoot = join(base, "pnpm-launcher");
+const pnpmBin = join(pnpmRoot, "bin");
+const pnpmGlobal = join(pnpmRoot, "global");
+mkdirSync(pnpmBin, { recursive: true });
+mkdirSync(pnpmGlobal, { recursive: true });
+const pnpmPayload = join(pnpmGlobal, "pnpm-real");
+writeFileSync(pnpmPayload, `#!/bin/sh\nexec ${JSON.stringify(systemPnpm)} "$@"\n`);
+chmodSync(pnpmPayload, 0o755);
+const pnpm = join(pnpmBin, "pnpm");
+writeFileSync(pnpm, '#!/bin/sh\nbasedir=$(dirname "$0")\nexec "$basedir/../global/pnpm-real" "$@"\n');
+chmodSync(pnpm, 0o755);
 const fixtureBin = join(base, "bin");
 mkdirSync(fixtureBin);
 for (const name of ["node", "npm", "nats-server", "sh", "tar", "gzip", "which"])
   symlinkSync(locate(name), join(fixtureBin, name));
+symlinkSync(locate("pnpm"), join(fixtureBin, "pnpm"));
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
-const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:${dirname(pnpm)}:/usr/bin:/bin`, NO_COLOR: "1" };
+const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:/usr/bin:/bin`, NO_COLOR: "1" };
 const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
@@ -58,6 +72,10 @@ try {
   assert.equal(Object.keys(cleanEnv).filter((key) => key.startsWith("COTAL_")).length, 0, "child env carries no COTAL_*");
   assert.equal(spawnSync("sh", ["-c", "command -v cotal"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), fixtureCotal, "the fixture PATH masks the operator cotal binary");
   assert.equal(spawnSync("sh", ["-c", "command -v pnpm"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), pnpm, "the fixture PATH preserves the original pnpm launcher path");
+  const brokenPnpm = join(fixtureBin, "pnpm-canary");
+  symlinkSync(pnpm, brokenPnpm);
+  assert.notEqual(spawnSync(brokenPnpm, ["--version"], { env: cleanEnv, encoding: "utf8" }).status, 0, "CONTROL: the $0-relative pnpm launcher fails through a symlink");
+  assert.equal(spawnSync(pnpm, ["--version"], { env: cleanEnv, encoding: "utf8" }).status, 0, "the $0-relative pnpm launcher works at its original path");
   assert.equal(run(npm, ["root"], current).stdout.trim(), join(realpathSync(current), "node_modules"), "current package install resolves into the isolated prefix before installation");
   assert.equal(run(npm, ["root"], old).stdout.trim(), join(realpathSync(old), "node_modules"), "old package install resolves into the isolated prefix before installation");
   // The packed set is DERIVED, never hand-listed. A hand-listed set silently omits the next
