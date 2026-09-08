@@ -58,10 +58,10 @@
       "cell": "the audit summary names the exact checkout tree"
     },
     {
-      "name": "a non-terminal OK line is accepted as completion",
+      "name": "progress totals no longer require an explicit completion marker",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      : /(?:^|\\s)(?:PASSED|OK)(?:\\s|$)/.test(terminal) && !(new RegExp(cfg.progressPattern).test(terminal));",
-      "replace": "      : /(?:^|\\n)[^\\n]*(?:PASSED|OK)/.test(output);",
+      "find": "    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);",
+      "replace": "    const completed = output.includes(\"OK\") || output.includes(\"PASSED\");",
       "expectRed": "early-ok is not a terminal completion witness",
       "cell": "early-ok is not a terminal completion witness"
     },
@@ -92,8 +92,8 @@
     {
       "name": "printed build text counts as a package build",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (tokens[0] !== \"pnpm\") continue;\n    if (tokens[1] === \"build\") return true;",
-      "replace": "    if (tokens.includes(\"pnpm\") && tokens.includes(\"build\")) return true;",
+      "find": "    if (tokens[0] !== \"pnpm\") continue;",
+      "replace": "    if (tokens[0] !== \"pnpm\" && !segment.includes(\"pnpm build\")) continue;",
       "expectRed": "printed-build cannot fabricate executes evidence",
       "cell": "printed-build cannot fabricate executes evidence"
     },

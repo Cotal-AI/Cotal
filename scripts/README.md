@@ -45,7 +45,8 @@ cell total. It exits non-zero after the full selection and reports the checkout 
 enumerated, examined, graded, refused-with-reason, unparsed, and command-failed configs.
 
 `unparsed` means the suite command completed but did not prove how many cells it executed. A zero
-failure count without a total is not enough. Configs whose suite launches a repository entrypoint
+failure count without a total is not enough. A progress-derived total also needs an explicit
+`completionMarker` on the terminal line. Configs whose suite launches a repository entrypoint
 may declare it in `executes`; the declaration is accepted only when the suite passes that entrypoint
 to a Node, tsx, or node-pty subprocess and the command builds each mutated package reached through
 it.
