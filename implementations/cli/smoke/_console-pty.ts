@@ -43,7 +43,11 @@ export class ConsoleSession {
       cols: size.cols,
       rows: size.rows,
       cwd: repoRoot,
-      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm-256color", COTAL_HOME: home, ...extraEnv },
+      // XDG_CONFIG_HOME isolates the seed engine's config-rooted store into the suite's own temp
+      // home (COTAL_HOME does not relocate it), and COTAL_ALLOW_CHECKOUT_SEED=1 is that guard's
+      // documented opt-in for a sandboxed store under a source checkout; without both, a console
+      // child on an operator box dies at startup refusing to reconcile the operator-global store.
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm-256color", COTAL_HOME: home, XDG_CONFIG_HOME: home, COTAL_ALLOW_CHECKOUT_SEED: "1", ...extraEnv },
     });
     this.p.onData((d) => (this.out += d));
     this.p.onExit((e) => (this.exited = { code: e.exitCode }));
