@@ -29,6 +29,14 @@
       "replace": "/^ia[12]_([a-f0-9]{32})_([a-f0-9]{32})$/",
       "expectRed": "legacy and future connection metadata receive no issued fallback",
       "cell": "legacy and future connection metadata receive no issued fallback"
+    },
+    {
+      "name": "discovery reports the client proposal instead of the accepted grants",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "  const allow = info.data?.permissions?.publish?.allow;",
+      "replace": "  const allow = [`cotal.${space}.ep.v1.one.p.c.local.calloutproof.${\"u\".repeat(26)}.${\"a\".repeat(32)}.*`];",
+      "expectRed": "a callout client discovers the generation the issuer bound, not the one it proposed",
+      "cell": "a callout client discovers the generation the issuer bound, not the one it proposed"
     }
   ]
 }

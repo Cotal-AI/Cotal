@@ -26,6 +26,7 @@ import { importNativeSubjectPermissions } from "../../../packages/core/smoke/pro
 import { issuedRequestRows, issuedRequestSubject } from "../../../packages/core/smoke/prototypes/issued-static-connection.js";
 import { prepareCredentialReleaseFence } from "./prototypes/credential-release-fence.js";
 import { gateIssuedCallout, issuedCalloutName, readIssuedCalloutName } from "./prototypes/issued-callout-gate.js";
+import { discoverIssuedAuthority, ISSUED_DISCOVERY_GRANT } from "../../../packages/core/smoke/prototypes/issued-generation-discovery.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -80,6 +81,7 @@ try {
   const capability = { endpoint: "proof.bound", command: "inspect" };
   const refFor = (generation: string): IssuedRef => ({ space, owner, actor, uid, generation });
   let expanded = false, failNext = false;
+  let override: string | undefined;
   let hold: Promise<void> | undefined, entered = false;
   const issued = new Map<string, ReturnType<typeof importNativeSubjectPermissions>>();
   const opts: StartAuthCalloutOpts = {
@@ -94,7 +96,7 @@ try {
     },
     permissionsFor(_token, name) {
       const proposed = readIssuedCalloutName(name);
-      return { pub: { allow: [...issuedRequestRows(refFor(proposed.generation), capability), "proof.allowed", ...(expanded ? ["proof.new"] : [])] }, sub: { allow: [`_INBOX_${name}.>`] } };
+      return { pub: { allow: [...issuedRequestRows(refFor(override ?? proposed.generation), capability), "proof.allowed", ISSUED_DISCOVERY_GRANT, ...(expanded ? ["proof.new"] : [])] }, sub: { allow: [`_INBOX_${name}.>`] } };
     },
     log() {},
   };
@@ -107,7 +109,7 @@ try {
     for await (const msg of sub) {
       const task = gateIssuedCallout(msg, opts, async (success) => {
         const proposed = readIssuedCalloutName(success.connectionName);
-        const ref = refFor(proposed.generation);
+        const ref = refFor(override ?? proposed.generation);
         assert.equal(success.token.act.credentialId, credentialId);
         const claims = decode<User>(success.userJwt);
         assert.equal(claims.exp, success.token.exp);
@@ -212,6 +214,20 @@ try {
     assert.equal(issued.has(missing), false); assert.equal(issued.has(forged), false);
     assert.equal(await kv.get(evidenceKey(refFor(missing))), null);
     assert.equal(await kv.get(evidenceKey(refFor(forged))), null);
+  });
+  await check("a callout client discovers the generation the issuer bound, not the one it proposed", async () => {
+    // The connection name is a client proposal. Acceptance alone cannot tell the client which
+    // generation the issuer actually bound, so it reads that back from the server.
+    const proposed = random();
+    override = random();
+    try {
+      const client = await open(proposed);
+      const discovered = await discoverIssuedAuthority(client.nc, space);
+      assert.equal(discovered.generation, override);
+      assert.notEqual(discovered.generation, proposed);
+      assert.deepEqual(discovered, refFor(override));
+      await deniedPublish(client.nc, issuedRequestSubject(refFor(proposed), request()));
+    } finally { override = undefined; }
   });
   await check("revoked bearer credential is refused by the unchanged callout authorization path", async () => {
     await markLedgerRowRevoked(authKv, credentialKey);

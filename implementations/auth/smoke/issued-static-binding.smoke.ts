@@ -19,6 +19,7 @@ import { epRequestSubject } from "../../../packages/core/src/endpoint-subjects.j
 import { openIssuedLifecycle, type IssuedRef } from "../../../packages/core/smoke/prototypes/issued-authority-lifecycle.js";
 import { importNativeSubjectPermissions, permitsSubject } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { connectIssuedStatic, issuedStaticTag, issuedRequestRows, issuedReplyFilter, issuedRequestSubject } from "../../../packages/core/smoke/prototypes/issued-static-connection.js";
+import { discoverIssuedAuthority, ISSUED_DISCOVERY_GRANT } from "../../../packages/core/smoke/prototypes/issued-generation-discovery.js";
 
 let passed = 0;
 async function check(name: string, run: () => Promise<void>) {
@@ -72,10 +73,13 @@ try {
     for await (const message of sub) received.add(new TextDecoder().decode(message.data));
   })();
   await issuer.flush();
-  async function mint(channels: string[], abort = false) {
+  async function mint(channels: string[], abort = false, opts: { discoverable?: boolean; tagRef?: IssuedRef } = {}) {
     const ref: IssuedRef = { space, ...caller, generation: randomBytes(16).toString("hex") };
-    const native = { pub: { allow: [...issuedRequestRows(ref, capability), ...channels], deny: ["proof.secret"] }, sub: { allow: [issuedReplyFilter(ref)] } };
-    const material = await signed({ ...native, tags: [issuedStaticTag(ref)] }, "local-staticproof");
+    const native = {
+      pub: { allow: [...issuedRequestRows(ref, capability), ...channels, ...(opts.discoverable ? [ISSUED_DISCOVERY_GRANT] : [])], deny: ["proof.secret"] },
+      sub: { allow: [issuedReplyFilter(ref), ...(opts.discoverable ? ["_INBOX.>"] : [])] },
+    };
+    const material = await signed({ ...native, tags: [issuedStaticTag(opts.tagRef ?? ref)] }, "local-staticproof");
     const permissions = importNativeSubjectPermissions(native);
     const mint = await stageAgentMint(reg, { lifecycleUid: ref.uid, credentialId: ref.generation, holderPrincipal: "local.staticproof", sourceChain: ["root"], exp: Date.now() + 600_000 });
     const sources = mint.pins.map((pin) => ({ space, bucket: epAuthBucket(space), key: pin.key }));
@@ -159,6 +163,47 @@ try {
     const replacement = await open(readFileSync(file));
     assert.deepEqual(replacement.ref, second.ref);
     await publication(replacement, "proof.new", true);
+  });
+
+  await check("the client discovers its accepted generation from the server, not from its own credentials", async () => {
+    const discoverable = await mint(["proof.public"], false, { discoverable: true });
+    const c = await open(discoverable.material);
+    assert.deepEqual(await discoverIssuedAuthority(c.nc, space), discoverable.ref);
+    // The signed tag is a label; the enforced grant rows are what the broker accepted. When an
+    // issuer signs one and grants the other, discovery follows the grants.
+    const mismatched = await mint(["proof.public"], false, { discoverable: true, tagRef: discoverable.ref });
+    const d = await open(mismatched.material);
+    assert.deepEqual(d.ref, discoverable.ref);
+    assert.deepEqual(await discoverIssuedAuthority(d.nc, space), mismatched.ref);
+    assert.notEqual(mismatched.ref.generation, discoverable.ref.generation);
+  });
+
+  await check("a connection without the server-info grant cannot discover its generation", async () => {
+    await assert.rejects(discoverIssuedAuthority(a.nc, space));
+    const unrestricted = await connect({ servers: server, authenticator: credsAuthenticator(operator.material), maxReconnectAttempts: 0 });
+    connections.push(unrestricted);
+    await assert.rejects(discoverIssuedAuthority(unrestricted, space), /names no generation|issued generations/);
+  });
+
+  await check("discovery refuses ambiguous or unbindable grant rows", async () => {
+    const other: IssuedRef = { space, ...caller, generation: randomBytes(16).toString("hex") };
+    const foreign: IssuedRef = { space: "otherspace", ...caller, generation: randomBytes(16).toString("hex") };
+    const two = await mint(issuedRequestRows(other, capability), false, { discoverable: true });
+    await assert.rejects(discoverIssuedAuthority((await open(two.material)).nc, space), /2 issued generations/);
+    const wildcard = await mint([`cotal.${space}.ep.v1.one.proof.bound.${caller.owner}.${caller.actor}.${caller.uid}.*.*`], false, { discoverable: true });
+    await assert.rejects(discoverIssuedAuthority((await open(wildcard.material)).nc, space), /invalid issued generation/);
+    const mixed = await mint(issuedRequestRows(foreign, capability), false, { discoverable: true });
+    assert.deepEqual(await discoverIssuedAuthority((await open(mixed.material)).nc, space), mixed.ref);
+  });
+
+  await check("replacing the credential file does not change what a live connection discovers", async () => {
+    const before = await mint(["proof.public"], false, { discoverable: true });
+    const after = await mint(["proof.public"], false, { discoverable: true });
+    const live = await open(before.material);
+    writeFileSync(file, after.material, { mode: 0o600 });
+    assert.deepEqual(await discoverIssuedAuthority(live.nc, space), before.ref);
+    const next = await open(readFileSync(file));
+    assert.deepEqual(await discoverIssuedAuthority(next.nc, space), after.ref);
   });
 
   await check("native reconnect retains snapshotted credentials after caller-buffer mutation", async () => {
