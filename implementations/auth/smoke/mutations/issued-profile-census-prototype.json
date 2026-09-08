@@ -45,6 +45,22 @@
       "replace": "if (profile === \"operator\") return { ...operatorPermissions(space, pr), pub: { allow: [\">\"] } };",
       "expectRed": "current profile excludes issued namespace: operator/default",
       "cell": "current profile excludes issued namespace: operator/default"
+    },
+    {
+      "name": "the raw-read overlap detector stops matching writes",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  return [...rawRead].filter(writable).sort();",
+      "replace": "  return [];",
+      "expectRed": "the write-plus-raw-read detector finds the known trusted overlaps",
+      "cell": "the write-plus-raw-read detector finds the known trusted overlaps"
+    },
+    {
+      "name": "a profile with a known overlap is treated as peer-held",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\"])",
+      "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"run-mediator\"])",
+      "expectRed": "no peer-held profile can both write and raw-read one stream",
+      "cell": "no peer-held profile can both write and raw-read one stream"
     }
   ]
 }

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, patternCovers,
+  chatStream, dmStream, dlvStream, inboxStream, taskStream,
+  epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
+  eptStreamName, eptReqStreamName, epwStreamName,
+  channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
+  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket,
   type Profile, type MintOpts, type MintPrincipal,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
@@ -99,3 +104,80 @@ export function namespaceGrants(permissions: Record<string, unknown>, space: str
   const wholeNamespaceDenied = deny.some((row) => !row.includes(" ") && patternCovers(row, `cotal.${space}.ep.v1.>`));
   return { overlaps, deny, potential: overlaps.length > 0 && !wholeNamespaceDenied };
 }
+
+/**
+ * Which subject space each stream captures, for the write-plus-raw-read overlap check.
+ * Explicit and closed: a raw read of a stream absent from this table FAILS the check rather
+ * than passing it, so a new stream cannot quietly become invisible to the invariant.
+ */
+export function streamSubjects(space: string): Record<string, string> {
+  const kv = (bucket: string) => `$KV.${bucket}.>`;
+  return {
+    [chatStream(space)]: `cotal.${space}.chat.>`,
+    [dmStream(space)]: `cotal.${space}.dm.>`,
+    [dlvStream(space)]: `cotal.${space}.dlv.>`,
+    [inboxStream(space)]: `cotal.${space}.inbox.>`,
+    [taskStream(space)]: `cotal.${space}.svc.>`,
+    [epcStreamName(space)]: `cotal.${space}.epc.>`,
+    [epeStreamName(space)]: `cotal.${space}.epe.>`,
+    [epfStreamName(space)]: `cotal.${space}.epf.>`,
+    [epjStreamName(space)]: `cotal.${space}.epj.>`,
+    [eprStreamName(space)]: `cotal.${space}.epr.>`,
+    [eptStreamName(space)]: `cotal.${space}.ept.>`,
+    [eptReqStreamName(space)]: `cotal.${space}.ept.>`,
+    [epwStreamName(space)]: `cotal.${space}.epw.>`,
+    [`KV_${channelBucket(space)}`]: kv(channelBucket(space)),
+    [`KV_${presenceBucket(space)}`]: kv(presenceBucket(space)),
+    [`KV_${membershipBucket(space)}`]: kv(membershipBucket(space)),
+    [`KV_${deliveryBucket(space)}`]: kv(deliveryBucket(space)),
+    [`KV_${managerBucket(space)}`]: kv(managerBucket(space)),
+    [`KV_${membersBucket(space)}`]: kv(membersBucket(space)),
+    [`KV_${aclBucket(space)}`]: kv(aclBucket(space)),
+    [`KV_${epAuthBucket(space)}`]: kv(epAuthBucket(space)),
+    [`KV_${recordsBucket(space)}`]: kv(recordsBucket(space)),
+    [`KV_${sessionsBucket(space)}`]: kv(sessionsBucket(space)),
+  };
+}
+
+/**
+ * Streams a credential can BOTH write into and read raw bytes out of by a caller-chosen
+ * destination (`DIRECT.GET` / `STREAM.MSG.GET`). That pairing is what would let a holder place
+ * bytes of its own choosing under any subject, so it is the condition the issued rail's origin
+ * assumption cannot survive. THROWS on a raw read of a stream this module does not model.
+ */
+export function writeAndRawReadStreams(permissions: Record<string, unknown>, space: string): string[] {
+  const table = streamSubjects(space);
+  const pub = ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? []).map((row) => row.split(" ")[0]);
+  const rawRead = new Set<string>();
+  for (const row of pub) {
+    const direct = /^\$JS\.API\.DIRECT\.GET\.([^.]+)/.exec(row) ?? /^\$JS\.API\.STREAM\.MSG\.GET\.([^.]+)/.exec(row);
+    if (!direct) continue;
+    const stream = direct[1];
+    if (stream === "*" || stream === ">")
+      throw new Error(`a raw read grant covers every stream (${row}); the overlap check cannot model it`);
+    if (!(stream in table)) throw new Error(`raw read of unmodelled stream "${stream}" (${row}); extend streamSubjects()`);
+    rawRead.add(stream);
+  }
+  const writable = (stream: string): boolean =>
+    pub.some((row) => !row.startsWith("$JS.API.") && subjectCoveredBy(table[stream], row));
+  return [...rawRead].filter(writable).sort();
+}
+
+/** True when a publish grant row lands anywhere inside a stream's captured subject space. */
+function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
+  const prefix = streamPattern.replace(/\.>$/, "").split(".");
+  const row = grantRow.split(".");
+  for (let i = 0; i < prefix.length; i++) {
+    if (row[i] === undefined) return false;
+    if (row[i] === ">") return true;
+    if (row[i] !== "*" && prefix[i] !== "*" && row[i] !== prefix[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * The profiles an ordinary, untrusted peer can be handed. Closed and explicit: the write-plus-raw-read
+ * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
+ * condition the issued rail's origin assumption cannot survive in a peer-held credential.
+ */
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver"]);

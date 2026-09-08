@@ -11,7 +11,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -101,6 +101,7 @@ try {
     assert.ok(asymmetric.every((r) => !r.publish && r.subscribe));
   });
   const reports: unknown[] = [];
+  const observations: Record<string, unknown> = {};
   for (const fixture of fixtures) {
     await check(`current profile excludes issued namespace: ${fixture.profile}/${fixture.variant}`, async () => {
       const pub = namespaceGrants(fixture.permissions, space, "pub");
@@ -115,13 +116,33 @@ try {
       assert.ok(native.every((r) => !r.publish && !r.subscribe));
     });
   }
+  await check("the write-plus-raw-read detector finds the known trusted overlaps", async () => {
+    // Positive control: without it, a detector that silently found nothing would pass the
+    // invariant below while measuring nothing at all.
+    const overlaps = fixtures.map((f) => ({ profile: f.profile, variant: f.variant, streams: writeAndRawReadStreams(f.permissions, space) }))
+      .filter((row) => row.streams.length > 0);
+    const named = (profile: string) => overlaps.some((row) => row.profile === profile);
+    assert.ok(named("run-mediator") && named("provisioner"), `expected trusted overlaps, got ${JSON.stringify(overlaps)}`);
+    observations.trustedOverlaps = overlaps;
+  });
+
+  await check("no peer-held profile can both write and raw-read one stream", async () => {
+    // A credential holding both could place bytes of its own choosing under any subject, which is
+    // the one condition that turns the measured deputy paths into a forged request on the rail.
+    for (const fixture of fixtures) {
+      if (!PEER_HELD_PROFILES.includes(fixture.profile as never)) continue;
+      const streams = writeAndRawReadStreams(fixture.permissions, space);
+      assert.deepEqual(streams, [], `${fixture.profile}/${fixture.variant} pairs write and raw read on ${streams.join(", ")}`);
+    }
+  });
+
   const report = {
     profileCount: new Set(fixtures.map((f) => f.profile)).size, variantCount: fixtures.length,
     nativeProfileDecisions: fixtures.length * subjects.length * 2,
     nonProfileKinds: ["membership-observer", "connection-evictor"],
     refusedCalloutViews: ["manager-service"],
     scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
-    rows: reports,
+    rows: reports, peerHeldProfiles: PEER_HELD_PROFILES, ...observations,
   };
   if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify(report, null, 2) + "\n");
   console.log(`issued profile census: ${passed} checks, ${report.profileCount} profiles, ${report.variantCount} variants, ${report.nativeProfileDecisions} native profile decisions`);
