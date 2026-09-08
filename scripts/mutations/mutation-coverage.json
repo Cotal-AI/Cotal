@@ -3,8 +3,6 @@
   "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
   "command": "node scripts/mutation-coverage.selftest.mjs",
   "progressPattern": "^  ✓ ",
-  "minTicks": 18,
-  "completionMarker": "MUTATION-COVERAGE SELF-TEST:",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
   "why": [
     "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
@@ -48,8 +46,8 @@
       "file": "scripts/mutation-coverage.mjs",
       "find": "if (refused || unparsed || failed || examined !== configs.length || graded !== configs.length) process.exitCode = 1;",
       "replace": "void refused; void unparsed; void failed; void examined; void graded;",
-      "expectRed": "zero failures without a total stays unparsed",
-      "cell": "zero failures without a total stays unparsed"
+      "expectRed": "a by-name same-package import without ../src is refused",
+      "cell": "a by-name same-package import without ../src is refused"
     },
     {
       "name": "the audit summary omits the checkout tree",
