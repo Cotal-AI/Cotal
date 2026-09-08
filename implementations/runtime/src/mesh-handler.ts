@@ -30,11 +30,13 @@ import {
   eptStreamName,
   eptSubject,
   chatStream,
-  chatSubject,
+  waitConsumerName,
+  waitConsumerConfig,
   isConcreteChannel,
   assertSafePattern,
   assertValidChannel,
   presenceBucket,
+  principalKey,
   liveKvEntries,
   IncompleteKvScan,
   openMembersRegistry,
@@ -52,6 +54,7 @@ import {
   readGoalStatus,
   resolveService,
   listRunNotices,
+  listRunMigrations,
   markRunNoticeConsumed,
   listRunNoticesForRun,
   readRunRecord,
@@ -69,6 +72,7 @@ import {
   type ResolvedService,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
+import { migrationSeats } from "./migrate.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -100,6 +104,16 @@ import {
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
+
+import type { RunPauseHost } from "./run-pause-host.js";
+import type { RunWaitHost } from "./run-wait-host.js";
+import type { RunScopeAuthority } from "./run-scope-authority.js";
+
+export interface RunMeshServices {
+  readonly pauses: RunPauseHost;
+  readonly waits: RunWaitHost;
+  readonly authority: RunScopeAuthority;
+}
 
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
 export interface MeshHandlerBinding {
@@ -191,6 +205,7 @@ export class MeshHandler {
     private readonly binding: MeshHandlerBinding,
     private readonly watcher: SettleWatcher,
     private readonly clock: () => number = () => Date.now(),
+    private readonly services?: RunMeshServices,
   ) {}
 
   /**
@@ -304,8 +319,9 @@ export class MeshHandler {
    * cannot advance it.
    */
   async adopted(entries: readonly JournalEntry[]): Promise<string[]> {
-    const folded = foldEntries(entries);
+    const folded = foldEntries(this.services ? await this.services.authority.journal() : entries);
     this.seedRunMemos(folded);
+    if (this.services) return [...await this.services.pauses.rearm()];
     return await rearmOutstandingPauses(
       { kv: this.kv, js: this.js, jsm: this.jsm },
       this.binding,
@@ -320,6 +336,17 @@ export class MeshHandler {
    * its identity, its worktree and its turn history across the edit. Called by the driver on the
    * migrated run before the program runs; a map with no entry for a persona changes nothing.
    */
+  async restoreMigratedSeats(entries: readonly JournalEntry[]): Promise<void> {
+    const source = this.services ? await this.services.authority.journal() : entries;
+    const kept = new Map<string, JournalEntry[]>();
+    for (const migration of await listRunMigrations(this.kv, this.binding.endpoint, this.binding.runId)) {
+      if (migration.applied === undefined) continue;
+      for (const [persona, seats] of migrationSeats(source, migration.spec).adopt)
+        kept.set(persona, [...(kept.get(persona) ?? []), ...seats]);
+    }
+    if (kept.size > 0) this.adoptMigratedSeats(kept);
+  }
+
   adoptMigratedSeats(seats: ReadonlyMap<string, readonly JournalEntry[]>): void {
     for (const [persona, entries] of seats)
       this.adoptable.set(persona, [...(this.adoptable.get(persona) ?? []), ...entries]);
@@ -456,7 +483,8 @@ export class MeshHandler {
    * landed, and the flip to `issued: true` happens only after it returns.
    */
   async discharge(entries: readonly JournalEntry[]): Promise<void> {
-    for (const e of entries) {
+    const owed = this.services ? await this.services.authority.cleanupEntries() : entries;
+    for (const e of owed) {
       if (e.requestId === undefined) continue;
       if (e.kind === "spawn") {
         await this.dischargeSpawn(e);
@@ -485,6 +513,10 @@ export class MeshHandler {
       await this.cancelTimer({ endpoint: this.binding.endpoint, token: current });
       if (e.kind === "wait") {
         await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(e.requestId, "wait-timeout") });
+        if (this.services) {
+          await this.services.waits.close(e.requestId);
+          continue;
+        }
         try {
           await this.jsm.consumers.delete(chatStream(this.binding.space), waitConsumerName(e.requestId));
         } catch { /* never created, or already deleted — nothing is held either way */ }
@@ -601,6 +633,7 @@ export class MeshHandler {
     if (e.closed === true) return;
     const plan = e.external;
     if (!isConclavePlan(plan)) return;
+    assertConclaveOwnership(plan, e.requestId!);
     await this.releaseConclave(plan);
     this.conclaves.delete(e.requestId as string);
   }
@@ -687,7 +720,7 @@ export class MeshHandler {
     // was accepted, so an answer found by token alone could be the loser's.
     const answer = settled.answerId === undefined
       ? undefined
-      : await readCheckpointAnswer(this.kv, this.binding.endpoint, ref.token, settled.answerId);
+      : this.services ? await this.services.pauses.readAnswer(ref.token) : await readCheckpointAnswer(this.kv, this.binding.endpoint, ref.token, settled.answerId);
     if (answer === undefined) throw new CheckpointAnswerMissing(ref.token, settled.answerId);
     return {
       outcome: "resolved",
@@ -722,6 +755,19 @@ export class MeshHandler {
     if (!isConcreteChannel(ev.channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${ev.channel}"); an await names one channel`);
     }
+    const waitBinding = {
+      ...ctx.resume,
+      waitChannel: ev.channel,
+      waitTimers: [
+        ...(ev.event === "idle" || req.timeout !== undefined ? [ctx.requestId] : []),
+        ...(ev.event === "idle" && req.timeout !== undefined ? [derivedToken(ctx.requestId, "wait-timeout")] : []),
+      ],
+    };
+    if (this.services) {
+      if (ctx.resume?.waitChannel !== undefined && ctx.resume.waitChannel !== ev.channel)
+        throw new Error(`wait ${ctx.requestId} recorded a different channel`);
+      await ctx.bind(waitBinding);
+    }
     // A recorded seq is a previous attempt's MATCH, taken before the crash. Return that message
     // rather than looking again: the consumer has already acked it, so looking again would wait for
     // a second event the program never asked for.
@@ -732,7 +778,7 @@ export class MeshHandler {
       // same reason the live match path does: this is the ending, it just happened last time.
       await this.cancelTimer({ endpoint: this.binding.endpoint, token: ctx.requestId });
       await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(ctx.requestId, "wait-timeout") });
-      return await this.messageAt(bound);
+      return await this.messageAt(bound, ctx.requestId);
     }
 
     const timeoutAt = req.timeout === undefined ? undefined : this.now() + parseDuration(req.timeout);
@@ -756,8 +802,9 @@ export class MeshHandler {
 
     const durable = waitConsumerName(ctx.requestId);
     const stream = chatStream(this.binding.space);
-    await this.jsm.consumers.add(stream, waitConsumerConfig(this.binding.space, ctx.requestId, ev.channel));
-    const consumer = await this.js.consumers.get(stream, durable);
+    if (this.services) await this.services.waits.open(ctx.requestId, ev.channel);
+    else await this.jsm.consumers.add(stream, waitConsumerConfig(this.binding.space, ctx.requestId, ev.channel));
+    const consumer = this.services ? undefined : await this.js.consumers.get(stream, durable);
     // Set on each of the three paths that END the wait, and read by the cleanup below. A THROW is
     // not one of them — see the note there.
     let over = false;
@@ -793,21 +840,27 @@ export class MeshHandler {
           over = true;
           return { channel: ev.channel, at: this.now() };
         }
-        for await (const m of await consumer.fetch({ max_messages: 16, expires: WAIT_POLL_MS })) {
+        const batch = this.services
+          ? (await this.services.waits.fetch(ctx.requestId)).map((message) => ({
+              seq: message.sequence, data: message.data,
+              ack: () => this.services!.waits.ack(ctx.requestId, message.receipt),
+            }))
+          : await consumer!.fetch({ max_messages: 16, expires: WAIT_POLL_MS });
+        for await (const m of batch) {
           const msg = decodeMessage(m.data);
           if (idleFor !== undefined) {
             // ANY traffic resets an idle window, matched or not: "idle" is a fact about the
             // channel, not about the messages this program finds interesting.
-            m.ack();
+            await m.ack();
             await this.push(primary!, this.now() + idleFor);
             continue;
           }
-          if (msg === undefined || !matchesEvent(msg, from, matcher)) { m.ack(); continue; }
+          if (msg === undefined || !matchesEvent(msg, from, matcher)) { await m.ack(); continue; }
           // BIND BEFORE ACK. The bind is durable; the ack is what makes the message unrecoverable.
           // In this order a crash in between redelivers it, and a crash after it is answered from
           // the recorded sequence — in the other order the match is simply lost.
-          await ctx.bind({ chatSeq: m.seq });
-          m.ack();
+          await ctx.bind(this.services ? { ...waitBinding, chatSeq: m.seq } : { chatSeq: m.seq });
+          await m.ack();
           if (primary !== undefined) await this.cancelTimer(primary);
           if (outer !== undefined) await this.cancelTimer(outer);
           over = true;
@@ -825,7 +878,8 @@ export class MeshHandler {
       // Keeping the consumer costs one durable on an abandoned run, which is what a host crash
       // already costs; reaping on inactivity instead could delete a live wait's position while its
       // host was down.
-      if (over) {
+      if (over && this.services) await this.services.waits.close(ctx.requestId);
+      else if (over) {
         try {
           await this.jsm.consumers.delete(stream, durable);
         } catch { /* already gone, or never created — either way there is nothing to hold */ }
@@ -1497,7 +1551,7 @@ export class MeshHandler {
       }
       const answer = settled.answerId === undefined
         ? undefined
-        : await readCheckpointAnswer(this.kv, this.binding.endpoint, token, settled.answerId);
+        : this.services ? await this.services.pauses.readAnswer(token) : await readCheckpointAnswer(this.kv, this.binding.endpoint, token, settled.answerId);
       if (answer === undefined) throw new CheckpointAnswerMissing(token, settled.answerId);
       if (conformsToAskSchema(answer.value, shape)) return answer.value;
       const why = askNonconformance(answer.value, shape);
@@ -1704,6 +1758,7 @@ export class MeshHandler {
       plan = await this.planConclave(req, ctx);
       await ctx.bind({ ...plan });
     }
+    assertConclaveOwnership(plan, ctx.requestId, req);
     await this.executeConclavePlan(plan);
     this.conclaves.set(ctx.requestId, plan);
     return { channel: plan.channel };
@@ -1724,6 +1779,7 @@ export class MeshHandler {
     const plan = this.conclaves.get(ctx.requestId) ?? (isConclavePlan(ctx.resume) ? ctx.resume : undefined);
     if (plan === undefined)
       throw new Error(`conclave close for "${ctx.requestId}" has no recorded plan: the open that owes this close bound none`);
+    assertConclaveOwnership(plan, ctx.requestId);
     await this.releaseConclave(plan);
     this.conclaves.delete(ctx.requestId);
     return null;
@@ -1865,6 +1921,7 @@ export class MeshHandler {
    * raised rather than waited on.
    */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
+    if (this.services) return this.services.pauses.arm(ref.token, deadline);
     // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
     // caller reads the fact next.
     if ((await readCheckpointSettle(this.jsm, this.binding.space, ref)) !== undefined) return;
@@ -1920,6 +1977,7 @@ export class MeshHandler {
   /** Push a live deadline out — the idle window restarting. The heartbeat CAS-advances the
    *  generation before replacing the timer, so a fire from the old one no-ops rather than racing. */
   private async push(ref: CheckpointRef, deadline: number): Promise<void> {
+    if (this.services) return this.services.pauses.heartbeat(ref.token, deadline);
     await heartbeatCheckpoint(this.kv, this.js, this.jsm, this.binding.space, {
       ref,
       instanceId: this.binding.instanceId,
@@ -1945,6 +2003,7 @@ export class MeshHandler {
    * owner-behind clock skew, and over-emission is idempotent at the timer writer.
    */
   private async takeFire(ref: CheckpointRef): Promise<boolean> {
+    if (this.services) return this.services.pauses.takeFire(ref.token);
     const subject = eptSubject(
       this.binding.space, ref.endpoint,
       this.binding.instanceId, this.binding.epoch, ref.token, "fire",
@@ -1977,6 +2036,12 @@ export class MeshHandler {
    *  without ever producing it is how a `wait` with a timeout waited past its timeout forever. */
   private async expired(ref: CheckpointRef | undefined): Promise<CheckpointSettleFact | undefined> {
     if (ref === undefined) return undefined;
+    if (this.services) {
+      const settled = await this.services.pauses.readSettle(ref.token);
+      if (settled !== undefined) return settled;
+      if (!(await this.services.pauses.takeFire(ref.token))) return undefined;
+      return this.services.pauses.readSettle(ref.token);
+    }
     const settled = await readCheckpointSettle(this.jsm, this.binding.space, ref);
     if (settled !== undefined) return settled;
     if (!(await this.takeFire(ref))) return undefined;
@@ -1987,6 +2052,7 @@ export class MeshHandler {
    *  A timer left armed would fire into a run that has moved on; claiming it is how the plane says
    *  "this pause is over" without a second mechanism for cancellation. */
   private async cancelTimer(ref: CheckpointRef): Promise<void> {
+    if (this.services) return this.services.pauses.claim(ref.token);
     const st = await readCheckpointStatus(this.kv, ref);
     if (st?.value.state !== "waiting") return;
     try {
@@ -2017,7 +2083,12 @@ export class MeshHandler {
   }
 
   /** The message at a recorded stream sequence — the re-bind path after a crash. */
-  private async messageAt(seq: number): Promise<unknown> {
+  private async messageAt(seq: number, requestId: string): Promise<unknown> {
+    if (this.services) {
+      const message = decodeMessage(await this.services.waits.messageAt(requestId, seq));
+      if (message === undefined) throw new Error(`wait ${requestId}'s recorded message does not decode`);
+      return message;
+    }
     const m = await this.jsm.streams.getMessage(chatStream(this.binding.space), { seq });
     if (m === null || m === undefined) {
       throw new Error(`the message this wait matched (sequence ${seq}) is no longer on the channel's stream; a recorded match cannot be re-read`);
@@ -2036,7 +2107,7 @@ export class MeshHandler {
    * already in the past.
    */
   private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
-    const already = await readCheckpointSettle(this.jsm, this.binding.space, ref);
+    const already = this.services ? await this.services.pauses.readSettle(ref.token) : await readCheckpointSettle(this.jsm, this.binding.space, ref);
     if (already !== undefined) return already;
     // The watcher waits for the FACT. For a pause with an answer the fact arrives because somebody
     // answered; for a pause nobody answers - a `sleep`, or a `checkpoint` whose timeout wins - it
@@ -2093,29 +2164,7 @@ export class MeshHandler {
   }
 }
 
-/** The durable that holds one wait's position on a channel. Derived from the step's own request id,
- *  which is why a resumed run finds the consumer its earlier attempt created rather than starting
- *  again from "now" — and why nothing about the wait has to be remembered across a crash. */
-export function waitConsumerName(requestId: string): string {
-  return `wfw_${requestId}`;
-}
-
-/**
- * The one definition of a wait's consumer, shared by the handler and by anything that has to
- * recreate it — so the name a resume looks for and the name a wait creates cannot drift apart.
- *
- * `deliver_policy: "new"` applies only to the FIRST create: an existing durable keeps its own
- * position, which is exactly what a resume needs, and events from before the program asked are not
- * this wait's to see.
- */
-export function waitConsumerConfig(space: string, requestId: string, channel: string): Record<string, unknown> {
-  return {
-    durable_name: waitConsumerName(requestId),
-    filter_subject: chatSubject(space, "*", "*", channel),
-    ack_policy: "explicit",
-    deliver_policy: "new",
-  };
-}
+export { waitConsumerName, waitConsumerConfig } from "@cotal-ai/core";
 
 /** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
  *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
@@ -2321,6 +2370,26 @@ interface ConclavePlan {
   readonly channel: string;
   readonly registered: boolean;
   readonly members: readonly ConclavePlanMember[];
+}
+
+/** A recorded flag cannot turn a borrowed channel into a channel this step owns. */
+function assertConclaveOwnership(plan: ConclavePlan, requestId: string, req?: ConclaveRequest): void {
+  const derived = `conclave-${createHash("sha256").update(requestId).digest("hex").slice(0, 12)}`;
+  if (plan.registered && plan.channel !== derived)
+    throw new Error(`recorded conclave channel ${plan.channel} is not owned by step ${requestId}`);
+  if (req !== undefined) {
+    if (plan.channel !== (req.channel ?? derived) || plan.registered !== (req.channel === undefined))
+      throw new Error(`recorded conclave channel does not match the requested channel for ${requestId}`);
+    const members = new Set(req.members.map((member) => member.agent));
+    if (plan.members.length !== members.size || plan.members.some((member) => !members.delete(member.agent)))
+      throw new Error(`recorded conclave members do not match the request for ${requestId}`);
+  }
+  for (const member of plan.members) {
+    const [owner, actor, ...extra] = member.principal.split(".");
+    if (owner === undefined || actor === undefined || extra.length !== 0 || principalKey(owner, actor).key !== member.principal
+      || parseAgentHandle(member.agent).uid !== member.uid || !Number.isSafeInteger(member.generation) || member.generation < 1)
+      throw new Error(`recorded conclave member identity is malformed for ${requestId}`);
+  }
 }
 
 /** Whether a recorded external is a conclave plan. A journal is bytes from an earlier process, so

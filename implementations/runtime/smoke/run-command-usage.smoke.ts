@@ -44,7 +44,9 @@ const VERBS = ["start", "resume", "ps", "journal", "answer"];
 let usage = "";
 {
   reset();
-  const got = await attempt(["frobnicate"]);
+  // Complete answer-shaped arguments prevent the hosted answer branch's own usage error
+  // from impersonating the verb gate. Invalid JSON stops that wrong branch before a connect.
+  const got = await attempt(["frobnicate", "run-0", "/checkpoint:probe#0"], { value: "{" });
   c("an unknown verb is refused the same way", got instanceof Exited && got.code === 1, got);
   usage = ERR.find((l) => l.startsWith("usage: cotal run")) ?? "";
   c("and the usage line is printed for it too", usage !== "", ERR);
