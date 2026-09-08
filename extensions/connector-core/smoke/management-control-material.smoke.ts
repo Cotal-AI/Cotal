@@ -1,5 +1,6 @@
 /** Management control material transport through every manager-facing connector. */
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { readLaunchMaterial, LAUNCH_MATERIAL_ENV, type Connector, type ManagementControlFence } from "@cotal-ai/core";
 import { controlFromEnv } from "../src/config.js";
 import { claudeConnector } from "../../connector-claude-code/src/extension.js";
@@ -22,6 +23,7 @@ for (const connector of connectors) {
   const materialPath = spec.env?.[LAUNCH_MATERIAL_ENV];
   assert.ok(materialPath, `${connector.name}: launch material path exists`);
   const material = readLaunchMaterial(materialPath);
+  const rawMaterial = readFileSync(materialPath, "utf8");
   assert.equal(material.controlToken, spec.control.token, `${connector.name}: hook token crosses through launch material`);
   assert.deepEqual(
     material.managementControl && {
@@ -33,10 +35,11 @@ for (const connector of connectors) {
     `${connector.name}: management verifier carries the exact lifecycle fence`,
   );
   assert.notEqual(material.managementControl?.tokenDigest, spec.control.management.token, `${connector.name}: raw management bearer is absent from child material`);
+  assert.ok(!rawMaterial.includes(spec.control.management.token), `${connector.name}: raw management bearer does not occur anywhere in child material bytes`);
   const parsed = controlFromEnv(spec.env);
   assert.equal(parsed?.managementVerifier?.tokenDigest, material.managementControl?.tokenDigest, `${connector.name}: connector server reconstructs the verifier digest`);
   assert.equal(parsed?.managementVerifier?.fence.resourceId, fence.resourceId, `${connector.name}: connector server reconstructs resourceId`);
-  pass += 6;
+  pass += 7;
   console.log(`  ✓ ${connector.name}: raw bearer manager-only, digest + exact fence reach the connector`);
 }
 console.log(`\nMANAGEMENT CONTROL MATERIAL TESTS PASSED ✅  (${pass} checks)`);
