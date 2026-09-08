@@ -140,6 +140,9 @@ export interface AuthAuthorityPlane {
     alreadyRetired?: boolean;
   }>;
   issueManagerServiceAuthority: (args: { owner: string; scope: string[]; request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
+  /** Trusted read-only shutdown guard. The sealed scanner retains all consumer authority; callers
+   * receive only a parsed manager-scoped lookup result. */
+  queryNativeLifecycleBindings: (managerPrincipal: string) => Promise<import("@cotal-ai/core").NativeLifecycleBindingLookup>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -517,6 +520,10 @@ export async function openAuthAuthorityPlane(opts: {
         },
       });
     },
+    queryNativeLifecycleBindings: async (managerPrincipal) => {
+      refuseIfFenced();
+      return recordsScanner!.scanNativeBindings(managerPrincipal);
+    },
     fenced,
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
@@ -724,6 +731,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     bridgeIdp,
     ownerSecret,
     managerServiceAuthority: plane.issueManagerServiceAuthority,
+    nativeLifecycleBindings: plane.queryNativeLifecycleBindings,
     retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
     cap,
     failures,
@@ -816,6 +824,7 @@ interface HandlerCtx {
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
   ownerSecret: string | Uint8Array;
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
+  nativeLifecycleBindings: AuthAuthorityPlane["queryNativeLifecycleBindings"];
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   cap: string;
   failures: number[];
@@ -945,6 +954,7 @@ const ROUTES = new Map<string, RouteHandler>([
   ],
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
+  ["/native-lifecycle-bindings", handleNativeLifecycleBindings],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
 ]);
 
@@ -952,11 +962,32 @@ const ROUTES = new Map<string, RouteHandler>([
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /interactive-lifecycle/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /native-lifecycle-bindings, /interactive-lifecycle/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
   }
+}
+
+/** Loopback-only trusted read. The per-start 0600 capability authenticates the local caller; no
+ * public route is registered, no IdP/supervise/admin scope is implied, and the caller can supply
+ * only one manager principal, never a records filter or consumer configuration. */
+async function handleNativeLifecycleBindings(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return send(res, 401, { error: "missing/invalid exchange capability - native lifecycle lookup is a loopback operator action" });
+  const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return send(res, 400, { error: "native lifecycle lookup needs { managerPrincipal }" });
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== "managerPrincipal")
+    return send(res, 400, { error: "native lifecycle lookup accepts exactly { managerPrincipal }; filters and scanner options are not accepted" });
+  const managerPrincipal = (body as { managerPrincipal?: unknown }).managerPrincipal;
+  if (typeof managerPrincipal !== "string") return send(res, 400, { error: "managerPrincipal must be a string" });
+  return send(res, 200, await ctx.nativeLifecycleBindings(managerPrincipal));
 }
 
 const INTERACTIVE_RETIRE_KEYS = new Set(["owner", "actor", "lifecycleUid"]);

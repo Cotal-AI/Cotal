@@ -1,6 +1,7 @@
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
 import type { RemoteManagerAuthorityMaterial, RemoteManagerAuthorityRequest } from "./remote-manager-authority.js";
+import type { NativeLifecycleBindingLookup } from "./session-lifecycle-store.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -65,6 +66,18 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /**
+   * Read-only trusted native-lifecycle inventory for one canonical manager principal. The provider
+   * owns the sealed records scanner/connection and returns only parsed bindings. Missing support is
+   * explicit at the caller; no raw records credential, scanner, filter or consumer config crosses
+   * this seam, and there is no fallback to caller-side enumeration.
+   */
+  nativeLifecycleBindings?(opts: {
+    store: SecretStore;
+    dir: string;
+    space: string;
+    managerPrincipal: string;
+  }): Promise<NativeLifecycleBindingLookup>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).

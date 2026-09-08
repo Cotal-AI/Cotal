@@ -307,7 +307,8 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   // The two SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
   // profiles on the authority streams, each pinned to its ONE literal consumer name; the records
-  // scanner's CREATE filter is additionally confined to the `oblig.` subtree.
+  // scanner's CREATE filters are additionally confined to the `oblig.` subtree and exact
+  // `sessionbinding.*` native-lifecycle family.
   "auth-scanner": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
@@ -320,6 +321,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
     "$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.oblig.>",
+    "$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.sessionbinding.*",
     "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
@@ -503,6 +505,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "auth-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_d32m.cotal-ledger-scan",
     "auth-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_auth_d32m.cotal-ledger-scan",
     "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.oblig.>",
+    "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.sessionbinding.*",
     "records-scanner: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
     "records-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "records-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
@@ -517,8 +520,8 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
 }
 
 // (2a'') the partition is ENFORCED at the reader-config SEAM, driven by the CANONICAL collection
-// (panel + freelance a559d9c re-verify): the records scanner's CREATE filter is confined to
-// `oblig.>`, and recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
+// (panel + freelance a559d9c re-verify): the records scanner's two CREATE filters are closed to
+// `oblig.>` and exact `sessionbinding.*`; recordReaderConfig remains an ALLOWLIST — it refuses every kind that is not a
 // caller-readable record kind. Iterating AUTHORITY_KIND_DEFS (the same collection the registry is
 // built from) proves the exclusion is by construction, not a hand-kept parallel list: a new
 // authority def is covered automatically. Dual-token `lifecycle` admits deeper audit but head-guards.

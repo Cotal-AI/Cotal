@@ -121,6 +121,9 @@ export {
   type ConnectReader,
 } from "./connect-reader.js";
 export { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
+// The raw records scanner remains package-internal. This one-call wrapper owns its credential,
+// connection, closed manager-scoped query and close, returning no scanner/consumer authority.
+export { queryNativeLifecycleBindingsWithAuthority } from "./records-scanner.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
