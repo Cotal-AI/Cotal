@@ -153,9 +153,7 @@ try {
   check("before the operator sends anything, the console has put nobody on the roster", operators().length === 0, seats());
 
   let mk = cs.mark();
-  await cs.keys("c", 700);
-  await cs.keys("from-the-console", 400);
-  await cs.keys("\r", 900);
+  await cs.compose("from-the-console");
   const joined = await until(() => (operators().length === 1 ? true : undefined), 12_000);
   check("the console's FIRST send activates participant mode by itself", joined === true, seats());
   check("...and the status bar says so, which is the flag the App passes down", await cs.waitFor("on roster", 8_000, mk), clean(cs.out.slice(mk)).slice(-200));
@@ -165,9 +163,7 @@ try {
   // every send builds and starts another peer and the reference to the previous one is overwritten,
   // so the console stops only the last of them on exit and the rest keep publishing presence under
   // the operator's principal after the console is gone. So the assertion is about what survives.
-  await cs.keys("c", 700);
-  await cs.keys("second-send", 400);
-  await cs.keys("\r", 900);
+  await cs.compose("second-send");
   await wait(1_500);
   check("the second send is still delivered", operators().length === 1, seats());
   check("the console quits cleanly", await cs.quit(), { exited: true });

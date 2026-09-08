@@ -44,10 +44,10 @@ export class ConsoleSession {
       rows: size.rows,
       cwd: repoRoot,
       // XDG_CONFIG_HOME isolates the seed engine's config-rooted store into the suite's own temp
-      // home (COTAL_HOME does not relocate it), and COTAL_ALLOW_CHECKOUT_SEED=1 is that guard's
-      // documented opt-in for a sandboxed store under a source checkout; without both, a console
-      // child on an operator box dies at startup refusing to reconcile the operator-global store.
-      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm-256color", COTAL_HOME: home, XDG_CONFIG_HOME: home, COTAL_ALLOW_CHECKOUT_SEED: "1", ...extraEnv },
+      // home (COTAL_HOME does not relocate it). These are console feature smokes, not seed smokes,
+      // so skip reconciliation entirely: cold extension seeding is covered by its own suite and can
+      // consume the whole console-paint budget under shard load before the feature under test starts.
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm-256color", COTAL_HOME: home, XDG_CONFIG_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
     });
     this.p.onData((d) => (this.out += d));
     this.p.onExit((e) => (this.exited = { code: e.exitCode }));
@@ -108,6 +108,34 @@ export class ConsoleSession {
     throw new Error(`the : palette did not run ${JSON.stringify(line)}`);
   }
 
+  /** Open the compose prompt, wait for its input to paint, then submit once. Like `command`, every
+   *  key is gated by the frame that receives it: a busy Ink render can otherwise spend `c` or Enter
+   *  before the corresponding input prompt exists. */
+  async compose(text: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let from = this.out.length;
+      this.write("c");
+      if (!(await this.waitFor("Enter sends", 3_000, from))) {
+        if (attempt === 2) throw new Error("the compose prompt did not open");
+        await wait(300);
+        continue;
+      }
+      from = this.out.length;
+      this.write(text);
+      if (!(await this.waitFor(text, 3_000, from))) {
+        this.write("\x1b");
+        await wait(300);
+        continue;
+      }
+      this.write("\r");
+      await wait(300);
+      if (!(await this.composeRepaintedOpen())) return;
+      this.write("\x1b");
+      await wait(300);
+    }
+    throw new Error(`the compose prompt did not send ${JSON.stringify(text)}`);
+  }
+
   /** True only when a FRESH paint still shows the palette's hint, which is the one signal that
    *  Enter was not taken. The cumulative buffer keeps every past paint, so an open palette cannot
    *  be read out of it, and silence cannot either: a console that simply stopped repainting would
@@ -117,6 +145,11 @@ export class ConsoleSession {
     const from = this.out.length;
     await wait(600);
     return clean(this.out.slice(from)).includes("Enter runs");
+  }
+  private async composeRepaintedOpen(): Promise<boolean> {
+    const from = this.out.length;
+    await wait(600);
+    return clean(this.out.slice(from)).includes("Enter sends");
   }
   /** `q`, then wait for the exit; true iff the console exited 0. */
   async quit(): Promise<boolean> {
