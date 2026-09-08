@@ -20,7 +20,7 @@
     {
       "name": "the defect restored: a plain stop still reaps every managed agent",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();\n      else this.detachManagedAgents();",
+      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();\n      else {\n        try {\n          this.detachManagedAgents();\n        } catch (e) {\n          spareError = e;\n        }\n      }",
       "replace": "      await this.teardownManagedAgents();",
       "expectRed": "spare: a plain stop does not hard-stop the child",
       "cell": "spare: a plain stop does not hard-stop the child",

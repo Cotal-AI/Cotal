@@ -1878,25 +1878,34 @@ export class Manager {
    *  `ps` is empty; the OS processes and their footprints stay. A pty handle must implement
    *  `release()`: Linux custodial pty closes the unix socket and leaves the child; in-process
    *  node-pty (`LegacyPtyRuntime`) throws because dropping the master would kill the child.
-   *  tmux/cmux/orca/herdr retain no fd, so they spare without a release. Handles stay on
-   *  {@link detached} so a still-running manager does not GC them. When this process itself
-   *  exits, a leftover PTY master close may still SIGHUP those children. */
+   *  tmux/cmux/orca/herdr retain no fd, so they spare without a release. `suppressCleanup` is set
+   *  only after that release succeeds, so a refusal stays deprovisionable. One refusal does not
+   *  skip later seats. Handles stay on {@link detached} so a still-running manager does not GC
+   *  them. When this process itself exits, a leftover PTY master close may still SIGHUP those
+   *  children. */
   private detachManagedAgents(): void {
     const managed = [...this.agents.values()];
+    const failures: string[] = [];
     for (const a of managed) {
-      a.suppressCleanup = true;
-      if (a.handle.kind === "pty") {
-        const release = (a.handle as { release?: () => void }).release;
-        if (typeof release !== "function") {
-          throw new Error(
-            `runtime "${a.handle.kind}" cannot spare agent "${a.name}": handle has no release()`,
-          );
+      try {
+        if (a.handle.kind === "pty") {
+          const release = (a.handle as { release?: () => void }).release;
+          if (typeof release !== "function") {
+            throw new Error(
+              `runtime "${a.handle.kind}" cannot spare agent "${a.name}": handle has no release()`,
+            );
+          }
+          release.call(a.handle);
         }
-        release.call(a.handle);
+        a.suppressCleanup = true;
+        this.agents.delete(a.name);
+        this.detached.push(a);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
       }
-      this.agents.delete(a.name);
-      this.detached.push(a);
     }
+    if (failures.length)
+      throw new Error(`manager stop could not spare every seat: ${failures.join("; ")}`);
   }
 
   /** Tear down every managed agent's footprint on {@link stop} with `withAgents: true` (#159 B2). A
@@ -1961,9 +1970,16 @@ export class Manager {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
+    let spareError: unknown;
     if (this.maintenanceState === "active" && !this.resumeRequired) {
       if (opts?.withAgents === true) await this.teardownManagedAgents();
-      else this.detachManagedAgents();
+      else {
+        try {
+          this.detachManagedAgents();
+        } catch (e) {
+          spareError = e;
+        }
+      }
     } else {
       // A signal after a partial preservation must never fall back into destructive teardown.
       await this.stopRetainedAgentsOnExit();
@@ -1984,6 +2000,7 @@ export class Manager {
     await this.stopSessionPlane();
     await this.ep.stop();
     await this.attach.stop();
+    if (spareError) throw spareError;
   }
 
   /**

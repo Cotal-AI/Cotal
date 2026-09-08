@@ -12,7 +12,7 @@
     {
       "name": "the defect restored: a plain stop still reaps every managed agent",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();\n      else this.detachManagedAgents();",
+      "find": "      if (opts?.withAgents === true) await this.teardownManagedAgents();\n      else {\n        try {\n          this.detachManagedAgents();\n        } catch (e) {\n          spareError = e;\n        }\n      }",
       "replace": "      await this.teardownManagedAgents();",
       "expectRed": "normal stop leaves managed agents running",
       "cell": "normal stop leaves managed agents running",
@@ -21,7 +21,7 @@
     {
       "name": "the hang restored: pty spare optional-chains close and never calls release",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.handle.kind === \"pty\") {\n        const release = (a.handle as { release?: () => void }).release;\n        if (typeof release !== \"function\") {\n          throw new Error(\n            `runtime \"${a.handle.kind}\" cannot spare agent \"${a.name}\": handle has no release()`,\n          );\n        }\n        release.call(a.handle);\n      }",
+      "find": "        if (a.handle.kind === \"pty\") {\n          const release = (a.handle as { release?: () => void }).release;\n          if (typeof release !== \"function\") {\n            throw new Error(\n              `runtime \"${a.handle.kind}\" cannot spare agent \"${a.name}\": handle has no release()`,\n            );\n          }\n          release.call(a.handle);\n        }",
       "replace": "      (a.handle as Partial<{ close(): void }>).close?.();",
       "expectRed": "plain stop of a pty seat calls release() and does not stop the child",
       "cell": "plain stop of a pty seat calls release() and does not stop the child",

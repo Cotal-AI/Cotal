@@ -1029,18 +1029,30 @@ let openInventory: ManagerResumeAgent;
 {
   let releases = 0;
   let stops = 0;
+  let alive = true;
+  const exits = new Set<() => void>();
   const handle: AgentHandle = {
     name: "pty-spare",
     kind: "pty",
-    status: () => "running",
-    stop: () => { stops++; },
+    status: () => (alive ? "running" : "exited"),
+    stop: () => {
+      stops++;
+      alive = false;
+      for (const fn of exits) fn();
+    },
+    waitForExit: () => alive
+      ? new Promise<void>((resolve) => {
+          const done = (): void => { exits.delete(done); resolve(); };
+          exits.add(done);
+        })
+      : Promise.resolve(),
     interrupt: () => {},
     attach: () => ({
       cols: 80,
       rows: 24,
       backlog: () => Buffer.alloc(0),
       onData: () => () => {},
-      onExit: () => () => {},
+      onExit: (fn) => { exits.add(fn); return () => exits.delete(fn); },
       write: () => {},
       resize: () => {},
     }),
@@ -1064,10 +1076,17 @@ let openInventory: ManagerResumeAgent;
   );
   try {
     const manager = managerWith((name) => fakeHandle(name));
-    (manager as unknown as { agents: Map<string, unknown> }).agents.set(
-      "legacy-spare",
-      managed("legacy-spare", "legacy_spare_id", handle, "persona"),
-    );
+    let leases = 0;
+    const ep = (manager as unknown as { ep: { releaseManagerLease: () => Promise<void> } }).ep;
+    const previousRelease = ep.releaseManagerLease.bind(ep);
+    ep.releaseManagerLease = async () => {
+      leases++;
+      await previousRelease();
+    };
+    const sibling = fakeHandle("sibling");
+    const agents = (manager as unknown as { agents: Map<string, { suppressCleanup?: boolean }> }).agents;
+    agents.set("legacy-spare", managed("legacy-spare", "legacy_spare_id", handle, "persona"));
+    agents.set("sibling", managed("sibling", "sibling_id", sibling, "persona"));
     let threw = "";
     try {
       await manager.stop();
@@ -1089,6 +1108,13 @@ let openInventory: ManagerResumeAgent;
       threw,
     );
     check("legacy pty spare left the child running", handle.status() === "running" && childAlive, { status: handle.status(), pid: handle.pid, childAlive });
+    check(
+      "a pty spare refusal does not suppressCleanup on the refused seat",
+      agents.get("legacy-spare")?.suppressCleanup !== true,
+      agents.get("legacy-spare")?.suppressCleanup,
+    );
+    check("a later seat still spares after a pty refusal", !agents.has("sibling") && sibling.stops === 0, { remaining: [...agents.keys()], siblingStops: sibling.stops });
+    check("a pty spare refusal still releases the manager lease", leases === 1, leases);
   } finally {
     handle.stop({ graceful: false });
     await handle.waitForExit?.();
