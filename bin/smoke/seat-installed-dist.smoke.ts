@@ -18,17 +18,21 @@ const check = (name: string, condition: unknown, detail?: unknown): void => {
   if (condition) { passed++; console.log(`  ✓ ${name}`); }
   else { failed++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
 };
-const run = (command: string, args: string[], cwd: string, isolatedHome = false) => spawnSync(command, args, {
-  cwd,
-  encoding: "utf8",
-  // Only the registry install runs against an isolated HOME: it must not see the operator's npm
-  // config. The pack steps reuse the ambient toolchain caches read-only, exactly as a release
-  // runner does, so the fixture does not redownload a toolchain into the temp home.
-  env: isolatedHome
-    ? { ...process.env, HOME: join(base, "home"), XDG_CONFIG_HOME: join(base, "xdg"), NO_COLOR: "1" }
-    : { ...process.env, NO_COLOR: "1" },
-  timeout: 180_000,
-});
+const run = (command: string, args: string[], cwd: string, isolatedHome = false) => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    // Only the registry install runs against an isolated HOME: it must not see the operator's npm
+    // config. The pack steps reuse the ambient toolchain caches read-only, exactly as a release
+    // runner does, so the fixture does not redownload a toolchain into the temp home.
+    env: isolatedHome
+      ? { ...env, HOME: join(base, "home"), XDG_CONFIG_HOME: join(base, "xdg"), NO_COLOR: "1" }
+      : { ...env, NO_COLOR: "1" },
+    timeout: 180_000,
+  });
+};
 const output = (result: ReturnType<typeof run>) => `${result.stdout ?? ""}${result.stderr ?? ""}`;
 const writeElf = (arch: string, machine: number): void => {
   const path = join(seatClone, "build", "Release", `linux-${arch}`, "peercred.node");
