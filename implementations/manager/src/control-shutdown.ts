@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import type { Binding } from "@cotal-ai/core";
 
 /** Window to deliver the cooperative shutdown frame before we give up and let the runtime's own
  *  grace timer hard-kill. Short — the frame is one small write; this only guards a hung connect. */
@@ -16,7 +17,15 @@ const TIMEOUT_MS = 2_000;
  * so a failed, refused, or slow send never blocks the stop — it just falls through to the kill. The
  * token authenticates the frame; it is held in memory only (never logged or persisted).
  */
-export function controlShutdown(endpoint: { path: string; token: string }): void {
+export interface ShutdownControlEndpoint {
+  path: string;
+  management: {
+    token: string;
+    binding: Pick<Binding, "bindingId" | "controllerEpoch">;
+  };
+}
+
+export function controlShutdown(endpoint: ShutdownControlEndpoint): void {
   let sock: ReturnType<typeof connect>;
   let done = false;
   const finish = (): void => {
@@ -40,7 +49,12 @@ export function controlShutdown(endpoint: { path: string; token: string }): void
   sock.setEncoding("utf8");
   sock.on("connect", () => {
     try {
-      sock.write(JSON.stringify({ token: endpoint.token, op: "shutdown" }) + "\n");
+      sock.write(JSON.stringify({
+        token: endpoint.management.token,
+        op: "shutdown",
+        bindingId: endpoint.management.binding.bindingId,
+        controllerEpoch: endpoint.management.binding.controllerEpoch,
+      }) + "\n");
     } catch {
       /* ignore — fallback kill covers it */
     }

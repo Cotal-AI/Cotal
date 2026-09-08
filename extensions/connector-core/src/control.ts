@@ -11,6 +11,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { Binding } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
 
 /** One lifecycle event, as the agent runtime delivers it on stdin. */
@@ -22,13 +23,30 @@ export interface HookEvent {
 /** Maps one hook event to the JSON reply the runtime applies. */
 export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<string, unknown>>;
 
-/** The authenticated control-plane wire frame (one newline-delimited JSON object per connection):
- *  a hook event the runtime delivered, or the manager's cooperative shutdown — both carry the
- *  endpoint `token` as their first field, validated before anything else runs. Shutdown is an
- *  explicit op, NOT a disguised hook event. */
+/** The authenticated control-plane wire frame (one newline-delimited JSON object per connection).
+ *  Hook frames carry the session-owned hook credential. Any frame carrying `op` is a management
+ *  frame and carries the separate management credential plus its Binding fence. */
 type ControlFrame =
   | { token?: unknown; event?: unknown; handoff?: unknown; op?: undefined }
-  | { token?: unknown; op?: "shutdown" | "session" };
+  | { token?: unknown; op?: unknown; bindingId?: unknown; controllerEpoch?: unknown };
+
+/** The canonical lifecycle fence a management credential is bound to. These are projections of the
+ *  core Binding fields, not another connector-owned epoch or binding vocabulary. */
+export type ManagementControlBinding = Pick<Binding, "bindingId" | "controllerEpoch">;
+
+/** A manager-only credential for effects on one exact lifecycle binding and controller epoch. */
+export interface ManagementControlCredential {
+  token: string;
+  binding: ManagementControlBinding;
+}
+
+/** The connector's local control endpoint. `token` is hook-only; management effects are unavailable
+ *  unless the separately carried credential and its Binding fence are both present. */
+export interface ControlEndpoint {
+  path: string;
+  token: string;
+  management?: ManagementControlCredential;
+}
 
 /** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
  *  Content is irrelevant — arrival is the signal — but a stable token keeps a transcript readable. */
@@ -56,6 +74,11 @@ export interface ControlServerOpts {
    *  recovery to the exact Pi JSONL session, never to a newest-session heuristic. Undefined means
    *  the connector has not reached session_start yet. */
   onSession?: () => string | undefined;
+  /** Re-check the trusted Binding fence immediately before every management effect. This callback is
+   *  mandatory whenever a management handler is installed: a fixed token comparison alone cannot
+   *  revoke a retired manager on the old still-listening control path. Throwing or returning false
+   *  refuses the frame. */
+  authorizeManagement?: (binding: ManagementControlBinding) => boolean | Promise<boolean>;
   /** Called once per handled hook frame, after the reply has been written, with whether it reached a
    *  LIVE client. A hook reply is the only vehicle for the peer messages a handler injects, and it is
    *  not guaranteed to arrive: the relay abandons the exchange after its own timeout, and the runtime
@@ -208,12 +231,22 @@ function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: 
  *  inject peer messages, or shut the agent down. */
 export function startControlServer(
   agent: MeshAgent,
-  endpoint: { path: string; token: string },
+  endpoint: ControlEndpoint,
   handle: HookHandle,
   opts: ControlServerOpts = {},
 ): Server {
   const { path } = endpoint;
-  const digest = createHash("sha256").update(endpoint.token).digest();
+  const hookDigest = createHash("sha256").update(endpoint.token).digest();
+  const management = endpoint.management;
+  const managementDigest = management
+    ? createHash("sha256").update(management.token).digest()
+    : undefined;
+  if ((opts.onShutdown || opts.onSession) && (!management || !opts.authorizeManagement))
+    throw new Error(
+      "control plane BLOCKED: management handlers require a separate management credential bound " +
+        "to Binding.bindingId + controllerEpoch and a revocation-aware authorizeManagement check; " +
+        "the hook credential is never a management fallback",
+    );
   // Stale-socket cleanup is POSIX-only: a win32 named pipe is not a filesystem entry to unlink, and
   // a live one there is a SQUATTER the fatal `EADDRINUSE` is meant to catch — never clear it. (With
   // a token-random path a stale POSIX socket from a dead predecessor is itself near-impossible, but
@@ -255,11 +288,35 @@ export function startControlServer(
       } catch {
         /* malformed — fails the auth check below and is dropped */
       }
-      if (!tokenMatches(frame.token, digest)) {
-        sock.destroy(); // unauthenticated — drop hard before handle/onShutdown (no half-open)
+      const op = (frame as { op?: unknown }).op;
+      if (op !== undefined) {
+        // An `op` can never fall through to the hook path. Management auth uses its own fixed-length
+        // digest, then the exact core Binding fence, then the live revocation check. The ordering keeps
+        // every unauthenticated or retired frame out of handle/onShutdown/onSession.
+        if (!management || !managementDigest || !tokenMatches(frame.token, managementDigest)) {
+          sock.destroy();
+          return;
+        }
+        const bindingId = (frame as { bindingId?: unknown }).bindingId;
+        const controllerEpoch = (frame as { controllerEpoch?: unknown }).controllerEpoch;
+        if (bindingId !== management.binding.bindingId || controllerEpoch !== management.binding.controllerEpoch) {
+          sock.destroy();
+          return;
+        }
+        let authorized = false;
+        try {
+          authorized = (await opts.authorizeManagement?.(management.binding)) === true;
+        } catch {
+          authorized = false;
+        }
+        if (!authorized) {
+          sock.destroy();
+          return;
+        }
+      } else if (!tokenMatches(frame.token, hookDigest)) {
+        sock.destroy(); // unauthenticated hook — drop hard before handle/onReply (no half-open)
         return;
       }
-      const op = (frame as { op?: unknown }).op;
       if (op === "shutdown") {
         try {
           sock.end(JSON.stringify({ ok: true }) + "\n");
@@ -273,6 +330,14 @@ export function startControlServer(
         const sessionId = opts.onSession?.();
         try {
           sock.end(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" }) + "\n");
+        } catch {
+          /* client gone */
+        }
+        return;
+      }
+      if (op !== undefined) {
+        try {
+          sock.end(JSON.stringify({ ok: false, error: `unsupported management op: ${String(op)}` }) + "\n");
         } catch {
           /* client gone */
         }
