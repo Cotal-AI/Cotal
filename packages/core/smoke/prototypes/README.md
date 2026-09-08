@@ -129,6 +129,33 @@ per-request handler setup; production still needs a direct prepared-response and
 mandatory release interface, authenticated discovery, renewal and complete revoker
 integration. No shipped handler, option or normative encoding changed here.
 
+## Accepted-generation discovery
+
+`issued-generation-discovery.ts` answers how a client learns which generation the issuer
+actually bound. It requests the native `$SYS.REQ.USER.INFO` subject, which on NATS 2.14.5
+returns the server's own view of the connection: account, user, and the enforced publish and
+subscribe permissions. The client then reads the generation out of its granted rail rows.
+The answer comes from the broker, never from the credential the client presented or the name
+it proposed.
+
+Measured limits. The stock agent profile holds no `$SYS` publish grant, so discovery refuses
+there; production issuance would have to add `$SYS.REQ.USER.INFO` to each issued ceiling. A
+connection whose publish permissions are unrestricted names no generation and refuses. Grant
+rows carrying two generations, a wildcard generation, or a malformed field all refuse rather
+than picking one. Foreign-space rows are ignored.
+
+The static smoke covers a signed tag that disagrees with the granted rows: the binding follows
+the tag, discovery follows the grants, and the two are asserted to differ. It also holds a live
+connection to its original answer after the credential file is replaced. The callout smoke has
+the issuer bind a generation different from the client proposal; discovery reports the issuer's,
+and the proposed rail is natively denied.
+
+Discovery establishes what the broker enforces for this connection. It does not establish that
+a durable issuance record exists; that remains the issuer-side lifecycle evidence. The static
+discovery mints grant `_INBOX.>`, wider than the production per-connection inbox confinement,
+because inbox scoping is not what these cells measure. Renewal across a reconnect is not covered
+on the callout path, where automatic reconnect stays disabled.
+
 ## Current profile census
 
 The census constructs every `Profile` and covers the generic callout views. Its
