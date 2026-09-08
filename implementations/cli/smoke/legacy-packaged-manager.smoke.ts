@@ -41,8 +41,10 @@ const pnpm = locate("pnpm");
 const natsServer = locate("nats-server");
 const fixtureBin = join(base, "bin");
 mkdirSync(fixtureBin);
-for (const name of ["node", "npm", "pnpm", "nats-server", "sh", "tar", "gzip", "which"])
+for (const name of ["node", "npm", "nats-server", "sh", "tar", "gzip", "which"])
   symlinkSync(locate(name), join(fixtureBin, name));
+writeFileSync(join(fixtureBin, "pnpm"), `#!/bin/sh\nexec ${JSON.stringify(pnpm)} "$@"\n`);
+chmodSync(join(fixtureBin, "pnpm"), 0o755);
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
@@ -119,11 +121,24 @@ try {
   const seatPackRoot = (dir: string): string => {
     // prepack refuses a host-only tree. Pack a clone so packages/seat/build/Release
     // is never written. A leftover synthetic helper there would ship on a later genuine pack.
-    const clone = join(base, "seat-pack");
+    const cloneRoot = join(base, "seat-pack");
+    const clone = join(cloneRoot, "packages", "seat");
     cpSync(join(repo, dir), clone, {
       recursive: true,
       filter: (src) => !src.split(sep).includes("node_modules"),
     });
+    cpSync(join(repo, "tsconfig.base.json"), join(cloneRoot, "tsconfig.base.json"));
+    const cloneModules = join(clone, "node_modules");
+    mkdirSync(join(cloneModules, "@lydell"), { recursive: true });
+    mkdirSync(join(cloneModules, "@types"), { recursive: true });
+    mkdirSync(join(cloneModules, "@xterm"), { recursive: true });
+    mkdirSync(join(cloneModules, ".bin"), { recursive: true });
+    symlinkSync(join(repo, dir, "node_modules", "@lydell", "node-pty"), join(cloneModules, "@lydell", "node-pty"), "dir");
+    for (const name of ["addon-serialize", "headless"])
+      symlinkSync(join(repo, dir, "node_modules", "@xterm", name), join(cloneModules, "@xterm", name), "dir");
+    symlinkSync(join(repo, "node_modules", "@types", "node"), join(cloneModules, "@types", "node"), "dir");
+    symlinkSync(join(repo, "node_modules", "typescript"), join(cloneModules, "typescript"), "dir");
+    symlinkSync(join(repo, "node_modules", ".bin", "tsc"), join(cloneModules, ".bin", "tsc"));
     const cloneHost = join(clone, "build", "Release", `linux-${hostArch}`, "peercred.node");
     mkdirSync(dirname(cloneHost), { recursive: true });
     cpSync(hostHelper, cloneHost);
