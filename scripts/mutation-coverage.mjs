@@ -104,10 +104,6 @@ const referencesRoot = (suiteSource, root) =>
 
 const assertGradable = (configPath, suite, m, assembles) => {
   const suiteSource = readFileSync(suite, "utf8");
-  // A smoke that is itself the mutation target is the strongest possible source witness: the
-  // command executes that file directly, so no package resolver or assembled copy sits between the
-  // changed bytes and the run. This must precede the package-root approximation below.
-  if (m.file === suite) return;
   if (packageRoot(m.file) === packageRoot(suite) && suiteSource.includes("../src/")) return;
   const root = assembles.find((r) => m.file === r || m.file.startsWith(r + "/"));
   if (root !== undefined && referencesRoot(suiteSource, root)) return;

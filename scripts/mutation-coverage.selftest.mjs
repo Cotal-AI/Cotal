@@ -51,7 +51,6 @@ writeFileSync(
   'import { cpSync } from "node:fs";\n' +
   'cpSync(join(ROOT, "packages", "seat"), clone, { recursive: true });\n',
 );
-writeFileSync(join(root, "bin/smoke/direct.smoke.ts"), "console.log('direct');\n");
 writeFileSync(
   join(root, "bin/smoke/by-name.smoke.ts"),
   'import { x } from "@cotal-ai/seat";\n',
@@ -97,19 +96,7 @@ check(
   (r.stderr || r.stdout).slice(-300),
 );
 
-// 3. DIRECT EXECUTION: a suite may grade a mutation to its own source without an import witness.
-writeConfig("direct.json", {
-  suite: "bin/smoke/direct.smoke.ts", command: TALLY,
-  mutations: [mutation("bin/smoke/direct.smoke.ts")],
-});
-r = runTool("direct.json");
-check(
-  "a suite is gradable when it directly executes the file being mutated",
-  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
-  (r.stderr || r.stdout).slice(-300),
-);
-
-// 4. THE DECLARATION IS NOT THE WITNESS: same declaration, suite that never references the tree.
+// 3. THE DECLARATION IS NOT THE WITNESS: same declaration, suite that never references the tree.
 writeConfig("hollow.json", {
   suite: "bin/smoke/by-name.smoke.ts", command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/seat/package.json")],
@@ -121,7 +108,7 @@ check(
   r.stderr.slice(-300),
 );
 
-// 5. CONTAINMENT: a declared root cannot smuggle a file it does not contain.
+// 4. CONTAINMENT: a declared root cannot smuggle a file it does not contain.
 writeConfig("foreign.json", {
   suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/other/impl.ts")],
@@ -133,7 +120,7 @@ check(
   r.stderr.slice(-300),
 );
 
-// 6. SHAPE: `assembles` is an array of paths, and anything else is refused rather than guessed at.
+// 5. SHAPE: `assembles` is an array of paths, and anything else is refused rather than guessed at.
 writeConfig("malformed.json", {
   suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: "packages/seat",
   mutations: [mutation("packages/seat/package.json")],
