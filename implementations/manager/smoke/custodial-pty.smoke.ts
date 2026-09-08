@@ -40,10 +40,26 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
     agentCount: 0,
     uptimeMs: 0,
     connectors: [],
+    staticReconciliation: { state: "idle", failures: [] },
   };
   check("status output accepts custodied", MANAGER_STATUS_CONTRACT.output.validate(sample) === true);
   check("status output still accepts legacy", MANAGER_STATUS_CONTRACT.output.validate({ ...sample, custody: "legacy" }) === true);
   check("status output refuses unknown custody", MANAGER_STATUS_CONTRACT.output.validate({ ...sample, custody: "other" }) === false);
+  // The refusal above must be caused by the custody value, not by an absent required field.
+  // `staticReconciliation` became required, so a fixture predating it would be refused for the
+  // missing member and would keep passing even if unknown-custody handling were deleted. The
+  // accept cells above carry the field, so the only difference here is the custody value itself.
+  check(
+    "status output refuses a payload missing staticReconciliation",
+    MANAGER_STATUS_CONTRACT.output.validate({
+      instanceId: "i",
+      runtime: "pty",
+      custody: "custodied",
+      agentCount: 0,
+      uptimeMs: 0,
+      connectors: [],
+    }) === false,
+  );
 }
 
 {

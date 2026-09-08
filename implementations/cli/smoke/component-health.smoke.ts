@@ -10,7 +10,9 @@
  *
  * This is intentionally an OPEN mesh: it removes minting from the experiment so the only changed
  * variable is the component's own manager control surface.  The holder renews its real manager
- * lease against a real JetStream broker; it is not a hand-written fake of a status reply.
+ * lease against a real JetStream broker; it is not a hand-written fake of a status reply.  The
+ * verdict regression cell separately registers a real status endpoint and serves a manager-shaped
+ * foreign-owner reconciliation payload; the manager suite owns reconciliation-state generation.
  *
  * Run: pnpm smoke:component-health
  */
@@ -20,6 +22,30 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { connect } from "@nats-io/transport-node";
+import {
+  CotalEndpoint,
+  SERVICE_READY,
+  VOID_SCHEMA,
+  authorizeServeGrant,
+  compileContract,
+  contractArtifactCanonicalBytes,
+  contractDigest,
+  contractStoreContext,
+  createEndpointStreams,
+  deliveryBucket,
+  endpointRegistrationBarrier,
+  epAuthBucket,
+  openRecordsBucket,
+  provisionEndpointGateOpen,
+  publishContractArtifact,
+  registerServiceInstance,
+  serveEndpoint,
+  serveIssuanceGateKv,
+  writeServiceStatus,
+} from "@cotal-ai/core";
 import { webProbeTarget } from "../src/commands/status.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -82,6 +108,25 @@ function cli(...args: string[]) {
   return spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
 }
 
+async function cliAsync(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const child = spawn(TSX, [CLI, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk) => { stdout += chunk; });
+  child.stderr?.on("data", (chunk) => { stderr += chunk; });
+  const status = await new Promise<number | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`CLI timed out: ${args.join(" ")}`));
+    }, 30_000);
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("exit", (code) => { clearTimeout(timer); resolve(code); });
+  });
+  return { status, stdout, stderr };
+}
+
 /** The old-surface fact under comparison, excluding unrelated process-wide advisories whose
  * presence depends on whether this particular subprocess crossed an approximate CPU threshold. */
 function oldManagerAnswer(text: string): string | undefined {
@@ -132,12 +177,166 @@ async function writeDeliveryHolder(): Promise<ChildProcess> {
   return child;
 }
 
+const SERVED_INSTANCE = "s".repeat(26);
+const FOREIGN_INSTANCE = "f".repeat(26);
+const FOREIGN_REMEDY = "the owning manager must reconcile or an operator must perform an explicit CAS takeover";
+const FOREIGN_FAILURE_FACT = `static alias=foreign-owned phase=active disposition=refused remedy=${FOREIGN_REMEDY}`;
+
+async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void> }> {
+  const nc = await connect({ servers: server });
+  const kvm = new Kvm(nc);
+  await createEndpointStreams(await jetstreamManager(nc), kvm, SPACE);
+  await kvm.create(deliveryBucket(SPACE), { ttl: 10_000 }).catch(async () => { await kvm.open(deliveryBucket(SPACE)); });
+
+  const input = compileContract({ root: VOID_SCHEMA });
+  const outputSchema = { type: "object" } as const;
+  const output = compileContract({ root: outputSchema });
+  const document = {
+    urn: "ai.cotal.test.component-health-manager",
+    revision: 1,
+    attributes: [],
+    events: [],
+    commands: [{
+      name: "status",
+      class: "ephemeral" as const,
+      targeted: false,
+      capability: "manager.read",
+      inputDigest: input.closureDigest,
+      outputDigest: output.closureDigest,
+    }],
+  };
+  const documentManifest = { v: 1 as const, root: contractDigest(document), members: [] as string[] };
+  const artifacts = [
+    VOID_SCHEMA,
+    { v: 1 as const, root: contractDigest(VOID_SCHEMA), members: [] as string[] },
+    outputSchema,
+    { v: 1 as const, root: contractDigest(outputSchema), members: [] as string[] },
+    document,
+    documentManifest,
+  ];
+  const artifactIndex = new Map(artifacts.map((value) => [contractDigest(value), value]));
+  const contractStore = await contractStoreContext(nc, SPACE);
+  for (const value of artifactIndex.values())
+    await publishContractArtifact(contractStore, contractArtifactCanonicalBytes(value));
+
+  const recordsKv = await openRecordsBucket(nc, SPACE);
+  const authKv = await kvm.open(epAuthBucket(SPACE));
+  const authority = {
+    authorize: (endpoint: string, owner: string) => ({ authorized: endpoint === "manager" && owner === "local", revision: 0 }),
+  };
+  await provisionEndpointGateOpen(authKv, {
+    endpoint: "manager",
+    instanceId: SERVED_INSTANCE,
+    principal: "local.mgr",
+  });
+  const barrier = endpointRegistrationBarrier(authKv, SPACE, {
+    endpoint: "manager",
+    instanceId: SERVED_INSTANCE,
+    opId: "r".repeat(26),
+  });
+  const { registrationRevision } = await registerServiceInstance(recordsKv, {
+    space: SPACE,
+    spec: { endpoint: "manager", owner: "local", clusterDigests: [contractDigest(documentManifest)], protocol: { v: 1 } },
+    instanceId: SERVED_INSTANCE,
+    registrant: { owner: "local" },
+    authority,
+    barrier,
+    readClusterArtifact: (digest) => artifactIndex.get(digest),
+  });
+  const fence = serveIssuanceGateKv(authKv, SPACE, { endpoint: "manager", instanceId: SERVED_INSTANCE });
+  const observed = await fence.observe();
+  assert.ok(observed, "manager service issuance gate exists after registration");
+  const grant = await authorizeServeGrant(recordsKv, {
+    space: SPACE,
+    endpoint: "manager",
+    instanceId: SERVED_INSTANCE,
+    epoch: observed.processEpoch,
+    holder: { owner: "local" },
+    authority,
+    readProcessEpoch: () => observed.processEpoch,
+    readClusterArtifact: (digest) => artifactIndex.get(digest),
+  });
+  await writeServiceStatus(recordsKv, {
+    endpoint: "manager",
+    instanceId: SERVED_INSTANCE,
+    epoch: observed.processEpoch,
+    status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+    readProcessEpoch: () => observed.processEpoch,
+  });
+  const service = serveEndpoint(nc, SPACE, grant, [{
+    command: "status",
+    contract: { input, output },
+    handler: () => ({
+      instanceId: SERVED_INSTANCE,
+      runtime: "pty",
+      custody: "legacy",
+      agentCount: 0,
+      uptimeMs: 1,
+      connectors: [],
+      staticReconciliation: {
+        state: "failed",
+        failures: [{
+          alias: "foreign-owned",
+          actor: "a".repeat(26),
+          lifecycleUid: "u".repeat(26),
+          phase: "active",
+          attempts: 1,
+          maxAttempts: 3,
+          disposition: "refused",
+          lastError: `the durable slot belongs to manager instance ${FOREIGN_INSTANCE}, not ${SERVED_INSTANCE}`,
+          remedy: FOREIGN_REMEDY,
+        }],
+      },
+    }),
+  }], { public: true });
+  await nc.flush();
+
+  const health = new CotalEndpoint({
+    space: SPACE,
+    servers: server,
+    channels: [],
+    consume: false,
+    registerPresence: false,
+    watchPresence: false,
+    watchChannels: false,
+    card: { name: "component-health-serving-manager", kind: "endpoint" },
+  });
+  health.on("error", (error) => console.error(`serving fixture endpoint error: ${error.message}`));
+  await health.start();
+  const managerLease = {
+    holder: health.ref().id,
+    instanceId: SERVED_INSTANCE,
+    runtime: "pty",
+    root,
+    pid: process.pid,
+  };
+  const managerLeaseRevision = await health.acquireManagerLease(managerLease);
+  const deliveryLeaseRevision = await health.acquireDeliveryLease(0);
+  await health.markDeliveryLeaseReady(0, deliveryLeaseRevision);
+  writeFileSync(join(root, ".cotal", "manager.pid"), String(process.pid));
+  writeFileSync(join(root, ".cotal", "delivery.pid"), String(process.pid));
+  writeFileSync(join(root, ".cotal", "renewal.json"), JSON.stringify({
+    ts: "2026-09-06T00:00:00.000Z", owner: "fixture", results: [], adoption: { ok: true },
+  }));
+
+  return {
+    close: async () => {
+      await service.stop();
+      await health.releaseDeliveryLease(0);
+      await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision);
+      await health.stop().catch(() => {});
+      await nc.drain().catch(() => nc.close());
+    },
+  };
+}
+
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined;
 let holder: ChildProcess | undefined;
 let web: ChildProcess | undefined;
 let delivery: ChildProcess | undefined;
+let servingManager: { close(): Promise<void> } | undefined;
 try {
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
   for (let i = 0; i < 100 && !(await portOpen(port)); i++) await sleep(50);
@@ -166,8 +365,8 @@ try {
   const present = cli("status", "--components", "--space", SPACE, "--server", server);
   const presentText = `${present.stdout}${present.stderr}`;
   check("live lease-holder that never serves exits present-not-serving (2)", present.status === 2, presentText);
-  check("manager row names not-serving, its PID, and its unreported phase",
-    /manager\s+not-serving/.test(presentText) && presentText.includes(`pid ${held.pid}`) && presentText.includes("phase not reported by this manager build"), presentText);
+  check("manager row names not-serving, its PID, and its unreported static reconciliation",
+    /manager\s+not-serving/.test(presentText) && presentText.includes(`pid ${held.pid}`) && presentText.includes("static reconciliation not reported by this manager build"), presentText);
   check("manager row names the lease holder rather than substituting service success",
     /lease holder local\./.test(presentText) && presentText.includes("serve no answer"), presentText);
 
@@ -236,9 +435,24 @@ try {
   delivery = undefined;
   rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
   rmSync(join(root, ".cotal", "renewal.json"), { force: true });
+  await sleep(10_500);
+
+  web = await writeWebHarness(await freePort());
+  servingManager = await serveManagerWithForeignRefusal();
+  const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
+  const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
+  check("benign foreign-owned reconciliation stays serving with exact failure facts",
+    benignRefusal.status === 0 &&
+      /manager\s+serving/.test(benignRefusalText) &&
+      !/manager\s+not-serving/.test(benignRefusalText) &&
+      benignRefusalText.includes("static reconciliation failed") &&
+      benignRefusalText.includes(FOREIGN_FAILURE_FACT) &&
+      benignRefusalText.includes("serve reachable"),
+    benignRefusalText);
 
   console.log(`\nCOMPONENT HEALTH SMOKE OK ✅ (${pass} checks)`);
 } finally {
+  await servingManager?.close();
   await stop(delivery);
   await stop(web);
   await stop(holder);
