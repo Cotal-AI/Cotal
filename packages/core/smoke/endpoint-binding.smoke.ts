@@ -24,6 +24,7 @@ import {
   epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eptStreamName,
   eprStreamName, epwStreamName, epcStreamName, epAuthBucket, recordsBucket, recordsKvStreamName,
   wfjStreamName, wfjSubject, runJournalConsumerConfig, runDriverJournalGrants,
+  waitConsumerName, waitConsumerConfig, waitConsumerGrants, waitConsumerReleaseGrant,
   EPJ_DUPLICATE_WINDOW_MS,
   canonDurable, poolDurable, timerWriterDurable, recordWriterDurable, effectsDurable,
   decisionReaderDurable, goalReaderDurable, eventReaderDurable, recordReaderDurable,
@@ -326,6 +327,22 @@ c("and every takeover names its OWN durable, so two contenders cannot inherit or
   && runJournalConsumerConfig(SPACE, "r-1", "t2").durable_name === "wfj_r-1_t2");
 c("a takeover token that is not an id token is refused rather than tokenized into a broader name",
   (() => { try { runJournalConsumerConfig(SPACE, "r-1", "t*"); return false; } catch { return true; } })());
+c("a wait grant pins its durable and its channel filter across create, bind, ack and delete",
+  JSON.stringify(waitConsumerGrants(SPACE, "step-a", "build.ready")) === JSON.stringify([
+    "$JS.API.CONSUMER.CREATE.CHAT_epbind.wfw_step-a.cotal.epbind.chat.*.*.build.ready",
+    "$JS.API.CONSUMER.INFO.CHAT_epbind.wfw_step-a",
+    "$JS.API.CONSUMER.MSG.NEXT.CHAT_epbind.wfw_step-a",
+    "$JS.ACK.CHAT_epbind.wfw_step-a.>",
+    "$JS.API.CONSUMER.DELETE.CHAT_epbind.wfw_step-a",
+  ]));
+c("the wait config and grant share the same durable and filter",
+  waitConsumerName("step-a") === "wfw_step-a"
+  && waitConsumerConfig(SPACE, "step-a", "build.ready").filter_subject === "cotal.epbind.chat.*.*.build.ready");
+c("a wait discharge receives only that wait's delete row",
+  waitConsumerReleaseGrant(SPACE, "step-a") === "$JS.API.CONSUMER.DELETE.CHAT_epbind.wfw_step-a");
+throws("a wildcard request id cannot widen a wait grant", () => waitConsumerGrants(SPACE, "*", "build"));
+throws("a wildcard channel cannot widen a wait grant", () => waitConsumerGrants(SPACE, "step-a", "build.>"));
+throws("a dotted request id cannot address a second durable token", () => waitConsumerReleaseGrant(SPACE, "step.a"));
 c("the EPW leader read is TRUSTED-CANONICALIZER-ONLY: no pool-owner, effects, or EPJ fragment carries it",
   [...poolOwnerBindGrants(SPACE, "manager", "builds"), ...effectsBindGrants(SPACE, "manager"), ...canonicalizerGrants(SPACE, "manager")]
     .every((r) => !r.includes("STREAM.MSG.GET")));
