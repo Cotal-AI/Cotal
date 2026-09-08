@@ -19,13 +19,19 @@ const TIMEOUT_MS = 2_000;
  */
 export interface ShutdownControlEndpoint {
   path: string;
-  management: {
+  management?: {
     token: string;
     binding: Pick<Binding, "bindingId" | "controllerEpoch">;
   };
 }
 
 export function controlShutdown(endpoint: ShutdownControlEndpoint): void {
+  const management = endpoint.management;
+  if (!management)
+    throw new Error(
+      "control shutdown BLOCKED: the endpoint carries no separate management credential bound to " +
+        "Binding.bindingId + controllerEpoch; refusing to fall back to the hook credential",
+    );
   let sock: ReturnType<typeof connect>;
   let done = false;
   const finish = (): void => {
@@ -50,10 +56,10 @@ export function controlShutdown(endpoint: ShutdownControlEndpoint): void {
   sock.on("connect", () => {
     try {
       sock.write(JSON.stringify({
-        token: endpoint.management.token,
+        token: management.token,
         op: "shutdown",
-        bindingId: endpoint.management.binding.bindingId,
-        controllerEpoch: endpoint.management.binding.controllerEpoch,
+        bindingId: management.binding.bindingId,
+        controllerEpoch: management.binding.controllerEpoch,
       }) + "\n");
     } catch {
       /* ignore — fallback kill covers it */

@@ -241,6 +241,11 @@ export function startControlServer(
   const managementDigest = management
     ? createHash("sha256").update(management.token).digest()
     : undefined;
+  if (managementDigest && timingSafeEqual(hookDigest, managementDigest))
+    throw new Error(
+      "control plane BLOCKED: hook and management credentials resolve to the same secret; " +
+        "management authority must be separately revocable",
+    );
   if ((opts.onShutdown || opts.onSession) && (!management || !opts.authorizeManagement))
     throw new Error(
       "control plane BLOCKED: management handlers require a separate management credential bound " +
