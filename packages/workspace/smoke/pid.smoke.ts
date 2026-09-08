@@ -236,9 +236,10 @@ try {
   // supplies the attribution, so the EPERM rule below is graded on the signal path and not on
   // whether the fixture pid happens to look like a manager.
   const asManager: CommandReader = () => ({ kind: "command", command: "node /usr/local/bin/cotal supervise --space main" });
+  const allowLegacyStop = async () => {};
   let stopRefused: string | undefined;
   try {
-    await stopManager(alive, refuseSignal, asManager);
+    await stopManager(alive, refuseSignal, asManager, undefined, allowLegacyStop);
   } catch (e) {
     stopRefused = (e as Error).message;
   }
@@ -250,13 +251,13 @@ try {
   // A signal that is ACCEPTED is still not a death. The record goes only on proven death.
   let outlived: string | undefined;
   try {
-    await stopManager(alive, () => {}, asManager); // accepted, but the probe keeps saying alive
+    await stopManager(alive, () => {}, asManager, undefined, allowLegacyStop); // accepted, but the probe keeps saying alive
   } catch (e) {
     outlived = (e as Error).message;
   }
   check("stopManager REFUSES when the process outlives SIGTERM", outlived !== undefined);
   check("and still leaves the pidfile in place", readFileSync(mgrPid, "utf8") === beforeStop);
-  check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), await stopManager()) === "already-gone" && !existsSync(mgrPid), deadPid);
+  check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), await stopManager(undefined, undefined, undefined, undefined, allowLegacyStop)) === "already-gone" && !existsSync(mgrPid), deadPid);
 
   // ── THE SIBLING, which is worse: it deleted the CREDENTIAL before even attempting the signal ──
   // A refused stop therefore left a LIVE daemon still connected and still serving, with its pidfile
