@@ -319,7 +319,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   );
   // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
   // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
-  const shutdown = () => void mgr.stop()
+  const shutdown = () => void mgr.stopForSignal()
     .then(() => {
       releasePidRecord();
       process.exit(0);

@@ -57,7 +57,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "staticReconciliation"],
+  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "staticReconciliation", "nativeLifecycle"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
@@ -67,6 +67,16 @@ const STATUS_OUTPUT_SCHEMA = {
     custody: { enum: ["legacy", "custodied"] },
     /** How many agents this manager currently supervises. */
     agentCount: { type: "integer", minimum: 0 },
+    nativeLifecycle: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "liveBindings"],
+      properties: {
+        status: { enum: ["known", "unknown"] },
+        liveBindings: { type: "integer", minimum: 0 },
+        reason: { type: "string" },
+      },
+    },
     /** Milliseconds since this manager process started serving. */
     uptimeMs: { type: "integer", minimum: 0 },
     /** Connector harness availability measured once during manager boot. */
@@ -136,6 +146,7 @@ export interface ManagerStatus {
   runtime: string;
   custody: "legacy" | "custodied";
   agentCount: number;
+  nativeLifecycle: { status: "known" | "unknown"; liveBindings: number; reason?: string };
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
   staticReconciliation: ManagerStaticReconciliationStatus;

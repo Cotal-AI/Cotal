@@ -286,6 +286,28 @@ const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | 
 };
 registry.register(preserveAuth as unknown as AuthProvider);
 
+// A caught direct SIGTERM dispatches by the authoritative binding lookup. The native arm must never
+// fall through to legacy stop, while a proven-empty lookup keeps the old destructive path. Before
+// this change commands.ts called stop() unconditionally, so the first cell selects the wrong method.
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const m = manager as unknown as {
+    hasLiveNativeLifecycleBindings(): Promise<boolean>;
+    stopPreservingNative(): Promise<void>;
+    stop(): Promise<void>;
+  };
+  let native = 0, legacy = 0;
+  m.hasLiveNativeLifecycleBindings = async () => true;
+  m.stopPreservingNative = async () => { native++; };
+  m.stop = async () => { legacy++; };
+  await manager.stopForSignal();
+  check("caught SIGTERM selects preserve-native cleanup for a native binding", native === 1 && legacy === 0, { native, legacy });
+
+  m.hasLiveNativeLifecycleBindings = async () => false;
+  await manager.stopForSignal();
+  check("caught SIGTERM keeps legacy destructive cleanup for a proven-empty binding lookup", native === 1 && legacy === 1, { native, legacy });
+}
+
 // Manager replacement may report a clean drain only after every request that crossed admission has
 // a conclusive disposition. This request deliberately never releases its admission. Before the fix
 // there was no request ledger and the lifecycle wait could only hang forever or be treated as a
@@ -332,6 +354,42 @@ registry.register(preserveAuth as unknown as AuthProvider);
     accepted.refusal === undefined && drain.status === "drained"
       && drain.accepted === 1 && drain.settled === 1 && drain.unaccounted.length === 0,
     drain);
+}
+
+// The distinct maintenance path fences and drains commands before retiring manager authority, and
+// retires that authority before old attach/session-serving rails. This manager has no legacy seats,
+// which models a live independently-owned native binding: no AgentHandle.stop can be reached.
+{
+  const manager = managerWith((name) => fakeHandle(name), { commandDrainTimeoutMs: 5 });
+  const order: string[] = [];
+  const m = manager as unknown as {
+    managerInstanceId: string;
+    leaseRevision?: number;
+    serviceServe?: unknown;
+    runHosting?: unknown;
+    ep: { releaseManagerLease(): Promise<void>; stop(): Promise<void> };
+    attach: { stop(): Promise<void> };
+    stopServiceServe(): Promise<void>;
+    retireManagerControlAuthority(): Promise<void>;
+    deregisterServiceOnStop(): Promise<void>;
+    stopGoalWriter(): Promise<void>;
+    stopSessionPlane(): Promise<void>;
+  };
+  m.managerInstanceId = "maintenanceinstance000000000";
+  m.serviceServe = {};
+  m.ep = { releaseManagerLease: async () => { order.push("lease"); }, stop: async () => { order.push("endpoint"); } };
+  m.attach = { stop: async () => { order.push("attach"); } };
+  m.stopServiceServe = async () => { order.push("serve-drain"); };
+  m.retireManagerControlAuthority = async () => { order.push("effect-fence"); };
+  m.deregisterServiceOnStop = async () => { order.push("deregister"); };
+  m.stopGoalWriter = async () => { order.push("goal-writer"); };
+  m.stopSessionPlane = async () => { order.push("session-rails"); };
+  await manager.stopPreservingNative();
+  check("preserve-native exit fences effects before lease turnover and session-rail revoke",
+    order.indexOf("serve-drain") < order.indexOf("effect-fence")
+      && order.indexOf("effect-fence") < order.indexOf("lease")
+      && order.indexOf("effect-fence") < order.indexOf("session-rails"),
+    order);
 }
 
 // Fence and drain: an accepted async control request completes before children stop, while later

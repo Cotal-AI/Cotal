@@ -83,8 +83,8 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
   return { root, child, pidPath };
 }
 
-const run = (positionals: string[], values: Record<string, string | boolean> = {}) =>
-  down({ values, positionals, raw: [] });
+const run = (positionals: string[], values: Record<string, string | boolean> = {}, runtime?: Parameters<typeof down>[1]) =>
+  down({ values, positionals, raw: [] }, runtime);
 
 const entry = (space: string, root: string) =>
   ({ space, server: "nats://127.0.0.1:4222", root, mode: "open" as const, ts: "2026-07-27T00:00:00.000Z" });
@@ -118,6 +118,9 @@ try {
   const fixtured: LocalProcess = { kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" };
   registry.register(fixtured);
 
+  const managerProcess: LocalProcess = { kind: "local-process", name: "manager", label: "manager", pidFile: "manager.pid" };
+  registry.register(managerProcess);
+
   process.chdir(neutral);
 
   // No meshes recorded anywhere → a target-addressed stop fails loud, it does not probe the cwd.
@@ -128,6 +131,18 @@ try {
   recordMesh(entry("teamA", meshA.root));
   recordMesh(entry("teamB", meshB.root));
   setCurrent("teamA");
+  const managerChild = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);", "supervise"], { stdio: "ignore" });
+  spawnedChildren.push(managerChild);
+  writeFileSync(join(meshA.root, ".cotal", "manager.pid"), String(managerChild.pid));
+  const refusedBeforeSignal = {
+    assertManagerShutdownAdmitted: async () => { throw new Error("live native lifecycle binding"); },
+  };
+  process.chdir(meshA.root);
+  await assert.rejects(run(["manager"], {}, refusedBeforeSignal), /live native lifecycle binding/);
+  check("down manager refuses before signalling with a live native binding", alive(managerChild.pid!));
+  await assert.rejects(run([], {}, refusedBeforeSignal), /live native lifecycle binding/);
+  check("bare down refuses before signalling with a live native binding", alive(managerChild.pid!));
+  process.chdir(neutral);
   await run(["web"]);
   for (let i = 0; i < 100 && alive(meshA.child.pid!); i++) await sleep(50);
   check("current mesh: `down web` from elsewhere stops the dashboard", !alive(meshA.child.pid!));
