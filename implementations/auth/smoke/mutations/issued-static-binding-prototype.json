@@ -73,8 +73,8 @@
     {
       "name": "discovery stops validating the parsed reference",
       "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
-      "find": "  evidenceKey(ref); // refuses a wildcard or malformed field; a \"*\" generation binds nothing",
-      "replace": "",
+      "find": "    if (ref) found.set(evidenceKey(ref), ref);",
+      "replace": "    if (ref) found.set(`${ref.owner}.${ref.actor}.${ref.uid}.${ref.generation}`, ref);",
       "expectRed": "discovery refuses ambiguous or unbindable grant rows",
       "cell": "discovery refuses ambiguous or unbindable grant rows"
     },

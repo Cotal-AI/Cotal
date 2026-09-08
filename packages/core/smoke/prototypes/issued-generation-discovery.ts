@@ -10,9 +10,7 @@ function refFromRow(space: string, row: string): IssuedRef | undefined {
   if (parts.length < 9 || parts[0] !== "cotal" || parts[1] !== space || parts[2] !== "ep" || parts[3] !== "v1") return undefined;
   if (!["one", "all", "inst", "reply"].includes(parts[4])) throw new Error(`unsupported issued rail kind in "${row}"`);
   const [owner, actor, uid, generation] = parts.slice(-5, -1);
-  const ref = Object.freeze({ space, owner, actor, uid, generation });
-  evidenceKey(ref); // refuses a wildcard or malformed field; a "*" generation binds nothing
-  return ref;
+  return Object.freeze({ space, owner, actor, uid, generation });
 }
 
 export async function discoverIssuedAuthority(nc: NatsConnection, space: string, timeout = 3000): Promise<IssuedRef> {
@@ -25,6 +23,7 @@ export async function discoverIssuedAuthority(nc: NatsConnection, space: string,
   const found = new Map<string, IssuedRef>();
   for (const row of allow as string[]) {
     const ref = refFromRow(space, row);
+    // evidenceKey refuses a wildcard or malformed field; a "*" generation binds nothing.
     if (ref) found.set(evidenceKey(ref), ref);
   }
   if (found.size !== 1) throw new Error(`the accepted connection carries ${found.size} issued generations; exactly one is required`);
