@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/seat": patch
+"@cotal-ai/connector-core": patch
 "cotal-ai": patch
 ---
 
