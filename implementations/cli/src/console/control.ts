@@ -99,14 +99,15 @@ const BEARER_INSTANCE = "owner";
 
 /** The managed rows of every reachable manager in the space: the `cotal ps` read.
  *
- *  `rows` is the merged list, `silent` the instances that did not answer, and `answered` the rows
- *  attributed to the instance that served them. The attribution is what makes a partial answer
+ *  `rows` is the merged list, `silent` the instances that did not answer, `failed` the reachable
+ *  instances that answered with an error, and `answered` the rows attributed to the instance that
+ *  served them. The attribution is what makes a partial answer
  *  usable: a caller holding state across polls can replace exactly the instances that spoke and
  *  keep only what a silent one last said, which neither a merged list nor a flat rebuild allows.
  *  `cotal ps` prints a silent instance rather than dropping it, and the console must not be the
  *  one surface that quietly answers a narrower question than the one asked. */
 export type PsReply =
-  | { ok: true; rows: ManagedRow[]; silent: string[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
+  | { ok: true; rows: ManagedRow[]; silent: string[]; failed: { instanceId: string; error: string }[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
   | { ok: false; error: string };
 
 /** Fold one ps answer into the rows held per manager instance, which is the only shape that can
@@ -159,12 +160,12 @@ export type PollOutcome = "applied" | "skipped" | "stopped";
  *  supervisor must not knock every tick. */
 export function createManagedPoller(
   read: () => Promise<PsReply>,
-  on: { rows(flat: Map<string, { agent?: string; mode?: string }>): void; partial(silent: string[]): void; stopped(error: string): void },
+  on: { rows(flat: Map<string, { agent?: string; mode?: string }>): void; partial(silent: string[], failed: { instanceId: string; error: string }[]): void; stopped(error: string): void },
 ): { tick(): Promise<PollOutcome> } {
   let byInstance = new Map<string, ManagedRow[]>();
   let inFlight = false;
   let stopped = false;
-  let announcedPartial = false;
+  let announcedPartial = "";
   return {
     async tick(): Promise<PollOutcome> {
       if (stopped) return "stopped";
@@ -177,11 +178,12 @@ export function createManagedPoller(
           on.stopped(r.error);
           return "stopped";
         }
-        if (r.silent.length && !announcedPartial) {
-          announcedPartial = true;
-          on.partial(r.silent);
+        const partialKey = JSON.stringify({ silent: r.silent, failed: r.failed });
+        if ((r.silent.length || r.failed.length) && partialKey !== announcedPartial) {
+          announcedPartial = partialKey;
+          on.partial(r.silent, r.failed);
         }
-        if (!r.silent.length) announcedPartial = false;
+        if (!r.silent.length && !r.failed.length) announcedPartial = "";
         byInstance = foldManagedRows(byInstance, r);
         on.rows(managedById(byInstance));
         return "applied";
@@ -198,7 +200,7 @@ export async function controlPs(ctx: ControlCtx): Promise<PsReply> {
       const r = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
       if (!r.ok) return { ok: false, error: r.error ?? "error" };
       const rows = (r.data as ManagedRow[]) ?? [];
-      return { ok: true, rows, silent: [], answered: [{ instanceId: BEARER_INSTANCE, rows }] };
+      return { ok: true, rows, silent: [], failed: [], answered: [{ instanceId: BEARER_INSTANCE, rows }] };
     }
     const s = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
     if (!s.ok) return s;
@@ -208,7 +210,8 @@ export async function controlPs(ctx: ControlCtx): Promise<PsReply> {
     return {
       ok: true,
       rows: answered.flatMap((i) => i.rows),
-      silent: s.instances.filter((i) => !(i.reachable && !i.error)).map((i) => i.instanceId),
+      silent: s.instances.filter((i) => !i.reachable).map((i) => i.instanceId),
+      failed: s.instances.filter((i) => i.reachable && i.error).map((i) => ({ instanceId: i.instanceId, error: i.error! })),
       answered,
     };
   } catch (e) {

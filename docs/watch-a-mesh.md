@@ -67,7 +67,9 @@ on an open one; no manager is involved. A wildcard is refused, so the one destru
 names one channel. A refusal, from the broker or the manager, lands on the status line. On a
 space with several managers, `D`, `:status`, and `a` are pinned to the manager hosting the seat and
 `:ps` merges every manager's rows; `:spawn` and `:purge` ride the class queue, as `cotal spawn
---detach` and `cotal purge` do without `--on`.
+--detach` and `cotal purge` do without `--on`. A manager that does not answer keeps its last known
+rows and is named as silent. A manager that answers with an error is named with that error and its
+old rows are withheld rather than shown as current.
 
 `a` on a roster agent (or `:attach <agent>`) suspends the console and hands the terminal to the
 seat: it is `cotal attach` run in place, the same one-use holder-bound mesh session, the same

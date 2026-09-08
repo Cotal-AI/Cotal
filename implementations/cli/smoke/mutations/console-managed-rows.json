@@ -25,6 +25,24 @@
       "expectRed": "A's rows keep being replaced across repeated partial polls",
       "cell": "A's rows keep being replaced across repeated partial polls",
       "note": "Merging pins stale rows forever: a despawned seat never leaves the list."
+    },
+    {
+      "name": "M3 a reachable manager failure is retained as if it were silent",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "        byInstance = foldManagedRows(byInstance, r);",
+      "replace": "        byInstance = foldManagedRows(byInstance, { ...r, silent: [...r.silent, ...r.failed.map((f) => f.instanceId)] });",
+      "expectRed": "a reachable manager error drops its previous rows instead of retaining them as silent",
+      "cell": "a reachable manager error drops its previous rows instead of retaining them as silent",
+      "note": "Treating a reachable error as silence retains stale launch facts even though that manager did answer and rejected the read."
+    },
+    {
+      "name": "M4 a prior silence suppresses the later manager error notice",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "        if ((r.silent.length || r.failed.length) && partialKey !== announcedPartial) {",
+      "replace": "        if ((r.silent.length || r.failed.length) && announcedPartial === \"\") {",
+      "expectRed": "...and a later reachable error replaces the silence notice",
+      "cell": "...and a later reachable error replaces the silence notice",
+      "note": "Announce-once must key on the partial state, not on whether any partial was announced before, or a new reachable failure stays hidden behind an older silence warning."
     }
   ]
 }

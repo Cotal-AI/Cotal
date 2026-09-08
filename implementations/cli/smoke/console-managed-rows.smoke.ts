@@ -88,11 +88,11 @@ console.log("7. the poll is single flight, so a slow read cannot be overtaken an
   check("a tick while a read is in flight is skipped", overlap === "skipped", overlap);
   check("...and it starts no second read that could be applied out of order", reads === 1, { reads });
 
-  gate[0]({ ok: true, rows: [row("x")], silent: [], answered: [{ instanceId: "A", rows: [row("x")] }] });
+  gate[0]({ ok: true, rows: [row("x")], silent: [], failed: [], answered: [{ instanceId: "A", rows: [row("x")] }] });
   check("the in-flight read still applies when it lands", (await outcome(p1)) === "applied" && held() === "id-x", held());
 
   const p2 = poller.tick();
-  gate[1]({ ok: true, rows: [], silent: [], answered: [{ instanceId: "A", rows: [] }] });
+  gate[1]({ ok: true, rows: [], silent: [], failed: [], answered: [{ instanceId: "A", rows: [] }] });
   check("the next read retires the seat", (await outcome(p2)) === "applied" && flat.size === 0, held());
   check("...and no older answer is left in flight to resurrect it", gate.length === 2, { reads, gates: gate.length });
 }
@@ -107,6 +107,52 @@ console.log("8. a failed read stops the poll, and cannot be raced by a newer suc
   );
   check("the first failure stops it and names the reason", (await poller.tick()) === "stopped" && stoppedWith === "refused", stoppedWith);
   check("...and a later tick does not knock again", (await poller.tick()) === "stopped" && reads === 1, { reads });
+}
+
+console.log("9. a reachable manager error is surfaced and cannot retain stale rows as silence");
+{
+  const replies: PsReply[] = [
+    { ok: true, rows: [row("x")], silent: [], failed: [], answered: [{ instanceId: "A", rows: [row("x")] }] },
+    { ok: true, rows: [], silent: [], failed: [{ instanceId: "A", error: "manager fenced" }], answered: [] },
+  ];
+  let flat = new Map<string, { agent?: string; mode?: string }>();
+  let partial = "";
+  const poller = createManagedPoller(
+    async () => replies.shift()!,
+    {
+      rows: (f) => { flat = f; },
+      partial: (silent, failed) => { partial = `${silent.join(",")}|${failed.map((f) => `${f.instanceId}:${f.error}`).join(",")}`; },
+      stopped: () => {},
+    },
+  );
+  await poller.tick();
+  check("the baseline poll holds the manager's row", [...flat.keys()].join(",") === "id-x", [...flat.keys()]);
+  await poller.tick();
+  check("a reachable manager error drops its previous rows instead of retaining them as silent", flat.size === 0, [...flat.keys()]);
+  check("...and the partial notice names the real manager error", partial === "|A:manager fenced", partial);
+}
+
+console.log("10. a changed partial cause is announced, while an unchanged one stays quiet");
+{
+  const replies: PsReply[] = [
+    { ok: true, rows: [], silent: ["B"], failed: [], answered: [] },
+    { ok: true, rows: [], silent: ["B"], failed: [], answered: [] },
+    { ok: true, rows: [], silent: [], failed: [{ instanceId: "B", error: "manager fenced" }], answered: [] },
+  ];
+  const partials: string[] = [];
+  const poller = createManagedPoller(
+    async () => replies.shift()!,
+    {
+      rows: () => {},
+      partial: (silent, failed) => partials.push(`${silent.join(",")}|${failed.map((f) => f.error).join(",")}`),
+      stopped: () => {},
+    },
+  );
+  await poller.tick();
+  await poller.tick();
+  await poller.tick();
+  check("an unchanged partial state is announced once", partials.filter((p) => p === "B|").length === 1, partials);
+  check("...and a later reachable error replaces the silence notice", partials.join(";") === "B|;|manager fenced", partials);
 }
 
 console.log(`\n${fail === 0 ? "CONSOLE-MANAGED-ROWS SMOKE OK ✅" : "CONSOLE-MANAGED-ROWS SMOKE FAILED ❌"} (${fail} failed)`);

@@ -163,8 +163,13 @@ export function App({
               });
             return same ? prev : flat;
           }),
-        partial: (silent) =>
-          setNotice(`managed rows are partial: ${silent.length} manager instance(s) gave no answer: ${silent.join(", ")}`),
+        partial: (silent, failed) => {
+          const parts = [
+            ...failed.map((f) => `${f.instanceId}: ${f.error}`),
+            ...(silent.length ? [`${silent.length} manager instance(s) gave no answer: ${silent.join(", ")}`] : []),
+          ];
+          setNotice(`managed rows are partial: ${parts.join("; ")}`);
+        },
         stopped: (error) => setNotice(`no managed-agent rows: ${error}`),
       },
     );

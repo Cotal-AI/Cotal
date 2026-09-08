@@ -25,7 +25,8 @@ export interface CommandCtx {
   control: (op: ControlOp, args?: Record<string, unknown>) => Promise<ManagerReply>;
   /** The managed rows of EVERY reachable manager in the space (the `cotal ps` scatter, merged):
    *  a single class-queue call would answer for one manager and omit the others' seats. `silent`
-   *  names the instances that did not answer, so a partial list is never shown as a whole one. */
+   *  names the instances that did not answer and `failed` names reachable error replies, so a
+   *  partial list is never shown as a whole one and an error is never mislabeled as silence. */
   ps: () => Promise<PsReply>;
   /** Open the type-the-space-name purge confirm (the palette never purges directly). */
   confirmPurge: () => void;
@@ -158,9 +159,13 @@ export const COMMANDS: ConsoleCommand[] = [
     run: async (ctx) => {
       const r = await ctx.ps();
       if (!r.ok) return ctx.notify("ps: " + r.error);
-      // A silent instance is named, never dropped: without it a merged list short by a whole
-      // manager's seats reads as the complete managed set of the space.
-      const partial = r.silent.length ? ` (${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")})` : "";
+      // A silent or failed instance is named, never dropped: without it a merged list short by a
+      // whole manager's seats reads as the complete managed set of the space.
+      const issues = [
+        ...r.failed.map((f) => `${f.instanceId}: ${f.error}`),
+        ...(r.silent.length ? [`${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`] : []),
+      ];
+      const partial = issues.length ? ` (${issues.join("; ")})` : "";
       ctx.notify((r.rows.length ? "agents: " + r.rows.map((a) => a.name).join(", ") : "no managed agents") + partial);
     },
   },

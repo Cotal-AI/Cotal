@@ -55,6 +55,8 @@ interface ManagerLike {
   start(): Promise<void>;
   stop(): Promise<void>;
   startAgent(o: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
+  preparePreservation(attemptId: string): Promise<unknown>;
+  abortPreservation(attemptId: string): void;
 }
 const { Manager } = (await import(pathToFileURL(join(repoRoot, "implementations", "manager", "dist", "index.js")).href)) as {
   Manager: new (o: { space: string; servers: string; runtime: string; workspaceRoot: string }) => ManagerLike;
@@ -152,6 +154,16 @@ try {
   }
   await wait(3_300);
   check(":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)", hits === 6, { hits });
+
+  console.log("2b. a manager that answers with an error is not reported as silent");
+  await m2.preparePreservation("console-ps-error-repro");
+  m = s.mark();
+  await s.command("ps");
+  const surfacedManagerError = await s.waitFor(/manager is in preserving mode; new lifecycle\/control work is fenced/, 30_000, m);
+  const managerErrorNotice = clean(s.out.slice(m)).match(/(agents:|ps:|manager is in)[^│\n]*/g)?.join(" | ") ?? clean(s.out.slice(m)).slice(-300);
+  check(":ps surfaces a reachable manager's real error instead of saying it gave no answer",
+    surfacedManagerError && !managerErrorNotice.includes("gave no answer"), managerErrorNotice);
+  await m2.abortPreservation("console-ps-error-repro");
 
   // The presence qualifier on a REAL managed seat. console-status-row proves formatManagedRow
   // rewords `working`; nothing proved a real seat's row reaches that function, so the console
