@@ -1,0 +1,49 @@
+{
+  "suite": "packages/core/smoke/issued-subject-permissions.smoke.ts",
+  "guard": "The test-only permission prototype preserves explicit application deny-all, native deny precedence, separate publish/read scopes and immutable input snapshots. It is not issuer provenance.",
+  "command": "pnpm exec tsx packages/core/smoke/issued-subject-permissions.smoke.ts",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/issued-subject-permissions-prototype.json",
+  "mutations": [
+    {
+      "name": "empty requested scope is widened",
+      "file": "packages/core/smoke/prototypes/issued-subject-permissions.ts",
+      "find": "return permission(listed.length ? { mode: \"patterns\", patterns: listed } : { mode: \"none\" }, patterns(deny));",
+      "replace": "return permission(listed.length ? { mode: \"patterns\", patterns: listed } : { mode: \"all\" }, patterns(deny));",
+      "expectRed": "an empty requested scope is denied and exports explicit deny-all",
+      "cell": "an empty requested scope is denied and exports explicit deny-all"
+    },
+    {
+      "name": "exported deny-all loses its native deny",
+      "file": "packages/core/smoke/prototypes/issued-subject-permissions.ts",
+      "find": "const deny = parsed.allow.mode === \"none\" ? Object.freeze([...parsed.deny, \">\"]) : parsed.deny;",
+      "replace": "const deny = parsed.allow.mode === \"none\" ? Object.freeze([...parsed.deny]) : parsed.deny;",
+      "expectRed": "an empty requested scope is denied and exports explicit deny-all",
+      "cell": "an empty requested scope is denied and exports explicit deny-all"
+    },
+    {
+      "name": "native deny loses precedence",
+      "file": "packages/core/smoke/prototypes/issued-subject-permissions.ts",
+      "find": "if (parsed.deny.some((pattern) => subjectMatches(pattern, concrete))) return false;",
+      "replace": "if (false && parsed.deny.some((pattern) => subjectMatches(pattern, concrete))) return false;",
+      "expectRed": "denies override listed or unrestricted native allows",
+      "cell": "denies override listed or unrestricted native allows"
+    },
+    {
+      "name": "caller inputs are frozen instead of copied",
+      "file": "packages/core/smoke/prototypes/issued-subject-permissions.ts",
+      "find": "return Object.freeze(copy);",
+      "replace": "return Object.freeze(value as string[]);",
+      "expectRed": "normalization snapshots and deep-freezes caller input",
+      "cell": "normalization snapshots and deep-freezes caller input"
+    },
+    {
+      "name": "publish policy is reused for reads",
+      "file": "packages/core/smoke/prototypes/issued-subject-permissions.ts",
+      "find": "subscribe: importDirection(raw.sub)",
+      "replace": "subscribe: importDirection(raw.pub)",
+      "expectRed": "publish and subscribe are independent",
+      "cell": "publish and subscribe are independent"
+    }
+  ]
+}

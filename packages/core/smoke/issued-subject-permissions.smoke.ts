@@ -9,7 +9,11 @@ import {
 
 let passed = 0;
 function check(name: string, run: () => void): void {
-  run();
+  try { run(); }
+  catch (error) {
+    console.error(`  FAIL: ${name}`);
+    throw error;
+  }
   passed++;
   console.log(`  ok ${name}`);
 }
