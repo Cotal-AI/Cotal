@@ -1,5 +1,7 @@
 # @cotal-ai/connector-core
 
+## 0.47.1
+
 ## 0.47.0
 
 ### Patch Changes
