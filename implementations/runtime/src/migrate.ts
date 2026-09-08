@@ -38,6 +38,7 @@ import {
   type RunMigrationSpecValue,
 } from "@cotal-ai/core";
 import {
+  ENGINE_LANGUAGE_VERSION,
   Journal,
   JournalReadOnlyError,
   journalEntryKeyString,
@@ -51,6 +52,7 @@ import {
   type JournalEntry,
   type RunPins,
 } from "@cotal-ai/lang";
+import { assertPlanningVersion, inspectCompiled } from "./inspect-compiled.js";
 
 /** What the caller decided to override, and therefore what the record has to say they decided. */
 export interface MigrateOverrides {
@@ -174,12 +176,21 @@ function dryHandler(now: () => number): EffectHandler {
  * catalogue).
  */
 export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
+  assertPlanningVersion(req.pins);
   const journal = new Journal({ run: req.runId, entries: req.entries, readOnly: true });
 
+  let inspectedOrphans: readonly JournalEntry[] | undefined;
   let divergence: MigrateDivergence | undefined;
   let unwalkable: { step: string; why: string } | undefined;
   try {
-    await runProgram(req.source, {
+    if (req.pins.languageVersion === ENGINE_LANGUAGE_VERSION) {
+      const inspected = await inspectCompiled({
+        source: req.source, runId: req.runId, pins: req.pins, entries: req.entries,
+        ...(req.file !== undefined ? { file: req.file } : {}),
+      });
+      inspectedOrphans = inspected.orphans;
+      if (inspected.error !== undefined) throw inspected.error;
+    } else await runProgram(req.source, {
       runId: req.runId,
       handler: dryHandler(req.now),
       journal,
@@ -209,7 +220,7 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
     }
   }
 
-  const orphans = journal.orphans();
+  const orphans = inspectedOrphans ?? journal.orphans();
   const notices = orphans.some((o) => o.kind === "notify")
     ? await listRunNoticesForRun(req.kv, req.endpoint, req.runId)
     : [];

@@ -38,6 +38,7 @@
 import type { KV } from "@nats-io/kv";
 import { createRunSpec, readRunRecord, recordRunProgram } from "@cotal-ai/core";
 import {
+  ENGINE_LANGUAGE_VERSION,
   Journal,
   JournalReadOnlyError,
   journalEntryKeyString,
@@ -55,6 +56,7 @@ import {
   type RunPins,
   type StepKey,
 } from "@cotal-ai/lang";
+import { assertPlanningVersion, inspectCompiled } from "./inspect-compiled.js";
 
 /** The journal kinds that open a scope, i.e. whose entry can ENCLOSE a cut point. */
 const SCOPE_KINDS = new Set<string>(["parallel", "race", "fanOut", "conclave"]);
@@ -169,6 +171,7 @@ class ForkFrontier extends Error {
  * code and the step, because that is what makes the next attempt a repair rather than a guess.
  */
 export async function planFork(req: ForkRequest): Promise<ForkPlan> {
+  assertPlanningVersion(req.pins);
   const refusals: ForkRefusal[] = [];
 
   if (req.newProgramHash !== undefined) {
@@ -213,8 +216,17 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   }
 
   let reached = false;
+  let inspectedOrphans: readonly JournalEntry[] | undefined;
   try {
-    await runProgram(req.source, {
+    if (req.pins.languageVersion === ENGINE_LANGUAGE_VERSION) {
+      const inspected = await inspectCompiled({
+        source: req.source, runId: req.parent, pins: req.pins, entries: req.entries,
+        cutAt: req.fromStepKey, ...(req.file !== undefined ? { file: req.file } : {}),
+      });
+      inspectedOrphans = inspected.orphans;
+      reached = inspected.reachedCut;
+      if (inspected.error !== undefined) throw inspected.error;
+    } else await runProgram(req.source, {
       runId: req.parent,
       handler: dryHandler(req.now),
       journal,
@@ -256,7 +268,7 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     }
   }
 
-  const orphaned = new Set(journal.orphans().map((e) => journalEntryKeyString(e)));
+  const orphaned = new Set((inspectedOrphans ?? journal.orphans()).map((e) => journalEntryKeyString(e)));
 
   // THE FRONTIER PROJECTION. A scope that ENCLOSES the cut point must not be copied as settled.
   //
