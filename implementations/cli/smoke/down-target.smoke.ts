@@ -35,6 +35,7 @@ let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
+let runGuardedSupervisorStop!: typeof import("../src/commands/up.js").runGuardedSupervisorStop;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 try {
   home = mkdtempSync(join(scratch, "home-"));
@@ -42,6 +43,7 @@ try {
   ({ registry } = await import("@cotal-ai/core"));
   ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down } = await import("../src/commands/down.js"));
+  ({ runGuardedSupervisorStop } = await import("../src/commands/up.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -142,6 +144,17 @@ try {
   check("down manager refuses before signalling with a live native binding", alive(managerChild.pid!));
   await assert.rejects(run([], {}, refusedBeforeSignal), /live native lifecycle binding/);
   check("bare down refuses before signalling with a live native binding", alive(managerChild.pid!));
+  const supervisorSignals: string[] = [];
+  const supervisorStopped = await runGuardedSupervisorStop({
+    admit: async () => { throw new Error("live native lifecycle binding"); },
+    stopDelivery: async () => { supervisorSignals.push("delivery"); },
+    stopManager: async () => { supervisorSignals.push("manager"); },
+    stopAuth: async () => { supervisorSignals.push("auth"); },
+    signalBroker: () => { supervisorSignals.push("broker"); },
+    log: () => {},
+  });
+  check("supervisor SIGTERM / OS service stop refuses before signalling any component",
+    !supervisorStopped && supervisorSignals.length === 0, supervisorSignals);
   process.chdir(neutral);
   await run(["web"]);
   for (let i = 0; i < 100 && alive(meshA.child.pid!); i++) await sleep(50);

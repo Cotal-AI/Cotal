@@ -112,7 +112,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "down",
     group: "Mesh",
-  summary: "stop the whole local stack, or name only the components to stop; legacy down is not a hot update",
+    summary: "stop the whole local stack, or name only the components to stop; legacy down is not a hot update",
     positionals: "[<component> …]",
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
