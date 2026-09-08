@@ -43,8 +43,8 @@
       "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
       "find": "      if (await kv.get(key)) throw new Error(\"issued generation already exists\");\n      const digest = rawDigest(canonicalJson(evidence));\n      await kv.create(key, bytes(evidence));\n      const revision = await kv.create(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));\n      for (const source of evidence.sources) {\n        await kv.create(sourceIndexKey(source, evidence.ref), bytes({ source, ref: evidence.ref }));\n      }",
       "replace": "      const digest = rawDigest(canonicalJson(evidence));\n      await kv.put(key, bytes(evidence));\n      const revision = await kv.put(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));\n      for (const source of evidence.sources) {\n        await kv.put(sourceIndexKey(source, evidence.ref), bytes({ source, ref: evidence.ref }));\n      }",
-      "expectRed": "an auto-reconnecting callout client fails closed instead of renewing in place",
-      "cell": "an auto-reconnecting callout client fails closed instead of renewing in place"
+      "expectRed": "callout generation reuse refuses instead of silently reminting",
+      "cell": "callout generation reuse refuses instead of silently reminting"
     }
   ]
 }
