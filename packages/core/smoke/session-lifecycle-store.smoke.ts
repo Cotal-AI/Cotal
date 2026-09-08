@@ -92,12 +92,14 @@ await rejects("native proof must come from the ResourceKey provider", () => upda
 }, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
 
 console.log("B. monotonic trusted state, rollback read-only, and retired fences");
-const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, retireBindingIds: ["binding-old"] });
+const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, retireBindingIds: ["binding-old"], observedNativeEpochFloor: 7 });
 c("trusted state records the epoch floor and retired binding id", state1.epochFloor === 7 && state1.retiredBindingIds.includes("binding-old") && state1.managementMode === "writable");
-const state2 = await advanceSessionTrustedState(kv, resource, { epochFloor: 3, retireBindingIds: ["binding-older"] });
+const state2 = await advanceSessionTrustedState(kv, resource, { epochFloor: 3, retireBindingIds: ["binding-older"], observedNativeEpochFloor: 7 });
 c("epoch floor never resets and retired ids are unioned", state2.epochFloor === 7 && state2.retiredBindingIds.join(",") === "binding-old,binding-older");
 const rolled = await advanceSessionTrustedState(kv, resource, { epochFloor: 3, observedNativeEpochFloor: 9 });
 c("a store restored below the live receiver floor starts management recovery-read-only", rolled.epochFloor === 9 && rolled.managementMode === "management-recovery-read-only");
+const unknownFloor = await advanceSessionTrustedState(kv, { ...resource, stableSessionId: "unknown-floor" }, { epochFloor: 0, observedNativeEpochFloor: "unknown" });
+c("unknown native epoch floor starts management recovery-read-only", unknownFloor.epochFloor === 0 && unknownFloor.managementMode === "management-recovery-read-only");
 throws("recovery-read-only blocks management writes", () => assertSessionManagementWritable(rolled), "failed-precondition");
 
 const writable = { ...state2, managementMode: "writable" as const };
@@ -119,9 +121,10 @@ const nativeBinding = {
 };
 const bindingEntry = { key: sessionBindingKey(resource), value: new TextEncoder().encode(JSON.stringify(nativeBinding)), revision: 1, operation: "PUT" as const };
 const scanLive = async () => [bindingEntry] as never;
+const scanLegacyOnly = async () => [] as never;
 c("live native lifecycle binding is found for its manager", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", scanLive));
 c("a binding owned by another manager does not block this manager", !(await hasLiveNativeLifecycleBindingsForManager(kv, "u_bob.manager", scanLive)));
-const scanLegacyOnly = async () => [] as never;
+c("a malformed manager principal fails closed before scanning", await hasLiveNativeLifecycleBindingsForManager(kv, "manager", scanLegacyOnly));
 c("legacy managed seats are outside the sessionbinding family and retain legacy behavior", !(await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", scanLegacyOnly)));
 const scanBroken = async () => { throw new Error("store unavailable"); };
 c("unreadable binding store fails closed as possibly live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", scanBroken));
@@ -129,6 +132,9 @@ const unknown = await lookupNativeLifecycleBindingsForManager(kv, "u_alice.manag
 c("an unparseable binding row is an explicit unknown lookup", unknown.status === "unknown" && unknown.bindings.length === 0);
 const deleted = await lookupNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{ ...bindingEntry, operation: "DEL" }] as never);
 c("a deleted authority binding is corruption and fails closed, never proven absence", deleted.status === "unknown" && deleted.reason.includes("DEL"));
+const releasedBinding = { ...nativeBinding, state: "released" as const, operationId: "release-final" };
+const releasedEntry = { ...bindingEntry, value: new TextEncoder().encode(JSON.stringify(releasedBinding)) };
+c("a released label without its terminal release receipt still blocks shutdown", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [releasedEntry] as never));
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -11,6 +11,7 @@ import { canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { createRecordEntry, updateRecordEntry } from "./endpoint-records.js";
 import { latestKvEntries } from "./kv-scan.js";
+import { parsePrincipalKey } from "./subjects.js";
 import {
   parseBinding,
   parseSessionOperation,
@@ -69,8 +70,8 @@ export async function prepareSessionOperation(
   value: Omit<SessionOperationRecord, "inputDigest" | "state" | "result" | "proofOrigin">,
 ): Promise<{ readonly created: boolean; readonly record: SessionOperationRecord }> {
   const input = sessionOperationInput(value);
-  const record: SessionOperationRecord = { ...value, inputDigest: sessionOperationInputDigest(input), state: "prepared" };
   const key = sessionOperationKey(value.resourceKey, value.operationId);
+  const record = parseSessionOperation(encoded({ ...value, inputDigest: sessionOperationInputDigest(input), state: "prepared" }), key, value.resourceKey);
   try {
     await createRecordEntry(kv, key, record);
     return { created: true, record };
@@ -117,15 +118,16 @@ export async function readSessionTrustedState(kv: KV, resourceKey: ResourceKey):
 export async function advanceSessionTrustedState(
   kv: KV,
   resourceKey: ResourceKey,
-  requested: { readonly epochFloor: number; readonly retireBindingIds?: readonly string[]; readonly observedNativeEpochFloor?: number },
+  requested: { readonly epochFloor: number; readonly retireBindingIds?: readonly string[]; readonly observedNativeEpochFloor: number | "unknown" },
 ): Promise<SessionTrustedState & { readonly revision: number }> {
   const current = await readSessionTrustedState(kv, resourceKey);
   const priorFloor = current?.epochFloor ?? 0;
-  const observedNativeFloor = requested.observedNativeEpochFloor ?? 0;
-  const rollbackObserved = observedNativeFloor > Math.max(priorFloor, requested.epochFloor);
+  const nativeFloorUnknown = requested.observedNativeEpochFloor === "unknown";
+  const observedNativeFloor = nativeFloorUnknown ? 0 : requested.observedNativeEpochFloor;
+  const rollbackObserved = nativeFloorUnknown || observedNativeFloor > Math.max(priorFloor, requested.epochFloor);
   const epochFloor = Math.max(priorFloor, requested.epochFloor, observedNativeFloor);
   const retiredBindingIds = [...new Set([...(current?.retiredBindingIds ?? []), ...(requested.retireBindingIds ?? [])])].sort();
-  const value: SessionTrustedState = {
+  const proposed: SessionTrustedState = {
     resourceKey,
     epochFloor,
     retiredBindingIds,
@@ -134,6 +136,7 @@ export async function advanceSessionTrustedState(
       : "writable",
   };
   const key = sessionTrustStateKey(resourceKey);
+  const value = parseSessionTrustedState(encoded(proposed), key, resourceKey);
   const revision = await rawPut(kv, key, value, current?.revision);
   return { ...value, revision };
 }
@@ -174,13 +177,25 @@ export async function lookupNativeLifecycleBindingsForManager(
   scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = latestKvEntries,
 ): Promise<NativeLifecycleBindingLookup> {
   try {
+    if (parsePrincipalKey(managerPrincipal) === null)
+      throw new EpEnvelopeError("failed-precondition", `manager principal ${JSON.stringify(managerPrincipal)} is not canonical owner.actor identity`);
     const entries = await scan(kv, "sessionbinding.*");
     const bindings: Binding[] = [];
     for (const entry of entries) {
       if (entry.operation !== "PUT")
         throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${entry.key} carries a ${entry.operation} marker`);
       const binding = parseBinding(entry.value, entry.key);
-      if (binding.managerPrincipal === managerPrincipal && binding.state !== "released") bindings.push(binding);
+      if (binding.managerPrincipal !== managerPrincipal) continue;
+      if (binding.state !== "released") {
+        bindings.push(binding);
+        continue;
+      }
+      // A `released` label alone is not sufficient for the destructive-shutdown decision. The
+      // bound release operation must itself be terminal-success with native-effect proof; absent,
+      // pending, refusal or indeterminate records all mean this binding may still be live.
+      const release = await queryOperation(kv, binding.resourceKey, binding.operationId);
+      if (release.state !== "terminal-success" || release.record.action !== "release"
+        || release.record.bindingId !== binding.bindingId) bindings.push(binding);
     }
     return { status: "known", bindings: Object.freeze(bindings) };
   } catch (e) {
