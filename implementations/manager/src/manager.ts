@@ -1880,6 +1880,7 @@ export class Manager {
     const managed = [...this.agents.values()];
     for (const a of managed) {
       a.suppressCleanup = true;
+      (a.handle as Partial<{ close(): void }>).close?.();
       this.agents.delete(a.name);
       this.detached.push(a);
     }
