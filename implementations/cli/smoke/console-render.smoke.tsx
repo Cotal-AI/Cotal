@@ -147,11 +147,12 @@ console.log("4. every send waits for the same participant start, and a refusal r
   stdin.ref = () => stdin;
   stdin.unref = () => stdin;
   let buf = "";
-  let lastFrame = "";
+  const frames: string[] = [];
   const stdout = new Writable({ write(c, _e, cb) {
     const frame = String(c);
     buf += frame;
-    lastFrame = strip(frame);
+    frames.push(strip(frame));
+    if (frames.length > 100) frames.shift();
     cb();
   } }) as unknown as NodeJS.WriteStream;
   stdout.columns = 120;
@@ -182,7 +183,7 @@ console.log("4. every send waits for the same participant start, and a refusal r
   let refusedPaint = "";
   const refusalDeadline = Date.now() + 2_000;
   while (Date.now() < refusalDeadline) {
-    refusedPaint = lastFrame;
+    refusedPaint = frames.join("\n");
     if (refusedPaint.includes("participant-start-refused")) break;
     await wait(25);
   }
