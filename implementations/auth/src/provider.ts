@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type NativeLifecycleBindingLookup, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -214,6 +214,33 @@ export const cotalAuthProvider: AuthProvider = {
     if (!res.ok)
       throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
     return body as RemoteManagerAuthorityMaterial;
+  },
+
+  async nativeLifecycleBindings({ dir, space, managerPrincipal }): Promise<NativeLifecycleBindingLookup> {
+    const info = loadAuthServiceInfo(dir);
+    if (!info || !pidAlive(info.pid))
+      return {
+        status: "unknown",
+        bindings: [],
+        reason: `trusted native lifecycle lookup is unavailable because the auth service for space ${JSON.stringify(space)} is not running`,
+      };
+    try {
+      const res = await fetch(`${info.url}/native-lifecycle-bindings`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+        body: JSON.stringify({ managerPrincipal }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok)
+        return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}` };
+      const out = body as NativeLifecycleBindingLookup;
+      if (out?.status !== "known" && out?.status !== "unknown")
+        return { status: "unknown", bindings: [], reason: "trusted native lifecycle lookup returned an invalid status" };
+      return out;
+    } catch (e) {
+      return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup did not answer: ${e instanceof Error ? e.message : String(e)}` };
+    }
   },
 
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the

@@ -450,6 +450,7 @@
     "smoke:admission-mediator:auth": "tsx implementations/auth/smoke/admission-mediator.smoke.ts",
     "smoke:retirement-barrier:auth": "tsx implementations/auth/smoke/retirement-barrier.smoke.ts",
     "smoke:mediator-confinement:auth": "tsx implementations/auth/smoke/mediator-confinement.smoke.ts",
+    "smoke:native-binding-scanner:auth": "tsx implementations/auth/smoke/native-binding-scanner.smoke.ts",
     "smoke:deny-new:auth": "tsx implementations/auth/smoke/deny-new.smoke.ts",
     "smoke:connect-reader-acl:auth": "tsx implementations/auth/smoke/connect-reader-acl.smoke.ts",
     "smoke:shape-supervisor:auth": "tsx implementations/auth/smoke/shape-supervisor.smoke.ts",

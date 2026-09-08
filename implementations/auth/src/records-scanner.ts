@@ -48,7 +48,16 @@
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, recordsBucket, recordsKvStreamName, type PlaneConnTuple } from "@cotal-ai/core";
+import {
+  EpEnvelopeError,
+  assertInboxConnId,
+  parseBinding,
+  parsePrincipalKey,
+  recordsBucket,
+  recordsKvStreamName,
+  type NativeLifecycleBindingLookup,
+  type PlaneConnTuple,
+} from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
 
@@ -108,6 +117,8 @@ function assertObligFilter(filter: string): string {
   return filter;
 }
 
+const NATIVE_BINDING_FILTER = "sessionbinding.*";
+
 /** One raw enumerated entry, WITH its KV operation so the domain parse layer (admission-mediator's
  *  {@link enumerateObligationRows}) can treat a DEL/PURGE marker as corruption. SEAM NOTE: consumed
  *  ONLY by that parse layer, which turns each entry into a closed parsed obligation row BEFORE
@@ -126,6 +137,10 @@ export interface RecordsScanner {
    *  last of every obligation row under the filter (markers included, so the caller sees a DEL/PURGE
    *  a bucket's own `keys()`/`watch()` would hide). */
   scanObligations(filter: string): Promise<RawRecordsEntry[]>;
+  /** Closed shutdown-guard query. The caller supplies only one canonical manager principal; the
+   * scanner fixes the records filter to `sessionbinding.*`, parses every value through core's
+   * trusted binding grammar, and returns only that manager's non-released bindings. */
+  scanNativeBindings(managerPrincipal: string): Promise<NativeLifecycleBindingLookup>;
   /** Tear down the owned credential+connection. */
   close(): Promise<void>;
 }
@@ -199,6 +214,40 @@ export async function openRecordsScannerCandidate(opts: {
 }
 
 /**
+ * Static/local composition for one shutdown guard query. The auth package owns the dedicated
+ * credential, connection and sealed scanner from open through close; the caller receives only the
+ * parsed manager-scoped result. This must not run beside the resident auth authority plane for the
+ * same space, which owns the same serialized literal consumer. User-mode callers use the auth
+ * service's closed query operation instead.
+ */
+export async function queryNativeLifecycleBindingsWithAuthority(opts: {
+  server: string;
+  space: string;
+  dataAccount: { pub: string; signingSeed: string };
+  managerPrincipal: string;
+  log: (line: string) => void;
+}): Promise<NativeLifecycleBindingLookup> {
+  try {
+    const client = await openAuthorityClient({
+      server: opts.server,
+      space: opts.space,
+      dataAccount: opts.dataAccount,
+      label: `cotal:native-binding-lookup:${opts.space}`,
+      grants: (id) => recordsScannerGrants(opts.space, id),
+      log: opts.log,
+    });
+    const scanner = buildScanner(client.nc, opts.space, () => client.close());
+    try {
+      return await scanner.scanNativeBindings(opts.managerPrincipal);
+    } finally {
+      await scanner.close();
+    }
+  } catch (e) {
+    return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup is unavailable: ${(e as Error).message}` };
+  }
+}
+
+/**
  * TEST/SMOKE-ONLY: build the sealed records scanner over an EXISTING connection. A plain-auth test
  * broker has no data-account signing seed to self-mint a JWT, so the JWT-owning
  * {@link openRecordsScannerCandidate} (the PRODUCTION seam) does not apply. This factory's `close()` does
@@ -226,10 +275,15 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   const jsmOf = (): Promise<JetStreamManager> => (jsmP ??= jetstreamManager(nc));
   const jsOf = (): JetStreamClient => (jsRef ??= jetstream(nc));
 
-  const scanOnce = async (rawFilter: string): Promise<RawRecordsEntry[]> => {
+  const scanOnce = async (rawFilter: string, filterKind: "oblig" | "sessionbinding"): Promise<RawRecordsEntry[]> => {
     const jsm = await jsmOf();
     const js = jsOf();
-    const filter = `$KV.${bucket}.${assertObligFilter(rawFilter)}`;
+    const validated = filterKind === "oblig"
+      ? assertObligFilter(rawFilter)
+      : rawFilter === NATIVE_BINDING_FILTER
+        ? rawFilter
+        : (() => { throw new EpEnvelopeError("failed-precondition", `the records scanner native-binding query is fixed to ${NATIVE_BINDING_FILTER}`); })();
+    const filter = `$KV.${bucket}.${validated}`;
 
     // 1. FAIL-CLOSED pre-clean: PROVE the literal name absent before create. Absence is proved ONLY
     // by a confirmed delete (`delete(...) === true`) or a structured ConsumerNotFound; a `false`
@@ -338,11 +392,30 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     // The PLANE guard (#29 HIGH 3, SPEC 13.13) wraps the scan INSIDE the serialized critical
     // section: claim re-validated before (refuse to enumerate) and after (discard the result).
     scanObligations: (filter: string) => serializedForSpace(space, async () => {
-      if (guard === undefined) return scanOnce(filter);
+      if (guard === undefined) return scanOnce(filter, "oblig");
       await guard.assertHeld("before");
-      const out = await scanOnce(filter);
+      const out = await scanOnce(filter, "oblig");
       await guard.assertHeld("after");
       return out;
+    }),
+    scanNativeBindings: (managerPrincipal: string) => serializedForSpace(space, async () => {
+      if (parsePrincipalKey(managerPrincipal) === null)
+        return { status: "unknown", bindings: [], reason: `manager principal ${JSON.stringify(managerPrincipal)} is not canonical owner.actor identity` };
+      try {
+        if (guard !== undefined) await guard.assertHeld("before");
+        const rows = await scanOnce(NATIVE_BINDING_FILTER, "sessionbinding");
+        if (guard !== undefined) await guard.assertHeld("after");
+        const bindings = [];
+        for (const row of rows) {
+          if (row.op !== undefined)
+            throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${row.key} carries a ${row.op} marker`);
+          const binding = parseBinding(row.data, row.key);
+          if (binding.managerPrincipal === managerPrincipal && binding.state !== "released") bindings.push(binding);
+        }
+        return { status: "known", bindings: Object.freeze(bindings) } as NativeLifecycleBindingLookup;
+      } catch (e) {
+        return { status: "unknown", bindings: [], reason: (e as Error).message };
+      }
     }),
     close: onClose,
   });
@@ -369,6 +442,7 @@ export function recordsScannerGrants(space: string, connId: string): { publish: 
       "$JS.API.INFO",
       `$JS.API.STREAM.INFO.${stream}`,
       `$JS.API.CONSUMER.CREATE.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}.$KV.${bucket}.oblig.>`,
+      `$JS.API.CONSUMER.CREATE.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}.$KV.${bucket}.sessionbinding.*`,
       `$JS.API.CONSUMER.INFO.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}`,
       `$JS.API.CONSUMER.MSG.NEXT.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}`,
       `$JS.API.CONSUMER.DELETE.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}`,
