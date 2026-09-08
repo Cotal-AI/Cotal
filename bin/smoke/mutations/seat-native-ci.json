@@ -52,8 +52,8 @@
     {
       "name": "Changesets version publish skips the shared assembler",
       "file": "package.json",
-      "find": "    \"ci:publish\": \"node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
-      "replace": "    \"ci:publish\": \"pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "find": "    \"ci:publish\": \"pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "replace": "    \"ci:publish\": \"pnpm build && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
       "expectRed": "changesets.yml version publish path runs the shared assembler",
       "cell": "changesets.yml version publish path runs the shared assembler"
     },
@@ -80,6 +80,14 @@
       "replace": "          pnpm build\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
       "expectRed": "changesets.yml snapshot runs the shared assembler",
       "cell": "changesets.yml snapshot runs the shared assembler"
+    },
+    {
+      "name": "a release retry skips dependency builds for already-published packages",
+      "file": "package.json",
+      "find": "    \"ci:publish\": \"pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "replace": "    \"ci:publish\": \"node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "expectRed": "Changesets publish builds dependencies before assembly and publication on every retry",
+      "cell": "Changesets publish builds dependencies before assembly and publication on every retry"
     }
   ]
 }
