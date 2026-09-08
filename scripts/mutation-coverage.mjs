@@ -178,7 +178,7 @@ const parseSummary = (cfg, output) => {
   if (typeof cfg.progressPattern === "string" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {
     const completed = typeof cfg.completionMarker === "string"
       ? output.includes(cfg.completionMarker)
-      : false;
+      : /(?:^|\n)[^\n]*(?:PASSED|\bOK\b)[^\n]*(?:\n|$)/.test(output);
     const executed = progressCount(output, cfg.progressPattern);
     if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };
   }
