@@ -637,7 +637,8 @@
     "smoke:console-attach": "tsx implementations/cli/smoke/console-attach.smoke.ts",
     "smoke:console-render": "tsx implementations/cli/smoke/console-render.smoke.tsx",
     "smoke:console-managed-rows": "tsx implementations/cli/smoke/console-managed-rows.smoke.ts",
-    "smoke:console-status-row": "tsx implementations/cli/smoke/console-status-row.smoke.ts"
+    "smoke:console-status-row": "tsx implementations/cli/smoke/console-status-row.smoke.ts",
+    "smoke:delivery-explicit-space": "tsx implementations/cli/smoke/delivery-explicit-space.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

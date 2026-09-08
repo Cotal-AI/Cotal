@@ -25,12 +25,12 @@
  * as an outcome would be writing down a conclusion about work it can no longer see.
  */
 import {
+  replayRunJournal,
   wfjStreamName,
   wfjSubject,
   EpEnvelopeError,
   activateRun,
   readRunRecord,
-  listRunMigrations,
   createRunSpec,
   recordRunProgram,
   writeRunStatus,
@@ -67,7 +67,6 @@ import {
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
 import { RunJournalStore } from "./journal-store.js";
-import { migrationSeats } from "./migrate.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
@@ -178,20 +177,12 @@ class RunRecordMalformed extends Error {
  * repair is the opposite one: nothing was performed, so the program is started again under a NEW
  * id rather than hunted for.
  *
- * Read through the SUBJECT rather than a replay: this is the refusal path, and a replay would
- * create and delete a consumer to answer a question one `getMessage` answers.
+ * Read through this attempt's scoped replay durable. The driver holds no stream-wide point read,
+ * including on diagnostic paths.
  */
-async function noRecordToResume(jsm: JetStreamManager, req: DriveRequest): Promise<Error> {
-  let journalled = false;
-  try {
-    const last = await jsm.streams.getMessage(wfjStreamName(req.space), { last_by_subj: wfjSubject(req.space, req.runId) });
-    journalled = last !== null && last !== undefined;
-  } catch (e) {
-    // 10037 is the stream saying there is no message on that subject: no journal, which is the
-    // first state. Any other error is the broker, and guessing on its behalf would put a
-    // fabricated diagnosis in front of an operator.
-    if ((e as { code?: unknown })?.code !== 10037) throw e;
-  }
+async function noRecordToResume(js: JetStreamClient, jsm: JetStreamManager, req: DriveRequest): Promise<Error> {
+  const replay = await replayRunJournal(js, jsm, req.space, req.runId, req.lease.takeoverId);
+  const journalled = replay.records.length !== 0;
   if (!journalled) return new RunNotResumable(req.runId, wfjSubject(req.space, req.runId));
   return new Error(
     `run ${req.runId} has a journal but no record: it was activated and then never pinned, which is the `
@@ -345,29 +336,16 @@ const adoptionOf = (handler: unknown): AdoptingHandler | undefined =>
 /** A handler that can receive the seats a committed migration kept for the program under
  *  `--adopt` (spec §11.2): the next `spawn` of each persona returns the recorded seat. */
 export interface SeatAdoptingHandler {
-  adoptMigratedSeats(seats: ReadonlyMap<string, readonly JournalEntry[]>): void;
+  restoreMigratedSeats(entries: readonly JournalEntry[]): Promise<void>;
 }
 
-const seatAdoptionOf = (handler: unknown): SeatAdoptingHandler | undefined =>
-  typeof (handler as SeatAdoptingHandler | undefined)?.adoptMigratedSeats === "function"
-    ? (handler as SeatAdoptingHandler)
-    : undefined;
-
-/**
- * The seats every APPLIED migration of this run handed to its program and that no spawn has
- * received yet, keyed by persona. Read off the migration records and the replayed journal, so a
- * resume on any host hands out the same seats in the same order; a migration filed but never
- * applied moved nothing and hands over nothing.
- */
-async function migratedSeats(req: DriveRequest, entries: readonly JournalEntry[]): Promise<ReadonlyMap<string, readonly JournalEntry[]>> {
-  const out = new Map<string, JournalEntry[]>();
-  for (const m of await listRunMigrations(req.kv, req.endpoint, req.runId)) {
-    if (m.applied === undefined) continue;
-    for (const [persona, seats] of migrationSeats(entries, m.spec).adopt)
-      out.set(persona, [...(out.get(persona) ?? []), ...seats]);
-  }
-  return out;
-}
+const seatAdoptionOf = (handler: unknown): SeatAdoptingHandler | undefined => {
+  const candidate = handler as Partial<SeatAdoptingHandler> & { adoptMigratedSeats?: unknown };
+  if (typeof candidate?.restoreMigratedSeats === "function") return candidate as SeatAdoptingHandler;
+  if (typeof candidate?.adoptMigratedSeats === "function")
+    throw new Error("a seat-adopting handler must provide restoreMigratedSeats; migration reads belong to its host");
+  return undefined;
+};
 
 /**
  * A handler that can end the external state a cancelled branch left behind (§7.6): timers still
@@ -500,7 +478,7 @@ async function drive(
       engine.version,
     );
   } else {
-    if (record === undefined) return { status: "released", reason: await noRecordToResume(jsm, req) };
+    if (record === undefined) return { status: "released", reason: await noRecordToResume(js, jsm, req) };
     // READ BACK, never re-derived. A default is a property of the interpreter, and the interpreter
     // is the thing that may have changed between attempts.
     pins = record.spec.value.pins as RunPins;
@@ -571,8 +549,7 @@ async function drive(
     if (expect === "existing") {
       const seats = seatAdoptionOf(req.handler);
       if (seats !== undefined) {
-        const kept = await migratedSeats(req, resumed);
-        if (kept.size > 0) seats.adoptMigratedSeats(kept);
+        await seats.restoreMigratedSeats(resumed);
       }
     }
 

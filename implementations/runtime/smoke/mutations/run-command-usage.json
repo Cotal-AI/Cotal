@@ -5,23 +5,17 @@
   "completionMarker": "run-command-usage:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-command-usage.json   # --config resolves against the repo root, never the cwd",
   "why": [
-    "This suite is the runtime package's `test` script, which the Windows required job runs with no",
-    "broker on the box, so it grades the one part of `cotal run` that must never touch the wire: the",
-    "verb gate. Two obligations, one mutant each: the gate itself (U1), and the agreement between",
-    "the gate's verb list and the usage text it prints, two hand-kept lists (U2). U1 shows why the",
-    "usage cell and not the exit-code cell is the discriminator: with the gate gone the dispatcher",
-    "opens the planes against an unreachable server and the connect helper exits 1 on its own, so",
-    "the exit code still reads 1 and only the missing usage line tells the two refusals apart."
+    "The unknown-verb case supplies both answer positionals so the hosted answer branch cannot print the same usage line for missing arguments. Invalid JSON stops that wrong path before a broker connection. Removing the verb gate must lose the usage line."
   ],
   "mutations": [
     {
-      "name": "the verb gate is gone, so an unroutable verb reaches the planes",
+      "name": "the verb gate is gone, so an unroutable verb reaches answer parsing",
       "file": "implementations/runtime/src/run-command.ts",
       "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
       "replace": "  if (false) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
-      "expectRed": "and the usage line on stderr",
-      "cell": "and the usage line on stderr",
-      "note": "Measured 2026-09-03: seven reds, the usage-line cells of both refusals and every verb-naming cell (the usage string was never printed), while both exit-code cells stay green because the connect helper exits 1 against the unreachable server; 3 ok, 7 failed."
+      "expectRed": "and the usage line is printed for it too",
+      "cell": "and the usage line is printed for it too",
+      "note": "An unknown verb carries complete answer-shaped arguments and invalid JSON. Without the gate it reaches answer parsing, which refuses without printing usage; neither path contacts a broker."
     },
     {
       "name": "the usage line loses a verb the gate still routes",
