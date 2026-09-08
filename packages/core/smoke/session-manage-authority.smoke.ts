@@ -33,7 +33,7 @@ const grant: SessionManageGrant = {
   v: 1, family: "session-manage", ownerPrincipal: OWNER, targetManagerPrincipal: MANAGER,
   selector, actions: ["discover", "adopt", "control", "release", "transfer"], expiresAt: 10_000,
 };
-const req = { authenticatedActor: OWNER, managerPrincipal: MANAGER, resourceOwnerPrincipal: OWNER, resourceKey: resource, action: "adopt" as const, now: 1_000 };
+const req = { authenticatedActor: MANAGER, managerPrincipal: MANAGER, resourceOwnerPrincipal: OWNER, resourceKey: resource, action: "adopt" as const, now: 1_000 };
 
 console.log("A. exact independent authority family");
 c("session-manage grant authorizes its exact owner/manager/resource/action tuple", authorizeSessionManage(grant, req, OWNER).family === "session-manage");
@@ -50,7 +50,7 @@ throws("expiry is enforced", () => authorizeSessionManage(grant, { ...req, now: 
 
 console.log("B. authenticated owner and no ledger self-grant");
 throws("manager cannot self-grant by writing a ledger row", () => authorizeSessionManage(grant, req, MANAGER), "permission-denied");
-throws("caller must be the authenticated owner principal", () => authorizeSessionManage(grant, { ...req, authenticatedActor: MANAGER }, OWNER), "permission-denied");
+throws("caller must be the authenticated target manager principal", () => authorizeSessionManage(grant, { ...req, authenticatedActor: OWNER }, OWNER), "permission-denied");
 throws("wire grant is closed", () => parseSessionManageGrant({ ...grant, admin: true }), "internal");
 throws("selector is closed", () => parseSessionManageGrant({ ...grant, selector: { ...selector, displayName: "friendly" } }), "internal");
 

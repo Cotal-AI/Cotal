@@ -157,10 +157,10 @@ export function authorizeSessionManage(
   if (!uint(request.now)) refuse("permission-denied", "session-manage request time is invalid");
   if (authenticatedGrantIssuer !== grant.ownerPrincipal)
     refuse("permission-denied", "session-manage grant issuer is not its authenticated owner principal; a manager cannot self-grant by writing a ledger row");
-  if (request.authenticatedActor !== grant.ownerPrincipal)
-    refuse("permission-denied", "session-manage caller is not the authenticated owner principal named by the grant");
   if (request.managerPrincipal !== grant.targetManagerPrincipal)
     refuse("permission-denied", "session-manage grant targets a different manager principal");
+  if (request.authenticatedActor !== grant.targetManagerPrincipal)
+    refuse("permission-denied", "session-manage caller is not the authenticated target manager principal");
   if (request.now >= grant.expiresAt) refuse("expired", "session-manage grant has expired");
   if (!grant.actions.includes(request.action)) refuse("permission-denied", `session-manage grant does not include ${request.action}`);
   if (!selectorMatches(grant.selector, request.resourceOwnerPrincipal, request.resourceKey))
