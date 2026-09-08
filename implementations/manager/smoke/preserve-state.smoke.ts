@@ -300,8 +300,8 @@ registry.register(preserveAuth as unknown as AuthProvider);
 {
   const missing = managerWith((name) => fakeHandle(name));
   const missingResult = await missing.nativeLifecycleBindings();
-  check("missing sessionbinding reader authority is explicit, not reported as a live binding",
-    missingResult.status === "unknown" && /missing session lifecycle reader authority/.test(missingResult.reason), missingResult);
+  check("missing trusted lookup authority is explicit, not reported as a live binding",
+    missingResult.status === "unknown" && /missing trusted session lifecycle lookup authority/.test(missingResult.reason), missingResult);
   const known = managerWith((name) => fakeHandle(name), {
     nativeLifecycleLookup: async () => ({ status: "known", bindings: [] }),
   });
@@ -331,11 +331,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   await manager.stopForSignal();
   check("caught SIGTERM keeps legacy destructive cleanup for a proven-empty binding lookup", native === 1 && legacy === 1, { native, legacy });
 
-  m.nativeLifecycleBindings = async () => ({ status: "unknown", bindings: [], reason: "missing session lifecycle reader authority" });
+  m.nativeLifecycleBindings = async () => ({ status: "unknown", bindings: [], reason: "missing trusted session lifecycle lookup authority" });
   let missing = "";
   try { await manager.stopForSignal(); } catch (e) { missing = (e as Error).message; }
   check("caught SIGTERM names missing reader authority instead of claiming a live binding",
-    /missing session lifecycle reader authority/.test(missing) && native === 1 && legacy === 1, missing);
+    /missing trusted session lifecycle lookup authority/.test(missing) && native === 1 && legacy === 1, missing);
 }
 
 // Manager replacement may report a clean drain only after every request that crossed admission has

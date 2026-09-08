@@ -1624,16 +1624,17 @@ export class Manager {
     return `manager is in ${this.maintenanceState} mode; new lifecycle/control work is fenced`;
   }
 
-  /** Complete durable native-binding lookup for THIS authenticated manager principal. The records
-   * helper scans only sessionbinding.*, so legacy managed seats remain outside this decision. Any
-   * unreadable or malformed answer is returned as unknown and therefore blocks destructive shutdown. */
+  /** Complete durable native-binding lookup for THIS authenticated manager principal. The injected
+   * trusted provider must return only native session bindings in that authority scope, so legacy
+   * managed seats remain outside this decision. Any absent, unreadable, or malformed answer is
+   * returned as unknown and therefore blocks destructive shutdown. */
   async nativeLifecycleBindings(): Promise<NativeLifecycleBindingLookup> {
     const managerPrincipal = this.ep.ref().id;
     if (!this.nativeLifecycleLookup)
       return {
         status: "unknown",
         bindings: [],
-        reason: "missing session lifecycle reader authority: this manager was not composed with the narrow sessionbinding reader",
+        reason: "missing trusted session lifecycle lookup authority: this manager was not composed with an authorized native lifecycle lookup provider",
       };
     try {
       return await this.nativeLifecycleLookup(managerPrincipal);

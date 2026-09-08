@@ -67,7 +67,7 @@ try {
   let missingAuthority = "", liveBinding = "";
   try {
     assertNativeLifecycleShutdownStatus(
-      { status: "unknown", liveBindings: 0, liveBindingIds: [], reason: "missing session-binding-reader authority" },
+      { status: "unknown", liveBindings: 0, liveBindingIds: [], reason: "missing trusted session lifecycle lookup authority" },
       "cotal down manager", ALPHA,
     );
   } catch (e) { missingAuthority = (e as Error).message; }
@@ -82,7 +82,7 @@ try {
     catch { return false; }
   })());
   check("missing reader authority is an explicit authorization result",
-    /missing session-binding-reader authority/.test(missingAuthority) && !/binding-live-17/.test(missingAuthority), missingAuthority);
+    /missing trusted session lifecycle lookup authority/.test(missingAuthority) && !/binding-live-17/.test(missingAuthority), missingAuthority);
   check("authorized live binding refusal names the exact binding and release remedy",
     /binding-live-17/.test(liveBinding) && /Release or explicitly stop/.test(liveBinding), liveBinding);
   check("missing authority and live binding have different operator messages", missingAuthority !== liveBinding);
