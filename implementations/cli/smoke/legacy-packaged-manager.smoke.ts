@@ -43,11 +43,10 @@ const fixtureBin = join(base, "bin");
 mkdirSync(fixtureBin);
 for (const name of ["node", "npm", "nats-server", "sh", "tar", "gzip", "which"])
   symlinkSync(locate(name), join(fixtureBin, name));
-symlinkSync(locate("pnpm"), join(fixtureBin, "pnpm"));
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
-const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:/usr/bin:/bin`, NO_COLOR: "1" };
+const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:${dirname(pnpm)}:/usr/bin:/bin`, NO_COLOR: "1" };
 const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
@@ -58,6 +57,7 @@ let legacy: ChildProcess | undefined;
 try {
   assert.equal(Object.keys(cleanEnv).filter((key) => key.startsWith("COTAL_")).length, 0, "child env carries no COTAL_*");
   assert.equal(spawnSync("sh", ["-c", "command -v cotal"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), fixtureCotal, "the fixture PATH masks the operator cotal binary");
+  assert.equal(spawnSync("sh", ["-c", "command -v pnpm"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), pnpm, "the fixture PATH preserves the original pnpm launcher path");
   assert.equal(run(npm, ["root"], current).stdout.trim(), join(realpathSync(current), "node_modules"), "current package install resolves into the isolated prefix before installation");
   assert.equal(run(npm, ["root"], old).stdout.trim(), join(realpathSync(old), "node_modules"), "old package install resolves into the isolated prefix before installation");
   // The packed set is DERIVED, never hand-listed. A hand-listed set silently omits the next
