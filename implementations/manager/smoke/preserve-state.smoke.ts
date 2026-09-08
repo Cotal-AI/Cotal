@@ -433,24 +433,49 @@ registry.register(preserveAuth as unknown as AuthProvider);
 // canonical barrier reports that exact request as unknown, and maintenance refuses recovery-required
 // BEFORE destructive legacy teardown or manager lease turnover.
 {
+  let brokerRetired = false;
   const manager = managerWith((name) => fakeHandle(name), {
     commandDrainTimeoutMs: 5,
-    nativeMaintenanceBarrier: async () => ({
-      status: "recovery-required",
-      reason: "native provider outcome is unknown after broker retirement",
-      requestIds: ["native-http-17"],
-    }),
+    nativeMaintenanceBarrier: async () => {
+      // The canonical retirement gate has already retired the broker rail, but that event cannot
+      // conclude the provider effect dispatched under this request ID.
+      brokerRetired = true;
+      return {
+        status: "recovery-required",
+        reason: "native provider outcome is unknown after broker retirement",
+        requestIds: ["native-http-17"],
+      };
+    },
   });
   const handle = fakeHandle("legacy-survivor");
   (manager as unknown as { agents: Map<string, unknown> }).agents.set(
     "legacy-survivor",
     managed("legacy-survivor", "legacy_survivor", handle, "persona"),
   );
+  const forbidden: string[] = [];
+  const m = manager as unknown as {
+    managerInstanceId: string;
+    leaseRevision?: number;
+    ep: { releaseManagerLease(): Promise<void>; stop(): Promise<void> };
+    attach: { stop(): Promise<void> };
+    stopServiceServe(): Promise<void>;
+    stopSessionPlane(): Promise<void>;
+  };
+  m.managerInstanceId = "unknownoutcome0000000000000";
+  m.ep = {
+    releaseManagerLease: async () => { forbidden.push("lease-turnover"); },
+    stop: async () => { forbidden.push("endpoint-stop"); },
+  };
+  m.attach = { stop: async () => { forbidden.push("attach-stop"); } };
+  m.stopServiceServe = async () => { forbidden.push("serve-drain"); };
+  m.stopSessionPlane = async () => { forbidden.push("session-rails"); };
   let error = "";
   try { await manager.stopPreservingNative(); } catch (e) { error = (e as Error).message; }
+  check("fixture reaches broker retirement with the native request still outcome-unknown", brokerRetired, brokerRetired);
   check("unknown accepted native request stays recovery-required rather than maintenance success",
     /requires recovery/.test(error) && /native-http-17/.test(error) && /broker rail retirement is not native effect proof/.test(error), error);
   check("unknown native outcome refuses before destructive teardown", handle.stops === 0, handle.stops);
+  check("unknown native outcome refuses before lease transfer or serving-rail teardown", forbidden.length === 0, forbidden);
 }
 
 // Fence and drain: an accepted async control request completes before children stop, while later
