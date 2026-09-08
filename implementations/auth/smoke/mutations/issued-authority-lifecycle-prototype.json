@@ -1,6 +1,6 @@
 {
   "suite": "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
-  "guard": "The test-only issued lifecycle stages source indexes before the existing agent-mint fence, activates only at the original prepared revision and refuses resolution after revocation. This is a localhost gate-composition proof, without production issuer or barrier attachment. Root-source resolution also uses the real credential reader with signature-validated bearer provenance and refuses revoked, expired or head-mismatched credentials. Root-release race serialization is not proved here.",
+  "guard": "The test-only issued lifecycle stages source indexes before the existing agent-mint fence, activates only at the original prepared revision and refuses resolution after revocation. This is a localhost gate-composition proof, without production issuer or barrier attachment. Root-source resolution also uses the real credential reader with signature-validated bearer provenance and refuses revoked, expired or head-mismatched credentials. The isolated credential-row fence covers both explicit revoke/release orders; production issuer and revoker attachment remain unproved.",
   "command": "pnpm exec tsx implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-authority-lifecycle-prototype.json",
@@ -93,6 +93,22 @@
       "replace": "if (false)",
       "expectRed": "an expired credential row denies otherwise active issued evidence",
       "cell": "an expired credential row denies otherwise active issued evidence"
+    },
+    {
+      "name": "credential source touch is omitted",
+      "file": "implementations/auth/smoke/prototypes/credential-release-fence.ts",
+      "find": "await kv.update(key, value, revision);",
+      "replace": "void revision;",
+      "expectRed": "signed root provenance resolves through the real credential and head reader",
+      "cell": "signed root provenance resolves through the real credential and head reader"
+    },
+    {
+      "name": "credential source touch refreshes a revoked revision",
+      "file": "implementations/auth/smoke/prototypes/credential-release-fence.ts",
+      "find": "await kv.update(key, value, revision);",
+      "replace": "await kv.update(key, value, (await kv.get(key))!.revision);",
+      "expectRed": "individual revocation between validation and finalization prevents release",
+      "cell": "individual revocation between validation and finalization prevents release"
     }
   ]
 }

@@ -60,7 +60,15 @@ even before the permission-generation index is retired. The head mismatch is
 operator-injected inconsistent state, not a root-rotation implementation.
 
 These cells call the credential reader directly. They do not pass a new generation
-through auth-callout CONNECT, and they do not close the race between an individual
-credential revoke and a new generation's final release. The earlier agent fixture
-now uses millisecond ledger expiry, checked by the real reader; bearer expiry
-remains in seconds. No production expiry or credential behavior changed.
+through auth-callout CONNECT. A forced revocation after validation reproduced a
+release gap in the candidate adapter. The test-only `credential-release-fence.ts`
+now captures the existing active credential row and touch-CASes its original bytes
+and revision after the existing finalizer. A revocation that wins first prevents
+release. If the touch wins first, the explicit source-index walk aborts the prepared
+attempt before activation. Production revokers have no such attachment yet.
+
+The earlier agent fixture now uses millisecond ledger expiry, checked by the real
+reader; bearer expiry remains in seconds. No production expiry or credential
+behavior changed. The source touch preserves the original row bytes and adds no
+new credential identity or gate. Re-reading a newer revision for that touch would
+revive revoked source state, which has its own named mutation control.
