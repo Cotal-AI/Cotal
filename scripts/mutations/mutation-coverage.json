@@ -61,9 +61,9 @@
       "name": "progress totals no longer require an explicit completion marker",
       "file": "scripts/mutation-coverage.mjs",
       "find": "    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);",
-      "replace": "    const completed = output.includes(\"OK\") || output.includes(\"PASSED\");\n    if (completed && progressCount(output, cfg.progressPattern) >= cfg.minTicks) return { executed: progressCount(output, cfg.progressPattern), failures: 0 };",
-      "expectRed": "early-ok is not a terminal completion witness",
-      "cell": "early-ok is not a terminal completion witness"
+      "replace": "    const completed = true;",
+      "expectRed": "progress without completion is unparsed",
+      "cell": "progress without completion is unparsed"
     },
     {
       "name": "an invalid progress regex escapes per-config validation",
