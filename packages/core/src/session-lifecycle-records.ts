@@ -207,6 +207,21 @@ export function parseIncarnationProof(value: unknown, label = "incarnationProof"
   };
 }
 
+/** Recovery classification for a fresh provider inspection. A mismatch is never coerced into a
+ * new alias or epoch reset: the only safe answer is the plan's explicit `identity-unproven`. */
+export function classifyIncarnationProof(
+  expected: IncarnationProof,
+  observed: IncarnationProof,
+): "matched" | "identity-unproven" {
+  const a = parseIncarnationProof(expected, "expected incarnation proof");
+  const b = parseIncarnationProof(observed, "observed incarnation proof");
+  return a.nativeHostIncarnation === b.nativeHostIncarnation
+    && a.sessionIncarnation === b.sessionIncarnation
+    && canonicalJson(a.evidence) === canonicalJson(b.evidence)
+    ? "matched"
+    : "identity-unproven";
+}
+
 /** Collision-resistant key token for one complete ResourceKey. */
 export function resourceKeyId(resourceKey: ResourceKey): string {
   const parsed = parseResourceKey(resourceKey);

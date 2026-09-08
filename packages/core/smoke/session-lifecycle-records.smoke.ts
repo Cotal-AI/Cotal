@@ -19,6 +19,7 @@ import {
   parseBinding,
   parseResourceKey,
   parseIncarnationProof,
+  classifyIncarnationProof,
   type Binding,
   type ResourceKey,
 } from "../src/index.js";
@@ -75,6 +76,8 @@ throws("provider must be a DNS-shaped provider name", () => parseResourceKey({ .
 throws("incarnation proof requires native host incarnation", () => parseIncarnationProof({ sessionIncarnation: "s1", evidence: {} }));
 throws("incarnation proof requires evidence", () => parseIncarnationProof({ nativeHostIncarnation: "h1", sessionIncarnation: "s1" }));
 throws("incarnation proof is closed", () => parseIncarnationProof({ ...binding.incarnationProof, cwd: "/work" }));
+c("equal incarnation proof is matched", classifyIncarnationProof(binding.incarnationProof, { ...binding.incarnationProof, evidence: { immutableCreationId: "c-17", origin: "provider-inspection" } }) === "matched");
+c("incarnation mismatch yields identity-unproven", classifyIncarnationProof(binding.incarnationProof, { ...binding.incarnationProof, sessionIncarnation: "session-process-start:93" }) === "identity-unproven");
 throws("binding is closed", () => parseBinding(enc({ ...binding, legacyAdmin: true }), bindingKey));
 throws("binding key must match the embedded ResourceKey", () => parseBinding(enc(binding), sessionBindingKey({ ...resource, resourceGeneration: "other" })));
 throws("consumer-requested ResourceKey must match the embedded ResourceKey", () => parseBinding(enc(binding), bindingKey, { ...resource, stableSessionId: "other-session" }));
