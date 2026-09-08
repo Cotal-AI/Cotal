@@ -130,6 +130,35 @@ export const UID_RESERVATION: RecordKindDef = {
   mediation: "mediated",
 };
 
+/** Native lifecycle binding head (§4): one owner-authorized CAS row per canonical ResourceKey.
+ *  The qualifier is the SHA-256-derived resource id; the full ResourceKey remains in the value
+ *  and consuming-boundary validation proves it hashes back to this key. */
+export const SESSION_BINDING: RecordKindDef = {
+  kind: "sessionbinding",
+  qualifiers: [qId("resourceId")],
+  split: false,
+  writers: { spec: "session-lifecycle-owner", status: "session-lifecycle-owner" },
+  mediation: "mediated",
+};
+
+/** One immutable/reconciled native lifecycle operation row per (ResourceKey, operationId). */
+export const SESSION_OPERATION: RecordKindDef = {
+  kind: "sessionop",
+  qualifiers: [qId("resourceId"), qId("operationId")],
+  split: false,
+  writers: { spec: "session-lifecycle-owner", status: "session-lifecycle-owner" },
+  mediation: "mediated",
+};
+
+/** Trusted monotonic epoch floor, retired binding ids and rollback recovery mode per ResourceKey. */
+export const SESSION_TRUST_STATE: RecordKindDef = {
+  kind: "sessiontrust",
+  qualifiers: [qId("resourceId")],
+  split: false,
+  writers: { spec: "session-lifecycle-owner", status: "session-lifecycle-owner" },
+  mediation: "mediated",
+};
+
 /** The fixed sentinel target token for an admission with no target lifecycle (§13.7/§13.8). */
 export const OBLIGATION_EP_SENTINEL = "ep";
 
@@ -453,6 +482,7 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
  *  record; the seam admits the detail but head-guards the atomic key. */
 export const AUTHORITY_KIND_DEFS: readonly RecordKindDef[] = [
   LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION, RETIREMENT_FRONTIER,
+  SESSION_BINDING, SESSION_OPERATION, SESSION_TRUST_STATE,
 ];
 
 /** RUNTIME-freeze a def: `readonly` is type-level only, and this module's collections are a

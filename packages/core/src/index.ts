@@ -6,6 +6,7 @@ export * from "./endpoint-envelope.js";
 export * from "./endpoint-records.js";
 export * from "./lifecycle-state.js";
 export * from "./lifecycle-saga.js";
+export * from "./session-lifecycle-records.js";
 export * from "./endpoint-cluster.js";
 export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
