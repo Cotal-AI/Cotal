@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Self-test for mutation-coverage's reachability, parser, and whole-corpus accounting. */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -31,7 +31,7 @@ const mutation = (file) => ({
 });
 const config = (name, value) => write(`${name}.json`, JSON.stringify(value));
 const run = (...names) => spawnSync(process.execPath, [TOOL, ...names.map((name) => `${name}.json`)], {
-  cwd: root, encoding: "utf8", timeout: 60_000,
+  cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, PATH: `${root}:${process.env.PATH}` },
 });
 const report = (result) => `${result.stdout}\n${result.stderr}`;
 
@@ -50,7 +50,8 @@ try {
     'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
   write("bin/smoke/pty-entry.smoke.ts",
-    'const repoRoot = resolve(import.meta.dirname, "../..");\n' +
+    'const here = dirname(fileURLToPath(import.meta.url));\n' +
+    'const repoRoot = resolve(here, "../..");\n' +
     'const ENTRY = join(repoRoot, "bin", "entry.ts");\n' +
     'pty.spawn(process.execPath, [ENTRY], { cwd: process.cwd() });\n');
   write("bin/smoke/spawn-other.smoke.ts",
@@ -58,18 +59,37 @@ try {
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
   write("bin/smoke/reference-only.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\nvoid ENTRY;\n');
+  write("bin/smoke/wrong-executable.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync("echo", [ENTRY]);\n');
+  write("bin/smoke/commented-spawn.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '// spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/despawn.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'despawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/args-variable.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  write("bin/comment-entry.ts", '// import "@cotal-ai/seat";\n');
+  write("bin/smoke/comment-import.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "comment-entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
   write("bin/smoke/direct.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
-  write("fake-build.mjs", "process.exit(0);\n");
+  write("pnpm", "#!/bin/sh\nexit 0\n");
+  chmodSync(join(root, "pnpm"), 0o755);
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "."], { cwd: root });
   execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
   const fixtureHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 
   const tally = summaryCommand("FIXTURE: 3 passed, 0 failed");
-  const seatBuild = `${JSON.stringify(process.execPath)} fake-build.mjs --filter @cotal-ai/seat build && ${tally}`;
-  const otherBuild = `${JSON.stringify(process.execPath)} fake-build.mjs --filter @cotal-ai/other build && ${tally}`;
+  const seatBuild = `pnpm --filter @cotal-ai/seat build && ${tally}`;
+  const equalsSeatBuild = `pnpm --filter=@cotal-ai/seat build && ${tally}`;
+  const otherBuild = `pnpm --filter @cotal-ai/other build && ${tally}`;
+  const fakePrintedBuild = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('pnpm build')")} && ${tally}`;
 
   config("trap", { suite: "packages/seat/smoke/local.smoke.ts", command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
   let result = run("trap");
@@ -115,6 +135,26 @@ try {
   result = run("wrong-build");
   check("building an unrelated package does not admit the target", result.status !== 0 && /REFUSED wrong-build/.test(result.stderr), report(result));
 
+  for (const [name, suite, entry, command] of [
+    ["wrong-executable", "bin/smoke/wrong-executable.smoke.ts", "bin/entry.ts", seatBuild],
+    ["commented-spawn", "bin/smoke/commented-spawn.smoke.ts", "bin/entry.ts", seatBuild],
+    ["despawn", "bin/smoke/despawn.smoke.ts", "bin/entry.ts", seatBuild],
+    ["comment-import", "bin/smoke/comment-import.smoke.ts", "bin/comment-entry.ts", seatBuild],
+    ["printed-build", "bin/smoke/spawn-entry.smoke.ts", "bin/entry.ts", fakePrintedBuild],
+  ]) {
+    config(name, { suite, command, executes: [entry], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`${name} cannot fabricate executes evidence`, result.status !== 0 && new RegExp(`REFUSED ${name}`).test(result.stderr), report(result));
+  }
+
+  config("args-variable", { suite: "bin/smoke/args-variable.smoke.ts", command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("args-variable");
+  check("a genuine subprocess argument array is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("equals-filter", { suite: "bin/smoke/spawn-entry.smoke.ts", command: equalsSeatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("equals-filter");
+  check("the pnpm --filter=value build form is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
   config("malformed-executes", { suite: "bin/smoke/spawn-entry.smoke.ts", command: seatBuild, executes: "bin/entry.ts", mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("malformed-executes");
   check("a non-array executes declaration is refused", result.status !== 0 && /"executes" must be an array/.test(result.stderr), report(result));
@@ -144,6 +184,19 @@ try {
   config("unfinished-progress", { suite: "bin/smoke/direct.smoke.ts", command: noCompletion, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("unfinished-progress");
   check("progress without completion is unparsed", result.status !== 0 && /UNPARSED unfinished-progress/.test(result.stderr), report(result));
+
+  for (const [name, text] of [
+    ["early-ok", "SETUP OK\\n  ✓ one\\n  ✓ two\\nWORK REMAINS"],
+    ["tick-passed", "  ✓ setup PASSED\\n  ✓ second\\nWORK REMAINS"],
+  ]) {
+    config(name, { suite: "bin/smoke/direct.smoke.ts", command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`console.log(${JSON.stringify(text)})`)}`, progressPattern: "^  ✓ ", minTicks: 2, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+    result = run(name);
+    check(`${name} is not a terminal completion witness`, result.status !== 0 && new RegExp(`UNPARSED ${name}`).test(result.stderr), report(result));
+  }
+
+  config("invalid-regex", { suite: "bin/smoke/direct.smoke.ts", command: tally, progressPattern: "[", minTicks: 1, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("invalid-regex", "fraction");
+  check("an invalid progress regex is refused without hiding the next config", result.status !== 0 && /enumerated=2 examined=2 graded=1 refused-with-reason=1/.test(result.stdout), report(result));
 
   result = run("declaration-only", "zero-failed", "fraction");
   check(
