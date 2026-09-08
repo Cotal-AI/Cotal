@@ -92,8 +92,11 @@ export async function updateSessionOperation(
   expectedRevision: number,
 ): Promise<number> {
   const parsed = parseSessionOperation(encoded(value), sessionOperationKey(value.resourceKey, value.operationId), value.resourceKey);
-  const inputDigest = sessionOperationInputDigest(sessionOperationInput(parsed));
-  if (inputDigest !== parsed.inputDigest) throw new EpEnvelopeError("conflict", "session operation immutable input changed across phases");
+  const existing = await queryOperation(kv, parsed.resourceKey, parsed.operationId);
+  if (existing.state === "absent")
+    throw new EpEnvelopeError("conflict", `session operation ${parsed.operationId} cannot advance because its prepared input fence is absent`);
+  if (existing.record.inputDigest !== parsed.inputDigest || !sameSessionOperationInput(existing.record, parsed))
+    throw new EpEnvelopeError("conflict", `operationId ${parsed.operationId} is already bound to different transition input and cannot be rewritten during a phase update`);
   return await updateRecordEntry(kv, sessionOperationKey(parsed.resourceKey, parsed.operationId), parsed, expectedRevision);
 }
 
@@ -114,12 +117,13 @@ export async function readSessionTrustedState(kv: KV, resourceKey: ResourceKey):
 export async function advanceSessionTrustedState(
   kv: KV,
   resourceKey: ResourceKey,
-  requested: { readonly epochFloor: number; readonly retireBindingIds?: readonly string[]; readonly restoredEpochFloor?: number },
+  requested: { readonly epochFloor: number; readonly retireBindingIds?: readonly string[]; readonly observedNativeEpochFloor?: number },
 ): Promise<SessionTrustedState & { readonly revision: number }> {
   const current = await readSessionTrustedState(kv, resourceKey);
   const priorFloor = current?.epochFloor ?? 0;
-  const rollbackObserved = requested.restoredEpochFloor !== undefined && requested.restoredEpochFloor < priorFloor;
-  const epochFloor = Math.max(priorFloor, requested.epochFloor);
+  const observedNativeFloor = requested.observedNativeEpochFloor ?? 0;
+  const rollbackObserved = observedNativeFloor > Math.max(priorFloor, requested.epochFloor);
+  const epochFloor = Math.max(priorFloor, requested.epochFloor, observedNativeFloor);
   const retiredBindingIds = [...new Set([...(current?.retiredBindingIds ?? []), ...(requested.retireBindingIds ?? [])])].sort();
   const value: SessionTrustedState = {
     resourceKey,

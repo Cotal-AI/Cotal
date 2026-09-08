@@ -71,6 +71,11 @@ const terminal: SessionOperationRecord = {
   result: { bindingState: "released" },
   proofOrigin: { kind: "receiver-receipt", receiver: "native-1", highestEpoch: 7, proves: "native-effect" },
 };
+await rejects("phase update cannot rewrite the operation's immutable input", () => updateSessionOperation(kv, {
+  ...terminal,
+  authenticatedActor: "u_alice.attacker",
+  inputDigest: sessionOperationInputDigest(sessionOperationInput({ ...base, authenticatedActor: "u_alice.attacker" })),
+}, row.revision), "conflict");
 await updateSessionOperation(kv, terminal, row.revision);
 const result = await queryOperation(kv, resource, "op-1");
 c("queryOperation returns terminal result and native proof origin", result.state === "terminal-success" && result.proofOrigin?.proves === "native-effect" && (result.result as { bindingState: string }).bindingState === "released");
@@ -85,8 +90,8 @@ const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, r
 c("trusted state records the epoch floor and retired binding id", state1.epochFloor === 7 && state1.retiredBindingIds.includes("binding-old") && state1.managementMode === "writable");
 const state2 = await advanceSessionTrustedState(kv, resource, { epochFloor: 3, retireBindingIds: ["binding-older"] });
 c("epoch floor never resets and retired ids are unioned", state2.epochFloor === 7 && state2.retiredBindingIds.join(",") === "binding-old,binding-older");
-const rolled = await advanceSessionTrustedState(kv, resource, { epochFloor: 3, restoredEpochFloor: 3 });
-c("a store restored below its trusted floor starts management recovery-read-only", rolled.epochFloor === 7 && rolled.managementMode === "management-recovery-read-only");
+const rolled = await advanceSessionTrustedState(kv, resource, { epochFloor: 3, observedNativeEpochFloor: 9 });
+c("a store restored below the live receiver floor starts management recovery-read-only", rolled.epochFloor === 9 && rolled.managementMode === "management-recovery-read-only");
 throws("recovery-read-only blocks management writes", () => assertSessionManagementWritable(rolled), "failed-precondition");
 
 const writable = { ...state2, managementMode: "writable" as const };
