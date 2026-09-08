@@ -186,13 +186,13 @@ export const claudeConnector: Connector = {
     // MCP server its material through the --mcp-config `env` block and giving the hooks a separate
     // control-only file, which depends on host behaviour that has to be verified against a live
     // `claude` first. Tracked separately rather than guessed at here.
-    const control = controlEndpoint(opts.space, opts.name);
+    const control = controlEndpoint(opts.space, opts.name, undefined, opts.managementControl);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
       // shells, builds and third-party CLIs this session runs no longer inherit live authority.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, managementControl: control.management?.verifier, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the

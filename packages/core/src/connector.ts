@@ -1,5 +1,6 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
+import type { ManagementControlFence } from "./launch-material.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -107,6 +108,9 @@ export interface LaunchOpts {
    *  point at any repo — doesn't scatter that state into the target tree. The per-agent working
    *  directory itself is the manager's concern and is passed to the runtime, not here. */
   workspaceRoot?: string;
+  /** Optional native-lifecycle management fence. A connector that receives it mints a separate
+   *  manager-only control bearer and gives the child only its digest. Legacy launches omit it. */
+  managementControl?: ManagementControlFence;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
@@ -126,7 +130,14 @@ export interface LaunchSpec {
    *  can't deliver a clean exit signal (ConPTY/Windows). Both the Claude Code (MCP server) and
    *  OpenCode (in-process plugin) connectors mint one; absent only for a connector with no control
    *  plane at all. */
-  control?: { path: string; token: string };
+  control?: {
+    path: string;
+    /** Session-owned hook credential. It never authorizes a frame carrying `op`. */
+    token: string;
+    /** Manager-only bearer bound to the exact native lifecycle fence. Additive and absent on legacy
+     *  managed seats, whose existing signal/kill behavior remains unchanged. */
+    management?: { token: string; fence: ManagementControlFence };
+  };
   /** Connector-owned host-session state file. A supervised restart reads this exact manager-provided
    *  path after process exit, then verifies the successor reports the same session over `control`.
    *  Contains no transcript or credential; currently used by Pi for its current session id. */

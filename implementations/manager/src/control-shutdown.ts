@@ -1,5 +1,5 @@
 import { connect } from "node:net";
-import type { Binding } from "@cotal-ai/core";
+import type { ManagementControlFence } from "@cotal-ai/core";
 
 /** Window to deliver the cooperative shutdown frame before we give up and let the runtime's own
  *  grace timer hard-kill. Short — the frame is one small write; this only guards a hung connect. */
@@ -22,7 +22,7 @@ export interface ShutdownControlEndpoint {
   path: string;
   management?: {
     token: string;
-    binding: Pick<Binding, "bindingId" | "controllerEpoch">;
+    fence: ManagementControlFence;
   };
 }
 
@@ -59,8 +59,9 @@ export function controlShutdown(endpoint: ShutdownControlEndpoint): void {
       sock.write(JSON.stringify({
         token: management.token,
         op: "shutdown",
-        bindingId: management.binding.bindingId,
-        controllerEpoch: management.binding.controllerEpoch,
+        resourceId: management.fence.resourceId,
+        bindingId: management.fence.bindingId,
+        controllerEpoch: management.fence.controllerEpoch,
       }) + "\n");
     } catch {
       /* ignore — fallback kill covers it */

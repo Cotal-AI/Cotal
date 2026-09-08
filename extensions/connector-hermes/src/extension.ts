@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
@@ -62,14 +62,16 @@ export const hermesConnector: Connector = {
       throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
     // Hermes supports the named provider keys below. Other ambient authority stays outside the child
     // unless the operator deliberately declares it in spawn.env.
+    const control = controlEndpoint(opts.space, opts.name, undefined, opts.managementControl);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
       // mints the control endpoint itself and merges the token into the same file (see launch.ts).
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, managementControl: control.management?.verifier, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
+      COTAL_CONTROL_SOCKET: control.path,
     };
     if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;
     if (opts.role) env.COTAL_ROLE = opts.role;
@@ -87,7 +89,7 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = model;
       env.COTAL_MODEL = model;
     }
-    return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env };
+    return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env, control };
   },
 };
 

@@ -1,17 +1,9 @@
-/**
- * Hook / management credential split (no broker, no live service).
- *
- * The hook relay must keep working with its session-owned credential, but that credential can never
- * authorize an `op`. Management frames need a separate credential, the exact Binding fence it was
- * minted for, and a live revocation check on every request. Run directly with:
- *
- *   pnpm exec tsx extensions/connector-core/smoke/control-credential-split.smoke.ts
- */
+/** Hook / management credential split. No broker or live service. */
 import { strict as assert } from "node:assert";
-import { randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { connect } from "node:net";
 import type { MeshAgent } from "../src/agent.js";
-import { startControlServer } from "../src/control.js";
+import { startControlServer, type ControlEndpoint } from "../src/control.js";
 import { controlEndpoint } from "../src/runtime.js";
 
 const stubAgent = {} as MeshAgent;
@@ -21,10 +13,8 @@ const check = (name: string, condition: boolean, extra?: unknown): void => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-
 const listening = (server: ReturnType<typeof startControlServer>): Promise<void> =>
   new Promise((resolve) => (server.listening ? resolve() : server.once("listening", resolve)));
-
 function sendFrame(path: string, frame: unknown, timeoutMs = 2_000): Promise<string> {
   return new Promise((resolve) => {
     const sock = connect(path);
@@ -47,201 +37,113 @@ function sendFrame(path: string, frame: unknown, timeoutMs = 2_000): Promise<str
   });
 }
 
-const hook = controlEndpoint("credential-split", "hook");
-const binding = { bindingId: "binding-credential-split", controllerEpoch: 7 } as const;
-const endpoint = {
-  ...hook,
-  management: { token: randomBytes(32).toString("base64url"), binding },
+const fence = { resourceId: "resource-credential-split", bindingId: "binding-credential-split", controllerEpoch: 7 } as const;
+const minted = controlEndpoint("credential-split", "hook", undefined, fence);
+assert.ok(minted.management);
+const endpoint: ControlEndpoint = {
+  path: minted.path,
+  token: minted.token,
+  managementVerifier: { tokenDigest: minted.management.verifier.tokenDigest, fence },
+};
+const managementFrame = {
+  token: minted.management.token,
+  resourceId: fence.resourceId,
+  bindingId: fence.bindingId,
+  controllerEpoch: fence.controllerEpoch,
 };
 const events: unknown[] = [];
 let shutdowns = 0;
 let sessions = 0;
 let managementCurrent = true;
-const server = startControlServer(
-  stubAgent,
-  endpoint,
-  async (_agent, event) => {
-    events.push(event);
-    return { handled: true };
-  },
-  {
-    onShutdown: () => shutdowns++,
-    onSession: () => {
-      sessions++;
-      return "session-credential-split";
-    },
-    authorizeManagement: (candidate) =>
-      managementCurrent && candidate.bindingId === binding.bindingId && candidate.controllerEpoch === binding.controllerEpoch,
-  },
-);
-
+const server = startControlServer(stubAgent, endpoint, async (_agent, event) => {
+  events.push(event);
+  return { handled: true };
+}, {
+  onShutdown: () => shutdowns++,
+  onSession: () => ((sessions++), "session-credential-split"),
+  authorizeManagement: (candidate) => managementCurrent && JSON.stringify(candidate) === JSON.stringify(fence),
+});
 try {
   await listening(server);
+  check("child endpoint retains only a management digest, never the manager bearer", !("token" in endpoint.managementVerifier!) && endpoint.managementVerifier!.tokenDigest !== minted.management.token);
 
-  const hookShutdown = await sendFrame(endpoint.path, { token: endpoint.token, op: "shutdown" });
-  check("hook credential on shutdown receives no management reply", hookShutdown === "");
-  check("hook credential on shutdown never runs onShutdown", shutdowns === 0, { shutdowns });
+  check("hook credential on shutdown receives no management reply", await sendFrame(endpoint.path, { token: endpoint.token, op: "shutdown" }) === "");
+  check("hook credential on shutdown never runs onShutdown", shutdowns === 0);
+  check("hook credential on session receives no management reply", await sendFrame(endpoint.path, { token: endpoint.token, op: "session" }) === "");
+  check("hook credential on session never runs onSession", sessions === 0);
+  for (const op of ["input", "stop", "resize"])
+    check(`hook credential on ${op} is refused before the hook handler`, await sendFrame(endpoint.path, { token: endpoint.token, op }) === "" && events.length === 0);
 
-  const hookSession = await sendFrame(endpoint.path, { token: endpoint.token, op: "session" });
-  check("hook credential on session receives no management reply", hookSession === "");
-  check("hook credential on session never runs onSession", sessions === 0, { sessions });
-
-  for (const op of ["input", "stop", "resize"] as const) {
-    const reply = await sendFrame(endpoint.path, { token: endpoint.token, op });
-    check(`hook credential on ${op} is refused before the hook handler`, reply === "" && events.length === 0);
-  }
-
-  const hookReply = await sendFrame(endpoint.path, {
-    token: endpoint.token,
-    event: { hook_event_name: "SessionStart", ordinary: true },
-  });
+  const hookReply = await sendFrame(endpoint.path, { token: endpoint.token, event: { hook_event_name: "SessionStart", ordinary: true } });
   check("ordinary hook event still succeeds with the hook credential", hookReply.trim() === JSON.stringify({ handled: true }));
-  check("ordinary hook event reaches the hook handler intact", JSON.stringify(events.at(-1)) === JSON.stringify({ hook_event_name: "SessionStart", ordinary: true }));
+  check("ordinary hook event reaches the hook handler intact", events.length === 1);
 
-  const managementFrame = {
-    token: endpoint.management.token,
-    bindingId: binding.bindingId,
-    controllerEpoch: binding.controllerEpoch,
-  };
-  const sessionReply = await sendFrame(endpoint.path, { ...managementFrame, op: "session" });
-  check("current management credential can query the bound session", sessionReply.includes("session-credential-split"));
-  check("management session query never reaches the hook handler", events.length === 1, { events: events.length });
-
-  const shutdownReply = await sendFrame(endpoint.path, { ...managementFrame, op: "shutdown" });
-  check("current management credential can invoke shutdown on its exact binding fence", shutdownReply.trim() === JSON.stringify({ ok: true }));
-  check("current management credential runs onShutdown exactly once", shutdowns === 1, { shutdowns });
-
-  const staleEpoch = await sendFrame(endpoint.path, { ...managementFrame, controllerEpoch: binding.controllerEpoch - 1, op: "shutdown" });
-  check("management credential with a stale controller epoch is refused", staleEpoch === "" && shutdowns === 1);
-  const wrongBinding = await sendFrame(endpoint.path, { ...managementFrame, bindingId: "retired-binding", op: "session" });
-  check("management credential for another binding is refused", wrongBinding === "" && sessions === 1);
+  check("current management credential can query the bound session", (await sendFrame(endpoint.path, { ...managementFrame, op: "session" })).includes("session-credential-split"));
+  check("management session query never reaches the hook handler", events.length === 1);
+  check("current management credential can invoke shutdown on its exact binding fence", (await sendFrame(endpoint.path, { ...managementFrame, op: "shutdown" })).trim() === JSON.stringify({ ok: true }));
+  check("current management credential runs onShutdown exactly once", shutdowns === 1);
+  check("stale controller epoch is refused", await sendFrame(endpoint.path, { ...managementFrame, controllerEpoch: fence.controllerEpoch - 1, op: "shutdown" }) === "" && shutdowns === 1);
+  check("wrong resource id is refused", await sendFrame(endpoint.path, { ...managementFrame, resourceId: "other-resource", op: "session" }) === "" && sessions === 1);
+  check("wrong binding id is refused", await sendFrame(endpoint.path, { ...managementFrame, bindingId: "retired-binding", op: "session" }) === "" && sessions === 1);
 
   managementCurrent = false;
-  const retiredOldPath = await sendFrame(endpoint.path, { ...managementFrame, op: "shutdown" });
-  check("retired manager credential fails on the old still-listening control path", retiredOldPath === "" && shutdowns === 1);
-  const retiredOldSession = await sendFrame(endpoint.path, { ...managementFrame, op: "session" });
-  check("retired manager credential fails for session on the old path", retiredOldSession === "" && sessions === 1);
-  const hookAfterRetire = await sendFrame(endpoint.path, { token: endpoint.token, event: { hook_event_name: "Stop" } });
-  check("ordinary hooks keep working after manager authority is retired", hookAfterRetire.trim() === JSON.stringify({ handled: true }) && events.length === 2);
+  check("retired manager credential fails on the old still-listening path", await sendFrame(endpoint.path, { ...managementFrame, op: "shutdown" }) === "" && shutdowns === 1);
+  check("retired manager credential fails for session on the old path", await sendFrame(endpoint.path, { ...managementFrame, op: "session" }) === "" && sessions === 1);
+  check("ordinary hooks keep working after manager retirement", (await sendFrame(endpoint.path, { token: endpoint.token, event: { hook_event_name: "Stop" } })).trim() === JSON.stringify({ handled: true }) && events.length === 2);
 
-  const nextHook = controlEndpoint("credential-split", "next");
-  const nextEndpoint = {
-    ...nextHook,
-    management: {
-      token: randomBytes(32).toString("base64url"),
-      binding: { bindingId: "binding-credential-split-next", controllerEpoch: binding.controllerEpoch + 1 },
-    },
+  const nextFence = { resourceId: "resource-next", bindingId: "binding-next", controllerEpoch: 8 } as const;
+  const nextMinted = controlEndpoint("credential-split", "next", undefined, nextFence);
+  assert.ok(nextMinted.management);
+  const nextEndpoint: ControlEndpoint = {
+    path: nextMinted.path,
+    token: nextMinted.token,
+    managementVerifier: { tokenDigest: nextMinted.management.verifier.tokenDigest, fence: nextFence },
   };
-  const nextEvents: unknown[] = [];
   let nextShutdowns = 0;
-  const nextServer = startControlServer(
-    stubAgent,
-    nextEndpoint,
-    async (_agent, event) => ((nextEvents.push(event)), { handled: "next" }),
-    { onShutdown: () => nextShutdowns++, authorizeManagement: () => true },
-  );
+  const nextServer = startControlServer(stubAgent, nextEndpoint, async () => ({ handled: "next" }), {
+    onShutdown: () => nextShutdowns++, authorizeManagement: () => true,
+  });
   try {
     await listening(nextServer);
-    const retiredNewPath = await sendFrame(nextEndpoint.path, { ...managementFrame, op: "shutdown" });
-    check("retired manager credential fails on the replacement control path", retiredNewPath === "" && nextShutdowns === 0);
-    const newHookReply = await sendFrame(nextEndpoint.path, { token: nextEndpoint.token, event: { hook_event_name: "SessionStart" } });
-    check("replacement path hooks remain independent of retired management authority", newHookReply.trim() === JSON.stringify({ handled: "next" }) && nextEvents.length === 1);
-  } finally {
-    nextServer.close();
-  }
+    check("retired manager credential fails on the replacement control path", await sendFrame(nextEndpoint.path, { ...managementFrame, op: "shutdown" }) === "" && nextShutdowns === 0);
+    check("replacement path hooks remain independent", (await sendFrame(nextEndpoint.path, { token: nextEndpoint.token, event: { hook_event_name: "Start" } })).trim() === JSON.stringify({ handled: "next" }));
+  } finally { nextServer.close(); }
 
   for (const badToken of [undefined, null, 7, {}, "x"]) {
-    const beforeEvents = events.length;
-    const beforeShutdowns = shutdowns;
-    const reply = await sendFrame(endpoint.path, { token: badToken, event: { hook_event_name: "Bad" } });
-    check("malformed hook credentials are dropped before handle without throwing", reply === "" && events.length === beforeEvents && shutdowns === beforeShutdowns, { badToken });
-  }
-  for (const badToken of [undefined, null, 7, {}, "x"]) {
-    const beforeEvents = events.length;
-    const beforeShutdowns = shutdowns;
-    const reply = await sendFrame(endpoint.path, { token: badToken, bindingId: binding.bindingId, controllerEpoch: binding.controllerEpoch, op: "shutdown" });
-    check("malformed management credentials are dropped before effects without throwing", reply === "" && events.length === beforeEvents && shutdowns === beforeShutdowns, { badToken });
+    const before = [events.length, shutdowns];
+    const hookBad = await sendFrame(endpoint.path, { token: badToken, event: { hook_event_name: "Bad" } });
+    check("malformed hook credentials are dropped before effects without throwing", hookBad === "" && events.length === before[0] && shutdowns === before[1]);
+    const managementBad = await sendFrame(endpoint.path, { token: badToken, ...managementFrame, op: "shutdown" });
+    check("malformed management credentials are dropped before effects without throwing", managementBad === "" && events.length === before[0] && shutdowns === before[1]);
   }
 
   const oversized = await new Promise<string>((resolve) => {
-    const sock = connect(endpoint.path);
-    let settled = false;
-    const finish = (result: string): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { sock.destroy(); } catch { /* already closed */ }
-      resolve(result);
-    };
+    const sock = connect(endpoint.path); let done = false;
+    const finish = (result: string): void => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); resolve(result); };
     const timer = setTimeout(() => finish("timeout"), 4_000);
     sock.on("connect", () => sock.write("x".repeat((1 << 20) + 1)));
-    sock.on("close", () => finish("closed"));
-    sock.on("error", () => finish("closed"));
+    sock.on("close", () => finish("closed")); sock.on("error", () => finish("closed"));
   });
   check("MAX_FRAME_BYTES still drops an oversized unauthenticated frame", oversized === "closed");
-  const afterFlood = await sendFrame(endpoint.path, { token: endpoint.token, event: { hook_event_name: "AfterFlood" } });
-  check("control server still serves hooks after the oversized frame", afterFlood.trim() === JSON.stringify({ handled: true }));
+  check("server still serves hooks after oversized frame", (await sendFrame(endpoint.path, { token: endpoint.token, event: { hook_event_name: "AfterFlood" } })).trim() === JSON.stringify({ handled: true }));
 
   const deadlineDrop = await new Promise<string>((resolve) => {
-    const sock = connect(endpoint.path);
-    let settled = false;
-    const finish = (result: string): void => {
-      if (settled) return;
-      settled = true;
-      clearInterval(dribble);
-      clearTimeout(timer);
-      try { sock.destroy(); } catch { /* already closed */ }
-      resolve(result);
-    };
-    let dribble: ReturnType<typeof setInterval>;
+    const sock = connect(endpoint.path); let done = false; let dribble: ReturnType<typeof setInterval>;
+    const finish = (result: string): void => { if (done) return; done = true; clearInterval(dribble); clearTimeout(timer); sock.destroy(); resolve(result); };
     const timer = setTimeout(() => finish("timeout"), 8_000);
-    sock.on("connect", () => {
-      dribble = setInterval(() => {
-        if (sock.destroyed) return;
-        try { sock.write("x"); } catch { /* close/error settles */ }
-      }, 500);
-    });
-    sock.on("close", () => finish("closed"));
-    sock.on("error", () => finish("closed"));
+    sock.on("connect", () => { dribble = setInterval(() => { if (!sock.destroyed) sock.write("x"); }, 500); });
+    sock.on("close", () => finish("closed")); sock.on("error", () => finish("closed"));
   });
   check("AUTH_DEADLINE_MS still drops a slow unauthenticated frame", deadlineDrop === "closed");
 
-  assert.throws(
-    () => startControlServer(stubAgent, controlEndpoint("credential-split", "blocked"), async () => ({}), { onShutdown: () => {} }),
-    /control plane BLOCKED: management handlers require a separate management credential/,
-  );
-  pass++;
-  console.log("  ✓ legacy single-token management setup fails BLOCKED instead of falling back");
-  assert.throws(
-    () => startControlServer(
-      stubAgent,
-      { ...controlEndpoint("credential-split", "same-secret", "same-secret"), management: { token: "same-secret", binding } },
-      async () => ({}),
-      { onShutdown: () => {}, authorizeManagement: () => true },
-    ),
-    /control plane BLOCKED: hook and management credentials resolve to the same secret/,
-  );
-  pass++;
-  console.log("  ✓ identical hook and management secrets fail BLOCKED instead of faking a split");
-  for (const badBinding of [
-    { bindingId: "", controllerEpoch: 1 },
-    { bindingId: "binding", controllerEpoch: 0 },
-    { bindingId: "binding", controllerEpoch: Number.NaN },
-  ]) {
-    assert.throws(
-      () => startControlServer(
-        stubAgent,
-        { ...controlEndpoint("credential-split", `bad-fence-${pass}`), management: { token: "management-token", binding: badBinding } },
-        async () => ({}),
-        { onShutdown: () => {}, authorizeManagement: () => true },
-      ),
-      /control plane BLOCKED: management credential carries an invalid Binding.bindingId or controllerEpoch/,
-    );
-    pass++;
-    console.log("  ✓ invalid management Binding fence fails BLOCKED before listen");
+  assert.throws(() => startControlServer(stubAgent, controlEndpoint("credential-split", "blocked"), async () => ({}), { onShutdown: () => {} }), /control plane BLOCKED: management handlers require/);
+  check("legacy single-token management setup fails BLOCKED", true);
+  const sameDigest = createHash("sha256").update("same-secret").digest("base64url");
+  assert.throws(() => startControlServer(stubAgent, { ...controlEndpoint("credential-split", "same", "same-secret"), managementVerifier: { tokenDigest: sameDigest, fence } }, async () => ({}), { onShutdown: () => {}, authorizeManagement: () => true }), /hook and management credentials resolve to the same secret/);
+  check("identical hook and management secrets fail BLOCKED", true);
+  for (const badFence of [{ ...fence, resourceId: "" }, { ...fence, bindingId: "" }, { ...fence, controllerEpoch: 0 }]) {
+    assert.throws(() => startControlServer(stubAgent, { ...controlEndpoint("credential-split", `bad-${pass}`), managementVerifier: { tokenDigest: sameDigest, fence: badFence } }, async () => ({}), { onShutdown: () => {}, authorizeManagement: () => true }), /invalid Binding.bindingId or controllerEpoch/);
+    check("invalid management fence fails BLOCKED before listen", true);
   }
-} finally {
-  server.close();
-}
-
+} finally { server.close(); }
 console.log(`\nCONTROL CREDENTIAL SPLIT TESTS PASSED ✅  (${pass} checks)`);

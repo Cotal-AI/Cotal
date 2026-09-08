@@ -11,7 +11,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { Binding } from "@cotal-ai/core";
+import type { ManagementControlFence } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
 
 /** One lifecycle event, as the agent runtime delivers it on stdin. */
@@ -32,12 +32,13 @@ type ControlFrame =
 
 /** The canonical lifecycle fence a management credential is bound to. These are projections of the
  *  core Binding fields, not another connector-owned epoch or binding vocabulary. */
-export type ManagementControlBinding = Pick<Binding, "bindingId" | "controllerEpoch">;
+export type ManagementControlBinding = ManagementControlFence;
 
 /** A manager-only credential for effects on one exact lifecycle binding and controller epoch. */
-export interface ManagementControlCredential {
-  token: string;
-  binding: ManagementControlBinding;
+export interface ManagementControlVerifier {
+  /** SHA-256 base64url digest of the manager-only bearer. The raw bearer never enters the session. */
+  tokenDigest: string;
+  fence: ManagementControlBinding;
 }
 
 /** The connector's local control endpoint. `token` is hook-only; management effects are unavailable
@@ -45,7 +46,7 @@ export interface ManagementControlCredential {
 export interface ControlEndpoint {
   path: string;
   token: string;
-  management?: ManagementControlCredential;
+  managementVerifier?: ManagementControlVerifier;
 }
 
 /** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
@@ -238,14 +239,13 @@ export function startControlServer(
 ): Server {
   const { path } = endpoint;
   const hookDigest = createHash("sha256").update(endpoint.token).digest();
-  const management = endpoint.management;
-  const managementDigest = management
-    ? createHash("sha256").update(management.token).digest()
-    : undefined;
+  const management = endpoint.managementVerifier;
+  const managementDigest = management ? Buffer.from(management.tokenDigest, "base64url") : undefined;
   if (management && (
-    !management.token || !management.binding.bindingId.trim()
-    || !Number.isSafeInteger(management.binding.controllerEpoch)
-    || management.binding.controllerEpoch <= 0
+    managementDigest?.length !== 32 || !management.fence.resourceId.trim()
+    || !management.fence.bindingId.trim()
+    || !Number.isSafeInteger(management.fence.controllerEpoch)
+    || management.fence.controllerEpoch <= 0
   ))
     throw new Error(
       "control plane BLOCKED: management credential carries an invalid Binding.bindingId or controllerEpoch",
@@ -311,15 +311,17 @@ export function startControlServer(
           sock.destroy();
           return;
         }
+        const resourceId = (frame as { resourceId?: unknown }).resourceId;
         const bindingId = (frame as { bindingId?: unknown }).bindingId;
         const controllerEpoch = (frame as { controllerEpoch?: unknown }).controllerEpoch;
-        if (bindingId !== management.binding.bindingId || controllerEpoch !== management.binding.controllerEpoch) {
+        if (resourceId !== management.fence.resourceId || bindingId !== management.fence.bindingId
+          || controllerEpoch !== management.fence.controllerEpoch) {
           sock.destroy();
           return;
         }
         let authorized = false;
         try {
-          authorized = (await opts.authorizeManagement?.(management.binding)) === true;
+          authorized = (await opts.authorizeManagement?.(management.fence)) === true;
         } catch {
           authorized = false;
         }

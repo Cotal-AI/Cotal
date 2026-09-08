@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import type { ManagementControlFence } from "@cotal-ai/core";
 
 const TIMEOUT_MS = 2_000;
 const MAX_REPLY_BYTES = 16 * 1024;
@@ -9,7 +10,18 @@ const MAX_REPLY_BYTES = 16 * 1024;
  * Used by Pi crash recovery: the manager must reopen the exact JSONL session the child reports,
  * never guess from cwd or newest-session ordering. The endpoint token is per launch and memory-only.
  */
-export function controlSession(endpoint: { path: string; token: string }): Promise<string> {
+export interface SessionControlEndpoint {
+  path: string;
+  management?: { token: string; fence: ManagementControlFence };
+}
+
+export function controlSession(endpoint: SessionControlEndpoint): Promise<string> {
+  const management = endpoint.management;
+  if (!management)
+    return Promise.reject(new Error(
+      "control session BLOCKED: the endpoint carries no separate management credential bound to " +
+        "resourceId + Binding.bindingId + controllerEpoch; refusing to fall back to the hook credential",
+    ));
   return new Promise((resolve, reject) => {
     let sock: ReturnType<typeof connect>;
     let settled = false;
@@ -34,7 +46,13 @@ export function controlSession(endpoint: { path: string; token: string }): Promi
     sock.setEncoding("utf8");
     sock.on("connect", () => {
       try {
-        sock.write(JSON.stringify({ token: endpoint.token, op: "session" }) + "\n");
+        sock.write(JSON.stringify({
+          token: management.token,
+          op: "session",
+          resourceId: management.fence.resourceId,
+          bindingId: management.fence.bindingId,
+          controllerEpoch: management.fence.controllerEpoch,
+        }) + "\n");
       } catch (error) {
         finish(error instanceof Error ? error : new Error(String(error)));
       }

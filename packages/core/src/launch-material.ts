@@ -51,6 +51,21 @@ const MATERIAL_FILE = "material.json";
 /** The env var naming the launch-material file. It carries a PATH, never a secret. */
 export const LAUNCH_MATERIAL_ENV = "COTAL_LAUNCH_MATERIAL";
 
+/** The immutable lifecycle identity a management control credential is scoped to. `resourceId` is
+ *  the registered sessionbinding key qualifier; bindingId/controllerEpoch are the canonical Binding
+ *  fence. This is additive launch transport, not another lifecycle epoch vocabulary. */
+export interface ManagementControlFence {
+  resourceId: string;
+  bindingId: string;
+  controllerEpoch: number;
+}
+
+/** What the connector process receives. It gets only the SHA-256 digest, never the manager's bearer,
+ *  so a hook process that can read launch material still cannot present management authority. */
+export interface ManagementControlVerifier extends ManagementControlFence {
+  tokenDigest: string;
+}
+
 /** What a launcher hands one spawned session. Every field is optional because the modes differ
  *  (open mesh has no creds; a static-auth launch has no user-mode identity; a launch with no
  *  control endpoint has no token), but an empty material file is refused at write time - an empty
@@ -64,6 +79,8 @@ export type LaunchMaterial = {
   token?: string;
   /** Shared secret authenticating the first frame on the session's local control socket. */
   controlToken?: string;
+  /** Separate, binding-fenced management verifier. The raw management bearer remains manager-only. */
+  managementControl?: ManagementControlVerifier;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 };
@@ -156,6 +173,25 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
   str("creds");
   str("token");
   str("controlToken");
+  if (raw.managementControl !== undefined) {
+    const m = raw.managementControl;
+    if (typeof m !== "object" || m === null || Array.isArray(m))
+      throw new Error(`launch material: ${path} has a managementControl that is not an object`);
+    const { tokenDigest, resourceId, bindingId, controllerEpoch } = m as Record<string, unknown>;
+    if (typeof tokenDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(tokenDigest))
+      throw new Error(`launch material: ${path} has a managementControl.tokenDigest that is not a SHA-256 base64url digest`);
+    for (const [key, value] of Object.entries({ resourceId, bindingId }))
+      if (typeof value !== "string" || !value.trim())
+        throw new Error(`launch material: ${path} has a managementControl.${key} that is not a non-empty string`);
+    if (!Number.isSafeInteger(controllerEpoch) || (controllerEpoch as number) <= 0)
+      throw new Error(`launch material: ${path} has a managementControl.controllerEpoch that is not a positive safe integer`);
+    material.managementControl = {
+      tokenDigest,
+      resourceId: resourceId as string,
+      bindingId: bindingId as string,
+      controllerEpoch: controllerEpoch as number,
+    };
+  }
   if (raw.userAuth !== undefined) {
     const u = raw.userAuth;
     if (typeof u !== "object" || u === null || Array.isArray(u))

@@ -8,6 +8,7 @@ import {
   hasIdentity,
   startControlServer,
   type AgentConfig,
+  type ControlEndpoint,
   type InboxItem,
   controlFromEnv,
   scrubLaunchMaterial,
@@ -92,7 +93,7 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig, control: { path: string; token: string } | undefined): PiRuntime {
+function createRuntime(config: AgentConfig, control: ControlEndpoint | undefined): PiRuntime {
   const mesh = new MeshAgent(config);
   const driver = new PiDriver(mesh);
   const runtime: PiRuntime = {
@@ -114,8 +115,13 @@ function createRuntime(config: AgentConfig, control: { path: string; token: stri
       async () => ({ ok: false, error: "pi uses in-process lifecycle events; only control operations are supported" }),
       {
         fatalBind: true,
-        onShutdown: () => driver.requestShutdown(),
-        onSession: () => runtime.sessionId,
+        ...(control.managementVerifier
+          ? {
+              onShutdown: () => driver.requestShutdown(),
+              onSession: () => runtime.sessionId,
+              authorizeManagement: () => false,
+            }
+          : {}),
       },
     );
   }
