@@ -79,13 +79,13 @@ async function replyFor(label: string, opts: ControlServerOpts | undefined, hand
 
 const WANT = JSON.stringify({ handled: true });
 
-// The four production opts shapes. Only claude-code passes `onReply`; it is the one caller the
-// short-circuit spared, which is exactly why nothing gated caught this.
+// Hook-serving opts shapes. Management handlers are deliberately absent here: under the credential
+// split they require their own verifier and revocation oracle, while this suite grades hook replies.
 check("no opts argument at all → reply returned", (await replyFor("noargs", undefined)) === WANT);
 check("empty opts → reply returned", (await replyFor("empty", {})) === WANT);
 check(
-  "onShutdown but no onReply (opencode, hermes, pi, codex) → reply returned",
-  (await replyFor("noonreply", { fatalBind: false, onShutdown: () => {} })) === WANT,
+  "fatalBind but no onReply (opencode, hermes, pi, codex hook-only path) → reply returned",
+  (await replyFor("noonreply", { fatalBind: false })) === WANT,
 );
 
 let observed: boolean | undefined;

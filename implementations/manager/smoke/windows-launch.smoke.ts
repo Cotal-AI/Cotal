@@ -377,7 +377,19 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
 }
 {
   const stubAgent = {} as unknown as MeshAgent;
-  const ep = controlEndpoint("smoke", "ctl");
+  const fence = { resourceId: "resource-windows-control", bindingId: "binding-windows-control", controllerEpoch: 1 } as const;
+  const ep = controlEndpoint("smoke", "ctl", undefined, fence);
+  const serverEp = {
+    path: ep.path,
+    token: ep.token,
+    managementVerifier: { tokenDigest: ep.management!.verifier.tokenDigest, fence },
+  };
+  const managementFrame = {
+    token: ep.management!.token,
+    resourceId: fence.resourceId,
+    bindingId: fence.bindingId,
+    controllerEpoch: fence.controllerEpoch,
+  };
 
   // F1: endpoint shape — a named pipe on win32 / a tmpdir .sock on POSIX, a 256-bit base64url token,
   // and a token-derived (so unguessable) path.
@@ -395,9 +407,10 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
     return { handled: true };
   };
   let sessionId: string | undefined = "01999999-9999-7999-8999-000000000001";
-  const server = startControlServer(stubAgent, ep, handle, {
+  const server = startControlServer(stubAgent, serverEp, handle, {
     onShutdown: () => shutdowns++,
     onSession: () => sessionId,
+    authorizeManagement: () => true,
   });
   await waitListening(server);
 
@@ -418,30 +431,39 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
   const sessionEventsBefore = events.length;
   eq("session: authenticated query returns the exact host id", await controlSession(ep), sessionId);
   eq("session: query is NOT routed through the hook handler", events.length, sessionEventsBefore);
-  eq("session: wrong token receives no reply", await sendFrame(ep.path, { token: "nope", op: "session" }), "");
+  eq("session: wrong token receives no reply", await sendFrame(ep.path, { ...managementFrame, token: "nope", op: "session" }), "");
   sessionId = undefined;
-  const sessionNotReady = await sendFrame(ep.path, { token: ep.token, op: "session" });
+  const sessionNotReady = await sendFrame(ep.path, { ...managementFrame, op: "session" });
   check("session: not-yet-ready is a loud negative reply", /session not ready/.test(sessionNotReady));
   sessionId = "01999999-9999-7999-8999-000000000002";
   eq("session: a replacement Pi session is reported immediately", await controlSession(ep), sessionId);
 
   // F5: a valid {op:"shutdown"} routes to onShutdown, NOT the hook handler.
   const evBefore = events.length;
-  const r4 = await sendFrame(ep.path, { token: ep.token, op: "shutdown" });
+  const r4 = await sendFrame(ep.path, { ...managementFrame, op: "shutdown" });
   await sleep(50);
   eq("shutdown: acked", r4.trim(), JSON.stringify({ ok: true }));
   eq("shutdown: onShutdown fired", shutdowns, 1);
   eq("shutdown: NOT routed through the hook handler", events.length, evBefore);
 
   // F6: a {op:"shutdown"} with a WRONG token shuts nothing down.
-  await sendFrame(ep.path, { token: "nope", op: "shutdown" });
+  await sendFrame(ep.path, { ...managementFrame, token: "nope", op: "shutdown" });
   await sleep(50);
   eq("shutdown: wrong token → onShutdown NOT fired", shutdowns, 1);
 
   // F7: the manager's controlShutdown client round-trips to a server's onShutdown (the WS4 wire path).
-  const ep2 = controlEndpoint("smoke", "ws4");
+  const fence2 = { resourceId: "resource-ws4", bindingId: "binding-ws4", controllerEpoch: 1 } as const;
+  const ep2 = controlEndpoint("smoke", "ws4", undefined, fence2);
+  const serverEp2 = {
+    path: ep2.path,
+    token: ep2.token,
+    managementVerifier: { tokenDigest: ep2.management!.verifier.tokenDigest, fence: fence2 },
+  };
   let ws4 = false;
-  const server2 = startControlServer(stubAgent, ep2, handle, { onShutdown: () => (ws4 = true) });
+  const server2 = startControlServer(stubAgent, serverEp2, handle, {
+    onShutdown: () => (ws4 = true),
+    authorizeManagement: () => true,
+  });
   await waitListening(server2);
   controlShutdown(ep2);
   for (let i = 0; i < 40 && !ws4; i++) await sleep(25);
