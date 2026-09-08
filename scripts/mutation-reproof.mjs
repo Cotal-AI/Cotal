@@ -27,6 +27,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
@@ -104,7 +105,7 @@ function loadCorpus(root, paths) {
       errors.push(err.message);
       continue;
     }
-    fixtures.push({ path, suites, command: config.command, mutations: config.mutations });
+    fixtures.push({ path, config, suites, command: config.command, mutations: config.mutations });
   }
   return { fixtures, errors };
 }
@@ -137,6 +138,26 @@ function changedSet(root, base, head) {
     }
   }
   return { changed, diffSize: raw.length };
+}
+
+/**
+ * The suite metadata migration changed legacy fixture configs even when their proof definition did
+ * not change. Classify that one-time base diff without weakening head validation: load the exact
+ * base blob, require legacy non-array -> canonical array, and compare every other top-level field.
+ * Additions, unreadable base blobs, canonical array changes, and any proof-field change remain
+ * selecting config changes.
+ */
+function isMetadataOnlySuiteCanonicalization(root, base, fixture) {
+  let baseConfig;
+  try {
+    baseConfig = JSON.parse(git(root, ["show", `${base}:${fixture.path}`]));
+  } catch {
+    return false;
+  }
+  if (Array.isArray(baseConfig?.suite) || !Array.isArray(fixture.config.suite)) return false;
+  const { suite: _baseSuite, ...baseRest } = baseConfig;
+  const { suite: _headSuite, ...headRest } = fixture.config;
+  return isDeepStrictEqual(baseRest, headRest);
 }
 
 function shardOf(path, count) {
@@ -190,11 +211,16 @@ if (errors.length) {
 
 const { changed, diffSize } = a.all ? { changed: new Set(), diffSize: 0 } : changedSet(root, a.base, head);
 
+const metadataOnlyExclusions = new Set(a.all ? [] : fixtures
+  .filter((fixture) => changed.has(fixture.path)
+    && isMetadataOnlySuiteCanonicalization(root, a.base, fixture))
+  .map((fixture) => fixture.path));
+
 let selected = fixtures.map((fixture) => ({
   ...fixture,
   selectedBy: {
     all: Boolean(a.all),
-    config: changed.has(fixture.path),
+    config: changed.has(fixture.path) && !metadataOnlyExclusions.has(fixture.path),
     suite: fixture.suites.some((suite) => changed.has(suite)),
     mutation: fixture.mutations.some((mutation) =>
       typeof mutation?.file === "string" && changed.has(mutation.file)),
@@ -209,6 +235,8 @@ console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fix
   + (a.all
     ? " for a full sweep"
     : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
+if (metadataOnlyExclusions.size > 0)
+  console.log(`metadata-only config-path exclusions (${metadataOnlyExclusions.size}):\n${[...metadataOnlyExclusions].map((path) => `  ${path}`).join("\n")}`);
 if (selected.length > 0) console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
 
 // UNMEASURED, exit 1: a selected fixture's guarded file does not exist at head — a dangling fixture.
@@ -235,7 +263,9 @@ if (dangling.length) {
 if (selected.length === 0) {
   console.log(shard
     ? `No selected mutation fixtures are assigned to shard ${a.shard}.`
-    : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
+    : metadataOnlyExclusions.size > 0
+      ? "No mutation fixtures to re-prove: the only intersections were metadata-only config-path exclusions."
+      : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
   process.exit(0);
 }
 

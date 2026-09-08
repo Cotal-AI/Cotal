@@ -2,11 +2,35 @@
   "suite": [
     "bin/smoke/mutation-reproof.smoke.ts"
   ],
-  "guard": "changed fixture config, suite, or guarded source re-proves its fixture; a deleted or renamed-away source is a loud dangling failure naming the exact fixture; both sides of a rename enter the changed set",
+  "guard": "changed proof definitions, canonical suite arrays, suite sources, or guarded sources re-prove their fixture; legacy non-array to canonical-array metadata-only config diffs are named exclusions; deletions and both rename sides remain selecting",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
   "mutations": [
+    {
+      "name": "metadata-only legacy suite canonicalization stops being excluded",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    config: changed.has(fixture.path) && !metadataOnlyExclusions.has(fixture.path),",
+      "replace": "    config: changed.has(fixture.path),",
+      "expectRed": "string to equivalent array is excluded as metadata-only instead of selecting by config path",
+      "cell": "string to equivalent array is excluded as metadata-only instead of selecting by config path"
+    },
+    {
+      "name": "metadata-only exclusion broadens to canonical array suite changes",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  if (Array.isArray(baseConfig?.suite) || !Array.isArray(fixture.config.suite)) return false;",
+      "replace": "  if (!Array.isArray(fixture.config.suite)) return false;",
+      "expectRed": "canonical array to different array remains a selecting config change",
+      "cell": "canonical array to different array remains a selecting config change"
+    },
+    {
+      "name": "metadata-only exclusion ignores other changed proof fields",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  return isDeepStrictEqual(baseRest, headRest);",
+      "replace": "  return true;",
+      "expectRed": "a non-suite config change remains selecting during legacy suite canonicalization",
+      "cell": "a non-suite config change remains selecting during legacy suite canonicalization"
+    },
     {
       "name": "the diff excludes deletions again (the original ACMR bug)",
       "file": "scripts/mutation-reproof.mjs",
@@ -26,8 +50,8 @@
     {
       "name": "a changed configured suite is ignored by changed-set selection",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    config: changed.has(fixture.path),\n    suite: fixture.suites.some((suite) => changed.has(suite)),\n    mutation: fixture.mutations.some((mutation) =>",
-      "replace": "    config: changed.has(fixture.path),\n    suite: false,\n    mutation: fixture.mutations.some((mutation) =>",
+      "find": "    config: changed.has(fixture.path) && !metadataOnlyExclusions.has(fixture.path),\n    suite: fixture.suites.some((suite) => changed.has(suite)),\n    mutation: fixture.mutations.some((mutation) =>",
+      "replace": "    config: changed.has(fixture.path) && !metadataOnlyExclusions.has(fixture.path),\n    suite: false,\n    mutation: fixture.mutations.some((mutation) =>",
       "expectRed": "changing only the second member of a multi-source array selects exactly that fixture",
       "cell": "changing only the second member of a multi-source array selects exactly that fixture"
     },

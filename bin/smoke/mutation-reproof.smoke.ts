@@ -16,7 +16,7 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +41,11 @@ const eq = (a: string[], b: string[]): boolean => JSON.stringify([...a].sort()) 
 /** Parse the "selected fixture paths:" block the scan prints before it runs any proof. */
 const selectedPaths = (out: string): string[] => {
   const m = out.match(/selected fixture paths:\n((?:  .+\n?)+)/);
+  return m ? m[1].split("\n").map((l) => l.trim()).filter(Boolean) : [];
+};
+/** Parse configs excluded only because the diff canonicalized legacy suite metadata. */
+const metadataOnlyPaths = (out: string): string[] => {
+  const m = out.match(/metadata-only config-path exclusions \(\d+\):\n((?:  .+\n?)+)/);
   return m ? m[1].split("\n").map((l) => l.trim()).filter(Boolean) : [];
 };
 /** Parse the dangling-fixture set the scan names when it refuses an unrunnable proof. */
@@ -404,6 +409,106 @@ try {
         && selectedPaths(out).length === 0,
       `status=${status}\n${out}`,
     );
+  }
+
+  // Base-only legacy metadata is read from the exact base blob for diff classification. Head corpus
+  // validation remains strict. Only a legacy non-array -> canonical array migration with every other
+  // top-level field unchanged is excluded from config-path selection.
+  for (const [label, baseSuite, headSuite] of [
+    ["string to equivalent array", "suites/a.suite.mjs", ["suites/a.suite.mjs"]],
+    ["missing to array", undefined, ["suites/a.suite.mjs"]],
+    ["string to different array", "suites/legacy.suite.mjs", ["suites/a.suite.mjs"]],
+  ] as const) {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { writeFileSync } from 'node:fs';\nimport { a } from '../a.mjs';\nwriteFileSync('executed', 'yes');\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n");
+        const config: Record<string, unknown> = { command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a is one" }] };
+        if (baseSuite !== undefined) config.suite = baseSuite;
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify(config, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = headSuite;
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(`${label} is excluded as metadata-only instead of selecting by config path`,
+      status === 0 && selectedPaths(out).length === 0
+        && eq(metadataOnlyPaths(out), ["smoke/mutations/a.mutations.json"])
+        && !existsSync(join(root, "executed"))
+        && out.includes("the only intersections were metadata-only config-path exclusions"),
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))} excluded=${JSON.stringify(metadataOnlyPaths(out))} executed=${existsSync(join(root, "executed"))}\n${out}`);
+  }
+  for (const [label, change] of [
+    ["declared suite source", (r: string) => writeFileSync(join(r, "suites", "a.suite.mjs"), "// changed suite\nconsole.log('✓ a is one');\n")],
+    ["mutation target", (r: string) => writeFileSync(join(r, "a.mjs"), "// changed target\nexport const a = () => 1;\n")],
+  ] as const) {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "console.log('✓ a is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: "legacy prose", command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a is one" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = ["suites/a.suite.mjs"];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        change(r);
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(`a metadata-only config-path exclusion does not suppress ${label} selection`,
+      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && eq(metadataOnlyPaths(out), ["smoke/mutations/a.mutations.json"]),
+      `status=${status}\n${out}`);
+  }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        for (const name of ["a", "other"]) writeFileSync(join(r, "suites", `${name}.suite.mjs`), "import { writeFileSync } from 'node:fs';\nwriteFileSync('executed', 'yes');\nconsole.log('✓ suite green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = ["suites/other.suite.mjs"];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check("canonical array to different array remains a selecting config change",
+      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
+      `status=${status}\n${out}`);
+  }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { writeFileSync } from 'node:fs';\nwriteFileSync('executed', 'yes');\nconsole.log('✓ suite green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: "suites/a.suite.mjs", command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = ["suites/a.suite.mjs"];
+        config.guard = "changed proof field";
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check("a non-suite config change remains selecting during legacy suite canonicalization",
+      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
+      `status=${status}\n${out}`);
   }
 
   // 2. Deleted guarded source: a.mjs is removed. The blocked head excluded `D` from the diff and
