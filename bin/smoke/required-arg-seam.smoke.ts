@@ -301,10 +301,12 @@ const SEAMS: Seam[] = [
   // credential of its own (one smoke-side call, tls: false).
   // 126/93 -> 127/94: run-host-live connects under a token-pinned run-operator ANSWERING
   // credential to prove the broker refuses an answer on any other pause.
-  // 127/94 -> 132/98: #774 adds one typechecked provisioner re-read before each static reconcile
+  // 127/94 -> 128/94: the local workflow mediator adds one typechecked connection,
+  // inheriting the same resolved broker and TLS requirement as its driver.
+  // 128/94 -> 133/98: #774 adds one typechecked provisioner re-read before each static reconcile
   // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
   // observer, caller, and exact terminal gate inspection). Every site states tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 132, untypecheckedSites: 98 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 133, untypecheckedSites: 98 },
 ];
 
 /**

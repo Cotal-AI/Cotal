@@ -67,7 +67,8 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 | **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
-| **run-driver** | One workflow run's driver, minted per takeover attempt: its own journal subject and replay durable, its run's records, the timer schedule at its own coordinates, and the manager's lifecycle commands as the run's caller; endpoint-wide on the checkpoint plane and the store reads, which [workflows](workflows.md#what-is-on-the-wire) names as its residual. |
+| **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
+| **run-mediator** | The trusted hosting process's separate connection for workflow effects and leader reads. It exposes journal-checked, run-bound operations and never hands its credential to the driver. |
 | **run-operator** | One served run read, or one half of an answer, minted per call: a read holds the records walk and one run's replay; the answering half is minted for one checkpoint token and holds that pause's answer record and settle alone. |
 
 **An agent's channel scope is three verbs**: `subscribe` (reads at boot),

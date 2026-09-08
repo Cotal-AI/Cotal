@@ -7,7 +7,7 @@
   "why": [
     "Lane F durable-actions step 6 (2026-09-02): `turn` leaves the not-yet-durable seam and",
     "performs through the manager's pull-shaped relay. The client half lives in mesh-handler.ts,",
-    "which the suite imports through a relative `../src` path \u2014 no build sits between the mutation",
+    "which the suite imports through a relative `../src` path — no build sits between the mutation",
     "and the run. Each obligation has a mutant: the roster the submission rides (TM9), the bound",
     "external a resume re-enters (TM12), the client's own deadline authority (TM8) and the deny's",
     "reason mapping (TM7), the presence watch that is the run's sole L4002 authority under the",
@@ -30,7 +30,7 @@
       "replace": "      const memo = this.handoffMemos.get(scope);\n      this.handoffMemos.delete(scope);\n      void memo;\n      const handoffFrom = undefined as string | undefined;",
       "expectRed": "the honoring submission carries the goal-chain link: handoffFrom is the previous turn's goalId",
       "cell": "the honoring submission carries the goal-chain link: handoffFrom is the previous turn's goalId",
-      "note": "Honoring gone at the source: no link, no mirror, no owner move, and the adopted memo has nothing to ride. Measured 2026-09-02: four reds \u2014 the link, the conversation-owner move, the terminal mirror, and the adoption-seeded link; 30 passed, 4 failed."
+      "note": "Honoring gone at the source: no link, no mirror, no owner move, and the adopted memo has nothing to ride. Measured 2026-09-02: four reds — the link, the conversation-owner move, the terminal mirror, and the adoption-seeded link; 30 passed, 4 failed."
     },
     {
       "name": "the memo spend is dropped, so honoring stops being immediate-only",
@@ -39,7 +39,7 @@
       "replace": "      const memo = this.handoffMemos.get(scope);",
       "expectRed": "a handoff not honored by the NEXT turn in the scope links nothing",
       "cell": "a handoff not honored by the NEXT turn in the scope links nothing",
-      "note": "Lang \u00a75.3's immediate-only rule: the begin spends the memo, honored or not. Unspent, a stale handoff links a LATER turn it never addressed. Measured 2026-09-02: exactly one named red; 33 passed, 1 failed."
+      "note": "Lang §5.3's immediate-only rule: the begin spends the memo, honored or not. Unspent, a stale handoff links a LATER turn it never addressed. Measured 2026-09-02: exactly one named red; 33 passed, 1 failed."
     },
     {
       "name": "the L4005 roster validation of a handoff addressee is dropped",
@@ -75,7 +75,7 @@
       "replace": "      if (false) {",
       "expectRed": "the client observes the death itself and throws L4002, naming the reason",
       "cell": "the client observes the death itself and throws L4002, naming the reason",
-      "note": "Under the executor-currency rule a dead target has no early goal terminal, so this watch is the run's SOLE L4002 authority; dropped, the orphaned turn parks to its bounded deadline. Measured 2026-09-02: three reds \u2014 the block's bounded deadline, the L4002 cell, and the death's pause claim; 32 passed, 3 failed."
+      "note": "Under the executor-currency rule a dead target has no early goal terminal, so this watch is the run's SOLE L4002 authority; dropped, the orphaned turn parks to its bounded deadline. Measured 2026-09-02: three reds — the block's bounded deadline, the L4002 cell, and the death's pause claim; 32 passed, 3 failed."
     },
     {
       "name": "the deny's turn-deadline reason stops mapping to L4003",
@@ -93,7 +93,7 @@
       "replace": "        const ended = await this.expired(primary);\n        if (false) { void ended; }",
       "expectRed": "the turn throws the effect's own L4003",
       "cell": "the turn throws the effect's own L4003",
-      "note": "The client's own pause is the L4003 authority that survives a dead manager; unread, an abandoned turn polls past its recorded deadline forever. Measured 2026-09-02: two reds \u2014 the block's bounded deadline and the L4003 cell; 33 passed, 2 failed."
+      "note": "The client's own pause is the L4003 authority that survives a dead manager; unread, an abandoned turn polls past its recorded deadline forever. Measured 2026-09-02: two reds — the block's bounded deadline and the L4003 cell; 33 passed, 2 failed."
     },
     {
       "name": "spawn never registers the roster entry turn addresses",
@@ -111,16 +111,16 @@
       "replace": "        const fact = await readGoalResult(actx, ref);\n        if (fact !== undefined) {\n          return await this.turnOutcome(req, fact, ext, scope, name, uid);",
       "expectRed": "the done yield claims the client's own armed deadline: the pause is settled",
       "cell": "the done yield claims the client's own armed deadline: the pause is settled",
-      "note": "A resolved turn that forgets its pause leaves a deadline armed to fire into a run that moved on. Measured 2026-09-02: two reds \u2014 the done yield's claim cell and the terminal claim cell; 32 passed, 2 failed."
+      "note": "A resolved turn that forgets its pause leaves a deadline armed to fire into a run that moved on. Measured 2026-09-02: two reds — the done yield's claim cell and the terminal claim cell; 32 passed, 2 failed."
     },
     {
       "name": "adoption seeds nothing, so a resumed run cannot keep turning",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    const folded = foldEntries(entries);\n    this.seedRunMemos(folded);",
-      "replace": "    const folded = foldEntries(entries);",
+      "find": "    this.seedRunMemos(folded);",
+      "replace": "",
       "expectRed": "the adopted handler turns the recorded roster's agent",
       "cell": "the adopted handler turns the recorded roster's agent",
-      "note": "The roster and memos are deterministic from the journal alone; unseeded, an adopted run refuses its own recorded seats. Measured 2026-09-02: three reds \u2014 the adopted-roster turn, the adoption-seeded handoff link, and block 11's L4004 cell (an empty roster reads as L4005 first); 31 passed, 3 failed."
+      "note": "The roster and memos are deterministic from the journal alone; unseeded, an adopted run refuses its own recorded seats. Measured 2026-09-02: three reds — the adopted-roster turn, the adoption-seeded handoff link, and block 11's L4004 cell (an empty roster reads as L4005 first); 31 passed, 3 failed."
     },
     {
       "name": "the turn external is never bound",
@@ -129,7 +129,7 @@
       "replace": "      ext = {\n        goalId, name, owner, actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };",
       "expectRed": "the acceptance floor and deadline are bound as the entry's external state before the wait",
       "cell": "the acceptance floor and deadline are bound as the entry's external state before the wait",
-      "note": "The bound external is what a resume re-enters: unbound, a crashed run re-submits from scratch instead of re-attaching to its accepted goal. Measured 2026-09-02: three reds \u2014 both bound-external cells and the resume block's one-recorded-yield cell; 31 passed, 3 failed."
+      "note": "The bound external is what a resume re-enters: unbound, a crashed run re-submits from scratch instead of re-attaching to its accepted goal. Measured 2026-09-02: three reds — both bound-external cells and the resume block's one-recorded-yield cell; 31 passed, 3 failed."
     },
     {
       "name": "a marked seat death on the deadline deny is read as the deadline",
@@ -156,7 +156,7 @@
       "replace": "      if (false)\n        throw new EffectError(\"L4001\", \"permit-turns\",",
       "expectRed": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
       "cell": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
-      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE \u2014 ran 50 of 47 cells; a partial run is not a pass Named cell red: the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint"
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 50 of 47 cells; a partial run is not a pass Named cell red: the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint"
     },
     {
       "name": "a turn never spends the turns budget",
@@ -165,7 +165,7 @@
       "replace": "",
       "expectRed": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
       "cell": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
-      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE \u2014 ran 49 of 47 cells; a partial run is not a pass Named cell red: the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint"
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 49 of 47 cells; a partial run is not a pass Named cell red: the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint"
     },
     {
       "name": "adoption counts no recorded turn against the budget",
@@ -174,7 +174,7 @@
       "replace": "",
       "expectRed": "an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline",
       "cell": "an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline",
-      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE \u2014 ran 49 of 47 cells; a partial run is not a pass Named cell red: an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline"
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 49 of 47 cells; a partial run is not a pass Named cell red: an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline"
     },
     {
       "name": "the wall-clock permit admits a deadline past it",
@@ -183,7 +183,7 @@
       "replace": "        if (false)\n          throw new EffectError(\"L4001\", \"permit-wall-clock\",",
       "expectRed": "a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoint",
       "cell": "a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoint",
-      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE \u2014 ran 48 of 47 cells; a partial run is not a pass Named cell red: a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoi"
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 48 of 47 cells; a partial run is not a pass Named cell red: a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoi"
     },
     {
       "name": "an unmeterable budget is accepted as a silent no-op",

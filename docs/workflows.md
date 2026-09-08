@@ -165,23 +165,44 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |
 | a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
 
-A run's **driver** connects on a credential of its own, the `run-driver` profile, minted for one
-run and one takeover attempt. Pinned to the run: publish on its own journal subject and its own
-replay durable, its `run`, `program`, `notice` and `migration` records, the timer schedule at its
-own instance and epoch, and the manager's lifecycle commands as the run's own caller. Wider than
-the run, and named as the profile's residual: the checkpoint records and settle facts of the whole
-endpoint (a pause is keyed by a token that does not exist at mint), the point reads of the records,
-fact, timer and chat stores (a KV read is one verb on the whole backing stream, and a matched
-message is re-read by sequence the same way), a wait's own durable on the chat stream (named per
-step, so the consumer rows are stream-scoped), and the channel and membership registries a
-conclave writes. It holds no consumer on the records store, so it lists its
-notices and migrations by walking the store one message at a time, and it cannot speak on a
-channel, read another run's journal, or file an answer. A served read rides a one-shot
-`run-operator` credential minted for that one call, holding the records walk and the named run's
-replay and nothing it can write. An answer is two such calls: the read that finds the open pause,
-then a second credential minted for that pause's token alone, holding its answer record and its
-checkpoint settle and no other pause's. `cotal run --local` mints the same profiles for itself on
-a static mesh, one per connection.
+A run's **driver** connects on a `run-driver` credential minted for one run and takeover
+attempt. It can append to its journal, use its replay durable, and write its own `run`, `program`,
+`notice` and `migration` records. It has no store point reads, checkpoint writes, chat consumers,
+or channel and membership registry grants.
+
+The hosting process keeps a separate `run-mediator` connection for effects and reads. The driver
+receives methods and data from that host; it never receives the mediator credential or connection.
+The host checks the journal's current activation and step identity before dispatch, and checks
+pause and wait authority again at each operation. Cancellation cleanup also admits losing steps
+named by a settled parent whose `cancel.issued` is still false. That permission allows cleanup;
+it cannot mint or rearm a cancelled pause. Wait acknowledgements consume host-held delivery
+receipts. A recorded match can be reread only at its bound sequence and channel. A conclave's
+recorded ownership flag must match its step-derived channel before registry writes or cleanup.
+
+The mediator retains endpoint-wide checkpoint rights and stream-wide leader reads as trusted
+host authority. Record reads exposed to the driver are restricted to its own run's keys. Reads
+that decide writes remain leader-served. A read of the journal uses the run's filtered replay
+durable, including the diagnostic for a journal with no run record.
+
+A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open
+pause, then a second credential pinned to that token for the answer and settlement.
+`cotal run --local` uses the same driver/mediator split. On an authenticated mesh it needs the
+locally recorded space signer to mint both credentials; a single `--creds` file is refused.
+Direct library users supplying broker clients to `MeshHandler` are constructing a trusted effect
+host. A hosted driver receives its closed effect interface instead.
+
+This split confines broker credentials; it is not process isolation for injected host code.
+The runtime and its effect host share the manager process. Workflow channel access still follows
+the program's requested channels, without inheriting the starting caller's channel ACL. Treat
+`run` as trusted program-execution authority. The host's journal checks enforce current run and
+step identity; they do not provide caller-scoped channel delegation.
+
+A version-1 fork can replay its settled parent history through the host. Inherited checkpoint
+identifiers carry no authority to read, rearm or claim the parent's pauses. New child effects use
+child-derived identifiers. The fork planner still uses the version-1 walker; planning a fork from
+a version-2 run currently fails on its language-version pin and needs a separate engine-aware
+planning implementation.
+
 
 ## What ships today
 
