@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.48.1
+
+### Patch Changes
+
+- 9c101cc: Report failed static lifecycle reconciliation, retry the same durable terminal with a bounded schedule, and drain accepted reconciliation work during shutdown.
+- 9a8a2a6: Inspect version-2 workflow journals on the compiled engine when planning forks and migrations. Preserve recorded pins, stop before new effects, and retain divergence and branch-refusal details across the worker boundary. Fork cuts remain fixed through catch and finally blocks, and inspection leaves pending broker effects untouched.
+
 ## 0.48.0
 
 ### Minor Changes
