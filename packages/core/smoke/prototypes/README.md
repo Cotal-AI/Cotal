@@ -183,8 +183,16 @@ policy is attached, and the versioned mode token is the only thing separating th
 The census constructs every `Profile` and covers the generic callout views. Its
 option variants are explicit representatives. `manager-service` is tested as a
 refused generic view; the two system-account credential kinds are listed outside
-the data-account matrix. Endpoint-serve uses its raw row builder, rather than a
-fenced mint. These limits remain open for full migration acceptance.
+the data-account matrix. Endpoint-serve appears twice: the raw row builder, and the
+wider shape a fenced mint composes on top of it (journal effects bind, one owned pool
+bind, `$JS.API.INFO`, and the connection inbox). The fence that releases those rows is
+covered by `endpoint-serve-auth.smoke.ts`, not here. These limits remain open for full
+migration acceptance.
+
+The overlap check counts `$JS.API.DIRECT.GET` and `$JS.API.STREAM.MSG.GET` and no other
+read. A pull `CONSUMER.MSG.NEXT` also delivers to a caller-chosen reply subject, but the
+frame keeps its original captured subject, so it cannot place bytes on the rail; the
+ingress-origin suite is where that was measured.
 
 The census also measures which profiles hold both a write and a raw stream read
 (`$JS.API.DIRECT.GET` or `$JS.API.STREAM.MSG.GET`) on one stream, the condition that
