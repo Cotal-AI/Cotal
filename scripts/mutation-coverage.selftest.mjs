@@ -136,6 +136,10 @@ try {
   result = run("progress");
   check("anchored progress plus an explicit completion marker supplies a total", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
+  config("progress-banner", { suite: "bin/smoke/direct.smoke.ts", command: ticks, progressPattern: "^  ✓ ", minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-banner");
+  check("anchored progress plus a terminal passed banner supplies a total", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
   const noCompletion = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three')")}`;
   config("unfinished-progress", { suite: "bin/smoke/direct.smoke.ts", command: noCompletion, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("unfinished-progress");
