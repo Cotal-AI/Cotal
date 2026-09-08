@@ -205,9 +205,7 @@ step identity; they do not provide caller-scoped channel delegation.
 
 A version-1 fork can replay its settled parent history through the host. Inherited checkpoint
 identifiers carry no authority to read, rearm or claim the parent's pauses. New child effects use
-child-derived identifiers. The fork planner still uses the version-1 walker; planning a fork from
-a version-2 run currently fails on its language-version pin and needs a separate engine-aware
-planning implementation.
+child-derived identifiers.
 
 
 ## What ships today
