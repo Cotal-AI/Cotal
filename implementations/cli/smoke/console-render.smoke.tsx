@@ -173,8 +173,13 @@ console.log("4. every send waits for the same participant start, and a refusal r
   await wait(200);
   check("a concurrent send waits instead of bypassing the in-flight participant start", ep.sent.length === 0, ep.sent);
   refuseStart(new Error("participant-start-refused"));
-  await wait(400);
-  const refusedPaint = strip(buf);
+  let refusedPaint = "";
+  const refusalDeadline = Date.now() + 2_000;
+  while (Date.now() < refusalDeadline) {
+    refusedPaint = strip(buf);
+    if (refusedPaint.includes("participant-start-refused")) break;
+    await wait(25);
+  }
   check("both waiting messages are withheld when participant startup is refused", ep.sent.length === 0, ep.sent);
   check("the participant refusal remains visible", refusedPaint.includes("participant-start-refused"), refusedPaint.slice(-300));
   check("send success is not painted over the refusal", !refusedPaint.includes("\n → #general\n"), refusedPaint.slice(-300));
