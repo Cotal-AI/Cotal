@@ -122,7 +122,7 @@ async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<Ru
   if (conn.creds !== undefined && conn.auth === undefined)
     throw new Error("run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles. From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.");
   const creds = conn.auth === undefined ? undefined : await mintCreds(conn.auth, newIdentity(), "run-mediator", { runMediator: pin });
-  const nc = await connect({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }) });
+  const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }) });
   try {
     return { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, conn.space), space: conn.space };
   } catch (error) {

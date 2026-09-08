@@ -428,7 +428,7 @@ export class RunHosting {
     let mediatorNc: NatsConnection | undefined;
     try {
       planes = { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, this.ctx.space), space: this.ctx.space };
-      mediatorNc = await connect({
+      mediatorNc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
         servers: this.ctx.servers ?? DEFAULT_SERVER,
         ...(mediatorCreds !== undefined
           ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(holder.mediatorCreds!))(nonce), inboxPrefix: `_INBOX_${mediatorIdentity.id}` }
