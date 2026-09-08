@@ -2,6 +2,7 @@
   "suite": "implementations/manager/smoke/attach-reconnect.smoke.ts",
   "guard": "`cotal attach` re-establishes its session when the LINK dies, and stops, saying why, when re-establishing cannot help",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
+  "executes": ["bin/cotal.ts"],
   "completionMarker": "F. the four classifications the loop turns on",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-reconnect.json",
   "why": [
