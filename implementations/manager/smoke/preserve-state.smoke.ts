@@ -305,8 +305,9 @@ registry.register(preserveAuth as unknown as AuthProvider);
   const known = managerWith((name) => fakeHandle(name), {
     nativeLifecycleLookup: async () => ({ status: "known", bindings: [] }),
   });
+  const knownResult = await known.nativeLifecycleBindings();
   check("an authorized proven-empty native binding lookup permits the legacy path",
-    !(await known.hasLiveNativeLifecycleBindings()));
+    knownResult.status === "known" && knownResult.bindings.length === 0);
 }
 
 // A caught direct SIGTERM dispatches by the authoritative binding lookup. The native arm must never

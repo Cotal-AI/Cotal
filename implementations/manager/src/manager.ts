@@ -1642,11 +1642,6 @@ export class Manager {
     }
   }
 
-  async hasLiveNativeLifecycleBindings(): Promise<boolean> {
-    const found = await this.nativeLifecycleBindings();
-    return found.status === "unknown" || found.bindings.length > 0;
-  }
-
   /** Fence and build the inventory without stopping a child. The coordinator must durably persist
    * this exact plan before calling commitPreservation with the same attempt id. */
   preparePreservation(attemptId: string): Promise<ManagerPreservationPlan> {
