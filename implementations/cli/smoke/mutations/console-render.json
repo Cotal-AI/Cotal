@@ -10,12 +10,12 @@
   ],
   "mutations": [
     {
-      "name": "R0 continue the send after participant startup was refused",
+      "name": "R0 bypass the in-flight participant start for a concurrent send",
       "file": "implementations/cli/src/console/app.tsx",
-      "find": "      if (!ready) return;",
-      "replace": "      if (!ready) void 0;",
-      "expectRed": "the message is not sent when the reply path could not start",
-      "cell": "the message is not sent when the reply path could not start"
+      "find": "    if (participantStart.current) return participantStart.current;",
+      "replace": "    if (participantStart.current) return true;",
+      "expectRed": "a concurrent send waits instead of bypassing the in-flight participant start",
+      "cell": "a concurrent send waits instead of bypassing the in-flight participant start"
     },
     {
       "name": "R1 the freshness comparison is inverted, so live and stale swap",

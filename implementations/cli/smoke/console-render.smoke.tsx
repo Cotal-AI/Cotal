@@ -114,7 +114,7 @@ console.log("3. the topology header draws the membership pill, in each of its fo
   check("the four states paint four DIFFERENT labels", new Set(labels).size === 4, labels);
 }
 
-console.log("4. a refused participant start does not send or paint success");
+console.log("4. every send waits for the same participant start, and a refusal retries cleanly");
 {
   class Observer extends EventEmitter {
     space = "participant-refusal";
@@ -132,8 +132,13 @@ console.log("4. a refused participant start does not send or paint success");
     async watchMembership() { return { stop: async () => {} }; }
     async multicast(text: string) { this.sent.push(text); }
   }
+  let refuseStart!: (e: Error) => void;
   class RefusedParticipant extends EventEmitter {
-    async start() { throw new Error("participant-start-refused"); }
+    start() { return new Promise<void>((_resolve, reject) => { refuseStart = reject; }); }
+    async stop() {}
+  }
+  class StartedParticipant extends EventEmitter {
+    async start() {}
     async stop() {}
   }
   const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
@@ -147,9 +152,10 @@ console.log("4. a refused participant start does not send or paint success");
   stdout.rows = 32;
   stdout.isTTY = true;
   const ep = new Observer();
+  let starts = 0;
   const app = render(
     <App ep={ep as unknown as CotalEndpoint} canWrite canControl={false}
-      makeParticipant={() => new RefusedParticipant() as unknown as CotalEndpoint} />,
+      makeParticipant={() => (++starts === 1 ? new RefusedParticipant() : new StartedParticipant()) as unknown as CotalEndpoint} />,
     { stdin, stdout, patchConsole: false, exitOnCtrlC: false },
   );
   await wait(250);
@@ -158,12 +164,28 @@ console.log("4. a refused participant start does not send or paint success");
   stdin.write("hello");
   await wait(100);
   stdin.write("\r");
-  await wait(500);
+  await wait(100);
+  stdin.write(":");
+  await wait(100);
+  stdin.write("msg second");
+  await wait(100);
+  stdin.write("\r");
+  await wait(200);
+  check("a concurrent send waits instead of bypassing the in-flight participant start", ep.sent.length === 0, ep.sent);
+  refuseStart(new Error("participant-start-refused"));
+  await wait(400);
+  const refusedPaint = strip(buf);
+  check("both waiting messages are withheld when participant startup is refused", ep.sent.length === 0, ep.sent);
+  check("the participant refusal remains visible", refusedPaint.includes("participant-start-refused"), refusedPaint.slice(-300));
+  check("send success is not painted over the refusal", !refusedPaint.includes("\n → #general\n"), refusedPaint.slice(-300));
+  stdin.write(":");
+  await wait(100);
+  stdin.write("msg retry");
+  await wait(100);
+  stdin.write("\r");
+  await wait(400);
   app.unmount();
-  const painted = strip(buf);
-  check("the message is not sent when the reply path could not start", ep.sent.length === 0, ep.sent);
-  check("the participant refusal remains visible", painted.includes("participant-start-refused"), painted.slice(-300));
-  check("send success is not painted over the refusal", !painted.includes("\n → #general\n"), painted.slice(-300));
+  check("a later send retries participant startup and publishes once", starts === 2 && ep.sent.join(",") === "retry", { starts, sent: ep.sent });
 }
 
 console.log(`\n${fail === 0 ? "CONSOLE-RENDER SMOKE OK ✅" : "CONSOLE-RENDER SMOKE FAILED ❌"} (${fail} failed)`);

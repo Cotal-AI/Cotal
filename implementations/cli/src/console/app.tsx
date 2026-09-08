@@ -339,44 +339,54 @@ export function App({
   // never be shown here. A send there is one-way, and the status line says exactly that once.
   const participant = useRef<CotalEndpoint | null>(null);
   const activatedRef = useRef(false);
+  const participantStart = useRef<Promise<boolean> | null>(null);
   const [onRoster, setOnRoster] = useState(false);
   const ensureParticipant = useCallback(async (): Promise<boolean> => {
     if (activatedRef.current || !canWrite) return true;
-    activatedRef.current = true;
+    if (participantStart.current) return participantStart.current;
     if (!makeParticipant) {
+      activatedRef.current = true;
       setNotice("sent one-way: under this credential replies cannot land in the console");
       return true;
     }
-    const peer = makeParticipant();
-    // The status bar's "on roster" is a claim about a LIVE presence peer, so it follows the peer's
-    // own connection state rather than being set once and left. `error` only says something went
-    // wrong; `connection` says whether the operator is actually on the roster right now, and the
-    // endpoint re-establishes itself after a terminal close, so a fault is usually followed by a
-    // recovery that must put the claim back. The peer is deliberately RETAINED across a fault:
-    // dropping the reference would leave a live endpoint that still republishes presence, that
-    // the console no longer stops on exit, and that a later send would duplicate under the same
-    // principal.
-    peer.on("connection", ({ connected }: { connected: boolean }) => {
-      if (participant.current === peer) setOnRoster(connected);
-    });
-    peer.on("error", (e: Error) => {
-      if (participant.current === peer) setNotice("participant: " + e.message);
-    });
+    const start = (async () => {
+      const peer = makeParticipant();
+      // The status bar's "on roster" is a claim about a LIVE presence peer, so it follows the peer's
+      // own connection state rather than being set once and left. `error` only says something went
+      // wrong; `connection` says whether the operator is actually on the roster right now, and the
+      // endpoint re-establishes itself after a terminal close, so a fault is usually followed by a
+      // recovery that must put the claim back. The peer is deliberately RETAINED across a fault:
+      // dropping the reference would leave a live endpoint that still republishes presence, that
+      // the console no longer stops on exit, and that a later send would duplicate under the same
+      // principal.
+      peer.on("connection", ({ connected }: { connected: boolean }) => {
+        if (participant.current === peer) setOnRoster(connected);
+      });
+      peer.on("error", (e: Error) => {
+        if (participant.current === peer) setNotice("participant: " + e.message);
+      });
+      try {
+        await peer.start();
+        participant.current = peer;
+        activatedRef.current = true;
+        setOnRoster(true);
+        return true;
+      } catch (e) {
+        // A peer that never started is dropped, so it must not keep this component's handlers or a
+        // half-open connection behind it. The next send builds a fresh one.
+        peer.removeAllListeners("connection");
+        peer.removeAllListeners("error");
+        peer.on("error", () => {});
+        void peer.stop().catch(() => undefined);
+        setNotice("participant: " + (e as Error).message);
+        return false;
+      }
+    })();
+    participantStart.current = start;
     try {
-      await peer.start();
-      participant.current = peer;
-      setOnRoster(true);
-      return true;
-    } catch (e) {
-      // A peer that never started is dropped, so it must not keep this component's handlers or a
-      // half-open connection behind it. The next send builds a fresh one.
-      peer.removeAllListeners("connection");
-      peer.removeAllListeners("error");
-      peer.on("error", () => {});
-      void peer.stop().catch(() => undefined);
-      activatedRef.current = false; // let the next send retry
-      setNotice("participant: " + (e as Error).message);
-      return false;
+      return await start;
+    } finally {
+      if (participantStart.current === start) participantStart.current = null;
     }
   }, [canWrite, makeParticipant]);
   // The peer leaves with the console (an offline record, like the observer's own stop in useMesh).

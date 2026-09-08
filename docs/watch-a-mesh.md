@@ -89,7 +89,8 @@ replies in the DM lens. The heartbeat survives a broker
 reconnect, and the operator leaves cleanly (an offline record) on exit. This is `canWrite`-gated,
 so a pure-watch session never registers, and a peer the broker refuses stays invisible, blocks that
 send, and leaves the refusal on the status line so the operator is never told replies can land when
-they cannot. The next send retries participant startup. Under auth the console does not upgrade: the read-only default cannot
+they cannot. Concurrent sends wait for the same startup result; the next later send retries after a
+refusal. Under auth the console does not upgrade: the read-only default cannot
 send at all, and an agent-grade `--creds` holds no live read of its own DM inbox (DMs ride its
 lifecycle-keyed durable, which the observer does not consume), so a send there is one-way and the
 status line says so once. An auth participant needs a credential profile that can publish
