@@ -70,15 +70,21 @@ if (process.platform !== "linux") {
   const here = dirname(fileURLToPath(import.meta.url));
   const pkgRoot = join(here, "..");
   const manifest = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as {
-    scripts?: { install?: string; prepack?: string; prepare?: string; prepublishOnly?: string };
+    scripts?: { install?: string; prepack?: string; prepare?: string; prepublishOnly?: string; "build:ts"?: string };
     files?: string[];
   };
   check("customer install does not compile: package.json has no install script", manifest.scripts?.install === undefined, manifest.scripts);
   check(
-    "prepack runs the shipped-natives assert",
-    manifest.scripts?.prepack === "node scripts/assert-shipped-natives.mjs",
+    "prepack asserts shipped natives and compiles TypeScript only",
+    manifest.scripts?.prepack === "node scripts/assert-shipped-natives.mjs && pnpm run build:ts",
     manifest.scripts,
   );
+  check(
+    "prepublishOnly asserts shipped natives and compiles TypeScript only",
+    manifest.scripts?.prepublishOnly === "node scripts/assert-shipped-natives.mjs && pnpm run build:ts",
+    manifest.scripts,
+  );
+  check("the TypeScript-only build does not rebuild natives", manifest.scripts?.["build:ts"] === "tsc -p tsconfig.json", manifest.scripts);
   check(
     "prepare is absent so install-from-git is not gated",
     manifest.scripts?.prepare === undefined,
@@ -362,6 +368,8 @@ if (process.platform !== "linux") {
         existsSync(join(pkgRoot, "build", "Release", "linux-arm64", "peercred.node")),
       { status: assembled.status, stdout: assembled.stdout, stderr: assembled.stderr },
     );
+    rmSync(join(pkgRoot, "dist"), { recursive: true, force: true });
+    check("assembled package inventory starts with no dist directory", !existsSync(join(pkgRoot, "dist")));
     const succeedDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-assembled-"));
     const assembledPack = spawnSync("pnpm", ["pack", "--pack-destination", succeedDir], { cwd: pkgRoot, encoding: "utf8" });
     check(
@@ -380,6 +388,8 @@ if (process.platform !== "linux") {
           !files.includes("package/build/Release/peercred.node"),
         files.filter((f) => f.includes("peercred") || f.includes("build/")),
       );
+      check("the tarball ships dist/index.js compiled by prepack", files.includes("package/dist/index.js"), files);
+      check("the tarball ships dist/index.d.ts compiled by prepack", files.includes("package/dist/index.d.ts"), files);
     }
     rmSync(succeedDir, { recursive: true, force: true });
   } finally {
