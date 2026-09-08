@@ -1084,7 +1084,7 @@ let openInventory: ManagerResumeAgent;
       await previousRelease();
     };
     const sibling = fakeHandle("sibling");
-    const agents = (manager as unknown as { agents: Map<string, { suppressCleanup?: boolean }> }).agents;
+    const agents = (manager as unknown as { agents: Map<string, unknown> }).agents;
     agents.set("legacy-spare", managed("legacy-spare", "legacy_spare_id", handle, "persona"));
     agents.set("sibling", managed("sibling", "sibling_id", sibling, "persona"));
     let threw = "";
@@ -1110,8 +1110,8 @@ let openInventory: ManagerResumeAgent;
     check("legacy pty spare left the child running", handle.status() === "running" && childAlive, { status: handle.status(), pid: handle.pid, childAlive });
     check(
       "a pty spare refusal does not suppressCleanup on the refused seat",
-      agents.get("legacy-spare")?.suppressCleanup !== true,
-      agents.get("legacy-spare")?.suppressCleanup,
+      (agents.get("legacy-spare") as { suppressCleanup?: boolean } | undefined)?.suppressCleanup !== true,
+      (agents.get("legacy-spare") as { suppressCleanup?: boolean } | undefined)?.suppressCleanup,
     );
     check("a later seat still spares after a pty refusal", !agents.has("sibling") && sibling.stops === 0, { remaining: [...agents.keys()], siblingStops: sibling.stops });
     check("a pty spare refusal still releases the manager lease", leases === 1, leases);
