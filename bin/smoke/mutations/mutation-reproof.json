@@ -35,7 +35,7 @@
       "name": "reproof stops applying canonical metadata validation to the corpus",
       "file": "scripts/mutation-reproof.mjs",
       "find": "      suites = parseSuiteSources(root, path, config.suite, { checkExists: false });",
-      "replace": "      suites = Array.isArray(config.suite) ? config.suite : [];",
+      "replace": "      suites = typeof config.suite === \"string\" ? [config.suite] : parseSuiteSources(root, path, config.suite, { checkExists: false });",
       "expectRed": "legacy string suite metadata makes the corpus unmeasured instead of dropping the fixture",
       "cell": "legacy string suite metadata makes the corpus unmeasured instead of dropping the fixture"
     },

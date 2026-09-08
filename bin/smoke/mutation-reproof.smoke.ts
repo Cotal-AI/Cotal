@@ -397,7 +397,11 @@ try {
     const { status, out } = scan(root, base, head);
     check(
       `${label} suite metadata makes the corpus unmeasured instead of dropping the fixture`,
-      status === 1 && out.includes(diagnosis) && out.includes("smoke/mutations/a.mutations.json"),
+      status === 1
+        && out.includes("mutation reproof: UNMEASURED — 1 malformed fixture(s)")
+        && out.includes(diagnosis)
+        && out.includes("smoke/mutations/a.mutations.json")
+        && selectedPaths(out).length === 0,
       `status=${status}\n${out}`,
     );
   }
