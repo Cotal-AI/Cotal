@@ -19,7 +19,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -258,7 +258,12 @@ try {
   {
     const { root, base, head } = makeSingle(
       (r) => {
-        writeFileSync(join(r, ".gitignore"), "probe.env\n");
+        writeFileSync(join(r, ".gitignore"), "probe.env\nscanner.env\n");
+        writeFileSync(join(r, "scanner-env-probe.mjs"), [
+          "import { writeFileSync } from 'node:fs';",
+          `if (process.argv[1] === ${JSON.stringify(SCAN)}) writeFileSync(${JSON.stringify(join(r, "scanner.env"))}, process.env.COTAL_REPROOF_SENTINEL ?? 'CLEAN');`,
+          "",
+        ].join("\n"));
         writeFileSync(join(r, "env.mjs"), "export const cap = (input) => Math.min(input, 32);\n");
         writeFileSync(join(r, "env.suite.mjs"), [
           "import { writeFileSync } from 'node:fs';",
@@ -277,7 +282,18 @@ try {
       },
       (r) => writeFileSync(join(r, "env.mjs"), "export const cap = (input) => Math.min(input, 32); // changed source\n"),
     );
-    const probe = scan(root, base, head);
+    const previousNodeOptions = process.env.NODE_OPTIONS;
+    let probe: ReturnType<typeof scan>;
+    try {
+      process.env.NODE_OPTIONS = `${previousNodeOptions ?? ""} --import=${pathToFileURL(join(root, "scanner-env-probe.mjs")).href}`;
+      probe = scan(root, base, head);
+    } finally {
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousNodeOptions;
+    }
+    const scannerObserved = readFileSync(join(root, "scanner.env"), "utf8");
+    check("scanner children do not inherit Cotal session credentials",
+      scannerObserved === "CLEAN", scannerObserved);
     const observed = readFileSync(join(root, "probe.env"), "utf8");
     check("fixture children do not inherit Cotal session credentials",
       observed === "CLEAN" && probe.status === 0 && okCounts(probe.out)?.discriminated === 1,

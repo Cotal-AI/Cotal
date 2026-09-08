@@ -98,8 +98,8 @@
       "file": "bin/smoke/mutation-reproof.smoke.ts",
       "find": "  const run = spawnSync(process.execPath, args, { encoding: \"utf8\", env });",
       "replace": "  const run = spawnSync(process.execPath, args, { encoding: \"utf8\" });",
-      "expectRed": "fixture children do not inherit Cotal session credentials",
-      "cell": "fixture children do not inherit Cotal session credentials"
+      "expectRed": "scanner children do not inherit Cotal session credentials",
+      "cell": "scanner children do not inherit Cotal session credentials"
     },
     {
       "name": "git bypasses the sanitized child environment",
