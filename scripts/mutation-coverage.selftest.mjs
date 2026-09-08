@@ -36,16 +36,17 @@ const check = (name, cond, extra) => {
   console.log(`  ✓ ${name}`);
 };
 
-// A fixture tree: a package whose source a suite may import or copy, and three suites — one that
-// assembles the source, one that imports the package by name from another package root, and one
-// that imports it by name from INSIDE the same package (the exact shape the ../src witness guards).
+// A fixture tree: a package whose source a suite may import or copy, a repo script a suite may run
+// directly, and suites for each accepted or refused resolution shape.
 mkdirSync(join(root, "packages/seat/src"), { recursive: true });
 mkdirSync(join(root, "packages/seat/smoke"), { recursive: true });
 mkdirSync(join(root, "packages/other"), { recursive: true });
 mkdirSync(join(root, "bin/smoke"), { recursive: true });
+mkdirSync(join(root, "scripts"), { recursive: true });
 writeFileSync(join(root, "packages/seat/package.json"), JSON.stringify({ name: "@cotal-ai/seat" }));
 writeFileSync(join(root, "packages/seat/src/impl.ts"), "export const x = 1;\n");
 writeFileSync(join(root, "packages/other/impl.ts"), "export const y = 1;\n");
+writeFileSync(join(root, "scripts/direct.mjs"), "console.log('direct');\n");
 writeFileSync(
   join(root, "bin/smoke/assembling.smoke.ts"),
   'import { cpSync } from "node:fs";\n' +
@@ -58,6 +59,15 @@ writeFileSync(
 writeFileSync(
   join(root, "packages/seat/smoke/local-by-name.smoke.ts"),
   'import { x } from "@cotal-ai/seat";\n',
+);
+writeFileSync(join(root, "bin/smoke/direct.smoke.ts"), "console.log('direct');\n");
+writeFileSync(
+  join(root, "bin/smoke/direct-script.smoke.ts"),
+  'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n',
+);
+writeFileSync(
+  join(root, "bin/smoke/mentions-script.smoke.ts"),
+  'const note = "scripts/direct.mjs";\n',
 );
 
 // A "suite" the script can tally: its terminal line is the only thing the coverage report parses.
@@ -96,7 +106,43 @@ check(
   (r.stderr || r.stdout).slice(-300),
 );
 
-// 3. THE DECLARATION IS NOT THE WITNESS: same declaration, suite that never references the tree.
+// 3. DIRECT SUITE: the command executes the mutation target itself.
+writeConfig("direct.json", {
+  suite: "bin/smoke/direct.smoke.ts", command: TALLY,
+  mutations: [mutation("bin/smoke/direct.smoke.ts")],
+});
+r = runTool("direct.json");
+check(
+  "a suite is gradable when it directly executes the file being mutated",
+  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
+  (r.stderr || r.stdout).slice(-300),
+);
+
+// 4. DIRECT SCRIPT: the suite launches the exact repo-relative mutation target.
+writeConfig("direct-script.json", {
+  suite: "bin/smoke/direct-script.smoke.ts", command: TALLY,
+  mutations: [mutation("scripts/direct.mjs")],
+});
+r = runTool("direct-script.json");
+check(
+  "a suite is gradable when it launches the exact mutated script path",
+  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
+  (r.stderr || r.stdout).slice(-300),
+);
+
+// 5. A QUOTED PATH IS NOT AN INVOCATION: prose or a fixture string cannot license a mutation.
+writeConfig("mentions-script.json", {
+  suite: "bin/smoke/mentions-script.smoke.ts", command: TALLY,
+  mutations: [mutation("scripts/direct.mjs")],
+});
+r = runTool("mentions-script.json");
+check(
+  "a quoted script path without an invocation is refused",
+  r.status !== 0 && /neither imports by source path nor reaches through/.test(r.stderr),
+  r.stderr.slice(-300),
+);
+
+// 6. THE DECLARATION IS NOT THE WITNESS: same declaration, suite that never references the tree.
 writeConfig("hollow.json", {
   suite: "bin/smoke/by-name.smoke.ts", command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/seat/package.json")],
@@ -108,7 +154,7 @@ check(
   r.stderr.slice(-300),
 );
 
-// 4. CONTAINMENT: a declared root cannot smuggle a file it does not contain.
+// 7. CONTAINMENT: a declared root cannot smuggle a file it does not contain.
 writeConfig("foreign.json", {
   suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/other/impl.ts")],
@@ -120,7 +166,7 @@ check(
   r.stderr.slice(-300),
 );
 
-// 5. SHAPE: `assembles` is an array of paths, and anything else is refused rather than guessed at.
+// 8. SHAPE: `assembles` is an array of paths, and anything else is refused rather than guessed at.
 writeConfig("malformed.json", {
   suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: "packages/seat",
   mutations: [mutation("packages/seat/package.json")],

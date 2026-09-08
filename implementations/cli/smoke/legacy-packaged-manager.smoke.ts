@@ -257,7 +257,7 @@ setInterval(() => {}, 1000);
   assert.match(output, /legacy manager custody: PTY continuity is impossible; this update is not a hot update/, output);
   for (const [name, continuity] of [["pi_seat", "exact"], ["claude_seat", "fork"], ["open_seat", "fresh"], ["jcode_seat", "drain-only"]]) assert.match(output, new RegExp(`${name}: ${continuity}`), output);
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "legacy report killed neither the old manager nor its counter child");
-  console.log("legacy packaged manager smoke OK");
+  console.log("LEGACY PACKAGED MANAGER: 1 checks passed");
   assert.deepEqual(
     helperSnapshot(),
     helpersBefore,

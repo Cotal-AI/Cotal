@@ -101,9 +101,19 @@ const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
  */
 const referencesRoot = (suiteSource, root) =>
   new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(suiteSource);
+const invokesFile = (suiteSource, file) => {
+  const parts = file.split("/");
+  const basename = parts.at(-1);
+  if (basename === undefined || !referencesRoot(suiteSource, file)) return false;
+  return new RegExp(`(?:spawnSync|spawn|execFileSync|execFile)\\s*\\([\\s\\S]{0,500}${quoted(basename)}`).test(suiteSource);
+};
 
 const assertGradable = (configPath, suite, m, assembles) => {
   const suiteSource = readFileSync(suite, "utf8");
+  // A smoke that mutates its own source executes those bytes directly. A smoke may also launch a
+  // repo script by its exact relative path, as the seat packaging suite does for the native
+  // assembler. Neither path crosses a package resolver or an assembled-copy boundary.
+  if (m.file === suite || invokesFile(suiteSource, m.file)) return;
   if (packageRoot(m.file) === packageRoot(suite) && suiteSource.includes("../src/")) return;
   const root = assembles.find((r) => m.file === r || m.file.startsWith(r + "/"));
   if (root !== undefined && referencesRoot(suiteSource, root)) return;
