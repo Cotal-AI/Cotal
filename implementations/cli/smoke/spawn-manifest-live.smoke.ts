@@ -31,7 +31,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-spawnf-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-spawnf-root-"));
 const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const nodeRun = (...args: string[]) => {
   const options = { cwd: root, env, encoding: "utf8" as const };
   assertSmokeSandboxDown(sandbox, args, options);

@@ -99,7 +99,7 @@ type Run = {
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const options = {
-      cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const,
+      cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] as const,
     };
     assertSmokeSandboxDown(sandbox, args, options);
     const child = spawn(TSX, [BIN, ...args], options);

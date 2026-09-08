@@ -46,6 +46,33 @@ export function parseCiSuites(raw, label = CI_SUITES_PATH) {
   return out;
 }
 
+/** Filename a new suite must use under `ci-suites.d/`. Derived from the public script name so two
+ *  branches adding unrelated suites cannot share a path. */
+/** @param {string} suite @returns {string} */
+export function fragmentFileName(suite) {
+  return `${createHash("sha256").update(suite).digest("hex")}.txt`;
+}
+
+/** Suite names present in `headRaw` that `baseRaw` does not already carry. Derived from the two
+ *  blobs with the same parser the chain uses: comment edits and deletions do not appear, a new
+ *  `smoke:*` line does. The frozen list is whatever suite names the file currently parses to, not a
+ *  copy of those names kept beside it. */
+/** @param {string} baseRaw @param {string} headRaw @param {string} [baseLabel] @param {string} [headLabel] @returns {string[]} */
+export function addedLegacySuites(
+  baseRaw,
+  headRaw,
+  baseLabel = "ci-suites.txt (base)",
+  headLabel = "ci-suites.txt (head)",
+) {
+  const base = new Set(parseCiSuites(baseRaw, baseLabel));
+  /** @type {string[]} */
+  const added = [];
+  for (const suite of parseCiSuites(headRaw, headLabel)) {
+    if (!base.has(suite) && !added.includes(suite)) added.push(suite);
+  }
+  return added;
+}
+
 /** Reads the chain file. A MISSING or unreadable file throws here - it never yields an empty chain,
  *  because "the chain cannot be empty" is only a real guard if empty cannot be produced silently. */
 export function readCiSuites(path = CI_SUITES_PATH) {
@@ -67,7 +94,7 @@ export function readCiSuiteFragments(dir = CI_SUITES_DIR) {
       const suites = parseCiSuites(readFileSync(path, "utf8"), path);
       if (suites.length !== 1)
         throw new Error(`${path}: a suite fragment must contain exactly one smoke script, got ${suites.length}`);
-      const expected = `${createHash("sha256").update(suites[0]).digest("hex")}.txt`;
+      const expected = fragmentFileName(suites[0]);
       if (entry.name !== expected)
         throw new Error(`${path}: fragment filename must be sha256(${suites[0]}) = ${expected}`);
       return suites;

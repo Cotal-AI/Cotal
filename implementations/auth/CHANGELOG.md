@@ -1,5 +1,95 @@
 # @cotal-ai/auth
 
+## 0.47.0
+
+### Patch Changes
+
+- 0855cb7: Grade each ambient `process.env` spread on its own, and strip `COTAL_` from the user-spawn auth-service child.
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+
+## 0.46.0
+
+### Patch Changes
+
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+  - @cotal-ai/core@0.46.0
+  - @cotal-ai/workspace@0.46.0
+
+## 0.45.0
+
+### Patch Changes
+
+- Updated dependencies [299a353]
+- Updated dependencies [38d7bb7]
+  - @cotal-ai/core@0.45.0
+  - @cotal-ai/workspace@0.45.0
+
+## 0.44.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.44.0
+- @cotal-ai/workspace@0.44.0
+
+## 0.43.0
+
+### Patch Changes
+
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/core@0.43.0
+  - @cotal-ai/workspace@0.43.0
+
+## 0.42.0
+
+### Patch Changes
+
+- Updated dependencies [a87709c]
+  - @cotal-ai/core@0.42.0
+  - @cotal-ai/workspace@0.42.0
+
+## 0.41.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.4
+- @cotal-ai/workspace@0.41.4
+
+## 0.41.3
+
+### Patch Changes
+
+- Updated dependencies [436f7d4]
+  - @cotal-ai/core@0.41.3
+  - @cotal-ai/workspace@0.41.3
+
+## 0.41.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.2
+- @cotal-ai/workspace@0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.1
+- @cotal-ai/workspace@0.41.1
+
+## 0.41.0
+
+### Patch Changes
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+- Updated dependencies [5ec7feb]
+  - @cotal-ai/core@0.41.0
+  - @cotal-ai/workspace@0.41.0
+
 ## 0.40.0
 
 ### Patch Changes

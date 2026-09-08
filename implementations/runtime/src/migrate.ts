@@ -234,7 +234,13 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
     toHash: programHashOf(req.source),
     ...(req.fromHash !== undefined ? { fromHash: req.fromHash } : {}),
     admissible,
-    consumedThrough: req.entries.length - orphans.length,
+    // BOTH COUNTS FROM THE SAME VIEW. `req.entries` is the raw replayed APPEND LOG, where a
+    // completed step appears at least twice (a pending row, then its settle), while `orphans()`
+    // reads the folded, keyed view. Subtracting one from the other counted something that is
+    // neither, and it lands in a durable migration record AND in that record's content-derived
+    // id, so the same decision computed from a differently-shaped replay filed under a different
+    // migration.
+    consumedThrough: journal.entries().length - orphans.length,
     orphans: table,
     ...(divergence !== undefined ? { divergence } : {}),
     ...(unwalkable !== undefined ? { unwalkable } : {}),
@@ -255,6 +261,11 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
  * not a migration with a caveat — filing it would put a decision nobody may act on into the same
  * history a reader trusts, and the refusal is the product the check exists to produce.
  *
+ * A `--release` override is HONOURED HERE: the named seats are despawned through the run's own
+ * discharge before the migration is filed, so the record never claims a release nothing performed.
+ * An `--adopt` override is honoured by the driver that next runs the program: the migration's kept
+ * spawn rows are what its handler hands to the next spawn of that persona ({@link migrationSeats}).
+ *
  * What is still NOT here, stated rather than implied: the run's pinned program hash does not
  * advance, because `RunSpecValue` carries no program hash to advance — that pin is declared and
  * unbuilt, and this branch does not invent it. The migration is durable and readable; the run
@@ -265,10 +276,20 @@ export async function commitMigration(
   endpoint: string,
   report: MigrateReport,
   driver: string,
-): Promise<{ migrationId: string; created: boolean }> {
+  seats?: { entries: readonly JournalEntry[]; handler: { discharge(entries: readonly JournalEntry[]): Promise<unknown> } },
+): Promise<{ migrationId: string; created: boolean; released: readonly string[] }> {
   if (!report.admissible) {
     throw new MigrationNotAdmissible(report);
   }
+  // `--release` is an act, not a note: the seats it names are torn down through the run's own
+  // discharge, the same path a cancelled branch's seat leaves by, BEFORE the migration is filed as
+  // applied. A commit that filed the release and despawned nothing would be the fake success this
+  // row existed to refuse. A report that releases a seat needs the journal and a discharger to
+  // release it with; a caller that has neither is refused rather than recorded as having done it.
+  const release = seats === undefined ? [] : migrationSeats(seats.entries, report).release;
+  if (seats === undefined && report.overrides.some((o) => o.startsWith("--release ")))
+    throw new Error(`migration of run ${report.run} releases a seat, and a commit with no journal and no discharger cannot tear one down; nothing was written`);
+  if (release.length > 0) await seats!.handler.discharge(release);
   const content: Omit<RunMigrationSpecValue, "at"> = {
     v: 1,
     run: report.run,
@@ -287,7 +308,7 @@ export async function commitMigration(
   const migrationId = runMigrationId(content);
   const { created } = await writeRunMigration(kv, endpoint, migrationId, { ...content, at: report.at });
   await markRunMigrationApplied(kv, endpoint, report.run, migrationId, driver, report.at);
-  return { migrationId, created };
+  return { migrationId, created, released: release.map((e) => spawnedHandle(e) as string) };
 }
 
 /** A migration the check refused, offered for commit anyway. The report says which rows refused. */
@@ -320,6 +341,52 @@ function recordedOverrides(o: MigrateOverrides | undefined): string[] {
   for (const h of o.adopt ?? []) out.push(`--adopt ${h}`);
   for (const h of o.release ?? []) out.push(`--release ${h}`);
   return out;
+}
+
+/** The agent a settled `spawn` entry produced (`<name>#<lifecycleUid>`), or nothing: a spawn that
+ *  failed, was cancelled, or never settled left no seat the program can name. A cancelled spawn's
+ *  seat is the cancellation discharge's to release, not a migration's. */
+function spawnedHandle(e: JournalEntry): string | undefined {
+  if (e.kind !== "spawn" || e.state !== "settled" || e.status !== "ok") return undefined;
+  const agent = (e.result as { agent?: unknown } | undefined)?.agent;
+  return typeof agent === "string" && agent.length > 0 ? agent : undefined;
+}
+
+function spawnedPersona(e: JournalEntry): string {
+  const persona = (e.result as { persona?: unknown } | undefined)?.persona;
+  return typeof persona === "string" ? persona : e.name;
+}
+
+/**
+ * The seats a committed migration hands over or tears down, read off the report's own rows so the
+ * commit acts on exactly what the report said. `release` is every settled spawn the caller named
+ * with `--release`; `adopt` maps each persona to the handle its next spawn receives, in journal
+ * order, so two adopted seats of one persona are handed out in the order they were spawned.
+ */
+export function migrationSeats(
+  entries: readonly JournalEntry[],
+  report: { readonly orphans: readonly { readonly step: string; readonly verdict: string }[]; readonly overrides: readonly string[] },
+): { release: readonly JournalEntry[]; adopt: ReadonlyMap<string, readonly JournalEntry[]> } {
+  const rows = new Map(report.orphans.map((o) => [o.step, o] as const));
+  // A seat already handed over is spent: the spawn that received it bound `adoptedFrom` naming the
+  // orphaned step, so a later resume of the migrated run hands it out to nobody else.
+  const spent = new Set(entries.map((e) => (e.external as { adoptedFrom?: unknown } | undefined)?.adoptedFrom).filter((k): k is string => typeof k === "string"));
+  const release: JournalEntry[] = [];
+  const adopt = new Map<string, JournalEntry[]>();
+  for (const e of entries) {
+    const handle = spawnedHandle(e);
+    if (handle === undefined) continue;
+    const key = journalEntryKeyString(e);
+    if (spent.has(key)) continue;
+    const row = rows.get(key);
+    if (row === undefined) continue;
+    if (report.overrides.includes(`--release ${handle}`) && row.verdict === "ignored") release.push(e);
+    if (report.overrides.includes(`--adopt ${handle}`) && row.verdict === "kept") {
+      const persona = spawnedPersona(e);
+      adopt.set(persona, [...(adopt.get(persona) ?? []), e]);
+    }
+  }
+  return { release, adopt };
 }
 
 /**
@@ -374,21 +441,31 @@ function classify(
         ? ignore("the scope closed, so no membership outlives it")
         : reject("L5014", "an open conclave is live membership the new program cannot close");
 
-    case "spawn":
-      // The specified repair for this row is `--adopt <handle>` or `--release`. NEITHER IS HONOURED
-      // HERE, and that is the seam rather than an omission: both name a durable agent this host
-      // cannot address, because `spawn` itself rides durable-action machinery that is not in this
-      // tree yet. An override that read as accepted would be the fake success — a migration
-      // recorded as having released an agent nothing ever released.
-      return (o?.adopt?.length ?? 0) + (o?.release?.length ?? 0) > 0
-        ? reject(
-            "L5003",
-            "--adopt and --release name a durable agent handle, and spawn is not durable on this host yet: it rides the durable-action machinery, which has not landed. The override is refused rather than recorded as honoured.",
-          )
-        : reject(
-            "L5003",
-            "the edit dropped a step that spawned a live agent; pass --adopt <handle> to reassign it or --release to tear it down",
-          );
+    case "spawn": {
+      // The repair the spec names is `--adopt <handle>` or `--release <handle>`, each naming the
+      // agent the orphaned step spawned. A step that never produced a handle spawned nothing the
+      // new program could leak, so it is ignored like a sleep; a settled one is a live seat.
+      const handle = spawnedHandle(e);
+      if (handle === undefined) return ignore("the spawn never produced an agent, so no seat outlives it");
+      const adopt = o?.adopt?.includes(handle) === true;
+      const release = o?.release?.includes(handle) === true;
+      if (adopt && release)
+        return reject("L5003", `${handle} is named by both --adopt and --release; one agent is reassigned or torn down, never both`);
+      if (adopt)
+        return {
+          step, kind: e.kind, verdict: "kept",
+          why: `${handle} is adopted under --adopt: the new program's next spawn of persona "${spawnedPersona(e)}" receives this seat instead of minting one, and the override is recorded with the actor who passed it`,
+        };
+      if (release)
+        return {
+          step, kind: e.kind, verdict: "ignored",
+          why: `${handle} is torn down under --release when the migration commits, and the override is recorded with the actor who passed it`,
+        };
+      return reject(
+        "L5003",
+        `the edit dropped a step that spawned ${handle}, a live agent; pass --adopt ${handle} to hand it to the new program's next spawn of that persona, or --release ${handle} to tear it down`,
+      );
+    }
 
     case "checkpoint": {
       const raw = e.result as { outcome?: string; by?: string } | undefined;

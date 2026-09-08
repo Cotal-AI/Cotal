@@ -105,6 +105,7 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
 export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
+  supportsFreshStart: true,
   requires: ["opencode"],
   supportsModelVariant: true,
   listModels: listOpenCodeModels,

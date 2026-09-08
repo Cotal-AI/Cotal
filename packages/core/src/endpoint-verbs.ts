@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import { spacePrefix } from "./subjects.js";
 import {
-  epRequestSubject, parseEpSubject, callerTokens, assertLifecycleToken, assertBoundedOwner,
+  epRequestSubject, parseEpSubject, callerTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
@@ -55,6 +55,15 @@ export interface EpVerbOp {
   /** Opaque signed authorization-context slot (§13.3); carried as-is. */
   auth?: string;
   goalId?: string;
+  /**
+   * A caller-PINNED envelope id, replacing the per-publish nonce. A goal-accepting command binds
+   * its goal under the envelope id, so a durable caller that must resubmit idempotently — a
+   * workflow run resuming across a crash re-derives the same `requestId` and the far side serves
+   * the recorded acceptance instead of accepting twice — pins the id it derived BEFORE submitting.
+   * Validated as an id token; reply correlation still rides the per-publish subject nonce, so two
+   * calls pinning one id cannot cross-deliver replies.
+   */
+  id?: string;
   /** Advisory display name for `from.name`; `from.id` is DERIVED from the caller triple, so it
    *  always equals the broker-authenticated sender principal (§13.3). */
   name?: string;
@@ -106,7 +115,7 @@ function buildRequest(
     ...(op.target ? { target: subjectTarget(op.target) } : {}),
     caller: op.caller, nonce: n,
   });
-  const requestId = nonce();
+  const requestId = op.id !== undefined ? assertIdToken(op.id, "pinned envelope id") : nonce();
   const env: EndpointRequest = {
     v: 1,
     id: requestId,

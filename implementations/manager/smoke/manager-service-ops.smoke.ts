@@ -27,18 +27,20 @@
  *
  * Run: pnpm smoke:manager-service-ops   (needs nats-server + node on PATH; boots its own broker)
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import { firstFreeName } from "@cotal-ai/core";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
+  gateObserve, gateFreeze, gateRetire, headBeginRetirement, headCompleteRetirement,
+  staticSlotKey,
   loadAgentFile, saveAgentFile,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
@@ -49,6 +51,7 @@ import {
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, managerShippedSurface } from "../src/manager-service-contract.js";
+import { activateStaticLifecycle, casStaticSlot, readStaticSlot, writeStaticSlotIntent } from "../src/static-lifecycle.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const shipped = managerShippedSurface();
 
@@ -70,12 +73,15 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const enc = new TextEncoder(), dec = new TextDecoder();
+const PROJECTION_ONLY = process.env.COTAL_SMOKE_STATIC_SLOT_INSPECT_ONLY === "1";
+const retireOpId = (lifecycleUid: string): string =>
+  createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
 
 /** P2 item 2: spawn is an ACTION - its reply is the ACCEPTANCE, returned BEFORE the agent is live.
  *  Poll `ps` until the named agent appears, returning the acceptance + its live ps row (id + uid, the
  *  targeting coordinates the pre-action reply used to carry). */
 const spawnLive = async (
-  call: (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string } } }>,
+  call: (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string; details?: Array<{ kind: string; [key: string]: unknown }> } } }>,
   args: Record<string, unknown>,
 ): Promise<{ acc: Record<string, unknown>; row: { name: string; id: string; lifecycleUid: string } }> => {
   const r = await call("spawn", args);
@@ -109,15 +115,95 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
 });
 const stubCon: Connector = { kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 registry.register(stubCon);
+// The child writes its own cwd before joining. A manager row alone could repeat the requested
+// path even if runtime.spawn used the wrong one, so the observation comes from the real process.
+const cwdCon: Connector = {
+  ...stubCon,
+  name: "cwd-stub",
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: "node",
+    args: ["--input-type=module", "-e", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(dir, "child-cwd.txt"))}, process.cwd()); await import(${JSON.stringify(pathToFileURL(STUB).href)});`],
+    env: envFor(o),
+  }),
+};
+registry.register(cwdCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string } }>;
+  goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
+  withLifecycleExecutor: <T>(
+    pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
+    fn: (transport: import("@cotal-ai/core").LifecycleStateTransport) => Promise<T>,
+  ) => Promise<T>;
   // The real signature takes the spawn hooks as a third parameter; this hand-written view had
   // only two, so the mock below could pass `hooks` that the type said would never arrive.
   startAgent: (opts: Record<string, unknown>, spawner?: string, hooks?: SpawnHooks) => Promise<ControlReply>;
 };
+
+/** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
+ * consume it before `inspect` observes it: slot `terminalizing`, then gate frozen and head
+ * `retiring` under the deterministic retirement op. */
+async function plantStrandedSlot(alias: string): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
+  const actor = newIdentity().id;
+  const lifecycleUid = mintLifecycleUid();
+  const opId = retireOpId(lifecycleUid);
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
+    await activateStaticLifecycle(transport, {
+      owner: DEV_OWNER, alias, actor, lifecycleUid,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+    });
+    const slot = await readStaticSlot(transport, DEV_OWNER, alias);
+    if (!slot) throw new Error(`missing planted slot ${alias}`);
+    await casStaticSlot(transport, { ...slot.row, phase: "terminalizing", cleanupComplete: true }, slot.revision);
+    const gate = await gateObserve(transport, lifecycleUid);
+    if (!gate) throw new Error(`missing planted gate ${lifecycleUid}`);
+    await gateFreeze(transport, { lifecycleUid, revision: gate.revision, op: { opId, kind: "retirement" } });
+    await headBeginRetirement(transport, { owner: DEV_OWNER, actor, lifecycleUid, opId });
+  });
+  return { actor, lifecycleUid, opId };
+}
+
+async function plantProvisioningSlotWithoutHead(alias: string): Promise<{ actor: string; lifecycleUid: string }> {
+  const actor = newIdentity().id;
+  const lifecycleUid = mintLifecycleUid();
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, (transport) =>
+    writeStaticSlotIntent(transport, {
+      owner: DEV_OWNER, alias, actor, lifecycleUid,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+    }));
+  return { actor, lifecycleUid };
+}
+
+async function plantActiveSlot(alias: string): Promise<{ actor: string; lifecycleUid: string }> {
+  const actor = newIdentity().id;
+  const lifecycleUid = mintLifecycleUid();
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
+    await activateStaticLifecycle(transport, {
+      owner: DEV_OWNER, alias, actor, lifecycleUid,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+    });
+    const slot = await readStaticSlot(transport, DEV_OWNER, alias);
+    if (!slot) throw new Error(`missing planted slot ${alias}`);
+    await casStaticSlot(transport, { ...slot.row, phase: "active" }, slot.revision);
+  });
+  return { actor, lifecycleUid };
+}
+
+async function plantRetiredSlot(alias: string): Promise<{ actor: string; lifecycleUid: string }> {
+  const { actor, lifecycleUid, opId } = await plantStrandedSlot(alias);
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
+    const gate = await gateObserve(transport, lifecycleUid);
+    if (!gate) throw new Error(`missing planted gate ${lifecycleUid}`);
+    await gateRetire(transport, { lifecycleUid, revision: gate.revision, opId });
+    await headCompleteRetirement(transport, { owner: DEV_OWNER, actor, lifecycleUid, opId });
+    const slot = await readStaticSlot(transport, DEV_OWNER, alias);
+    if (!slot) throw new Error(`missing planted slot ${alias}`);
+    await casStaticSlot(transport, { ...slot.row, phase: "retired", cleanupComplete: true }, slot.revision);
+  });
+  return { actor, lifecycleUid };
+}
 
 /** A caller instrument: mint an agent cred with the given ep capabilities (+ ctl privileged via
  *  the spawn capability), connect, and return the epCall/ctl helpers bound to its triple. */
@@ -249,9 +335,113 @@ try {
       !("model" in enrich), enrich);
     const ins = await A.call("inspect", { name: "w1" });
     check("inspect returns the same row", ins.reply.ok === true && (ins.reply.data as { id: string }).id === w1.id);
+    check("the durable miss projection does not widen inspect's closed live-agent success contract",
+      ins.reply.ok === true && MANAGER_CONTRACTS.inspect.output.validate(ins.reply.data) === true &&
+      MANAGER_CONTRACTS.inspect.output.validate({ ...(ins.reply.data as Record<string, unknown>), slotPhase: "active" }) === false,
+      ins.reply.data);
     const insMiss = await A.call("inspect", { name: "ghost" });
     check("inspect of an unknown name is not-found", insMiss.reply.ok === false && insMiss.reply.error?.code === "not-found", insMiss.reply);
+
+    const stranded = await plantStrandedSlot("stranded-inspect");
+    const strandedReply = await A.call("inspect", { name: "stranded-inspect" });
+    const strandedDetail = strandedReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+    check("inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      strandedReply.reply.ok === false && strandedReply.reply.error?.code === "failed-precondition" &&
+      strandedDetail?.slotPhase === "terminalizing" && strandedDetail.cleanupComplete === true &&
+      strandedDetail?.headState === "retiring" && (strandedDetail.headOp as { opId?: string } | undefined)?.opId === stranded.opId &&
+      strandedDetail.slotLifecycleUid === stranded.lifecycleUid && strandedDetail.consistency === "ordered-not-atomic" &&
+      JSON.stringify(strandedDetail.readOrder) === JSON.stringify(["slot", "head"]) &&
+      typeof strandedDetail.slotRevision === "number" && typeof strandedDetail.headRevision === "number" &&
+      strandedReply.reply.error?.message?.includes(`slotPhase=terminalizing`) === true &&
+      strandedReply.reply.error.message.includes(`cleanupComplete=true`) &&
+      strandedReply.reply.error.message.includes(`headState=retiring`) &&
+      strandedReply.reply.error.message.includes(`headOp=retirement:${stranded.opId}`) &&
+      strandedReply.reply.error.message.includes(`consistency=ordered-not-atomic`),
+      strandedReply.reply);
+
+    const provisioning = await plantProvisioningSlotWithoutHead("provisioning-inspect");
+    const provisioningReply = await A.call("inspect", { name: "provisioning-inspect" });
+    const provisioningDetail = provisioningReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+    check("inspect projects a provisioning slot whose lifecycle head has not been written yet",
+      provisioningReply.reply.ok === false && provisioningReply.reply.error?.code === "failed-precondition" &&
+      provisioningDetail?.slotPhase === "provisioning" && provisioningDetail.slotLifecycleUid === provisioning.lifecycleUid &&
+      !("headState" in (provisioningDetail ?? {})) && !("headOp" in (provisioningDetail ?? {})) &&
+      !("headLifecycleUid" in (provisioningDetail ?? {})) && !("headRevision" in (provisioningDetail ?? {})),
+      provisioningReply.reply);
+
+    const active = await plantActiveSlot("active-inspect");
+    const activeReply = await A.call("inspect", { name: "active-inspect" });
+    const activeDetail = activeReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+    check("inspect reports an active durable slot with no live manager row as contradictory stranded state",
+      activeReply.reply.ok === false && activeReply.reply.error?.code === "failed-precondition" &&
+      activeDetail?.slotPhase === "active" && activeDetail.headState === "active" &&
+      activeDetail.slotLifecycleUid === active.lifecycleUid && activeDetail.headLifecycleUid === active.lifecycleUid,
+      activeReply.reply);
+
+    await plantRetiredSlot("retired-inspect");
+    const retiredReply = await A.call("inspect", { name: "retired-inspect" });
+    check("inspect keeps a durably retired slot indistinguishable from a genuinely absent current agent",
+      retiredReply.reply.ok === false && retiredReply.reply.error?.code === "not-found" &&
+      retiredReply.reply.error?.details?.some((d) => d.kind === "ai.cotal.manager.static-slot-observation") !== true,
+      retiredReply.reply);
+
+    const torn = await plantStrandedSlot("torn-inspect");
+    const kv = M.goalWriter?.ctx.kv;
+    if (!kv) throw new Error("manager goal-writer KV is not standing");
+    const originalGet = kv.get;
+    let advancedBetweenReads = false;
+    kv.get = async (key: string): Promise<unknown> => {
+      const entry = await originalGet.call(kv, key);
+      if (key === staticSlotKey(DEV_OWNER, "torn-inspect") && !advancedBetweenReads) {
+        advancedBetweenReads = true;
+        await M.withLifecycleExecutor({ owner: DEV_OWNER, actor: torn.actor, lifecycleUid: torn.lifecycleUid, alias: "torn-inspect" }, (transport) =>
+          headCompleteRetirement(transport, { owner: DEV_OWNER, actor: torn.actor, lifecycleUid: torn.lifecycleUid, opId: torn.opId }));
+      }
+      return entry;
+    };
+    try {
+      const tornReply = await A.call("inspect", { name: "torn-inspect" });
+      const tornDetail = tornReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+      check("a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
+        advancedBetweenReads && tornDetail?.slotPhase === "terminalizing" && tornDetail.headState === "retired" &&
+        tornDetail.consistency === "ordered-not-atomic" && JSON.stringify(tornDetail.readOrder) === JSON.stringify(["slot", "head"]) &&
+        typeof tornDetail.slotRevision === "number" && typeof tornDetail.headRevision === "number" &&
+        (tornDetail.slotRevision as number) < (tornDetail.headRevision as number), tornReply.reply);
+    } finally {
+      kv.get = originalGet;
+    }
+
+    let liveSlotReadAttempted = false;
+    let outageSlotReadAttempted = false;
+    const liveSlotKey = staticSlotKey(DEV_OWNER, "w1");
+    const outageSlotKey = staticSlotKey(DEV_OWNER, "store-outage");
+    kv.get = async (key: string): Promise<unknown> => {
+      if (key === liveSlotKey) {
+        liveSlotReadAttempted = true;
+        return originalGet.call(kv, key);
+      }
+      if (key === outageSlotKey) {
+        outageSlotReadAttempted = true;
+        return new Promise<never>(() => {});
+      }
+      return originalGet.call(kv, key);
+    };
+    try {
+      const liveDuringOutage = await A.call("inspect", { name: "w1" });
+      check("inspect keeps live hits entirely local when the durable slot store is unavailable",
+        liveDuringOutage.reply.ok === true && (liveDuringOutage.reply.data as { id?: string }).id === w1.id && !liveSlotReadAttempted,
+        liveDuringOutage.reply);
+      const missDuringOutage = await A.call("inspect", { name: "store-outage" });
+      const outageDetail = missDuringOutage.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-read-failed") as Record<string, unknown> | undefined;
+      check("inspect surfaces durable-store unavailability on a miss instead of lying not-found",
+        missDuringOutage.reply.ok === false && missDuringOutage.reply.error?.code === "unavailable" &&
+        outageSlotReadAttempted && outageDetail?.record === "slot" && outageDetail.name === "store-outage" &&
+        /timed out after 2000ms/.test(missDuringOutage.reply.error?.message ?? ""), missDuringOutage.reply);
+    } finally {
+      kv.get = originalGet;
+    }
   }
+  if (!PROJECTION_ONLY) {
   {
     // #651 fix: the persona-file model path. A seat whose model comes from its PERSONA FILE (no
     // --model override) must surface that model in the row - the manager folds def.model into the
@@ -303,6 +493,35 @@ try {
     check("the agent's OWN baseline cred invokes self-mode `stop` and halts itself",
       rSelf.reply.ok === true && (rSelf.reply.data as { name: string; stopped: boolean }).name === "w2" && (rSelf.reply.data as { stopped: boolean }).stopped === true, rSelf.reply);
     await w2Nc.drain().catch(() => w2Nc.close());
+  }
+
+  console.log("manifest cwd through the real launch door (#963)");
+  for (const [name, cwd] of [["cwdrelative", "repos/worker"], ["cwdabsolute", join(dir, "external repo")], ["cwddefault", undefined]] as const) {
+    const expected = cwd === undefined ? workspaceRoot : resolve(workspaceRoot, cwd);
+    mkdirSync(expected, { recursive: true });
+    rmSync(join(dir, "child-cwd.txt"), { force: true });
+    const runId = `run${name}`;
+    const spec = {
+      apiVersion: "cotal-launch/v1", space, runId,
+      agents: [{ name, agent: "cwd-stub", ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
+    };
+    const launched = await A.call("launch", { runId, name, spec });
+    check(`manifest ${name} is accepted through the registered launch door`, launched.reply.ok === true, launched.reply);
+    let row: { name: string; id: string; lifecycleUid: string; cwd?: string } | undefined;
+    // Launch acknowledges the action before the child is live. Wait for the child observation,
+    // as spawnLive does for ordinary spawns, rather than grading the acceptance as completion.
+    for (let attempt = 0; launched.reply.ok && attempt < 80; attempt++) {
+      const ps = await A.call("ps");
+      row = (ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string; cwd?: string }>).find((r) => r.name === name);
+      if (row && existsSync(join(dir, "child-cwd.txt"))) break;
+      await wait(250);
+    }
+    const observed = existsSync(join(dir, "child-cwd.txt")) ? readFileSync(join(dir, "child-cwd.txt"), "utf8") : undefined;
+    check(`manifest ${name} runs in the declared manager-host directory`, observed === realpathSync(expected) && row?.cwd === expected, { observed, recorded: row?.cwd, expected });
+    if (row) {
+      const stopped = await A.call("despawn", { graceful: true }, { actor: row.id, lifecycleUid: row.lifecycleUid });
+      check(`manifest ${name} child is cleaned up`, stopped.reply.ok === true, stopped.reply);
+    }
   }
 
   console.log("5. definePersona / models / purge / attach / launch + resume negatives");
@@ -562,6 +781,8 @@ try {
     }
     check("a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)",
       refused === "unavailable" || refused === "deadline-exceeded", refused);
+  }
+
   }
 
   await A.nc.drain().catch(() => A.nc.close());

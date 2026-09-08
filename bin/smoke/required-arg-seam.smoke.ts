@@ -279,8 +279,29 @@ const SEAMS: Seam[] = [
   // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
   // 109/80 -> 110/80: `cotal run`'s command connection (implementations/runtime/src/run-command.ts)
   // adds one typechecked call carrying the endpoint auth and the resolved tls decision.
+  // 110/80 -> 114/83: the delivery daemon's checkpoint timer writer (implementations/delivery/src/
+  // delivery.ts) adds one typechecked call, and its suite (delivery-timer-writer.smoke.ts) three
+  // smoke-side calls.
+  // 114/83 -> 117/86: the manager's auth-mesh turn relay suite (turn-relay-auth.smoke.ts, landed at
+  // 301a6cf6e) adds three smoke-side calls. The pin was not moved when that suite landed, so this
+  // cell was red from 301a6cf6e until 24b3d9281 corrected it: a whole-repo exact count goes red
+  // without the file that holds it being touched, which is the reason it is exact.
+  // 117/86 -> 118/87: gate-reconcile-auth.smoke.ts opens one more provisioner connection for the
+  // records KV the lost-ack same-op recovery needs. It stays under smoke/ with the suite's other
+  // three sites: the call is harness residue, not product connect, and it already states tls: false.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 110, untypecheckedSites: 80 },
+  // 118/87 -> 119/88: static-lifecycle.smoke.ts's #1274 crash-resume cell (driveTerminalDirect) opens
+  // one more lifecycle-executor connection to plant a terminalizing slot and drive runStaticTerminal
+  // as a resume would. It is under smoke/, harness residue not product connect, and states tls: false.
+  // 119/88 -> 125/92: manager-hosted workflow runs. The manager's per-call run-operator
+  // connection (implementations/manager/src/run-hosting.ts) and `cotal run`'s hosted-client
+  // connection (implementations/runtime/src/run-command.ts) add two typechecked calls; the
+  // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
+  // 125/92 -> 126/93: run-host-live reads an answer record back under a run-operator READ
+  // credential of its own (one smoke-side call, tls: false).
+  // 126/93 -> 127/94: run-host-live connects under a token-pinned run-operator ANSWERING
+  // credential to prove the broker refuses an answer on any other pause.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 127, untypecheckedSites: 94 },
 ];
 
 /**

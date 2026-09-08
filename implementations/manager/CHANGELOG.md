@@ -1,5 +1,222 @@
 # @cotal-ai/manager
 
+## 0.47.0
+
+### Minor Changes
+
+- e6d3c96: Split Linux PTY ownership out of the manager worker: a one-shot launcher starts one detached custodian process per seat, and `Runtime.adopt` returns a live proxy over a permissioned Unix socket. Off Linux, pty spawn stays in-process and `adopt` throws a named custody-transport error.
+
+### Patch Changes
+
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+- 8ec22cb: `cotal supervise` on a registered remote mesh now dials the broker URL the registry actually
+  holds. A remote broker is commonly published over a `wss://` edge, and the manager-authority
+  registration the supervisor runs first handed that URL to the raw node transport, which refuses a
+  websocket URL outright, so supervision stopped before a manager was ever constructed. That
+  registration and every other control dial this audit found can be handed a registry server URL now
+  select the transport from the scheme, including the planes `cotal run --local` opens, which failed
+  on such a mesh for the same reason. The registration also carries the record's TLS requirement
+  instead of assuming a plaintext broker, so a participant no longer downgrades its prepare
+  credential exchange on a mesh the registry describes as TLS-required. On the same path, the cluster
+  artifacts the registration reads back are now looked up by the key form the content-addressed store
+  uses, which a remote registration reached with a prefixed digest reference and could not resolve.
+- Updated dependencies [e6d3c96]
+- Updated dependencies [30cf300]
+- Updated dependencies [f43d842]
+- Updated dependencies [4ea4257]
+- Updated dependencies [cf294e7]
+  - @cotal-ai/seat@0.47.0
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+- 18a0024: The manager hosts workflow runs. `run-start`, `run-resume`, `run-answer`, `run-status` and
+  `run-ps` are served on the manager's endpoint rails; a run is validated before anything is
+  recorded, driven in the manager's process under a per-run `run-driver` credential, and taken back
+  from its journal after a manager restart. `cotal run` is a client of that surface by default,
+  with `--local` keeping the in-process drive, now under the run's own `run-driver` and
+  `run-operator` credentials rather than `admin`; an answer's writes are pinned to the one pause it
+  answers. A user-auth mesh refuses the family by name until a run can carry its user's owner. A new `run` capability mints the family into an
+  agent's credential and injects the `cotal_run` tool, so an agent can write a cotal-lang program
+  and start it from a session. `run-answer` records the answerer from the caller's credential and
+  takes no `by`; `cotal run answer` drops `--by` on the hosted path. `spawn({ supervise })` is a restart policy the manager enforces in
+  place: `{ restarts, window? }` (default `10m`) until the budget is spent, then the seat is
+  retired and the next `turn` is L4002. A policy this host cannot honour is refused at accept.
+- e986173: Make manager `inspect` distinguish a stranded static slot from an unknown name through structured durable-state details, and make `attach` stop reconnecting when those details show the seat is gone.
+
+### Patch Changes
+
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+  - @cotal-ai/core@0.46.0
+  - @cotal-ai/workspace@0.46.0
+
+## 0.45.0
+
+### Minor Changes
+
+- 38d7bb7: Record a durable cleanup-complete marker on a terminalizing static managed slot before the final CAS to `retired`. A `terminalizing` row was previously consistent with three worlds (cleanup not started, cleanup in flight, or cleanup completed with the process dead before the CAS) that the state could not tell apart, so a resumed terminal always re-ran `cleanup()` as the only total option and the row could never assert cleanup was already done. `runStaticTerminal` now runs the footprint cleanup through one at-most-once helper that writes `cleanupComplete: true` on the `terminalizing` slot before the `retired` CAS; a resumed terminal reads it and skips a completed cleanup. The marker distinguishes the cleanup-completed world from the not-known-complete worlds (which keep the same remedy: re-run the idempotent cleanup) and adds no unrecoverable intermediate state.
+
+### Patch Changes
+
+- Updated dependencies [299a353]
+- Updated dependencies [38d7bb7]
+  - @cotal-ai/core@0.45.0
+  - @cotal-ai/workspace@0.45.0
+
+## 0.44.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.44.0
+- @cotal-ai/workspace@0.44.0
+
+## 0.43.0
+
+### Minor Changes
+
+- 890d08a: Complete a committed registration spec after a lost ack instead of freezing a new coordinate. Boot self-heal and `cotal reconcile-gate` now finish that same freeze when the spec advanced, and abort-reopen only on a definite no-commit.
+- e5412a1: Add per-agent `cwd` to mesh manifests. Relative paths resolve on the manager host against its workspace, matching the imperative spawn option. The directory survives launch-spec validation and contributes to stale-entry detection without changing hashes for manifests that omit it.
+
+  This implements the working-directory part of #963. Manifest session continuity remains separate work.
+
+- 7ff0c21: Hold the endpoint governance slot through Phase-4 reopen so a concurrent deregister cannot delete the spec a registration is still completing. `deregisterServiceInstance` now requires an observe-only read of this instance's issuance-gate generation: matching the held slot is `registration-in-flight`; a slot behind that generation is a leftover after reopen and does not block.
+
+### Patch Changes
+
+- 42b1fce: A late `turn-yield` after the deadline deny has committed is told the turn ended `failed`, never `not-found`.
+
+  The deny itself held: first-terminal-wins still refused a success over it. What failed was the diagnostic. `commitTurnDeadline` deletes the pending entry (its idempotency latch) _before_ the terminal CAS, then remembers the settled answer only after. A yield in that window, or after a concurrent sweep dropped `turnAcceptances.settled`, heard `no pending turn` — which a seat reads as an addressing fault, not "the run moved on". The durable terminal is the answer the run already has; the yield now reads it when the in-memory settled field is missing, and the sweep no longer wipes an unsettled acceptance the moment pending is empty.
+
+- 5038519: A leftover turn acceptance whose deadline commit never remembered is aged off `leftoverSince` (when the pending latch dropped), not off the original deadline.
+
+  Aging off `deadlineAt` would prune a long-outage leftover on the first sweep tick and take the GoalRef a late yield still needs. `commitTurnDeadline` stamps that clock when it deletes pending.
+
+- 42635d2: Re-anchor the late-yield mutation `find` on the durable-read code block, not the neighbouring comment.
+
+  `smoke:mutation-fixtures` refuses a `find` that spans prose. The #1265 guard used three comment lines to make the window unique; a comment-only tidy would have disarmed it silently. The durable `readGoalResult` block is unique on its own.
+
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/core@0.43.0
+  - @cotal-ai/workspace@0.43.0
+
+## 0.42.0
+
+### Minor Changes
+
+- a87709c: Every cotal-lang effect now performs on the mesh: the durable-action group is built end to end and
+  the not-yet-durable seam is gone.
+
+  `spawn` submits a real manager goal and returns the allocated seat's handle, and meters the
+  agent's `permits` (`turns`, `wallClock`; the turn that would exceed one is L4001, and a budget the
+  host cannot meter is refused at spawn); `conclave` opens a scoped sub-team as durable membership
+  rows; `ask` parks schema-checked pauses answered through `cotal run answer` and tells the agent
+  over the turn relay, one relay per attempt carrying the schema, the attempt and the previous
+  refusal, which every connector's intake renders with the answer command; `monitor` registers the
+  handle on its journal entry and `wait(down)` reads a monitored incarnation's death off presence
+  liveness, refusing an agent nobody monitored.
+  `turn` rides a new pull-shaped manager relay: the manager serves `turn` (targeted, the
+  despawn/input reach) plus `turn-pending` and `turn-yield` (self reach, manager contract revision
+  10), holds the payload on the goal-index note, pins the goal to the seat's incarnation, and denies
+  at a goal-bound deadline hold; the seat side (all connectors) pulls pending turns, surfaces them
+  two-phase into host context, auto-yields `done` when the host turn ends, and yields `blocked` or
+  `handoff` through the new `cotal_yield` tool; the run client renders context with pending notices,
+  arms its own pause on the acceptance's deadline as the L4003 authority, watches presence as the
+  L4002 authority (a death the manager marks on the deadline terminal reads the same way), and
+  honors handoffs (L4005/L4004 validation, the `handoffFrom` goal chain); the manager shows a seat
+  one turn at a time. The relay holds on an auth mesh: the agent baseline gains the self-mode
+  `turn-pending` and `turn-yield` rows, the operator seat-write set (`control-caller-admin`, the
+  `admin` capability) gains `turn` beside `input`, and the manager mints the deadline hold's
+  schedule over its serve connection and owner-expires the hold once due instead of reading a
+  fire it holds no grant for. `wait(replied)` observes the run's own turn terminals as a level, and never a
+  turn the run itself ended without an accepted yield. A `spawn` may bind a logical worktree: the
+  validator rejects two literal-worktree spawns in one concurrent scope (L3022, named branch
+  functions included) and the runtime claims a tree before it submits, refusing a second spawn into
+  a tree held by a live seat or by a spawn in flight (L4008), with sequential reuse the moment the
+  holder's presence lapses. A spawn refused at accept is L4000 (L4001 for seat capacity) and one
+  whose seat never came up is L4002; an `ask` whose deadline passes with no conforming record is
+  L4006; a fork copies a spawn that said `onFork: "adopt"` and refuses one that would have to
+  respawn (L5019). The run driver re-issues
+  recorded-but-undischarged cancellations at adoption, so recovery does not wait for completion to
+  release a dead loser's seat, pause, or tree. A migration's `--adopt <handle>` hands the orphaned
+  seat to the edited program's next spawn of that persona, and `--release <handle>` despawns it at
+  commit through the run's own discharge; both name the agent the step spawned, and a spawn that
+  produced none is an orphan like a sleep; the adopting spawn binds the orphaned spawn's goal as
+  its own, so a resume re-reads the seat and a cancellation despawns it. A turn accept the manager
+  cannot finish unwinds to a failed terminal on its bound goal, and a retry of it is refused naming
+  that terminal. The delivery daemon hosts the checkpoint timer writer, so mediated deadlines fire
+  with no suite pump.
+
+### Patch Changes
+
+- Updated dependencies [a87709c]
+  - @cotal-ai/core@0.42.0
+  - @cotal-ai/workspace@0.42.0
+
+## 0.41.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.4
+- @cotal-ai/workspace@0.41.4
+
+## 0.41.3
+
+### Patch Changes
+
+- Updated dependencies [436f7d4]
+  - @cotal-ai/core@0.41.3
+  - @cotal-ai/workspace@0.41.3
+
+## 0.41.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.2
+- @cotal-ai/workspace@0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- e7687e7: fix(manager): schedule credential renewal so a tick lands inside `[renewAt, exp)` for any TTL
+
+  The manager scheduled `renewDaemonCreds` every `STANDING_RENEWABLE_TTL_SEC / 2`, so on a 24h
+  credential the ticks landed at 12h (`healthy`, no-op) and 24h (`expired`, session already
+  refused). `inspectCredHealth` enters `near-expiry` at 75% of iat-to-exp lifetime, so the renewal
+  window is only TTL/4 wide, and an interval of TTL/2 can miss it entirely for any TTL. The
+  manager's own daemon credential died on that ~24h cadence, as reported at 0.37.0.
+
+  The interval is now `credRenewIntervalMs(ttlSeconds) = max(1ms, TTL/4·1000)`, derived from the
+  caller's TTL. Ticks TTL/4 apart guarantee at least one lands in every `[renewAt, exp)` window
+  regardless of TTL, so both the 24h `STANDING_RENEWABLE_TTL_SEC` and the 30-day
+  `ROTATION_RENEWED_TTL_SEC` are covered without a hardcoded number. The renewal pass is unchanged
+  and idempotent, so a tick that fires before the window costs one health check per owner. Both
+  scheduling sites (initial start and preservation abort) are updated together.
+
+  Covered by `smoke:manager-renewal-boundary`, a real-broker cell that drives the compressed-ratio
+  (TTL=20s) boundary and asserts the schedule reissues inside the window, with an in-probe mutant
+  that reverts to TTL/2 to prove the cell reddens when the fix is reverted.
+
+  - @cotal-ai/core@0.41.1
+  - @cotal-ai/workspace@0.41.1
+
+## 0.41.0
+
+### Patch Changes
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+- Updated dependencies [5ec7feb]
+  - @cotal-ai/core@0.41.0
+  - @cotal-ai/workspace@0.41.0
+
 ## 0.40.0
 
 ### Patch Changes

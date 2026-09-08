@@ -28,6 +28,10 @@ import {
   commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
   type CommandReader,
 } from "../src/pid.js";
+// #969: the manager stop cells below grade the EPERM and outlived-SIGTERM refusals, which sit
+// AFTER the creation-identity gate. A bare-pid record is now (correctly) refused as a legacy
+// record before reaching them, so the fixtures write the pin a real launch writes.
+import { defaultStartToken, formatRecord } from "../src/pid.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -226,6 +230,7 @@ try {
   };
   writeFileSync(mgrPid, `${process.pid}\n`);
   writeFileSync(join(root, ".cotal", "manager.delivery-aware"), `${process.pid}\n`);
+  writeFileSync(`${mgrPid}.identity`, formatRecord({ pid: process.pid, token: defaultStartToken(process.pid) ?? "0" }));
   const beforeStop = readFileSync(mgrPid, "utf8");
   // The record names a MANAGER for these cells: the injected probe supplies the liveness and this
   // supplies the attribution, so the EPERM rule below is graded on the signal path and not on
@@ -259,6 +264,7 @@ try {
   // much as the catch: nothing may be removed before the process is proven gone.
   const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
   writeFileSync(delPid, `${process.pid}\n`);
+  writeFileSync(`${delPid}.identity`, formatRecord({ pid: process.pid, token: defaultStartToken(process.pid) ?? "0" })); // #969: a real launch pins
   const delBefore = readFileSync(delPid, "utf8");
   let delRefused: string | undefined;
   try {

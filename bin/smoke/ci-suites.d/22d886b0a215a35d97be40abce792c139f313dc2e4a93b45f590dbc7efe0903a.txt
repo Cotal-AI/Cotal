@@ -1,0 +1,5 @@
+# `monitor` + `wait(down)` on the real planes: the death of one incarnation read off presence
+# liveness — the rescue idiom driven end to end, the immediate down, lapsed vs superseded, the
+# timeout resolving null on one absolute deadline a re-entry attaches to, and cancellation
+# claiming the armed pause.
+smoke:runtime-mesh-monitor

@@ -81,12 +81,14 @@ function processPids(): number[] {
   throw new Error(`jcode connector: cannot prove Jcode process ownership on unsupported platform ${process.platform}`);
 }
 
-interface ProcessIdentityProbe {
+export interface ProcessIdentityProbe {
+  readEnviron: (pid: number) => string;
   ps: (pid: number) => string;
   pidExists: (pid: number) => boolean;
 }
 
 const processIdentityProbe: ProcessIdentityProbe = {
+  readEnviron: (pid) => readFileSync(`/proc/${pid}/environ`, "utf8"),
   ps: (pid) => execFileSync("/bin/ps", ["eww", "-p", String(pid), "-o", "command="], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -104,7 +106,11 @@ const processIdentityProbe: ProcessIdentityProbe = {
   },
 };
 
-function processHasLaunchIdentityFromPs(pid: number, identityValue: string, probe: ProcessIdentityProbe): boolean {
+function processHasLaunchIdentityFromPs(
+  pid: number,
+  identityValue: string,
+  probe: Pick<ProcessIdentityProbe, "ps" | "pidExists">,
+): boolean {
   try {
     const out = probe.ps(pid);
     return out.includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
@@ -118,25 +124,43 @@ function processHasLaunchIdentityFromPs(pid: number, identityValue: string, prob
   }
 }
 
-function processHasLaunchIdentity(pid: number, identityValue: string): boolean {
-  if (process.platform === "linux")
-    return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
+/** Whether `pid` carries this launch's identity, or `undefined` when the kernel cannot answer.
+ *
+ * A process releases the mm backing /proc/<pid>/environ as it exits, before it becomes the zombie
+ * that `alive` reads as dead. In that window the environ read fails or returns empty while
+ * /proc/<pid>/stat still reports a live state and the same start token. Reporting that as a missing
+ * identity would convict a bridge that is merely dying, so it is answered as unprovable. */
+function launchIdentityProof(pid: number, identityValue: string, probe: ProcessIdentityProbe): boolean | undefined {
+  if (process.platform === "linux") {
+    let environ: string;
+    try {
+      environ = probe.readEnviron(pid);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ESRCH" || code === "EACCES" || code === "EPERM") return undefined;
+      throw error;
+    }
+    // An exec fixes the environ block for the life of the process, so a non-empty read against an
+    // unchanged start token is authoritative; only an empty one means the mm is already gone.
+    if (environ.length === 0) return undefined;
+    return environ.split("\0").includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
+  }
   if (process.platform === "darwin" || process.platform.endsWith("bsd"))
-    return processHasLaunchIdentityFromPs(pid, identityValue, processIdentityProbe);
+    return processHasLaunchIdentityFromPs(pid, identityValue, probe);
   throw new Error(`jcode connector: launch-bound process identity is unavailable on ${process.platform}`);
 }
 
 export const processHasLaunchIdentityForTest = (
   pid: number,
   identityValue: string,
-  probe: ProcessIdentityProbe,
+  probe: Pick<ProcessIdentityProbe, "ps" | "pidExists">,
 ): boolean => processHasLaunchIdentityFromPs(pid, identityValue, probe);
 
-function captureLaunchProcesses(identityValue: string): ProcessIdentity[] {
+function captureLaunchProcesses(identityValue: string, probe: ProcessIdentityProbe = processIdentityProbe): ProcessIdentity[] {
   const owned: ProcessIdentity[] = [];
   for (const pid of processPids()) {
     try {
-      if (!processHasLaunchIdentity(pid, identityValue)) continue;
+      if (launchIdentityProof(pid, identityValue, probe) !== true) continue;
       const stat = processStat(pid);
       if (stat) owned.push({ pid: stat.pid, start: stat.start });
     } catch (error) {
@@ -320,24 +344,36 @@ export interface StopPrivateTreeOptions {
   killWaitMs?: number;
   /** Records must remain absent for this long after the bridge is gone (default 500ms). */
   settleMs?: number;
+  /** Injectable process proof source for direct lifecycle tests. */
+  identityProbe?: ProcessIdentityProbe;
 }
 
 /** SIGTERM the launch-owned tree, escalate survivors to SIGKILL, and only return once its records
  * remain quiescent after the bridge is gone. A stale or reused registry PID is skipped, never
  * signalled; an unprovable live process is not converted into ownership by location alone. */
 export async function stopPrivateTree(options: StopPrivateTreeOptions): Promise<void> {
-  const { jcodeHome, launch, identityValue, gracefulWaitMs = 3_000, killWaitMs = 2_000, settleMs = 500 } = options;
+  const {
+    jcodeHome,
+    launch,
+    identityValue,
+    gracefulWaitMs = 3_000,
+    killWaitMs = 2_000,
+    settleMs = 500,
+    identityProbe = processIdentityProbe,
+  } = options;
   const owned = new Map<number, ProcessIdentity>();
   const refreshOwned = (): void => {
-    for (const identity of captureLaunchProcesses(identityValue)) owned.set(identity.pid, identity);
+    for (const identity of captureLaunchProcesses(identityValue, identityProbe)) owned.set(identity.pid, identity);
   };
   refreshOwned();
   // A bridge that already died (provider stall, crash) or whose PID was reused is a legal teardown
   // state: there is nothing safe to signal, and the record scan below still owns any survivors. The
   // refusal is reserved for a live bridge matching its captured start token that does not carry the
   // launch identity — broken launch wiring, where ownership cannot be proved for a process that
-  // must be stopped.
-  if (alive(launch.pid) && processMatches(launch) && !owned.has(launch.pid))
+  // must be stopped. A bridge exiting under us reads as identity-less for a moment (#1179), so the
+  // refusal takes a direct proof that the environment is readable and lacks the identity, rather
+  // than the scan's absence, which cannot tell that window apart from broken wiring.
+  if (alive(launch.pid) && processMatches(launch) && launchIdentityProof(launch.pid, identityValue, identityProbe) === false)
     throw new Error(`jcode connector: spawned Jcode bridge ${launch.pid} does not carry its launch-bound identity — refusing unsafe teardown`);
 
   if (processMatches(launch)) {

@@ -36,6 +36,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -156,7 +157,7 @@ try {
   console.log(`seat ${SEAT} is running on the manager\n`);
 
   // The attach client, under a real pty, pointed at the PROXY.
-  child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
+  child = pty.spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });

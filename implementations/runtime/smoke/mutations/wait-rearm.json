@@ -29,7 +29,10 @@
     "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
     "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
     "kill rate would measure module resolution rather than the guard. Either mutate the module the",
-    "suite imports relatively, or put a build between the mutation and the run."
+    "suite imports relatively, or put a build between the mutation and the run.",
+    "Batch B2 (2026-09-03): `turn` arms a pause under its goal id and was missing from the",
+    "outstanding list, so the run's own L4003 authority went dark from a takeover until the",
+    "replay reached the turn again."
   ],
   "mutations": [
     {
@@ -57,6 +60,15 @@
       "expectRed": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
       "cell": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
       "note": "Adding a kind to a list is the edit that most easily over-fires, and a takeover that re-arms finished pauses is a timer leak rather than a hang -- quieter than the bug it replaces, and therefore worse to find later."
+    },
+    {
+      "name": "a pending turn's deadline authority is not re-armed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (e.kind === \"sleep\" || e.kind === \"checkpoint\" || e.kind === \"turn\") tokens.push(e.requestId);",
+      "replace": "    if (e.kind === \"sleep\" || e.kind === \"checkpoint\") tokens.push(e.requestId);",
+      "expectRed": "a pending `turn` is an outstanding pause too: its deadline authority is re-armed",
+      "cell": "a pending `turn` is an outstanding pause too: its deadline authority is re-armed",
+      "note": "Measured 2026-09-03: KILLED. mesh-checkpoint.smoke: 39 passed, 1 failed Named cell red: a pending `turn` is an outstanding pause too: its deadline authority is re-armed"
     }
   ],
   "unkillable": [

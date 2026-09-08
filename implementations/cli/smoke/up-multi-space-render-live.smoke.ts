@@ -50,6 +50,8 @@ const root = mkdtempSync(join(scratch, "root-"));
 // is set explicitly right after, pointing at this smoke's own sandbox.
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
 const { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
@@ -71,7 +73,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function startUp(port: number, space: string): ChildProcess {
   const cp = spawn(TSX, [CLI, "up", "--space", space, "--server", `nats://127.0.0.1:${port}`], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(cp);

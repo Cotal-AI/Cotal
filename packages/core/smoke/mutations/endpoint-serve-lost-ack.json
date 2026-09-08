@@ -1,0 +1,25 @@
+{
+  "suite": "packages/core/smoke/endpoint-serve-auth.smoke.ts",
+  "guard": "a committed-then-lost-ack re-registration spec-write completes the same freeze instead of exiting 1 with a new frozen coordinate",
+  "command": "pnpm smoke:ep-serve:auth",
+  "completionMarker": "ENDPOINT SERVE AUTH SMOKE",
+  "proveWith": "pnpm mutation-proof -- --config packages/core/smoke/mutations/endpoint-serve-lost-ack.json",
+  "why": [
+    "The field loop is: spec update commits, ack is lost, the manager leaves the gate frozen and exits 1.",
+    "Boot self-heal abort-reopens, the next start freezes a NEW coordinate, and takeover never converges.",
+    "The named cell drives registerServiceInstance against an isolated KV that stores the successor spec",
+    "then throws. CONTROL: the same first registration without the lost ack still completes.",
+    "This suite imports core through ../src/index.js, so the mutation is visible without a dist rebuild."
+  ],
+  "mutations": [
+    {
+      "name": "PHASE 3 lost-ack always throws instead of reading the committed spec back",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "    newRev = await recoverCommittedSpecWrite(kv, key, spec, current, err);",
+      "replace": "    throw err;",
+      "expectRed": "an AMBIGUOUS first spec-write (committed then ack lost) read-back completes the same freeze rather than leaving a stuck gate",
+      "cell": "an AMBIGUOUS first spec-write (committed then ack lost) read-back completes the same freeze rather than leaving a stuck gate",
+      "note": "The earliest cell that uses recoverCommittedSpecWrite. The later #1243 re-registration cell is the same catch on an UPDATE."
+    }
+  ]
+}

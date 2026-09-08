@@ -56,8 +56,8 @@
     {
       "name": "M6 sandbox guard proof remains in check but moves behind the first live suite",
       "file": "package.json",
-      "find": "pnpm smoke:core-boundary && pnpm smoke:sandbox-guard && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect",
-      "replace": "pnpm smoke:core-boundary && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:sandbox-guard && pnpm smoke:connect",
+      "find": "pnpm smoke:core-boundary && pnpm smoke:sandbox-guard && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:preflight",
+      "replace": "pnpm smoke:core-boundary && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:sandbox-guard && pnpm smoke:preflight",
       "expectRed": "check reaches smoke:sandbox-guard before its first environment-dependent live suite"
     },
     {

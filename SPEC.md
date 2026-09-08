@@ -3795,9 +3795,9 @@ characters**, which is an id token by construction. The reference implementation
   digest id of `{ requestId, addressee }`, where `requestId` is the `notify` step's request id, so
   one call to N agents files N notices and a re-run after a crash lands on the same ones. A driver
   that performs the addressee's turns MUST render an unconsumed notice ahead of its next turn and
-  MUST NOT deliver it as a channel message. (The reference driver's turn plane is not durable in
-  this revision, `spec/cotal-lang.md` §6.5, so no host performs that rendering today; the renderer
-  and the consumed mark exist and are what a turn plane binds to.)
+  MUST NOT deliver it as a channel message. The reference driver performs that rendering: its turn
+  plane is durable (`spec/cotal-lang.md` §6.5), and a relayed turn carries the addressee's
+  unconsumed notices as its rendered context and marks them consumed with the turn's outcome.
 - **`migration`**, `migration.<endpoint>.<runId>.<migrationId>`, split: spec `{ v: 1, run,
   fromHash?, toHash, at, consumedThrough, orphans[], overrides[], actor }` (create-only), status
   `{ v: 1, appliedAt, by, observedSpecRevision }` (create-only). `migrationId` = the digest id of the

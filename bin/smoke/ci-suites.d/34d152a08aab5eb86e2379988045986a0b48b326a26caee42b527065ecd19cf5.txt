@@ -1,0 +1,2 @@
+# Fail a commit that adds a suite line to the frozen ci-suites.txt list.
+smoke:ci-suites-freeze

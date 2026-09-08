@@ -30,6 +30,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 // A run started from a session that is itself joined to a mesh inherits `COTAL_*`, and every child
 // spawned below is `cotal attach`, which READS connection material. Blanking three names by hand
@@ -129,7 +130,7 @@ try {
 
   const n = `N${randomUUID().slice(0, 8).toUpperCase()}`;
   const mark = sink().length;
-  child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", BROKER, "--no-reconnect"], {
+  child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", BROKER, "--no-reconnect"], {
     cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
     stdio: ["pipe", "pipe", "pipe"],

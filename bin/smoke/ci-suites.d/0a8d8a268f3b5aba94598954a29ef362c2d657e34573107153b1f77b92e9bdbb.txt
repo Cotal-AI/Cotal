@@ -1,0 +1,2 @@
+# Workflow source-contract: seat native builders stay on PR pack and Changesets.
+smoke:seat-native-ci

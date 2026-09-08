@@ -23,6 +23,15 @@
       "completionMarker": "ok an effect's input is frozen AT the share: mutating it afterwards is L2031",
       "cell": "a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
       "note": "The live path freezes before settle, so only the JSON round trip exposes this: parsed entries are fresh writable objects, and replay returned them as-is."
+    },
+    {
+      "name": "the freeze walk stops at the first already-frozen node",
+      "file": "packages/lang/src/values.ts",
+      "find": "  if (seen.has(value as object)) return value;\n  seen.add(value as object);",
+      "replace": "  if (Object.isFrozen(value)) return value;\n  seen.add(value as object);",
+      "expectRed": "a result frozen only at its top level is still frozen THROUGH: the nested write is L2031",
+      "cell": "a result frozen only at its top level is still frozen THROUGH: the nested write is L2031",
+      "note": "A handler returning Object.freeze({ a: { b: 1 } }) handed back a value whose `a` was still writable, so assertWritable saw an unfrozen container and a program mutated a recorded value with no L2031."
     }
   ]
 }

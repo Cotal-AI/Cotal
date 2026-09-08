@@ -82,6 +82,16 @@ class FakeMesh {
     return channel ? this.modes.get(channel) : undefined;
   }
 
+  // The run-turn intake is two-phase on the real agent (peek is pure, commit arms). Nothing here
+  // drives a turn, so the peek is empty and a commit would be a defect worth failing on.
+  peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
+    return undefined;
+  }
+
+  commitSurfacedTurns(goalIds: readonly string[]): void {
+    throw new Error(`FakeMesh: no turn was surfaced, so nothing can be committed: ${goalIds.join(",")}`);
+  }
+
   async setStatus(status: string, activity?: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, status === "working" && activity === "thinking" ? 3 : 0));
     this.statuses.push({ status, activity });
@@ -571,6 +581,7 @@ for (const assistant of [
     "COTAL_DEFAULT_AGENT",
     "COTAL_CONTROL_SOCKET",
     "COTAL_CONTROL_TOKEN",
+    "COTAL_LAUNCH_MATERIAL",
   ] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -584,6 +595,7 @@ for (const assistant of [
   const compatibleApi = {
     sendMessage(): void {},
     registerMessageRenderer(): void {},
+    registerTool(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
   await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);

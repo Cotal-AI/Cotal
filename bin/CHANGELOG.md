@@ -1,5 +1,249 @@
 # cotal-ai
 
+## 0.47.0
+
+### Minor Changes
+
+- e6d3c96: Split Linux PTY ownership out of the manager worker: a one-shot launcher starts one detached custodian process per seat, and `Runtime.adopt` returns a live proxy over a permissioned Unix socket. Off Linux, pty spawn stays in-process and `adopt` throws a named custody-transport error.
+- 30cf300: Ship linux-x64 and linux-arm64 SO_PEERCRED helpers from native builder jobs, assembled before pack and publish. `waitForExit` drops the controller socket so a manager worker can exit after the child is gone.
+
+### Patch Changes
+
+- 0855cb7: Grade each ambient `process.env` spread on its own, and strip `COTAL_` from the user-spawn auth-service child.
+- f3103b3: Refresh an explicitly named local space from its matching same-server registry record instead of a record chosen by registry order.
+- 4ea4257: Gate `@cotal-ai/seat` pack with `prepack` (not `prepare`) so a host-only tree cannot pack, and assert the native linux-x64/arm64 builder wiring in CI and Changesets from the workflow files.
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+- Updated dependencies [0855cb7]
+- Updated dependencies [8ec22cb]
+- Updated dependencies [f3103b3]
+- Updated dependencies [e6d3c96]
+- Updated dependencies [cf294e7]
+- Updated dependencies [8ec22cb]
+- Updated dependencies [8aee1c0]
+  - @cotal-ai/auth@0.47.0
+  - @cotal-ai/cli@0.47.0
+  - @cotal-ai/manager@0.47.0
+  - @cotal-ai/connector-core@0.47.0
+  - @cotal-ai/runtime@0.47.0
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+  - @cotal-ai/delivery@0.47.0
+
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+
+### Patch Changes
+
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+- Updated dependencies [e986173]
+  - @cotal-ai/core@0.46.0
+  - @cotal-ai/cli@0.46.0
+  - @cotal-ai/manager@0.46.0
+  - @cotal-ai/connector-core@0.46.0
+  - @cotal-ai/workspace@0.46.0
+  - @cotal-ai/runtime@0.46.0
+  - @cotal-ai/auth@0.46.0
+  - @cotal-ai/delivery@0.46.0
+
+## 0.45.0
+
+### Patch Changes
+
+- Updated dependencies [299a353]
+- Updated dependencies [2a34295]
+- Updated dependencies [38d7bb7]
+  - @cotal-ai/core@0.45.0
+  - @cotal-ai/cli@0.45.0
+  - @cotal-ai/connector-core@0.45.0
+  - @cotal-ai/manager@0.45.0
+  - @cotal-ai/auth@0.45.0
+  - @cotal-ai/delivery@0.45.0
+  - @cotal-ai/runtime@0.45.0
+  - @cotal-ai/workspace@0.45.0
+
+## 0.44.0
+
+### Patch Changes
+
+- 2850a5a: Count a smoke suite as gated only when a CI job actually runs it. join-external live coverage now rides its own live-job step; a duplicate connect classifier that only `pnpm check` reached is gone. Backup live suites stay UNGATED as already-red (#643 / #1285).
+- Updated dependencies [2850a5a]
+- Updated dependencies [ba9af19]
+  - @cotal-ai/cli@0.44.0
+  - @cotal-ai/connector-core@0.44.0
+  - @cotal-ai/manager@0.44.0
+  - @cotal-ai/core@0.44.0
+  - @cotal-ai/workspace@0.44.0
+  - @cotal-ai/runtime@0.44.0
+  - @cotal-ai/delivery@0.44.0
+  - @cotal-ai/auth@0.44.0
+
+## 0.43.0
+
+### Patch Changes
+
+- 6dd4dfb: Fail a commit that adds a suite line to the frozen `ci-suites.txt` list.
+
+  The freeze has been a comment since #1052. A tail append is shard-stable and inventory-green, then conflicts the next PR. GitHub will not build a CONFLICTING PR, so that branch also gets zero CI. New suites go under `ci-suites.d/<sha256(name)>.txt`.
+
+- acacca4: Run the sandbox-down adoption scan in CI, and require the three remaining live `down` wrappers to prove the sandbox held before the destructive verb.
+- Updated dependencies [42b1fce]
+- Updated dependencies [5038519]
+- Updated dependencies [42635d2]
+- Updated dependencies [64d6131]
+- Updated dependencies [d967f76]
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/manager@0.43.0
+  - @cotal-ai/cli@0.43.0
+  - @cotal-ai/connector-core@0.43.0
+  - @cotal-ai/core@0.43.0
+  - @cotal-ai/auth@0.43.0
+  - @cotal-ai/delivery@0.43.0
+  - @cotal-ai/runtime@0.43.0
+  - @cotal-ai/workspace@0.43.0
+
+## 0.42.0
+
+### Minor Changes
+
+- a87709c: Every cotal-lang effect now performs on the mesh: the durable-action group is built end to end and
+  the not-yet-durable seam is gone.
+
+  `spawn` submits a real manager goal and returns the allocated seat's handle, and meters the
+  agent's `permits` (`turns`, `wallClock`; the turn that would exceed one is L4001, and a budget the
+  host cannot meter is refused at spawn); `conclave` opens a scoped sub-team as durable membership
+  rows; `ask` parks schema-checked pauses answered through `cotal run answer` and tells the agent
+  over the turn relay, one relay per attempt carrying the schema, the attempt and the previous
+  refusal, which every connector's intake renders with the answer command; `monitor` registers the
+  handle on its journal entry and `wait(down)` reads a monitored incarnation's death off presence
+  liveness, refusing an agent nobody monitored.
+  `turn` rides a new pull-shaped manager relay: the manager serves `turn` (targeted, the
+  despawn/input reach) plus `turn-pending` and `turn-yield` (self reach, manager contract revision
+  10), holds the payload on the goal-index note, pins the goal to the seat's incarnation, and denies
+  at a goal-bound deadline hold; the seat side (all connectors) pulls pending turns, surfaces them
+  two-phase into host context, auto-yields `done` when the host turn ends, and yields `blocked` or
+  `handoff` through the new `cotal_yield` tool; the run client renders context with pending notices,
+  arms its own pause on the acceptance's deadline as the L4003 authority, watches presence as the
+  L4002 authority (a death the manager marks on the deadline terminal reads the same way), and
+  honors handoffs (L4005/L4004 validation, the `handoffFrom` goal chain); the manager shows a seat
+  one turn at a time. The relay holds on an auth mesh: the agent baseline gains the self-mode
+  `turn-pending` and `turn-yield` rows, the operator seat-write set (`control-caller-admin`, the
+  `admin` capability) gains `turn` beside `input`, and the manager mints the deadline hold's
+  schedule over its serve connection and owner-expires the hold once due instead of reading a
+  fire it holds no grant for. `wait(replied)` observes the run's own turn terminals as a level, and never a
+  turn the run itself ended without an accepted yield. A `spawn` may bind a logical worktree: the
+  validator rejects two literal-worktree spawns in one concurrent scope (L3022, named branch
+  functions included) and the runtime claims a tree before it submits, refusing a second spawn into
+  a tree held by a live seat or by a spawn in flight (L4008), with sequential reuse the moment the
+  holder's presence lapses. A spawn refused at accept is L4000 (L4001 for seat capacity) and one
+  whose seat never came up is L4002; an `ask` whose deadline passes with no conforming record is
+  L4006; a fork copies a spawn that said `onFork: "adopt"` and refuses one that would have to
+  respawn (L5019). The run driver re-issues
+  recorded-but-undischarged cancellations at adoption, so recovery does not wait for completion to
+  release a dead loser's seat, pause, or tree. A migration's `--adopt <handle>` hands the orphaned
+  seat to the edited program's next spawn of that persona, and `--release <handle>` despawns it at
+  commit through the run's own discharge; both name the agent the step spawned, and a spawn that
+  produced none is an orphan like a sleep; the adopting spawn binds the orphaned spawn's goal as
+  its own, so a resume re-reads the seat and a cancellation despawns it. A turn accept the manager
+  cannot finish unwinds to a failed terminal on its bound goal, and a retry of it is refused naming
+  that terminal. The delivery daemon hosts the checkpoint timer writer, so mediated deadlines fire
+  with no suite pump.
+
+### Patch Changes
+
+- Updated dependencies [a87709c]
+  - @cotal-ai/core@0.42.0
+  - @cotal-ai/runtime@0.42.0
+  - @cotal-ai/manager@0.42.0
+  - @cotal-ai/delivery@0.42.0
+  - @cotal-ai/connector-core@0.42.0
+  - @cotal-ai/auth@0.42.0
+  - @cotal-ai/cli@0.42.0
+  - @cotal-ai/workspace@0.42.0
+
+## 0.41.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.4
+- @cotal-ai/workspace@0.41.4
+- @cotal-ai/runtime@0.41.4
+- @cotal-ai/cli@0.41.4
+- @cotal-ai/manager@0.41.4
+- @cotal-ai/delivery@0.41.4
+- @cotal-ai/connector-core@0.41.4
+- @cotal-ai/auth@0.41.4
+
+## 0.41.3
+
+### Patch Changes
+
+- Updated dependencies [436f7d4]
+  - @cotal-ai/core@0.41.3
+  - @cotal-ai/connector-core@0.41.3
+  - @cotal-ai/auth@0.41.3
+  - @cotal-ai/cli@0.41.3
+  - @cotal-ai/delivery@0.41.3
+  - @cotal-ai/manager@0.41.3
+  - @cotal-ai/runtime@0.41.3
+  - @cotal-ai/workspace@0.41.3
+
+## 0.41.2
+
+### Patch Changes
+
+- @cotal-ai/manager@0.41.2
+- @cotal-ai/core@0.41.2
+- @cotal-ai/workspace@0.41.2
+- @cotal-ai/runtime@0.41.2
+- @cotal-ai/cli@0.41.2
+- @cotal-ai/delivery@0.41.2
+- @cotal-ai/connector-core@0.41.2
+- @cotal-ai/auth@0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- a2687ed: Smoke suites launch the CLI through the workspace `node_modules/.bin/tsx` instead of `npx tsx`. From a scratch working directory `npx` resolves `tsx` from the npm cache or the registry rather than the workspace, and the registry install banner lands in the output the suites parse. A guard reddens on any suite that reintroduces the `npx tsx` form.
+- 1eb94b8: The `ps-operator-path` and `presence-ttl-refresh-cli` smoke suites opt their CLI out of the connector seed reconcile, as fifteen sibling suites already do and as `up` does for the daemons it launches. Neither suite exercises the seeder, and on a cold npm cache the reconcile can consume the whole `cotal up` budget the fixtures allow.
+- Updated dependencies [e7687e7]
+- Updated dependencies [80ddc41]
+  - @cotal-ai/manager@0.41.1
+  - @cotal-ai/connector-core@0.41.1
+  - @cotal-ai/core@0.41.1
+  - @cotal-ai/workspace@0.41.1
+  - @cotal-ai/runtime@0.41.1
+  - @cotal-ai/cli@0.41.1
+  - @cotal-ai/delivery@0.41.1
+  - @cotal-ai/auth@0.41.1
+
+## 0.41.0
+
+### Patch Changes
+
+- Updated dependencies [de258fb]
+- Updated dependencies [42d80da]
+- Updated dependencies [dbd7d98]
+- Updated dependencies [96e1d54]
+- Updated dependencies [bac1e00]
+- Updated dependencies [5ec7feb]
+- Updated dependencies [bc2f328]
+- Updated dependencies [7dab05c]
+  - @cotal-ai/core@0.41.0
+  - @cotal-ai/connector-core@0.41.0
+  - @cotal-ai/cli@0.41.0
+  - @cotal-ai/workspace@0.41.0
+  - @cotal-ai/auth@0.41.0
+  - @cotal-ai/delivery@0.41.0
+  - @cotal-ai/manager@0.41.0
+  - @cotal-ai/runtime@0.41.0
+
 ## 0.40.0
 
 ### Patch Changes

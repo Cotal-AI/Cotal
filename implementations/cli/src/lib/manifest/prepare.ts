@@ -34,6 +34,8 @@ export interface AgentWarning {
 export interface PreparedAgent {
   name: string;
   agentType: string;
+  /** Manager-host directory, forwarded without resolving on the deploying machine. */
+  cwd?: string;
   /** Persona file path (or undefined for an inline agent). */
   persona?: string;
   /** Effective values (manifest override ?? persona default). */
@@ -138,6 +140,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
     prepared: {
       name: agent.name,
       agentType: agent.agentType,
+      cwd: agent.cwd,
       persona: agent.persona,
       model,
       variant,

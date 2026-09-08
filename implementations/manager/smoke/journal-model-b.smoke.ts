@@ -55,10 +55,16 @@ c("WRONG-TODAY: the chokepoint itself still exists",
 pending("both commands accept through the journal rail (submission → decision fact → goal bind) and serveSpawnGoal is DELETED");
 
 console.log("\n── WRONG-TODAY (2/2): the reconcile index is written and filtered by the Model-B accept path ──");
-c("WRONG-TODAY: the manager's own serve path writes the goalidx row (`recordGoalIndex`)",
-  count("await recordGoalIndex(") === 1);
-c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances`, an IN-MEMORY map that same path fills",
-  count("this.goalAcceptances.has(ref.goalId)") === 1 && count("this.goalAcceptances.set(") === 1);
+// TWO sites, not one: the spawn/launch chokepoint and the turn relay's serve path both write the
+// row from a live manager's memory. The count pins both so a third such writer is noticed, and
+// the flip has to move both.
+c("WRONG-TODAY: the manager's own serve paths write the goalidx row (`recordGoalIndex`): spawn and turn",
+  count("await recordGoalIndex(") === 2, { sites: count("await recordGoalIndex(") });
+// The sweep's skip reads two in-memory maps now (the turn relay keeps its own twin); both are the
+// same Model-B dependence on a live incarnation's memory, and both go when the flip lands.
+c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances` (and its turn twin), IN-MEMORY maps the serve paths fill",
+  count("this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(entry.ref.goalId)") === 1
+    && count("this.goalAcceptances.set(") === 1);
 pending("the CANONICALIZER writes goalidx create-only BEFORE the bind (step 4a), so the index no longer depends on a live manager's memory");
 
 console.log("\n── THE MECHANISM THAT MUST LIVE — read this before deleting anything ──");

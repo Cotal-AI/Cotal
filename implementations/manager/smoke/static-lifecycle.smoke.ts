@@ -75,6 +75,7 @@ import {
   casStaticSlot,
   recordSlotCredential,
   appendStaticCredentialRow,
+  runStaticTerminal,
 } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";
 
@@ -95,7 +96,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 40;
+const EXPECTED_CHECKS = 43;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -258,6 +259,44 @@ async function plantActiveOrphan(alias: string, actor: string, uid: string, ledg
   }
 }
 
+/** Plant a live static incarnation, latch it to `terminalizing` (optionally with the durable
+ *  `cleanupComplete` marker already set, modelling a crash AFTER cleanup finished but BEFORE the
+ *  `retired` CAS), then drive `runStaticTerminal` as a resume would — counting how many times the
+ *  footprint cleanup hook actually runs. Returns the cleanup-call count and the final slot. */
+async function driveTerminalDirect(
+  alias: string,
+  opts: { preMarkedCleanupComplete: boolean },
+): Promise<{ cleanupCalls: number; slot?: StaticManagedSlotRow }> {
+  const id = newIdentity();
+  const actor = id.id;
+  const uid = mintLifecycleUid();
+  const opId = retireOpId(uid);
+  let cleanupCalls = 0;
+  const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+    lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias },
+  });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const kvm = new Kvm(nc);
+    const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
+    await activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor, lifecycleUid: uid, managerInstance: "smoke", ownerInstanceId: M.managerInstanceId });
+    const credentialId = `cred-${alias}`;
+    await recordSlotCredential(t, DEV_OWNER, alias, uid, credentialId);
+    await appendStaticCredentialRow(t, { lifecycleUid: uid, credentialId, holderPrincipal: principalKey(DEV_OWNER, actor).key, exp: Math.floor(Date.now() / 1000) + 3600 });
+    // Latch the crashed-terminal shape: `terminalizing`, with the marker pre-set for the world-3 case.
+    const planted = await readStaticSlot(t, DEV_OWNER, alias);
+    await casStaticSlot(t, { ...planted!.row, phase: "terminalizing", ...(opts.preMarkedCleanupComplete ? { cleanupComplete: true } : {}) }, planted!.revision);
+    await runStaticTerminal(
+      t,
+      { owner: DEV_OWNER, alias, actor, lifecycleUid: uid, opId, managerInstance: "smoke", managerProcessUid: "smoke-proc" },
+      { cleanup: async () => { cleanupCalls++; }, evict: async (principal) => ({ principal, kicked: 1, remaining: 0, scanComplete: true, verifiedGone: true }), log: () => {} },
+    );
+    return { cleanupCalls, slot: (await readStaticSlot(t, DEV_OWNER, alias))?.row };
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
 try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
@@ -409,6 +448,20 @@ try {
   check("POST-ADOPTION sweep terminalized the unadopted active orphan (F3 resume-path fix)", rSettled);
   check("the resume-path orphan's principal now REFUSES at the control surface (F5(a) closed on resume)", typeof M.lifecycleMembershipRefusal(principalKey(DEV_OWNER, resOrphanId.id).key) === "string");
   check("worker B STILL survived both resume-path sweeps (live membership adopted)", M.agents.get("worker")?.lifecycleUid === uidB && (await readSlotOnly("worker"))?.phase === "active");
+
+  // ── 7c. #1274 durable cleanup-complete marker (crash between cleanup and the retired CAS) ──
+  // A `terminalizing` row whose `cleanupComplete` is already set models world 3: cleanup finished,
+  // the process died before the `retired` CAS. A resumed terminal must READ that marker and NOT
+  // re-run cleanup, yet still reach `retired`. A `terminalizing` row WITHOUT the marker is worlds
+  // 1/2 (cleanup never ran / in flight): the resume MUST re-run the idempotent cleanup, and on
+  // success the row it settles must carry the marker (written BEFORE the retired CAS).
+  const markedResume = await driveTerminalDirect("resumemarked", { preMarkedCleanupComplete: true });
+  check("a resume over a cleanupComplete=true terminalizing slot SKIPS cleanup (world 3: already done)", markedResume.cleanupCalls === 0, markedResume.cleanupCalls);
+  check("that resume still reaches RETIRED (the marker recovers, it does not wedge)", markedResume.slot?.phase === "retired" && markedResume.slot?.cleanupComplete === true, markedResume.slot);
+  const plainResume = await driveTerminalDirect("resumeplain", { preMarkedCleanupComplete: false });
+  check("a resume over an UNMARKED terminalizing slot re-runs cleanup once, then RETIRES marking cleanup complete (write before the retired CAS)",
+    plainResume.cleanupCalls === 1 && plainResume.slot?.phase === "retired" && plainResume.slot?.cleanupComplete === true,
+    { calls: plainResume.cleanupCalls, slot: plainResume.slot });
 
   // ── 8. F2: endpointCapabilities refusal ────────────────────────────────────
   const spawnEp = await mgr.startAgent({ name: "epcap", agent: "smoke-sl", ...({ endpointCapabilities: [{ endpoint: "x", verb: "call" }] } as Record<string, unknown>) });

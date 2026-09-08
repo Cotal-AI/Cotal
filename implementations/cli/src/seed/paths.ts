@@ -84,6 +84,67 @@ export function seedStorePath(generation: string, name: string): string {
   return join(seedStoreDir(), generation, name);
 }
 
+export type SeedWriterKind = "released" | "checkout" | "unknown";
+
+/**
+ * Who is about to mutate the operator-global seed store. Fail closed: a released
+ * install or an npx unpack is allowed; a source checkout is refused; anything
+ * that cannot be proven is `unknown` and is also refused. A missing answer is
+ * never treated as a released install.
+ */
+export function seedWriterKind(): SeedWriterKind {
+  let entry: string;
+  try {
+    entry = entryScript();
+  } catch {
+    return "unknown";
+  }
+  if (/[/\\]_npx[/\\]/.test(entry)) return "released";
+  let root: string;
+  try {
+    root = cliPackageRoot();
+  } catch {
+    return "unknown";
+  }
+  let pkgName: unknown;
+  try {
+    pkgName = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown }).name;
+  } catch {
+    return "unknown";
+  }
+  if (pkgName !== "cotal-ai") return "unknown";
+  const parent = dirname(root);
+  if (
+    basename(root) === "bin" &&
+    (existsSync(join(parent, "implementations")) || existsSync(join(parent, "pnpm-workspace.yaml")))
+  ) {
+    return "checkout";
+  }
+  if (basename(root) === "bin") return "unknown";
+  return "released";
+}
+
+/**
+ * Refuse a checkout (or unproven) writer before it can copy payloads, stamp a
+ * generation, or GC an installed one. `COTAL_ALLOW_CHECKOUT_SEED=1` is the
+ * deliberate opt-in for a sandboxed release test.
+ */
+export function assertReleasedSeedWriter(generation: string, action: string): void {
+  if (process.env.COTAL_ALLOW_CHECKOUT_SEED === "1") return;
+  const kind = seedWriterKind();
+  if (kind === "released") return;
+  let entry: string;
+  try {
+    entry = entryScript();
+  } catch {
+    entry = process.argv[1] ?? "(no entry)";
+  }
+  const origin = kind === "checkout" ? "a source checkout" : "an unproven CLI entry";
+  throw new Error(
+    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store.`,
+  );
+}
+
 /** Resolve package-manager bin symlinks to the exact CLI entry this process is running. */
 export function entryScript(): string {
   const entry = process.argv[1];

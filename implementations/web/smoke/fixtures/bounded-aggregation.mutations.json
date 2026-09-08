@@ -6,35 +6,28 @@
       "file": "implementations/web/src/web.ts",
       "find": "        if (i >= sources.length || expired) return;\n        try {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;",
       "replace": "        if (i >= sources.length) return;\n        try {\n          const r = await sources[i].read(clock.signal);\n          settled[i] = r;",
-      "expectRed": "2.2 and it answers inside its own deadline"
+      "expectRed": "4.13 cancellation keeps the deadline response partial and named"
     },
     {
       "name": "B2 the page stops saying it is short, so a partial read is indistinguishable from a complete one and the dashboard draws a space that looks emptier than it is",
       "file": "implementations/web/src/web.ts",
       "find": "      partial: missing.length > 0,\n",
       "replace": "      partial: false,\n",
-      "expectRed": "2.3 the answer says it is PARTIAL rather than looking complete"
+      "expectRed": "4.3 the page is marked partial because of it"
     },
     {
-      "name": "B3 the missing sources stop being NAMED, leaving a count that tells a reader something is gone and not what, which on this dashboard is the difference between one slow channel and an empty space",
+      "name": "B3 the missing sources stop being NAMED, leaving a count that tells a reader something is gone and not what, which on this dashboard is the difference between one half of the feed being late and an empty space",
       "file": "implementations/web/src/web.ts",
       "find": "      if (r === LATE) missing.push(sources[i].name);\n",
       "replace": "      if (r === LATE) missing.push(\"a source\");\n",
-      "expectRed": "2.6 the names are the sources, not a count dressed as one"
-    },
-    {
-      "name": "B4 the pool is restored to the unbounded fan-out that shipped: every source starts at once over one saturated connection, the bytes are spread over reads that all miss the deadline together, and almost nothing completes",
-      "file": "implementations/web/src/web.ts",
-      "find": "    await Promise.all(Array.from({ length: Math.min(concurrency, sources.length) }, worker));",
-      "replace": "    await Promise.all(Array.from({ length: sources.length }, worker));",
-      "expectRed": "3.1 the bounded pool reads MORE sources than starting every source at once"
+      "expectRed": "4.2 the failed source is named missing"
     },
     {
       "name": "B5 a failing source takes the whole page with it again, which is the `Promise.all` shape that turned one channel's rejection into the route's 500 while every channel that had already answered was discarded",
       "file": "implementations/web/src/web.ts",
       "find": "        try {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;\n        } catch {",
       "replace": "        {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;\n        }\n        if (false) {",
-      "expectRed": "4.0 one failing channel does not make the whole aggregation throw"
+      "expectRed": "4.0 one failing source does not make the whole aggregation throw"
     },
     {
       "name": "B6 the dms route's deadline is dropped: an inner history walk that never ends holds the browser until its own abort instead of returning the route's named refusal",
@@ -51,7 +44,7 @@
       "expectRed": "5.5 the never-ending refusal names the deadline it exceeded"
     },
     {
-      "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a broken channel is the one person never told",
+      "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a half of the feed that refused is the one person never told",
       "file": "implementations/web/src/web.ts",
       "find": "      if (page.partial)\n        console.error(c.yellow(`~ ${req.method ?? \"GET\"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(\", \")}`));\n",
       "replace": "",
@@ -85,6 +78,27 @@
       "replace": "    if (writing || queued.length === 0 || to.destroyed) return;",
       "expectRed": "slow-link serialization arms only one chunk callback at a time",
       "command": "pnpm smoke:web-proxy-order"
+    },
+    {
+      "name": "B13 the link counter goes back to incrementing on ARRIVAL at the proxy, so a truncated arm reports chunks that were queued and never crossed the modelled link, inflating the very shape this change argues against",
+      "file": "implementations/web/smoke/activity-read-cost.smoke.ts",
+      "find": "    const toBroker = throttledWriter(upstream, opts.latency, undefined, onUp);\n    const toClient = throttledWriter(client, opts.latency, undefined,\n      (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; });\n    client.on(\"data\", (chunk: Buffer) => { toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { toClient.push(chunk); });",
+      "replace": "    const toBroker = throttledWriter(upstream, opts.latency);\n    const toClient = throttledWriter(client, opts.latency);\n    client.on(\"data\", (chunk: Buffer) => { onUp(chunk); toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; toClient.push(chunk); });",
+      "expectRed": "4.7 the link counter reports what CROSSED the link, not what queued at the proxy",
+      "cell": "4.7",
+      "command": "pnpm smoke:web-activity-read-cost",
+      "completionMarker": "activity-read-cost smoke:",
+      "note": "Restores the pre-fix shape exactly: counting in the `data` handlers, before the throttled push. 4.7 truncates an arm mid-queue and requires the counter not to exceed what the receiving socket observed; under arrival counting it reports the full pushed total while the socket saw a fraction, so the comparison fails. 4.8 is the control that the truncation stranded bytes at all, so 4.7 cannot pass on an empty window."
+    },
+    {
+      "name": "B14 the DOWN link counter goes back to incrementing on ARRIVAL from the broker, so a truncated arm reports bytes that queued at the proxy and never crossed the link - and bytesDown is the column the Measured tables actually publish, which the up-path cell 4.7 does not guard",
+      "file": "implementations/web/smoke/activity-read-cost.smoke.ts",
+      "find": "    const toClient = throttledWriter(client, opts.latency, undefined,\n      (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; });\n    client.on(\"data\", (chunk: Buffer) => { toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { toClient.push(chunk); });",
+      "replace": "    const toClient = throttledWriter(client, opts.latency, undefined);\n    client.on(\"data\", (chunk: Buffer) => { toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; toClient.push(chunk); });",
+      "expectRed": "4.9 the DOWN counter reports what CROSSED the link, not what queued at the proxy",
+      "command": "pnpm smoke:web-activity-read-cost",
+      "completionMarker": "activity-read-cost smoke:",
+      "note": "Reverts ONLY the down counter. 4.7 reads local.bytesUp alone and stays green under this mutation, which is why 4.9 exists."
     }
   ]
 }

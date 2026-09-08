@@ -32,6 +32,7 @@ import { pickFreePort } from "./_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "./_ephemeral-only.js";
 import { foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 // FENCE LAYER 4, FIRST STATEMENT OF THE SUITE. This operator environment carries the LIVE broker in
 // COTAL_SERVERS (and live COTAL_CREDS / COTAL_SPACE). This suite spawns the real `cotal` binary,
@@ -72,9 +73,12 @@ const check = (n: string, v: boolean, x?: unknown) => { v ? (pass++, console.log
 type Run = { status: number | null; out: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
-    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const };
+    // This suite grades presence TTL refresh across restarts and never exercises the connector
+    // seeder, so its CLI opts out of the seed reconcile the way `up` does for the daemons it
+    // launches. On a cold npm cache that reconcile can spend the whole `cotal up` budget (#1245).
+    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] as const };
     assertSmokeSandboxDown(sandbox, args, options);
-    const child = spawn("npx", ["tsx", BIN, ...args], options);
+    const child = spawn(TSX, [BIN, ...args], options);
     let out = "", timedOut = false, settled = false, exited = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null, drain: NodeJS.Timeout | undefined;
     const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(cmd); clearTimeout(drain); res(r); };

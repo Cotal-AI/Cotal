@@ -1,0 +1,93 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-conclave.smoke.ts",
+  "guard": "the mesh handler's durable conclave recovers by derivation: the channel derives from the step's request id, the plan is bound before a row is written, a re-entered open converges from the recorded plan alone, the close releases exactly what the open created, an absent member is the effect's own catchable L4002, and a cancelled conclave's membership is released by the discharge",
+  "command": "pnpm smoke:runtime-mesh-conclave",
+  "completionMarker": "mesh-conclave.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-conclave.json",
+  "why": [
+    "Lane F durable-actions step 3 (2026-09-02): `conclave` leaves the not-yet-durable seam and",
+    "performs as durable membership rows over core's channel and members registries. Each recovery",
+    "and permission half has a mutant: the resume short-circuit that makes recovery presence-free",
+    "(MC1), the incarnation pin in presence resolution (MC2), the joined-by-us discrimination that",
+    "protects a resident membership (MC3), the close's release (MC4), the discharge arm for a",
+    "cancelled subtree (MC5), the minted registry row's teardown (MC6), the catchable L4002 class",
+    "(MC7), and the re-execute guard that keeps a landed row's join cursor still (MC8).",
+    "",
+    "All mutants live in ../src/mesh-handler.ts, imported by the suite through the relative source",
+    "path — no build sits between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "a re-entered open ignores the recorded plan and re-plans from the world",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    let plan: ConclavePlan;\n    if (isConclavePlan(ctx.resume)) {\n      plan = ctx.resume;\n    } else {",
+      "replace": "    let plan: ConclavePlan;\n    if (false) {\n      plan = ctx.resume as never;\n    } else {",
+      "expectRed": "the re-entered open returns the same channel with the member's presence gone",
+      "cell": "the re-entered open returns the same channel with the member's presence gone",
+      "note": "The recovery contract inverted: a resume re-resolves presence instead of executing the recorded plan, so a member that died since the crash makes the re-entry fail where the plan would have converged. Measured 2026-09-02: exactly one red (the re-open rejects with the L4002 the plan exists to avoid); 38 passed."
+    },
+    {
+      "name": "presence resolution matches the name alone, not the incarnation",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  const matches = rows.filter((p) => p.card?.name === name && p.lifecycleUid === uid && typeof p.card?.id === \"string\");",
+      "replace": "  const matches = rows.filter((p) => p.card?.name === name && typeof p.card?.id === \"string\");",
+      "expectRed": "a failed resolve bound no plan and wrote no row",
+      "cell": "a failed resolve bound no plan and wrote no row",
+      "note": "The handle pins one lifecycle; matching the name alone joins whatever seat currently wears it — a different incarnation than the run holds. Measured 2026-09-02: two reds (the stale-uid member resolves instead of failing L4002, and a row is written for it); 37 passed."
+    },
+    {
+      "name": "every member is planned joined-by-us, residents included",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,\n          joined: !open,",
+      "replace": "          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,\n          joined: true,",
+      "expectRed": "the close left the resident's membership open at its own generation",
+      "cell": "the close left the resident's membership open at its own generation",
+      "note": "The discrimination dropped: a pre-existing membership on a pinned channel is claimed by the conclave and evicted at close — a durable membership the run merely borrowed, destroyed. Measured 2026-09-02: two reds (the plan claims the resident, and the close tombstones its generation-3 row); 37 passed."
+    },
+    {
+      "name": "the close releases nothing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  private async releaseConclave(plan: ConclavePlan): Promise<void> {\n    const joined = plan.members.filter((m) => m.joined);",
+      "replace": "  private async releaseConclave(plan: ConclavePlan): Promise<void> {\n    const joined: ConclavePlanMember[] = [];",
+      "expectRed": "both membership rows were committed and then tombstoned by the close",
+      "cell": "both membership rows were committed and then tombstoned by the close",
+      "note": "\"Has them leave\" removed: every conclave leaves its members durably joined forever. Measured 2026-09-02: six reds across the close and discharge blocks (both cells of block 1, block 2's close, block 3's visitor, block 5's discharge, block 7's re-entered close); 33 passed."
+    },
+    {
+      "name": "the discharge skips conclave entries",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (e.kind === \"conclave\") {\n        await this.dischargeConclave(e);\n        continue;\n      }",
+      "replace": "      if (e.kind === \"conclave\") {\n        continue;\n      }",
+      "expectRed": "the discharge tombstoned the loser's membership row",
+      "cell": "the discharge tombstoned the loser's membership row",
+      "note": "Spec §7.5's recovery path removed: a cancelled conclave never closes itself, so with no discharge arm its membership lives on with nobody in the room. Measured 2026-09-02: two reds (the loser's row stays open and the minted registry row survives); 37 passed."
+    },
+    {
+      "name": "a minted channel's registry row is never torn down",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (plan.registered) {\n      await (await this.channelRegistry()).delete(plan.channel);\n    }",
+      "replace": "    if (false) {\n      await (await this.channelRegistry()).delete(plan.channel);\n    }",
+      "expectRed": "the minted channel's registry row is deleted by the close",
+      "cell": "the minted channel's registry row is deleted by the close",
+      "note": "Every conclave leaks one registry row into the operator surface, per step, per run, forever. Measured 2026-09-02: three reds (blocks 1, 5 and 6's registry cells); 36 passed."
+    },
+    {
+      "name": "an absent member loses its catchable class",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  if (matches.length === 0)\n    throw new EffectError(\"L4002\", \"conclave\",\n      `conclave member \"${agent}\" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);",
+      "replace": "  if (matches.length === 0)\n    throw new Error(\n      `conclave member \"${agent}\" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);",
+      "expectRed": "the entry settles as the conclave effect's own catchable L4002",
+      "cell": "the entry settles as the conclave effect's own catchable L4002",
+      "note": "The refusal thrown raw: the journal records a generic L4000 scope fault, so a program acting on e.code reads 'the handler broke' where the mesh said 'this agent is down'. Measured 2026-09-02: exactly one red with the recorded L4000 in the transcript; 38 passed."
+    },
+    {
+      "name": "a re-execute recommits landed rows with a fresh join cursor",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);\n      if (existing !== undefined && existing.record.generation >= m.generation) continue;",
+      "replace": "      const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);\n      if (false) continue;\n      void existing;",
+      "expectRed": "the landed row is untouched: same join cursor, same generation",
+      "cell": "the landed row is untouched: same join cursor, same generation",
+      "note": "The idempotency guard dropped: a re-entered open rolls a landed row's join cursor forward to the current frontier, erasing the member's eligibility for everything said in the room while the host was down. Measured 2026-09-02: exactly one red; 38 passed."
+    }
+  ]
+}

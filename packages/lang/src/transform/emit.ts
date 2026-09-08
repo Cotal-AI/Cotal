@@ -333,17 +333,36 @@ class Emitter {
     // never terminated and the run died on the step budget.
     const first = this.temp();
     const decls = (init.declarations as AnyNode[]) ?? [];
+    // ONE CARRIER PER BOUND NAME, not per declarator. `for (let [i] = [0]; ...)` binds a pattern,
+    // and the per-iteration copy copies the VALUES the pattern bound, one slot each. Refusing the
+    // pattern outright threw a raw uncoded Error out of the transform for a program the validator
+    // and the walker both accept, which is a v2-only crash on valid source.
     const carriers: { readonly carrier: string; readonly id: AnyNode }[] = [];
+    const perDecl: AnyNode[][] = [];
     for (const d of decls) {
-      const id = d.id as AnyNode;
-      if (id.type !== "Identifier") throw new Error("transform: a per-iteration `for (let ...)` head takes a name, not a pattern");
-      carriers.push({ carrier: this.temp(), id });
+      const names = declaredNames(d.id as AnyNode);
+      perDecl.push(names);
+      for (const id of names) carriers.push({ carrier: this.temp(), id });
     }
 
     let head = `${first} = true;\n`;
+    let taken = 0;
     for (let i = 0; i < decls.length; i += 1) {
       const d = decls[i] as AnyNode;
-      head += `${(carriers[i] as { carrier: string }).carrier} = ${d.init === null || d.init === undefined ? VOID : this.expr(d.init as AnyNode)};\n`;
+      const id = d.id as AnyNode;
+      const value = d.init === null || d.init === undefined ? VOID : this.expr(d.init as AnyNode);
+      const names = perDecl[i] as AnyNode[];
+      if (id.type === "Identifier") {
+        head += `${(carriers[taken] as { carrier: string }).carrier} = ${value};\n`;
+      } else {
+        // The pattern is bound ONCE, in a block of its own so its names cannot collide with the
+        // per-iteration bindings the loop body opens, and each name it bound is read into its slot.
+        let seed = this.bindPattern(id, value, "let");
+        for (let k = 0; k < names.length; k += 1)
+          seed += `${(carriers[taken + k] as { carrier: string }).carrier} = ${this.readName(names[k] as AnyNode)};\n`;
+        head += `{\n${seed}}\n`;
+      }
+      taken += names.length;
     }
     let open = "";
     let close = "";

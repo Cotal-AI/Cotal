@@ -42,6 +42,7 @@ import { putSpaceAuth, saveManagerInstanceIdentity, workspaceSecretStore } from 
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION: this drives a command that revokes credentials and evicts connections. Refuse the
@@ -117,13 +118,22 @@ let daemon: ReturnType<typeof spawn> | undefined;
 let poisonDaemon: ReturnType<typeof spawn> | undefined;
 const holderConns: NatsConnection[] = [];
 const execConns: NatsConnection[] = [];
+const childEnv = {
+  ...process.env,
+  COTAL_SERVER: "",
+  COTAL_SERVERS: "",
+  COTAL_CREDS: "",
+  NATS_URL: "",
+  XDG_CONFIG_HOME: join(dir, "xdg"),
+  COTAL_SKIP_CONNECTOR_SEED: "1",
+};
 
 /** Drive the REAL command, from the seeded root, and hand back what an operator would see. */
 const runCli = (args: string[]): { code: number | null; out: string; err: string } => {
-  const r = spawnSync("npx", ["tsx", join(REPO, "bin", "cotal.ts"), ...args], {
+  const r = spawnSync(TSX, [join(REPO, "bin", "cotal.ts"), ...args], {
     cwd: ROOT, encoding: "utf8", timeout: 120_000,
     // Scrubbed: a live ambient broker/creds must never reach a command this smoke drives.
-    env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+    env: childEnv,
   });
   return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
 };
@@ -220,9 +230,9 @@ try {
     writeFileSync(targetDeliveryCreds, await mintCreds(auth, newIdentity(), "delivery"));
 
     let poisonLog = "";
-    poisonDaemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--creds", targetDeliveryCreds], {
+    poisonDaemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--creds", targetDeliveryCreds], {
       cwd: FOREIGN_ROOT, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+      env: childEnv,
     });
     poisonDaemon.stdout?.on("data", (b) => { poisonLog += String(b); });
     poisonDaemon.stderr?.on("data", (b) => { poisonLog += String(b); });
@@ -234,9 +244,9 @@ try {
     check("POISONED LEASE: account A with account B root exits before holding lease.0",
       poisonExited && poisonLog.includes(auth.account.pub) && poisonLog.includes(foreignAuth.account.pub), poisonLog.slice(-1200));
 
-    daemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
+    daemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
       cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+      env: childEnv,
     });
     let daemonLog = "";
     daemon.stdout?.on("data", (b) => { daemonLog += String(b); });
@@ -247,9 +257,9 @@ try {
     if (!ready) {
       if (poisonDaemon.exitCode === null && poisonDaemon.signalCode === null) { poisonDaemon.kill("SIGKILL"); await awaitExit(poisonDaemon); }
       await wait(35_000);
-      daemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
+      daemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
         cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+        env: childEnv,
       });
       daemonLog = "";
       daemon.stdout?.on("data", (b) => { daemonLog += String(b); });

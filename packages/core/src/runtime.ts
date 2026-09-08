@@ -5,6 +5,16 @@ import type { LaunchSpec } from "./connector.js";
  *  name is contributed by a {@link RuntimeProvider}. */
 export type RuntimeKind = string;
 
+/**
+ * A runtime-owned durable handle reference. Its contents are intentionally opaque to the manager
+ * and to the mesh protocol: a runtime may use a local socket name, a provider resource id, or
+ * another private capability to identify a handle it can adopt.
+ */
+export interface RuntimeReference {
+  readonly kind: RuntimeKind;
+  readonly id: string;
+}
+
 /** A live attach onto a running agent's terminal — the stream `cotal attach`
  *  (and, later, the browser console) consumes. PTY frames flow here directly,
  *  never over the mesh. */
@@ -30,6 +40,8 @@ export interface AttachSession {
 export interface AgentHandle {
   readonly name: string;
   readonly kind: RuntimeKind;
+  /** A local durable reference for a runtime that can later adopt this handle. */
+  readonly reference?: RuntimeReference;
   /** OS pid of the spawned child, when the backend owns a real process (pty/host); absent for
    *  backends that don't (tmux/cmux attach to an externally-owned process). */
   readonly pid?: number;
@@ -73,6 +85,13 @@ export interface AgentHandle {
 export interface Runtime {
   readonly kind: RuntimeKind;
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
+  /**
+   * Reattach this runtime to a handle it created previously. This is a local runtime operation,
+   * not a mesh operation. OPTIONAL, and absent means REFUSE, never spawn a replacement: a runtime
+   * without durable custody omits it, and the caller must throw naming that runtime. A silent skip
+   * here would drop custody on the floor.
+   */
+  adopt?(reference: RuntimeReference): AgentHandle;
 }
 
 /**

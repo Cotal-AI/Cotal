@@ -24,6 +24,7 @@ const LaunchAgentSchema = z.strictObject({
   name: z.string().min(1),
   agent: z.string().regex(TOKEN, "agent must be a connector token ([A-Za-z0-9_-])"),
   role: z.string().regex(TOKEN, "role must be a route-safe token ([A-Za-z0-9_-])").optional(),
+  cwd: z.string().min(1).refine((s) => !s.includes("\0"), "cwd must not contain a NUL byte").optional(),
   model: z.string().optional(),
   variant: z.string().min(1).optional(),
   launchOptions: z.record(z.string(), z.unknown()).optional(),
@@ -123,7 +124,7 @@ export function launchSpecForRun(root: string, runId: string): MeshLaunchSpec {
 // deliberately NOT accepted from a manifest: a hand-editable file must not be what mints an
 // authority-root agent. An unknown capability is inert downstream, so reject it at the boundary
 // rather than carry a no-op grant.
-const isKnownCapability = (c: string): boolean => c === "spawn" || /^role:[A-Za-z0-9_-]+$/.test(c);
+const isKnownCapability = (c: string): boolean => c === "spawn" || c === "run" || /^role:[A-Za-z0-9_-]+$/.test(c);
 
 /** Re-enforce the v1 manifest's policy constraints at the manager boundary so a hand-edited/malicious
  *  launch spec can't smuggle in what the CLI schema would reject: concrete channels only (no wildcard
@@ -143,7 +144,7 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
   const missing = a.subscribe.filter((c) => !a.allowSubscribe.includes(c));
   if (missing.length) throw new Error(`${where}: subscribe [${missing.join(", ")}] not within allowSubscribe`);
   for (const cap of a.capabilities ?? [])
-    if (!isKnownCapability(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: spawn, role:<r>)`);
+    if (!isKnownCapability(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: spawn, run, role:<r>)`);
 }
 
 /** Materialize one resolved agent's persona to a transient file the connector reads, and return its
@@ -179,6 +180,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
 export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, owner?: string, runId?: string): {
   name: string;
   agent: string;
+  cwd?: string;
   role?: string;
   model?: string;
   variant?: string;
@@ -190,6 +192,7 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, o
   return {
     name: a.name,
     agent: a.agent,
+    cwd: a.cwd,
     role: a.role,
     model: a.model,
     variant: a.variant,

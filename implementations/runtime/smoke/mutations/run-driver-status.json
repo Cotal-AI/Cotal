@@ -1,0 +1,45 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "guard": "The driver's status writes around the activation fence: the revision it pins is read AFTER it wins the run, a lost CAS on the first note is a takeover and not a crash, a lost CAS on a terminal write never rewrites the outcome the journal already holds, and a resume with no record distinguishes a run that was never journalled from one activated and never pinned.",
+  "command": "pnpm smoke:runtime-run-driver",
+  "completionMarker": "run-driver.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-driver-status.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "the pinned status revision is read before the activation fence",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  statusRevision = activated.status?.revision;",
+      "replace": "  statusRevision = record?.status?.revision;",
+      "expectRed": "a takeover whose status revision moved before its first write still resumes: the revision is read on the far side of the fence",
+      "cell": "a takeover whose status revision moved before its first write still resumes: the revision is read on the far side of the fence",
+      "note": "A driver that discovers it lost writes its own `released` on the way out, which bumps the status revision. A taker-over that pinned the revision it read BEFORE activating then loses its first CAS and throws out of the try, past the outcome contract, as a raw exception from a legitimate takeover."
+    },
+    {
+      "name": "a terminal status write that loses its CAS throws over the outcome",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    await noteFinal(req, \"completed\", appender.journalHigh, specRevision, statusRevision);",
+      "replace": "    await note(req, \"completed\", appender.journalHigh, specRevision, statusRevision);",
+      "expectRed": "a completion whose status write lost its CAS is still reported as the completion it was",
+      "cell": "a completion whose status write lost its CAS is still reported as the completion it was",
+      "note": "The journal is the authority and already holds the outcome by the time this write runs. A throw here converts a run that COMPLETED into an exception out of the driver, and the caller learns nothing about the completion that actually happened."
+    },
+    {
+      "name": "a resume with no record always reads as a lost journal",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  if (!journalled) return new RunNotResumable(req.runId, wfjSubject(req.space, req.runId));",
+      "replace": "  return new RunNotResumable(req.runId, wfjSubject(req.space, req.runId));",
+      "expectRed": "a run activated but never pinned is released, naming the window it died in rather than a lost journal",
+      "cell": "a run activated but never pinned is released, naming the window it died in rather than a lost journal",
+      "note": "A run whose journal holds an activation and whose record was never written died in the window between winning the run and pinning it. Telling the operator its journal is gone points them at a stream that is right there."
+    },
+    {
+      "name": "a takeover that loses the run inside its adoption escapes drive() as a raw throw",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    if (e instanceof JournalAppendRejected || isNotOurs(e)) return { status: \"released\", reason: e as Error };\n    throw e;",
+      "replace": "    throw e;",
+      "expectRed": "a takeover whose adoption is refused by the journal is RELEASED, not thrown out of drive()",
+      "cell": "a takeover whose adoption is refused by the journal is RELEASED, not thrown out of drive()",
+      "note": "adopt and dischargeCancellations run on the far side of the activation and can lose the run the same way the engine can. Both used to sit in no try at all, so a legitimate takeover between the activation and the first note was a crash out of a function whose contract is that losing a run is an answer."
+    }
+  ]
+}

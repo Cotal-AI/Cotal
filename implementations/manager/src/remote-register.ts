@@ -1,10 +1,11 @@
-import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   authorizeServeGrant,
   contractArtifactCanonicalBytes,
+  contractRefToHex,
   contractStoreContext,
+  dialerFor,
   endpointRegistrationBarrier,
   epAuthBucket,
   fetchContractArtifact,
@@ -30,10 +31,16 @@ export async function registerRemoteManagerAuthority(args: {
   instanceId: string;
   serveActor: string;
   prepareCreds: string;
+  /** Whether the registered broker REQUIRES TLS, carried from the mesh record rather than decided
+   *  here. A participant reaches its host through whatever the record says, so this can be a
+   *  `wss://` edge; hardcoding `false` would send the prepare credential to it in the clear. */
+  tlsRequired: boolean;
 }): Promise<{ registrationRevision: number; processEpoch: number; serveGrant: Awaited<ReturnType<typeof authorizeServeGrant>> }> {
-  const nc = await connect({
+  // The transport follows the RECORDED URL: a remote broker is commonly published through an HTTPS
+  // edge, and the raw node transport refuses `ws://`/`wss://` outright instead of dialing it.
+  const nc = await dialerFor(args.server)({
     servers: args.server,
-    ...standaloneConnectOpts({ creds: args.prepareCreds, tls: false }),
+    ...standaloneConnectOpts({ creds: args.prepareCreds, tls: args.tlsRequired }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -45,7 +52,8 @@ export async function registerRemoteManagerAuthority(args: {
     const all = [...managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];
     for (const value of all) await publishContractArtifact(store, contractArtifactCanonicalBytes(value));
     const readClusterArtifact = async (digest: string): Promise<unknown> => {
-      const bytes = await fetchContractArtifact(store, digest);
+      // `clusterDigests` rows are `sha256:<hex>` references; the store is keyed by the BARE hex.
+      const bytes = await fetchContractArtifact(store, contractRefToHex(digest));
       return bytes ? JSON.parse(new TextDecoder().decode(bytes)) : undefined;
     };
     const principal = `${args.owner}.${args.serveActor}`;

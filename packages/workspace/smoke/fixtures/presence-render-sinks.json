@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 317,
+    "total": 324,
     "honest-text": 33,
     "presence-only-glyph/count": 41,
-    "command-ack": 8,
-    "non-render/control": 235
+    "command-ack": 10,
+    "non-render/control": 240
   },
   "renderers": [
     {
@@ -45,7 +45,21 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "\"idle\"",
+      "anchor": "tatus: PresenceStatus = \"idle\";\n  private _attention: ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "\"working\" && status === \"idle\") this.onTurnBoundary();",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -222,6 +236,27 @@
       "anchor": "`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : \"\"}).`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "return r;",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Couldn't yield: ${reply.error ?? \"manager refused\"}`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Turn yielded (${status}${to ? ` \u2192 ${to}` : \"\"}) \u2014 the run continues.`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
@@ -2220,6 +2255,20 @@
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
+      "class": "non-render/control",
+      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
+      "class": "non-render/control",
+      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",

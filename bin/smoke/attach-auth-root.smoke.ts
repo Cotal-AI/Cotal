@@ -72,9 +72,11 @@ const { authDir, divergentCwdAnchor, findCotalRoot, recordMesh, saveSpaceAuth } 
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
 let fail = 0;
+let exitCode = 1;
 const kids: ChildProcess[] = [];
 let releaseBroker: (() => void) | undefined;
 /** A graded cell. It RECORDS rather than throws, so every cell runs and the banner below always
@@ -188,7 +190,7 @@ const cmd = (name: string): Command => {
  *  unset and attach takes its no-terminal path - which still prints the `attached to …` banner cell
  *  C asserts on. */
 async function attachFrom(cwd: string, ms = 25_000): Promise<string> {
-  const p = spawnProc("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", SPACE], {
+  const p = spawnProc(TSX, [BIN, "attach", "--name", SEAT, "--space", SPACE], {
     cwd,
     env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -225,6 +227,7 @@ const detectorSays = (resolvedRoot: string, cwd: string): string => {
 
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
+  console.log("attach-auth-root: first-line");
   // ---- 1. the measurement is only valid in the selected unanchored tree -------------------------
   const walked = findCotalRoot(base);
   must(
@@ -390,9 +393,9 @@ try {
   const credFile = join(base, "raw.creds");
   writeFileSync(credFile, await mintCreds(live, newIdentity(), "control-caller-admin", { lifecycleUid: mintLifecycleUid() }));
   const runCli = (argv: string[]) => {
-    const r = spawnSync("npx", ["tsx", BIN, ...argv], {
+    const r = spawnSync(TSX, [BIN, ...argv], {
       cwd: workBare,
-      env: { ...cleanEnv, COTAL_HOME: home, NO_COLOR: "1" },
+      env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       encoding: "utf8",
       timeout: 120_000,
     });
@@ -422,17 +425,24 @@ try {
   );
   ok(
     "the attached-session subprocess does not reconcile connector payloads before exercising attach",
-    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload)/.test(o)),
+    ![fromFossil, fromBare, fromCorrupt].some((o) =>
+      /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload|✗ refusing to reconcile the operator-global seed store)/.test(o),
+    ),
   );
 
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
-  if (fail) process.exitCode = 1;
+  if (!fail) exitCode = 0;
 } finally {
   // BOUNDED, and the bound is the point: the brokers this file started are killed below, and a
   // manager stop that hangs must not be able to keep that from happening. Measured once: a leaked
   // `nats-server` from this rig outlived its run by half an hour, and the reaper attributes a leak
   // like that to whichever suite was running.
   await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
+  console.log("attach-auth-root: manager-stop-returned");
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   releaseBroker?.();
+  console.log("attach-auth-root: finally-complete");
+  // Manager.stop keeps NATS clients alive after the race returns. That pinned this
+  // process past a green banner until the shard hour cap.
+  process.exit(exitCode);
 }

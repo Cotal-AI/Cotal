@@ -1,0 +1,30 @@
+{
+  "suite": "implementations/manager/smoke/legacy-pty-custody.smoke.ts",
+  "guard": "an isolated legacy manager owns a PTY that ends when the manager dies and exposes no durable runtime reference",
+  "command": "pnpm --filter @cotal-ai/manager... build && pnpm smoke:legacy-pty-custody",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/legacy-pty-custody.json",
+  "why": [
+    "The fixture creates the real current PtyRuntime in one isolated Node process, records the actual manager and counter child pids, then kills only the manager it created. It distinguishes a live process from a zombie through /proc before reporting the red condition.",
+    "Both mutation windows are code-only. The first removes the absence of a durable reference. The second suppresses the manager-death outcome. The named cells prove the fixture is not merely checking a child it never owned."
+  ],
+  "mutations": [
+    {
+      "name": "M1 make the legacy PTY claim a durable reference",
+      "file": "implementations/manager/smoke/legacy-pty-custody.smoke.ts",
+      "find": "hasReference: handle.reference !== undefined",
+      "replace": "hasReference: true",
+      "expectRed": "legacy PTY exposes no durable reference a successor can adopt",
+      "cell": "legacy PTY exposes no durable reference a successor can adopt",
+      "note": "The fixture reads the handle the real current PtyRuntime returned. Reversing this code-only boolean makes the test observe a reference where legacy custody must expose none."
+    },
+    {
+      "name": "M2 suppress the manager-owned PTY death observation",
+      "file": "implementations/manager/smoke/legacy-pty-custody.smoke.ts",
+      "find": "state(ids.childPid) === \"gone\" || state(ids.childPid) === \"Z\"",
+      "replace": "false",
+      "expectRed": "M1 red: legacy manager death ends the manager-owned counter PTY",
+      "cell": "M1 red: legacy manager death ends the manager-owned counter PTY",
+      "note": "The mutation is only the final child-death predicate. The earlier cells still arm the fixture, establish the child live, and prove the actual manager died before this named cell reddens."
+    }
+  ]
+}

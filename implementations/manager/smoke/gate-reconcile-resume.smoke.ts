@@ -149,6 +149,7 @@ async function attempt(
   try {
     return { ok: true as const, report: await reconcileEndpointGate({
       kv, space: SPACE, endpoint: ENDPOINT, instanceId, probeHolder: probe, evict, log: () => {},
+      recordsKv: kv,
     }) };
   } catch (error) {
     if (error instanceof GateReconcileRefused)

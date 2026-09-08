@@ -1,0 +1,3 @@
+# a spawn carrying supervise restarts the process in place until the budget is spent: identity
+# and lifecycle stay, pending turns survive a restart, and a host that cannot relaunch refuses.
+smoke:manager-supervise-restart

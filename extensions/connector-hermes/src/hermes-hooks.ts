@@ -31,7 +31,11 @@ export const hermesHookHandle: HookHandle = async (agent, ev) => {
     switch (event) {
       case "gateway_startup": // gateway up / adapter connected — present and free
       case "on_session_start":
-        await agent.setStatus("idle");
+        // NOT a turn ending. `setStatus` reads working→idle as the seat finishing its turn and
+        // auto-yields `done` for every surfaced run turn; a gateway reconnect or a session start
+        // that lands mid-turn is a lifecycle event, and routing it through the boundary yielded
+        // work the model had not finished (the same defect Claude Code's SessionStart had).
+        await agent.resetStatus("idle");
         return {};
       case "pre_llm_call": // a turn is running the model
         await agent.setStatus("working", pendingTool);

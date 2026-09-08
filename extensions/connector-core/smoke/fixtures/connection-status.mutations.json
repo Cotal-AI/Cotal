@@ -3,13 +3,14 @@
   "guard": "cotal_connection_status reports MeshAgent's live state, and its five states stay distinct",
   "command": "pnpm smoke:connection-status",
   "progressPattern": "  ✓ ",
-  "completionMarker": "SUITE COMPLETE: 15 cells",
+  "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/connection-status.mutations.json",
   "why": [
     "The state a caller acts on is derived from three facts, so each collapse of that derivation gets its own mutation rather than one mutation standing in for the whole getter. A single mutation on connectionState would be killed by whichever cell ran first and would leave the other states ungraded.",
     "M1 and M6 mutate the two liveness getters, which proves the tool reports live MeshAgent state rather than deriving or assuming it. M2 to M4 collapse one state into another, which proves each state is separately observable. M5 mutates the issue scoping, which is the only thing keeping a stopped session's post-mortem from being read as a current fault.",
     "The full predicted kill set, including every exclusion, is recorded in the suite header before this config is run.",
-    "The suite imports connector-core source relatively, so mutation-proof executes the changed source directly and needs no build or afterRestore command."
+    "The suite imports connector-core source relatively, so mutation-proof executes the changed source directly and needs no build or afterRestore command.",
+    "The completion marker carries no cell count on purpose. Each of these suites prints `SUITE COMPLETE: ${ran} cells` and separately refuses a run whose `ran` is not its EXPECTED_CELLS, so a count in the marker duplicates a check the suite already makes and rots the moment a cell is added. It did: a cell landed in the suite, the marker still said 15, and every mutant here graded INCONCLUSIVE for a week because a finished run printed a line the marker could never match."
   ],
   "mutations": [
     {

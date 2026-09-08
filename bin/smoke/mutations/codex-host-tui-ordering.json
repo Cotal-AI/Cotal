@@ -1,0 +1,34 @@
+{
+  "suite": "extensions/connector-codex/smoke/codex-host.smoke.ts",
+  "guard": "the two codex-host cells that count the launch tail's `tui` log line wait for the event that bounds the count before counting, so a scheduling accident cannot read the count before the tail's TUI child has journalled its line (#1280)",
+  "command": "pnpm smoke:codex-host",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/codex-host-tui-ordering.json",
+  "why": [
+    "#1280: two cells counted a `tui` line without ever waiting for it to be written. Both were confirmed to fail live by delaying the tail's TUI-child `tui` write past the point each cell read the count. The fix makes each cell wait on the event that bounds its count, so the ordering the cell assumed is enforced rather than assumed.",
+    "The suite spawns the REAL host (`../src/host-main.ts`) with `tsx`, which loads `host.ts` from source — no build step participates, so a mutation to `host.ts` is read directly by the run and no `command` build/afterRestore is needed.",
+    "BOTH mutations anchor on the SAME code line — the restart tail's `startTui()` that attaches the replacement UI on the new listener — because that single call is what both cells ultimately observe: cell B (tuicrash, earlier in the file) counts its replacement `tui`, and cell A (genpeer, later) counts the recovered launch's one `tui`.",
+    "CELL A asserts an EXACT count (one TUI, not one per generation). Duplicating the restart's `startTui()` makes the recovered launch attach two TUIs, so two `tui` lines are journalled and the exact count is 2. It reddens FIRST at cell A: the cells above it in the genpeer block (`recovered by the restart`) still pass, and cell A is the earliest assertion the extra TUI reaches. This is the property the cell guards — a launch that attaches more than one TUI — and it is exactly the case a `wait for the count to reach 1, then assert === 1` would have blessed when the second `tui` lagged the first.",
+    "CELL B asserts a LOWER bound (a replacement TUI attaches, >= 2). Deleting the restart's `startTui()` suppresses the replacement UI entirely; the tuicrash scenario's initial TUI still attaches (a different, earlier `startTui()`), so the cell above it (`a TUI dying ... does NOT shut the agent down`) passes and cell B is the earliest red — it times out waiting for the second `tui`, which is exactly the timeout-is-the-failure the fix installs.",
+    "The two mutations are opposite edits of one line (duplicate vs delete), so each also serves as the other's proof that the suite reaches this file at runtime."
+  ],
+  "mutations": [
+    {
+      "name": "the recovered launch attaches TWO TUIs (exact-count cell A must fall)",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      startTui();\n      await safeStatus(\"idle\");",
+      "replace": "      startTui();\n      startTui();\n      await safeStatus(\"idle\");",
+      "expectRed": "exactly one launch tail finished: one TUI, not one per generation",
+      "cell": "exactly one launch tail finished: one TUI, not one per generation",
+      "note": "Two `startTui()` calls on the recovered generation journal two `tui` lines. The fix waits for the superseded tail to stand down and settles before counting, so the second TUI is present when the exact count runs and cell A reddens at 2. A `wait for 1 then assert === 1` would have passed the instant the first landed."
+    },
+    {
+      "name": "the replacement TUI is never attached (lower-bound cell B must fall)",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      startTui();\n      await safeStatus(\"idle\");",
+      "replace": "      await safeStatus(\"idle\");",
+      "expectRed": "a replacement TUI is attached to the new listener",
+      "cell": "a replacement TUI is attached to the new listener",
+      "note": "With no replacement `startTui()` the tuicrash scenario never journals a second `tui`. The fix waits for the count to REACH 2 with the timeout as the failure, so the cell times out naming itself instead of reading a stale count and passing."
+    }
+  ]
+}

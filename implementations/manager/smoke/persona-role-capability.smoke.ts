@@ -144,11 +144,19 @@ let provisioner: CotalEndpoint | undefined;
 let definer: MeshAgent | undefined;
 
 let pass = 0;
+let code = 1;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
+
+/** Force-exit cannot drop a named failure: drain the pipe after the assertion has been printed. */
+const drain = (s: NodeJS.WriteStream): Promise<void> =>
+  new Promise((r) => {
+    if (s.writableEnded || s.destroyed) return r();
+    s.write("", () => r());
+  });
 
 try {
   let up = false;
@@ -295,11 +303,24 @@ try {
   );
 
   console.log(`\n  ${pass} checks passed`);
+  code = 0;
+} catch (e) {
+  // process.exit in finally pre-empts Node's uncaught-exception report. Print the named
+  // assertion here so mutation-proof can see it, leave code = 1, then still force-exit
+  // after drain so Manager.stop cannot pin the event loop.
+  console.log(`  ✗ FAIL: ${e instanceof Error ? e.message : String(e)}`);
 } finally {
-  await definer?.stop().catch(() => {});
-  await provisioner?.stop().catch(() => {});
-  await mgr.stop().catch(() => {});
+  await Promise.race([
+    (async () => {
+      await definer?.stop().catch(() => {});
+      await provisioner?.stop().catch(() => {});
+      await mgr.stop().catch(() => {});
+    })(),
+    sleep(10_000),
+  ]);
   if (brokerPid) try { process.kill(brokerPid, "SIGKILL"); } catch { /* already gone */ }
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
+  await Promise.all([drain(process.stdout), drain(process.stderr)]);
+  process.exit(code);
 }

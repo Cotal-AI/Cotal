@@ -28,6 +28,7 @@
 import {
   endpointRegistrationBarrier, parseEndpointGate, epgateKey,
   loadEndpointRepairCursor, saveEndpointRepairCursor, deleteEndpointRepairCursor, repairCursorMatches,
+  completeFrozenRegistrationFromSpec,
   type EndpointGateRow, type EndpointRepairCursor,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
@@ -81,8 +82,10 @@ export interface GateReconcileReport {
   holderPrincipal: string;
   opId: string;
   freezeToken: number;
-  /** The coordinate before the repair; the reopen advances `generation` by one and NOTHING else. */
+  /** The coordinate before the repair. */
   before: { generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number };
+  /** After reopen: generation always +1. A committed spec also adopts its revision and may advance processEpoch. */
+  after: { generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number };
   liveness: HolderLiveness;
   familyRows: number;
   revoked: string[];
@@ -117,8 +120,10 @@ export async function reconcileEndpointGate(opts: {
   probeHolder: (principal: string) => Promise<HolderLiveness>;
   evict: (holderPrincipal: string) => Promise<boolean>;
   log: (line: string) => void;
+  /** Records store: same-op Phase-3 completion reads the spec key. Required so a missing store cannot silently abort-reopen a committed write. */
+  recordsKv: KV;
 }): Promise<GateReconcileReport> {
-  const { kv, space, endpoint, instanceId, log } = opts;
+  const { kv, space, endpoint, instanceId, log, recordsKv } = opts;
 
   // ---- 1. Observe the gate RAW: the freeze token IS the row revision, and the dead op's opId is
   // on the row. Both are needed to complete that op's obligation rather than start a new one.
@@ -223,20 +228,45 @@ export async function reconcileEndpointGate(opts: {
       `repair of ${key} still has ${holdersRemaining.length} unverified holder(s) — the gate stays frozen.`,
     );
 
-  // ---- 4. Token-pinned abort-reopen at the UNCHANGED coordinate. The dead op wrote nothing
-  // forward, so only `generation` advances; the successor's normal takeover then runs end-to-end.
+  // ---- 4. Token-pinned reopen. If the dead op's spec write committed, finish THAT op
+  // (promote + reopen at the committed registrationRevision, advancing processEpoch for a
+  // re-registration). Only a definite no-commit abort-reopens at the unchanged coordinate.
   const reopenedAtGeneration = row.generation + 1;
-  const ok = await barrier.reopen(freezeToken, {
-    generation: reopenedAtGeneration,
-    processEpoch: row.processEpoch,
-    registrationRevision: row.registrationRevision,
-    nameAuthorityRevision: row.nameAuthorityRevision,
-  });
-  if (!ok)
-    throw new GateReconcileRefused(
-      "raced",
-      `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`,
-    );
+  let processEpochAfter = row.processEpoch;
+  let registrationRevisionAfter = row.registrationRevision;
+  let finished: Awaited<ReturnType<typeof completeFrozenRegistrationFromSpec>>;
+  try {
+    finished = await completeFrozenRegistrationFromSpec(recordsKv, {
+      endpoint, instanceId, barrier, freezeToken,
+      gate: {
+        generation: row.generation, processEpoch: row.processEpoch,
+        registrationRevision: row.registrationRevision, nameAuthorityRevision: row.nameAuthorityRevision,
+      },
+    });
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e);
+    if (/reopen did not complete|lost its freeze token/.test(msg))
+      throw new GateReconcileRefused("raced", `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`);
+    throw e;
+  }
+  if (finished.completed) {
+    processEpochAfter = finished.processEpoch;
+    registrationRevisionAfter = finished.registrationRevision;
+    log(`same-op spec recovery: committed registrationRevision=${registrationRevisionAfter} processEpoch=${processEpochAfter}`);
+  }
+  if (processEpochAfter === row.processEpoch && registrationRevisionAfter === row.registrationRevision) {
+    const ok = await barrier.reopen(freezeToken, {
+      generation: reopenedAtGeneration,
+      processEpoch: row.processEpoch,
+      registrationRevision: row.registrationRevision,
+      nameAuthorityRevision: row.nameAuthorityRevision,
+    });
+    if (!ok)
+      throw new GateReconcileRefused(
+        "raced",
+        `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`,
+      );
+  }
 
   // The gate is already open, so cleanup cannot be a correctness precondition. Delete with the
   // cursor's own revision; if it fails, retain the row and rely on its exact freeze-token binding.
@@ -251,12 +281,16 @@ export async function reconcileEndpointGate(opts: {
     log(`repair cursor: cleanup retained a safely freeze-bound cursor: ${(e as Error)?.message ?? String(e)}`);
   }
 
-  log(`✓ gate ${key} reopened at generation=${reopenedAtGeneration}, processEpoch unchanged (${row.processEpoch}); family revoked this attempt (${revoked.length}), verify-evicted this attempt (${evicted.length}), durable verified ${cursor.verified.length}/${boundHolders.length}, cursor cleanup ${repairCursorCleanup}`);
+  log(`✓ gate ${key} reopened at generation=${reopenedAtGeneration}, processEpoch=${processEpochAfter}, registrationRevision=${registrationRevisionAfter}; family revoked this attempt (${revoked.length}), verify-evicted this attempt (${evicted.length}), durable verified ${cursor.verified.length}/${boundHolders.length}, cursor cleanup ${repairCursorCleanup}`);
   return {
     endpoint, instanceId, holderPrincipal: row.principal, opId, freezeToken,
     before: {
       generation: row.generation, processEpoch: row.processEpoch,
       registrationRevision: row.registrationRevision, nameAuthorityRevision: row.nameAuthorityRevision,
+    },
+    after: {
+      generation: reopenedAtGeneration, processEpoch: processEpochAfter,
+      registrationRevision: registrationRevisionAfter, nameAuthorityRevision: row.nameAuthorityRevision,
     },
     liveness, familyRows: rows.length, revoked, evicted,
     holders: boundHolders,

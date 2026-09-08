@@ -82,7 +82,7 @@ try {
 
   let out = "";
   const daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", servers, "--creds", credsPath], {
-    cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   daemon.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
   daemon.stderr!.on("data", (d: Buffer) => { out += d.toString(); });

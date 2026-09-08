@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   STANDING_RENEWABLE_TTL_SEC,
   agentFilePath,
   clearSpaceHistory,
+  dialerFor,
   connectorServers,
   spawnEnvAllow,
   deprovisionAgent,
@@ -48,9 +49,10 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
+  requireRuntimeAdopt,
   type AgentHandle,
   type Runtime,
   type RuntimeMode,
@@ -62,11 +64,12 @@ import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
+import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   recordsBucket,
@@ -126,6 +129,12 @@ import {
   readGoalIndex,
   clearGoalIndex,
   listGoalIndex,
+  mintCheckpoint,
+  resumeCheckpoint,
+  readCheckpointSettle,
+  readCheckpointSpec,
+  expireCheckpoint,
+  type CheckpointSettleFact,
   type GoalIndexEntry,
   GOAL_TERMINAL_STATES,
   goalRefOf,
@@ -155,6 +164,10 @@ import {
   recordSlotCredential,
   appendStaticCredentialRow,
   planStaticSlotResume,
+  observeStaticSlot,
+  renderStaticSlotObservation,
+  StaticSlotReadError,
+  STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
@@ -164,6 +177,14 @@ const MAX_AGENTS = 50;
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
 const MIN_LIFETIME = 10_000;
+/** Cadence of the turn-deadline sweep while turns are pending: the poll that turns an elapsed
+ *  hold's fire into its expired settle and commits the deadline terminal. Deadlines are
+ *  minutes-scale; a few seconds of lateness on the commit is invisible to the run. */
+const TURN_SWEEP_MS = 5_000;
+/** How long a settled turn's answer is kept so a RETRIED yield hears it instead of `not-found`.
+ *  The window a lost reply is retried in is seconds; five minutes is generous for that and short
+ *  enough that the map drains between bursts rather than growing for the process lifetime. */
+const TURN_ANSWER_RETENTION_MS = 5 * 60_000;
 /** Backstop for the detached-launch readiness race (#159 B1). `startAgent` waits on two REAL outcomes —
  *  the assigned id joining the mesh (presence) = started, the child process exiting = failed — NOT a
  *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
@@ -190,6 +211,24 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
+ * tick lands inside every renewal owner's `[renewAt, exp)` window.
+ *
+ * `inspectCredHealth` marks a credential `near-expiry` at 75% of its iat-to-exp lifetime and
+ * `expired` at 100%, so the window width is TTL/4. Ticks TTL/4 apart therefore land at least once
+ * inside every window; ticks TTL/2 apart (the old schedule) can miss it entirely for any TTL. That
+ * is the cause of Cotal #457, reproduced at both TTL=86400 and TTL=20 (the compressed-ratio probe).
+ *
+ * Deriving from the caller's TTL keeps the schedule correct for any credential class: the 24h
+ * `STANDING_RENEWABLE_TTL_SEC` and the 30-day `ROTATION_RENEWED_TTL_SEC` both get a tick inside
+ * their own renewal window without a hardcoded number. Post-boot responsiveness is already
+ * covered by the caller invoking `renewDaemonCreds` once synchronously before starting the timer,
+ * so no separate floor is needed. The pass is idempotent, since `renewDaemonCreds` no-ops each
+ * credential when its state is `healthy`, so a tick that lands before the window costs one health
+ * check per owner. */
+export function credRenewIntervalMs(ttlSeconds: number): number {
+  return Math.max(1, Math.floor((ttlSeconds / 4) * 1000));
+}
 /** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
  * a reuse. */
@@ -305,6 +344,7 @@ export interface ManagerOptions {
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
+
 /** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
  *  is how the one caller that matters ends up unlabelled, and the whole point of recording a cause
  *  is that an unexplained death cannot masquerade as a routine one. A new free path must name
@@ -314,6 +354,8 @@ export type FreeSlotCause =
   | "process-exit"
   | "pi-crash-loop"
   | "pi-recovery-failed"
+  | "supervise-crash-loop"
+  | "supervise-recovery-failed"
   | "session-bind-failed"
   | "resume-session-rebind-failed";
 
@@ -324,6 +366,8 @@ const FREE_SLOT_CAUSE_TEXT: Record<FreeSlotCause, string> = {
   "process-exit": "its own process exited and this manager did not stop it",
   "pi-crash-loop": "this manager retired it after a Pi crash loop",
   "pi-recovery-failed": "this manager retired it after Pi session recovery failed",
+  "supervise-crash-loop": "this manager retired it after its supervise restart budget was spent",
+  "supervise-recovery-failed": "this manager retired it after a supervised restart failed",
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
 };
@@ -473,6 +517,11 @@ export interface StartAgentOpts {
   /** `--share-tools` selection narrowing which of the operator's configured MCP servers this
    *  agent gets (absent → all declared for the connector — the pre-merge manager behavior). */
   shareTools?: string;
+  /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
+   *  the process under the same name, lifecycle uid, persona, worktree and permits until
+   *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
+   *  (pi) arms the existing session-recovery constants. */
+  supervise?: { restarts: number; windowMs: number };
   /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
    *  `startAgent` takes identity/role/ACLs/capabilities/model from here — NOT from a persona file —
    *  and `config` points at the materialized transient persona the connector reads. The persona file
@@ -551,9 +600,19 @@ interface ManagedAgent {
   control?: { path: string; token: string };
   launch: ManagedLaunch;
   /** In-memory process-recovery input. It is never persisted with secret values: preservation
-   * reconstructs it from the validated inventory and current config. Only connectors explicitly
-   * declaring same-session continuation receive it. */
-  restart?: { opts: LaunchOpts; sessionStatePath?: string; crashes: number[]; recovering: boolean; armed: boolean };
+   * reconstructs it from the validated inventory and current config. Continuation-capable
+   * connectors (pi) receive it by default; any connector receives it when spawn carries
+   * `supervise`. */
+  restart?: {
+    opts: LaunchOpts;
+    sessionStatePath?: string;
+    crashes: number[];
+    recovering: boolean;
+    armed: boolean;
+    /** Present when spawn carried `supervise`; recoverManagedSession takes its budget from it.
+     *  Absent on the pi path without a policy, which keeps SESSION_RESTART_LIMIT / WINDOW_MS. */
+    policy?: { restarts: number; windowMs: number };
+  };
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
   /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
@@ -608,6 +667,68 @@ export interface SpawnAcceptance {
    *  outlive it; otherwise it can time out while the manager is still legitimately waiting. */
   readinessDeadlineMs: number;
   executor: { lifecycleUid: string; epoch: number };
+}
+
+/** The `turn` acceptance floor: the resolved seat incarnation the payload is addressed to, the
+ *  goal coordinates the caller follows to the terminal, and the ABSOLUTE deadline the goal-bound
+ *  hold is armed at — a follower bounds its wait on `deadlineAt`, never a relative window. */
+export interface TurnAcceptance {
+  name: string;
+  owner: string;
+  actor: string;
+  uid: string;
+  goalId: string;
+  fingerprint: string;
+  deadlineAt: number;
+  executor: { lifecycleUid: string; epoch: number };
+}
+
+/** One relayed turn awaiting its seat's yield. `holdEpoch` is the ACCEPT-time serve epoch: the
+ *  acceptance floor reports it as the executor epoch, so a restarted manager (whose current epoch
+ *  moved on) carries it here — and in the index entry's note — to serve the same floor again. */
+interface PendingTurn {
+  ref: GoalRef;
+  goalId: string;
+  seat: { name: string; owner: string; actor: string; uid: string };
+  payload: string;
+  acceptedAt: number;
+  deadlineAt: number;
+  holdToken: string;
+  holdEpoch: number;
+  /** The goal-chain link the caller declared (lang §5.3), mirrored into every terminal's data. */
+  handoffFrom?: string;
+  /** When the addressed seat incarnation was reaped, if it died before yielding. A dead target
+   *  has NO early goal ending (a completion must prove the executor's LIVE currency, and the
+   *  hold is only owner-expirable once due — SPEC 13.6 item 7), so the entry rides to its
+   *  deadline; this stamp makes the deadline terminal say what actually happened. */
+  seatDiedAt?: number;
+}
+
+/** The turn relay's durable half of a pending entry, riding the goal-index `note` (opaque to
+ *  core): what a successor incarnation needs beyond the acceptance floor to rebuild the relay. */
+interface TurnNote {
+  payload: string;
+  deadlineAt: number;
+  holdEpoch: number;
+  owner: string;
+  handoffFrom?: string;
+}
+
+function parseTurnNote(raw: string): TurnNote | undefined {
+  let o: unknown;
+  try { o = JSON.parse(raw); } catch { return undefined; }
+  if (o === null || typeof o !== "object") return undefined;
+  const n = o as Record<string, unknown>;
+  if (typeof n.payload !== "string" || typeof n.deadlineAt !== "number"
+    || typeof n.holdEpoch !== "number" || typeof n.owner !== "string") return undefined;
+  if (n.handoffFrom !== undefined && typeof n.handoffFrom !== "string") return undefined;
+  return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
+}
+
+/** A turn hold's token, DERIVED from the goal id (same recipe as the runtime's pause tokens): a
+ *  same-goalId retry or a successor incarnation re-derives the identical token with no lookup. */
+function turnHoldToken(goalId: string): string {
+  return createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
 }
 
 /** One ep request/reply round-trip on the caller's OWN reply-plane filter (§13.2). The responder
@@ -766,6 +887,10 @@ export class Manager {
    *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
    *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
   private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
+  /** The workflow-run host (SPEC 14.3): the drives this incarnation holds, each on its own
+   *  per-run credential and connection. Absent under a remote authority, which mints no driver
+   *  credentials, so the `run-*` family refuses there rather than connecting on a weaker identity. */
+  private runHosting?: RunHosting;
   /** P2 item 2 must-5 (b): the STABLE goal-writer identity (auth mode) — minted once at
    *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
@@ -808,6 +933,37 @@ export class Manager {
   /** P2 item 2 (M4): the live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   private agentGoals = new Map<string, GoalRef>();
+  /** The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin): a
+   *  same-goalId retry serves the identical acceptance; cross-incarnation retries rebuild from
+   *  the goal-index entry (its acceptance floor + note). */
+  /**
+   * One entry per turn this incarnation accepted: the acceptance a duplicate submission is served
+   * from, and — once the turn settles — the answer a RETRIED yield is served from.
+   *
+   * A yield's reply can be lost, and the retry used to find the pending turn already deleted and
+   * hear `not-found`, which a seat reads as "drop it": failure reported for work that committed.
+   * The settled answer lives here for a bounded window instead, and the sweep drops it after,
+   * which is also what keeps this map from being one entry per turn for the process lifetime.
+   *
+   * `ref` is the goal coordinates the durable terminal is published under. A late yield that
+   * arrives after pendingTurns is gone and before `settled` is remembered (or after a concurrent
+   * sweep dropped the settled field) still has to name that terminal, never `not-found`. The
+   * index entry is not that answer: it is cleared at commit, and the yield path never consults it.
+   *
+   * `leftoverSince` is when the pending latch dropped. An unsettled leftover ages off that stamp,
+   * never off `acceptance.deadlineAt`: a turn that expired after a long outage would otherwise be
+   * pruned on the first sweep tick, taking the GoalRef with it, and a late yield in the retry
+   * window would hear `not-found` again.
+   */
+  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>();
+  /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
+   *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
+   *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
+   *  Rebuilt at boot from goal-index entries carrying a turn note. */
+  private pendingTurns = new Map<string, PendingTurn>();
+  /** The deadline sweep behind {@link pendingTurns}: takes the hold's fire into an expired
+   *  settle and commits the deadline terminal. Unref'd; idle when no turn is pending. */
+  private turnSweepTimer?: ReturnType<typeof setInterval>;
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
@@ -872,6 +1028,18 @@ export class Manager {
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
 
+  /** Every broker dial this manager makes, through ONE transport decision.
+   *
+   *  `this.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
+   *  can be a `ws://`/`wss://` broker published through an HTTPS edge. The raw node transport
+   *  refuses such a URL instead of dialing it, so the scheme picks the dialer here rather than at
+   *  thirteen call sites. `dialerFor` also owns the websocket transport's options, which is why
+   *  callers below still pass their own auth options unchanged. */
+  private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection> {
+    const servers = this.servers ?? DEFAULT_SERVER;
+    return dialerFor(servers)({ ...opts, servers });
+  }
+
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
     this.servers = opts.servers;
@@ -914,6 +1082,11 @@ export class Manager {
 
   get runtimeKind(): string {
     return this.runtime.kind;
+  }
+
+  /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
+  adoptRuntimeHandle(reference: RuntimeReference): AgentHandle {
+    return requireRuntimeAdopt(this.runtime, reference);
   }
 
   /** The console page URL (manager-hosted, loopback). */
@@ -1105,7 +1278,7 @@ export class Manager {
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
       await this.renewDaemonCreds();
-      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
     // P2 item 1: register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
@@ -1126,6 +1299,25 @@ export class Manager {
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
     await this.reconcileGoalIndex();
+    // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
+    // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh
+    // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
+    // The serve surface is already live by here, so the family itself holds the gate: `runHost()`
+    // refuses `run-start`/`run-resume` as `unavailable` until the host exists and `RunHosting`
+    // refuses them until its reconcile has returned. A user-auth mesh stands no host up at all
+    // (`runHost()` names why); a remote-authority manager holds no signer to mint with.
+    if (!this.remoteAuthority && !this.userMode) {
+      this.runHosting = new RunHosting({
+        space: this.space,
+        servers: this.servers,
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: this.managerInstanceId,
+        holder: { id: this.ep.ref().id, lifecycleUid: this.managerLifecycleUid },
+        auth: this.auth,
+        log: (line) => console.error(line),
+      });
+      await this.runHosting.reconcile();
+    }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -1253,6 +1445,9 @@ export class Manager {
       // scoped executor. Without this the standing session-ledger connection dies at its TTL and
       // `attach` stops establishing sessions until a restart. The connection's authenticator presents
       // the refreshed credential on its next (re)connect.
+      // SPEC 14.6: every hosted drive's per-run `run-driver` credential is the manager's to renew
+      // for the same nkey; a run parked in a pause for days must not die at the credential's TTL.
+      await this.runHosting?.renew();
       if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
         const sw = this.sessionLedgerConn;
         try {
@@ -1479,7 +1674,7 @@ export class Manager {
     this.preservationInventory = undefined;
     this.preservationFailures = [];
     if (this.auth && !this.credRenewTimer) {
-      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
     // Exit watchers were suppressed while the fence stood: reconcile every child that died during
@@ -1535,7 +1730,6 @@ export class Manager {
   private async awaitHandleExit(handle: AgentHandle): Promise<void> {
     if (!handle.waitForExit)
       throw new Error(`runtime "${handle.kind}" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);
-    if (handle.status() === "exited") return;
     await withTimeout(
       handle.waitForExit(),
       this.preserveStopTimeoutMs,
@@ -1744,6 +1938,10 @@ export class Manager {
     // in-flight command can write a status back onto the record it just removed.
     const registered = this.serviceServe !== undefined;
     await this.stopServiceServe();
+    // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
+    // released run's status write is the last thing this incarnation says about it.
+    await this.runHosting?.stop();
+    this.runHosting = undefined;
     if (registered) await this.deregisterServiceOnStop();
     await this.stopGoalWriter();
     await this.stopSessionPlane();
@@ -1771,14 +1969,26 @@ export class Manager {
    */
   private async deregisterServiceOnStop(): Promise<void> {
     const iid = this.managerInstanceId;
-    const dereg = ({ recordsKv }: { recordsKv: KV }): Promise<ServiceDeregistration> =>
-      deregisterServiceInstance(recordsKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const dereg = ({ recordsKv, authKv }: { recordsKv: KV; authKv: KV }): Promise<ServiceDeregistration> =>
+      deregisterServiceInstance(recordsKv, {
+        endpoint: MANAGER_ENDPOINT,
+        instanceId: iid,
+        observeGeneration: async () => {
+          const key = epgateKey(MANAGER_ENDPOINT, iid);
+          const entry = await authKv.get(key);
+          if (!entry || entry.operation !== "PUT")
+            throw new Error(`no issuance gate at ${key}`);
+          return parseEndpointGate(entry.value, key).generation;
+        },
+      });
     try {
       const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
         console.error(`! manager instance ${iid} was not deregistered: its registration moved while this stop ran, so another incarnation owns it now - leaving it alone`);
+      else if (outcome.reason === "registration-in-flight")
+        console.error(`! manager instance ${iid} was not deregistered: a registration is still in flight (governance slot held at the live gate generation) - leaving it alone`);
       // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.
     } catch (e) {
       console.error(
@@ -2137,6 +2347,34 @@ export class Manager {
    *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
    *  Both are least-privilege reductions, never widenings. */
+  /** The run host, or one of three refusals. A remote-authority manager holds no space signer, so
+   *  it cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
+   *  identity would be the fallback this tree does not take: `unimplemented`, for good. A
+   *  user-auth mesh is `unimplemented` too, for a different reason it names: a hosted run's seats
+   *  are spawned, turned and despawned by a caller derived from the run id under the static
+   *  owner, which the user-mode spawn door refuses (no `u_` owner), so a program would fail at
+   *  its first seat; no path to `--local` is offered there since a user bearer holds no run rows
+   *  either. An ordinary manager whose host is not standing yet is still booting (the serve
+   *  surface comes up before the host): `unavailable`, retry. The three are told apart, since
+   *  the first sentence steers a caller to `--local` and the others must not. */
+  private runHost(): RunHosting {
+    if (this.runHosting) return this.runHosting;
+    if (this.remoteAuthority)
+      throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
+    if (this.userMode)
+      throw new EpEnvelopeError("unimplemented", `user-auth space "${this.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
+    throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
+  }
+
+  /** The answerer a `run-answer` records (SPEC 14.5): the caller as this manager knows them. A
+   *  managed seat is named by its persona name; any other authenticated caller (an operator
+   *  instrument, a logged-in user) by its principal. Never the request body's word. */
+  private runAnswerer(ctx: EpServeContext): string {
+    const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return a.name;
+    return caller;
+  }
+
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -2170,7 +2408,33 @@ export class Manager {
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
         const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);
-        if (!row) throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        if (!row) {
+          // The live hit above stays entirely local. Only a miss widens into durable static state,
+          // where `not-found` is honest only after the slot read itself succeeds and returns absent.
+          // User-mode lifecycles have no manager-local mgrslot row; their per-name projection remains
+          // the live map until the auth service exposes an equivalent mediated reader.
+          if (this.auth && !this.userMode) {
+            const recordsKv = this.goalWriter?.ctx.kv;
+            if (!recordsKv)
+              throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while inspecting "${name}"`, [
+                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: "slot", operation: "read" },
+              ]);
+            let observed;
+            try {
+              observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);
+            } catch (error) {
+              throw new EpEnvelopeError("unavailable", `the durable static slot state for "${name}" could not be read: ${(error as Error).message}`, [
+                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "read" },
+              ]);
+            }
+            // A retired row affirms that no agent exists now, so it keeps the old `not-found`
+            // result. The changed refusal is reserved for durable NONTERMINAL state that contradicts
+            // the live-map miss and needs operator attention.
+            if (observed !== undefined && observed.slotPhase !== "retired")
+              throw new EpEnvelopeError("failed-precondition", `no live agent "${name}"; durable state contradicts absence ${renderStaticSlotObservation(observed)}`, [observed]);
+          }
+          throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        }
         return row;
       }),
       models: (ctx) => this.serveGated(ctx, async () => {
@@ -2201,6 +2465,19 @@ export class Manager {
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.inputAuthorized(a, args(ctx));
       }),
+      // The turn relay (§8 durable actions): `turn` shares despawn/input's reach policy — the
+      // caller must hold owner-equality or admin over the TARGET seat — written out for the same
+      // reason `input` is (a shared policy, not a shared body).
+      turn: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return this.serveTurnGoal(ctx, a);
+      }),
+      // The seat's own half of the relay (`manager.self`, stop-self's tier): a seat pulls the
+      // turns addressed to ITS incarnation and yields them; no reach beyond itself exists here.
+      turnPending: (ctx) => this.serveGated(ctx, () => this.turnPendingFor(ctx.subject.caller)),
+      turnYield: (ctx) => this.serveGated(ctx, () => this.serveTurnYield(ctx.subject.caller, args(ctx))),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
       listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
@@ -2230,6 +2507,13 @@ export class Manager {
       resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
       commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
+      // The workflow-run family (SPEC 14.3): the manager hosts the driver. Reach is the broker's
+      // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
+      runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(args(ctx) as { source: string; file?: string; timeout?: string })),
+      runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
+      runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, this.runAnswerer(ctx))),
+      runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),
+      runPs: (ctx) => this.serveGated(ctx, () => this.runHost().list(args(ctx) as { endpoint?: string })),
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
@@ -2475,7 +2759,7 @@ export class Manager {
     // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
-    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
     // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
     // user-mode spawn reads the callout material from it — the same store the auth-store kinds
     // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.
@@ -2603,6 +2887,10 @@ export class Manager {
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
     // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
     this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, "target-despawn");
+    // The turn relay's reap hook: every pending turn addressed to THIS incarnation is stamped
+    // with the death, and its deadline terminal carries it as `agentDownAt`. The addressee is gone
+    // and no successor may answer for it; the terminal is still the deadline's, not a new reason.
+    this.failSeatTurns(a.name, a.lifecycleUid);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
     // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
@@ -2799,7 +3087,7 @@ export class Manager {
       const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
         retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
       });
-      const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+      const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
       try {
         // §13.2 nonce: >=128 bits of CSPRNG entropy, base64url (the `endpoint-invoke` idiom).
         const nonce = randomBytes(24).toString("base64url");
@@ -2996,21 +3284,25 @@ export class Manager {
     throw new Error(`replacement did not prove session ${expected} (${last})`);
   }
 
-  /** Restart one continuation-capable managed process in place. Identity, lifecycle, credentials,
-   *  durables, children, and the manager row remain owned; only the process handle/control endpoint
-   *  change. A fourth crash inside two minutes is a loop and falls through to normal retirement. */
+  /** Restart one managed process in place. Identity, lifecycle, credentials, durables, children,
+   *  and the manager row remain owned; only the process handle/control endpoint change. Budget
+   *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
+   *  constants. Spending the budget falls through to normal retirement. */
   private recoverManagedSession(a: ManagedAgent): void {
     const restart = a.restart;
     if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
     const release = this.beginLifecycle();
     if (!release) return; // preservation owns the cut once the lifecycle fence closes
     const now = Date.now();
-    restart.crashes = restart.crashes.filter((at) => now - at < SESSION_RESTART_WINDOW_MS);
+    const limit = restart.policy?.restarts ?? SESSION_RESTART_LIMIT;
+    const windowMs = restart.policy?.windowMs ?? SESSION_RESTART_WINDOW_MS;
+    const supervised = restart.policy !== undefined;
+    restart.crashes = restart.crashes.filter((at) => now - at < windowMs);
     restart.crashes.push(now);
-    if (restart.crashes.length > SESSION_RESTART_LIMIT) {
-      console.error(`! ${a.name}: Pi crash loop (${restart.crashes.length} crashes in ${SESSION_RESTART_WINDOW_MS / 1000}s) - retiring the managed seat`);
+    if (restart.crashes.length > limit) {
+      console.error(`! ${a.name}: ${supervised ? "supervised" : "Pi"} crash loop (${restart.crashes.length} crashes in ${windowMs / 1000}s) - retiring the managed seat`);
       restart.armed = false;
-      this.freeSlot(a, true, "pi-crash-loop");
+      this.freeSlot(a, true, supervised ? "supervise-crash-loop" : "pi-crash-loop");
       this.reapChildrenOf(this.managedPrincipal(a));
       release();
       return;
@@ -3019,21 +3311,38 @@ export class Manager {
     void (async () => {
       let replacement: AgentHandle | undefined;
       try {
-        const sessionId = this.readManagedSession(a);
         const connector = await this.resolveConnector(a.agent);
-        if (!connector.supportsSessionContinuation)
-          throw new Error(`connector ${connector.name} no longer declares same-session continuation`);
-        const opts: LaunchOpts = {
-          ...restart.opts,
-          resume: undefined,
-          prompt: undefined,
-          continueSession: sessionId,
-        };
+        const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
+        const opts: LaunchOpts = continueSession !== undefined
+          ? { ...restart.opts, resume: undefined, prompt: undefined, continueSession }
+          : { ...restart.opts, resume: undefined, prompt: undefined };
         const spec = connector.buildLaunch(opts);
+        const wanted = this.managedPrincipal(a);
+        const joinedAfter = this.ep.getRoster()
+          .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)
+          .reduce((max, p) => Math.max(max, p.ts), 0) + 1;
         const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
-        await this.awaitRecoveredSession(a, sessionId, handle, spec.control);
+        if (continueSession !== undefined)
+          await this.awaitRecoveredSession(a, continueSession, handle, spec.control);
+        else {
+          const previousHandle = a.handle;
+          const previousControl = a.control;
+          a.handle = handle;
+          a.control = spec.control;
+          try {
+            const readiness = await this.awaitReadiness(a, connector.readinessTimeoutMs ?? this.readinessTimeoutMs, {
+              reapOnExit: false,
+              joinedAfter,
+            });
+            if (!readiness.ok) throw new Error(readiness.detail);
+          } catch (error) {
+            a.handle = previousHandle;
+            a.control = previousControl;
+            throw error;
+          }
+        }
         if (this.agents.get(a.name) !== a || a.terminalizing) {
           try { handle.stop({ graceful: false }); } catch { /* terminal path owns cleanup */ }
           return;
@@ -3043,18 +3352,21 @@ export class Manager {
         replacement = undefined;
         restart.opts = opts;
         restart.recovering = false;
-        console.error(`! ${a.name}: recovered Pi session ${sessionId} after crash (${restart.crashes.length}/${SESSION_RESTART_LIMIT})`);
+        if (continueSession !== undefined)
+          console.error(`! ${a.name}: recovered Pi session ${continueSession} after crash (${restart.crashes.length}/${limit})`);
+        else
+          console.error(`! ${a.name}: restarted under the same lifecycle after crash (${restart.crashes.length}/${limit})`);
         this.watchExit(a);
       } catch (error) {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
         try { tail = this.tail(await (replacement ?? a.handle).attach().backlog()); } catch { /* runtime has no readable tail */ }
-        console.error(`! ${a.name}: Pi session recovery failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
-        // The replacement may be alive but unable to prove the expected session. Stop it BEFORE
+        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
+        // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
         try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
-        this.freeSlot(a, true, "pi-recovery-failed");
+        this.freeSlot(a, true, supervised ? "supervise-recovery-failed" : "pi-recovery-failed");
         this.reapChildrenOf(this.managedPrincipal(a));
       } finally {
         release();
@@ -3063,12 +3375,21 @@ export class Manager {
   }
 
   /** A managed agent's process exited on its own (crash, /exit, finished). Continuation-capable Pi
-   *  seats restart in place after readiness; every other exit follows the existing terminal path. */
+   *  seats restart in place after readiness; a spawn carrying `supervise` restarts any connector
+   *  the same way, without classifying a session-state file. Every other exit follows the existing
+   *  terminal path. */
   private onAgentExit(a: ManagedAgent): void {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
     if (this.maintenanceState !== "active") return;
+    // A replacement is proving readiness under this row. Its own wait owns a failed
+    // relaunch; treating that exit as a seat death would free the slot mid-recovery.
+    if (a.restart?.recovering && !a.terminalizing) return;
     if (a.restart?.armed && !a.terminalizing) {
+      if (a.restart.policy !== undefined) {
+        this.recoverManagedSession(a);
+        return;
+      }
       try {
         if (this.readManagedSessionState(a).status === "running") {
           this.recoverManagedSession(a);
@@ -3159,6 +3480,21 @@ export class Manager {
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
       return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
+    let supervise: { restarts: number; windowMs: number } | undefined;
+    if (args.supervise !== undefined) {
+      const raw = args.supervise;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+        return Promise.resolve({ ok: false, error: "supervise: expected { restarts, windowMs }" });
+      const rec = raw as Record<string, unknown>;
+      const extra = Object.keys(rec).filter((k) => k !== "restarts" && k !== "windowMs");
+      if (extra.length > 0)
+        return Promise.resolve({ ok: false, error: `supervise: unknown key ${extra[0]}; it takes restarts and windowMs` });
+      if (typeof rec.restarts !== "number" || !Number.isInteger(rec.restarts) || rec.restarts < 1)
+        return Promise.resolve({ ok: false, error: "supervise.restarts: expected a positive integer" });
+      if (typeof rec.windowMs !== "number" || !Number.isInteger(rec.windowMs) || rec.windowMs < 1)
+        return Promise.resolve({ ok: false, error: "supervise.windowMs: expected a positive integer" });
+      supervise = { restarts: rec.restarts, windowMs: rec.windowMs };
+    }
     // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
     // not something to coerce (no fallbacks).
     const strList = (v: unknown, flag: string): string[] | undefined => {
@@ -3194,6 +3530,7 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
+        ...(supervise !== undefined ? { supervise } : {}),
       },
       caller,
       hooks,
@@ -3505,6 +3842,16 @@ export class Manager {
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
     if (opts.resume && !connector.supportsResume)
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
+    // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
+    // External runtimes (tmux/cmux/orca/herdr) attach to a process they do not own and stream no
+    // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
+    // keeps the incarnation owned across a process death, so the same refusal applies there.
+    if (opts.supervise !== undefined) {
+      if (this.runtime.kind !== "pty")
+        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.runtime.kind}" cannot respawn a name in place` };
+      if (this.userMode)
+        return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
+    }
 
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
     // + model/variant. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
@@ -3923,8 +4270,17 @@ export class Manager {
               ? Object.keys(opts.launchOptions).sort()
               : undefined,
         },
-        ...(connector.supportsSessionContinuation
-          ? { restart: { opts: launchOpts, sessionStatePath: spec.sessionStatePath, crashes: [], recovering: false, armed: false } }
+        ...(connector.supportsSessionContinuation || opts.supervise !== undefined
+          ? {
+              restart: {
+                opts: launchOpts,
+                sessionStatePath: spec.sessionStatePath,
+                crashes: [],
+                recovering: false,
+                armed: false,
+                ...(opts.supervise !== undefined ? { policy: opts.supervise } : {}),
+              },
+            }
           : {}),
       };
       // Unit B: the DURABLE slot takes the `active` phase before the in-memory row takes the
@@ -3961,15 +4317,19 @@ export class Manager {
         return { ok: false, error: readiness.detail };
       }
       if (managed.restart) {
-        try {
-          await this.armSessionRecovery(managed);
-          managed.launch.sessionId = this.readManagedSession(managed);
-        } catch (error) {
-          const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
-          this.stopHandle(managed, false);
-          this.freeSlot(managed, true, "session-bind-failed");
-          await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
-          return { ok: false, error: detail };
+        if (connector.supportsSessionContinuation) {
+          try {
+            await this.armSessionRecovery(managed);
+            managed.launch.sessionId = this.readManagedSession(managed);
+          } catch (error) {
+            const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
+            this.stopHandle(managed, false);
+            this.freeSlot(managed, true, "session-bind-failed");
+            await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
+            return { ok: false, error: detail };
+          }
+        } else {
+          managed.restart.armed = true;
         }
       }
       this.watchExit(managed);
@@ -4519,7 +4879,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -4540,17 +4900,26 @@ export class Manager {
     // claims. The manager threads the uid into EVERY mode's launch (open included), so the child
     // adopts it over a self-mint and publishes it in presence; the uid is absent only from a peer
     // the manager never launched (a pure operator/daemon connection that never registers).
+    // A supervised restart keeps the same principal+uid, so a SIGKILL'd child's still-live
+    // presence row would otherwise satisfy this equality. `joinedAfter` is one millisecond
+    // past that row's last heartbeat: only a later heartbeat counts as THIS replacement joining.
     const joined = (): boolean =>
-      this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid);
+      this.ep.getRoster().some((p) =>
+        p.card.id === wanted
+        && p.status !== "offline"
+        && p.lifecycleUid === a.lifecycleUid
+        && (opts.joinedAfter === undefined || p.ts >= opts.joinedAfter));
 
     return await new Promise((resolve) => {
       let done = false;
       let timer: ReturnType<typeof setTimeout>;
       let unsubExit = (): void => {};
+      let joinedPoll: ReturnType<typeof setInterval> | undefined;
       const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        if (joinedPoll !== undefined) clearInterval(joinedPoll);
         this.ep.off("presence", onPresence);
         unsubExit();
         resolve(r);
@@ -4558,6 +4927,11 @@ export class Manager {
       const onPresence = (): void => {
         if (joined()) finish({ ok: true });
       };
+      if (opts.joinedAfter !== undefined) {
+        // Heartbeats bump roster.ts without emitting "presence" (same status/uid/activity).
+        // A supervised restart needs that bump, so poll joined() rather than waiting on the event.
+        joinedPoll = setInterval(onPresence, 50);
+      }
       // Process exit → failed. Clear the backstop FIRST (synchronously) so it can't resolve UNCERTAIN while
       // the backlog reads async — the process is known dead, that's a failure, not an unknown. Reap through
       // onAgentExit so a child the launcher spawned in the window is reaped too.
@@ -4588,8 +4962,12 @@ export class Manager {
         // └──────────────────────────────────────────────────────────────────────────────────────┘
         const deliberate = a.terminalizing === true;
         void (async () => {
-          const tail = this.tail(await s.backlog());
-          this.onAgentExit(a);
+          // waitForExit may close the attach stream before this snapshot
+          let tail = "";
+          try {
+            tail = this.tail(await s.backlog());
+          } catch {}
+          if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
           // caller the agent died on launch when in fact an operator cancelled it. The process
@@ -4720,7 +5098,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
       lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(this.space));
@@ -4744,7 +5122,7 @@ export class Manager {
         })
       : undefined);
     if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
@@ -4759,7 +5137,7 @@ export class Manager {
    *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
   private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     if (this.auth) throw new Error("withOpenServeConnection: an auth mesh must use the scoped endpoint-serve executor");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
+    const nc = await this.dial({ maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
@@ -4778,6 +5156,7 @@ export class Manager {
     return {
       instanceId: this.managerInstanceId,
       runtime: this.runtime.kind,
+      custody: process.platform === "linux" && this.runtime.kind === "pty" ? "custodied" : "legacy",
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
@@ -4793,8 +5172,9 @@ export class Manager {
    *  `gone` into `unestablishable`). Live / unknown / unestablishable / wrong-op-kind stay loud
    *  refusals. No TTL: request-ingress has no process-epoch fence, so a clock would either let a
    *  superseded serve credential keep consuming ingress or just rename the freeze. An open gate
-   *  is a no-op (the successor's own freeze comes next). */
-  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth): Promise<void> {
+   *  is a no-op (the successor's own freeze comes next). A committed spec under that freeze is
+   *  finished at the committed registrationRevision; only a definite no-commit abort-reopens. */
+  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV): Promise<void> {
     const key = epgateKey(MANAGER_ENDPOINT, instanceId);
     const entry = await authKv.get(key);
     if (!entry || entry.operation !== "PUT") return;
@@ -4809,6 +5189,7 @@ export class Manager {
         probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
         evict: makeManagerEndpointEvictor({ space: this.space, servers, auth, log }),
         log,
+        recordsKv,
       });
     } catch (e) {
       // We observed frozen, then a concurrent reconciler finished first. If the gate is now open,
@@ -4825,7 +5206,7 @@ export class Manager {
     }
     console.error(
       `✓ boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} registration gate reopened at generation ${
-        report.reopenedAtGeneration} (processEpoch unchanged at ${report.before.processEpoch}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
+        report.reopenedAtGeneration} (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
     );
   }
 
@@ -4858,8 +5239,7 @@ export class Manager {
         creds: remote.serveCreds,
       };
       const enc = new TextEncoder();
-      const nc = await connect({
-        servers: this.servers ?? DEFAULT_SERVER,
+      const nc = await this.dial({
         authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds))(nonce),
         inboxPrefix: `_INBOX_${state.identity.id}`,
         maxReconnectAttempts: -1,
@@ -4889,7 +5269,7 @@ export class Manager {
     {
       // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
-      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+      const provNc = await this.dial({ ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       try {
         // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
         // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
@@ -4955,7 +5335,9 @@ export class Manager {
       // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
       // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
       // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);
+      if (auth) {
+        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
+      }
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
@@ -5028,8 +5410,7 @@ export class Manager {
     // registered surface for its whole incarnation.
     const state = { handle: undefined as unknown as EpServeHandle, nc: undefined as unknown as NatsConnection, identity: serveIdentity, grant, creds };
     const enc = new TextEncoder();
-    const nc = await connect({
-      servers: this.servers ?? DEFAULT_SERVER,
+    const nc = await this.dial({
       // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
       ...(creds !== undefined ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${serveIdentity.id}`,
@@ -5121,8 +5502,7 @@ export class Manager {
     // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
     const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
       { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: (this.auth || this.remoteAuthority) ? this.goalWriterCreds : undefined, identity };
-    const nc = await connect({
-      servers: this.servers ?? DEFAULT_SERVER,
+    const nc = await this.dial({
       ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
@@ -5221,8 +5601,7 @@ export class Manager {
     // updates `sw.creds` and the next (re)connect presents the refreshed credential.
     const sw: { nc: NatsConnection; creds?: string } =
       { nc: undefined as unknown as NatsConnection, creds: (this.auth || this.remoteAuthority) ? this.sessionLedgerCreds : undefined };
-    const nc = await connect({
-      servers: this.servers ?? DEFAULT_SERVER,
+    const nc = await this.dial({
       ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
@@ -5393,7 +5772,7 @@ export class Manager {
         // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
         // without its own credential is exactly the standing-writer shape this design removes.
         const opts = (this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
-        return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
+        return this.dial({ ...opts, maxReconnectAttempts: -1 });
       },
       revoke: async (credentialId) => {
         if (!this.auth && !this.remoteAuthority) return; // open mesh: nothing was minted
@@ -5431,10 +5810,10 @@ export class Manager {
     const gw = this.goalWriter;
     if (!gw) { this.goalReconcileDone = true; return; }
     try {
-      let entries: { ref: GoalRef; iid: string }[] = [];
+      let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
       const nc = this.auth
-        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
-        : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
+        ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
+        : await this.dial({ maxReconnectAttempts: 0 });
       try {
         const kvm = new Kvm(nc);
         await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
@@ -5445,10 +5824,15 @@ export class Manager {
       // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
       // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep
       // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
-      for (const { ref, iid } of entries) {
-        if (this.goalAcceptances.has(ref.goalId)) continue; // never settle a goal THIS incarnation drives
-        try { await this.reconcileOneGoal(ref, iid); }
-        catch (e) { console.error(`! goal reconcile for ${ref.goalId}: ${(e as Error).message}`); }
+      for (const entry of entries) {
+        if (this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(entry.ref.goalId)) continue; // never settle a goal THIS incarnation drives
+        try {
+          // A note marks a TURN entry: its relay is rebuilt (the hold is its bounded ending), never
+          // settled uncertain — the spawn arm's readiness window is the wrong ending for a relay.
+          if (entry.note !== undefined) await this.adoptTurnGoal(entry);
+          else await this.reconcileOneGoal(entry.ref, entry.iid);
+        }
+        catch (e) { console.error(`! goal reconcile for ${entry.ref.goalId}: ${(e as Error).message}`); }
       }
       if (entries.length) console.error(`goal-index boot reconcile: swept ${entries.length} inherited goal(s)`);
     } catch (e) {
@@ -5783,6 +6167,437 @@ export class Manager {
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
   }
 
+  // ---- the turn relay (§8 durable actions) ------------------------------------------------------
+  //
+  // A seat is NOT an endpoint: a run's `turn(agent, payload)` rides the manager, which accepts it
+  // as a goal (the spawn-as-action pattern minus the launch closure), parks the payload durably on
+  // the goal-index entry's note, and lets the seat PULL it (`turn-pending`) and answer it
+  // (`turn-yield`) under its own `manager.self` reach. The deadline is a goal-bound HOLD minted at
+  // accept: the delivery daemon's timer writer pumps its schedule, the fire settles it `expired`,
+  // and THIS manager commits the deny (`hold-expired` is the predicate core verifies). Three
+  // endings, one each: yield -> succeeded (the TurnResult rides the terminal's data), deadline ->
+  // failed `turn-deadline`, and a seat death before that is stamped by the reap hook so the same
+  // terminal carries `agentDownAt` (the run reads it as L4002). The adoption sweep stamps nothing.
+
+  /** Accept one `turn` goal against a live managed seat. Mirrors {@link serveSpawnGoal}'s accept
+   *  path (idempotent retry map, index-CAS-before-bind, create-only bindGoal) but runs it INLINE:
+   *  there is no launch to hand off, so the accept either completes durably or unwinds its own
+   *  bound goal with a `failed` terminal before refusing. */
+  private async serveTurnGoal(ctx: EpServeContext, a: ManagedAgent): Promise<TurnAcceptance> {
+    const gw = this.goalWriter;
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; turn-as-action cannot accept (SPEC 13.6)");
+    const serve = this.serviceServe;
+    if (!serve) throw new EpEnvelopeError("unavailable", "the manager service endpoint is not serving; a turn's deadline hold is armed over its connection (SPEC 13.9)");
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)");
+    const t = ctx.request.target!; // targeted command: the serve boundary enforced presence + currency
+    const goalId = ctx.request.id;
+    const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
+    const ref = goalRefOf(ctx.subject, goalId);
+    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
+    const acceptedAt = Date.now();
+
+    const prior = this.turnAcceptances.get(goalId)?.acceptance;
+    if (prior !== undefined) {
+      if (prior.fingerprint !== fingerprint)
+        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
+      return prior;
+    }
+
+    const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
+    const payload = String(raw.payload);
+    const deadlineMs = Number(raw.deadlineMs);
+    const handoffFrom = raw.handoffFrom === undefined ? undefined : String(raw.handoffFrom);
+    const deadlineAt = acceptedAt + deadlineMs;
+    const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
+
+    // A goal that already ENDED is never accepted again, whatever the retry carries: the bind is
+    // create-only and outlives an unwind (the failed terminal, the cleared index), so a retry of an
+    // unwound accept would otherwise re-record an index entry over a tombstone and, before that
+    // check existed, be served an acceptance rebuilt from it — a live deadline on a turn no seat
+    // would ever be shown. The terminal is the durable answer, and it is read before anything is
+    // written.
+    const ended = await readGoalResult(gw.ctx, ref);
+    if (ended !== undefined)
+      throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" already ended ${ended.state}; a bound goal is never accepted again (SPEC 13.6)`);
+    // Index-CAS-before-bind, exactly as spawn: the entry (floor + note) is the durable relay
+    // record a successor rebuilds from, so it must exist before the acceptance is servable.
+    const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name: a.name, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
+    if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid)
+      throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance owns its relay and this attempt provisions nothing (SPEC 13.6)`);
+    const b = await bindGoal(gw.ctx, ref, fingerprint);
+    if (!b.bound) {
+      if (b.existing.fingerprint !== fingerprint)
+        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound to a different submission; one goalId never carries two specs (SPEC 13.6)`);
+      // Same submission, bound, not ended, and not in the acceptance map. Every relay this
+      // incarnation holds is in that map (the accept path and the boot sweep both write it), so
+      // this is a goal nobody is relaying: an earlier attempt bound it and could not finish its
+      // unwind, or a predecessor's relay was left unadopted. Nothing here can rebuild a relay a
+      // seat will be shown, so the caller is refused rather than served an acceptance no pending
+      // entry backs; the index entry this attempt recorded is withdrawn with it.
+      if (idx.recorded) await clearGoalIndex(gw.ctx, ref);
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is bound but no relay of it is pending on this instance; retry (SPEC 13.6)`);
+    }
+    try {
+      await createGoal(gw.ctx, ref, {
+        fingerprint,
+        command: ctx.subject.command,
+        caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
+        acceptedEpoch: executor.epoch,
+        requestId: goalId,
+        sourceSeq: 0,
+        acceptedAt,
+        readinessDeadlineMs: deadlineMs,
+        // The §13.6 target pin: the seat INCARNATION this payload is addressed to. A successor
+        // under the same name is a different addressee; its uid differs and the pin holds that.
+        target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid, mappingRevision: 0 },
+      });
+      // The deadline, as a goal-bound hold on the plane: its EXPIRED settle is the one predicate
+      // `commitGoalResult` accepts for the deny. The record rides the goal-writer's KV; the
+      // `.schedule` request rides the SERVE connection, because the timer row is the serving
+      // instance's own (`ept.<e>.<iid>.<epoch>.*.schedule`, SPEC 13.9) and the goal-writer holds
+      // none. Measured on an auth mesh: minted over the goal-writer, the schedule publish was
+      // broker-denied and every accept unwound.
+      await mintCheckpoint(gw.ctx.kv, jetstream(serve.nc), this.space, {
+        ref: { endpoint: ref.endpoint, token: turnHoldToken(goalId) },
+        instanceId: this.managerInstanceId,
+        epoch: executor.epoch,
+        goal: { caller: { owner: ctx.subject.caller.owner, actor: ctx.subject.caller.actor, uid: ctx.subject.caller.uid }, goalId },
+        holder: { id: MANAGER_ENDPOINT, lifecycleUid: this.managerInstanceId },
+        deadline: deadlineAt,
+        now: acceptedAt,
+      });
+    } catch (e) {
+      // The accept is inline (no launch closure to fail later), so a post-bind throw unwinds HERE:
+      // commit the failed terminal this attempt owns, clear the index, and refuse the accept — an
+      // accepted-but-unanswered goal must never be left for the boot sweep to find (H1's rule).
+      const msg = (e as Error)?.message ?? String(e);
+      try {
+        await this.assertGoalWriterEpochCurrent(executor.epoch);
+        // The goal is TARGET-PINNED, so its completion proves the seat's currency exactly as the
+        // yield's does (managed-seat epochs are 0 within an incarnation; the resolver answers from
+        // the live agents map). Committed without it, core refused the terminal and the unwind
+        // left a bound goal with no ending for every retry to find.
+        await commitGoalResult(gw.ctx, {
+          ref, now: Date.now(), cause: "complete", state: "failed", data: { error: msg },
+          committer: { instanceId: this.managerInstanceId, epoch: executor.epoch },
+          executor: { lifecycleUid: t.lifecycleUid, epoch: 0 },
+          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
+        });
+        await clearGoalIndex(gw.ctx, ref);
+      } catch (e2) { console.error(`! turn accept unwind for ${goalId}: ${(e2 as Error).message}`); }
+      throw e instanceof EpEnvelopeError ? e : new EpEnvelopeError("internal", `turn accept for ${goalId} failed: ${msg}`);
+    }
+    const pending: PendingTurn = {
+      ref, goalId,
+      seat: { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid },
+      payload, acceptedAt, deadlineAt,
+      holdToken: turnHoldToken(goalId), holdEpoch: executor.epoch,
+      ...(handoffFrom !== undefined ? { handoffFrom } : {}),
+    };
+    this.pendingTurns.set(goalId, pending);
+    this.ensureTurnSweep();
+    const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
+    this.turnAcceptances.set(goalId, { acceptance, ref });
+    this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
+    return acceptance;
+  }
+
+  /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
+   *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
+  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {
+    // AN EMPTY LIST IS AN ANSWER, so it must not be given before the index is rebuilt. Between
+    // registration and `reconcileGoalIndex`, `pendingTurns` holds nothing a predecessor accepted,
+    // and a seat that pulls in that window is told authoritatively that it has no turn. The seat
+    // treats a refusal as "keep what you hold" and an empty list as "you hold nothing", so the
+    // window has to refuse, the same way `serveTurnGoal` does.
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)");
+    // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest
+    // unsettled one is served, and the next surfaces once it yields or its deadline denies, so a
+    // seat is never shown two turns at once.
+    // An ELAPSED turn is not servable: its hold is expirable and its run has already thrown from
+    // its own pause, so handing it to the seat buys work whose yield is refused. It also cannot be
+    // allowed to stay the head, or one expired turn dams every later turn for that seat.
+    const now = Date.now();
+    const turns = [...this.pendingTurns.values()]
+      .filter((p) => p.seat.owner === c.owner && p.seat.actor === c.actor && p.seat.uid === c.uid)
+      .filter((p) => now < p.deadlineAt)
+      .sort((x, y) => x.acceptedAt - y.acceptedAt)
+      .slice(0, 1)
+      .map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, deadlineAt: p.deadlineAt }));
+    return { turns };
+  }
+
+  /** The seat's yield: claim the hold (one-use; expiry fails closed), then commit the goal
+   *  `succeeded` carrying the TurnResult. A yield AFTER the deadline drives the deadline terminal
+   *  instead and refuses — the expiry outcome stands, never a late success over it. */
+  private async serveTurnYield(c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>): Promise<{ goalId: string; state: string }> {
+    // Same boot window as the pull, and checked first because it is the earlier boot phase: before
+    // the index is rebuilt a predecessor's accepted turn is not in `pendingTurns`, and `not-found`
+    // would tell the seat to drop work it is holding.
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; this yield's turn may not be indexed yet, retry (SPEC 13.6)");
+    const gw = this.goalWriter;
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing (SPEC 13.6)");
+    const goalId = String(raw.goalId);
+    const status = String(raw.status);
+    const to = raw.to === undefined ? undefined : String(raw.to);
+    const yieldNote = raw.note === undefined ? undefined : String(raw.note);
+    if (status === "handoff" && (to === undefined || to.length === 0))
+      throw new EpEnvelopeError("failed-precondition", `a handoff yield names its addressee ("to"); a handoff to nobody relays nothing`);
+    const p = this.pendingTurns.get(goalId);
+    if (!p) {
+      // A YIELD WHOSE REPLY WAS LOST IS NOT A YIELD THAT FAILED. The commit deleted the pending
+      // turn, so a retry found nothing and heard `not-found` — which a seat reads as "drop it",
+      // reporting failure for work the run already has. The answer the first reply carried is
+      // served again instead, to the addressee it was addressed to and nobody else.
+      const settled = this.turnAcceptances.get(goalId);
+      if (settled !== undefined) {
+        const a = settled.acceptance;
+        if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)
+          throw new EpEnvelopeError("permission-denied", `turn "${goalId}" was addressed to ${a.owner}.${a.actor}/${a.uid}; a yield is the addressee's own (SPEC 13.6)`);
+        if (settled.settled !== undefined) return { goalId, state: settled.settled.state };
+        // The in-memory answer is not yet remembered (pending deleted before the terminal CAS,
+        // or a concurrent sweep dropped `settled` while the commit was still in flight). The
+        // durable terminal is the one the run already has; name it, never `not-found`.
+        if (settled.ref !== undefined) {
+          const ended = await readGoalResult(gw.ctx, settled.ref);
+          if (ended !== undefined) {
+            this.rememberSettledTurn(goalId, ended.state, ended.ts);
+            return { goalId, state: ended.state };
+          }
+        }
+      }
+      throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
+    }
+    if (p.seat.owner !== c.owner || p.seat.actor !== c.actor || p.seat.uid !== c.uid)
+      throw new EpEnvelopeError("permission-denied", `turn "${goalId}" is addressed to ${p.seat.owner}.${p.seat.actor}/${p.seat.uid}; a yield is the addressee's own (SPEC 13.6)`);
+    const cpRef = { endpoint: p.ref.endpoint, token: p.holdToken };
+    try {
+      await resumeCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: cpRef, presenter: { id: MANAGER_ENDPOINT, lifecycleUid: this.managerInstanceId }, now: Date.now() });
+    } catch (e) {
+      const settle = await readCheckpointSettle(gw.ctx.jsm, this.space, cpRef).catch(() => undefined);
+      if (settle?.settle === "expired") {
+        await this.commitTurnDeadline(p);
+        throw new EpEnvelopeError("failed-precondition", `turn "${goalId}" elapsed its deadline before the yield; the deadline terminal stands (SPEC 13.6)`);
+      }
+      // Already resumed BY THIS MANAGER (the hold is holder-bound): a prior yield attempt claimed
+      // it and then failed to commit. Fall through and commit — the claim is ours to finish.
+      if (settle?.settle !== "resumed") throw e;
+    }
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    await this.assertGoalWriterEpochCurrent(epoch);
+    const at = Date.now();
+    const data = { status, ...(to !== undefined ? { to } : {}), ...(yieldNote !== undefined ? { note: yieldNote } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}), at };
+    // The goal is TARGET-PINNED, so this completion proves the EXECUTOR's (the seat's) fresh
+    // currency, not the manager's: managed-seat epochs are 0 within an incarnation (the same
+    // convention resolveTarget serves), and the resolver answers from the live agents map — a
+    // seat that died between its yield call and this commit refuses `expired` here.
+    const { fact } = await commitGoalResult(gw.ctx, {
+      ref: p.ref, now: at, cause: "complete", state: "succeeded", data,
+      committer: { instanceId: this.managerInstanceId, epoch },
+      executor: { lifecycleUid: p.seat.uid, epoch: 0 },
+      resolveCurrentEpoch: (target) => this.agents.get(p.seat.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
+    });
+    this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+    await clearGoalIndex(gw.ctx, p.ref);
+    this.pendingTurns.delete(goalId);
+    this.markTurnLatchDropped(goalId, at);
+    this.rememberSettledTurn(goalId, fact.state, at);
+    this.maybeStopTurnSweep();
+    return { goalId, state: fact.state };
+  }
+
+  /** Commit the deadline terminal for one pending turn whose hold settled EXPIRED: the deny's
+   *  predicate is that recorded settle, verified by core against the spec's goal binding. The map
+   *  delete is the idempotency latch (yield-loss and sweep race here); a commit failure after it
+   *  converges through the goal index at the next boot, the same narrow leg spawn leaves open. */
+  private async commitTurnDeadline(p: PendingTurn): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) return;
+    if (!this.pendingTurns.delete(p.goalId)) return;
+    this.markTurnLatchDropped(p.goalId);
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    try {
+      await this.assertGoalWriterEpochCurrent(epoch);
+      const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
+      this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+      // Remember BEFORE the index clear: a late yield that arrives after the pending latch
+      // (the delete at the top of this function) and after this CAS has to name this terminal.
+      // Clearing first, then remembering, left a window where maybeStopTurnSweep saw no pending
+      // turn and no settled answer, wiped the acceptance, and rememberSettledTurn no-op'd.
+      this.rememberSettledTurn(p.goalId, fact.state, Date.now());
+      await clearGoalIndex(gw.ctx, p.ref);
+    } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${(e as Error).message}`); }
+    this.maybeStopTurnSweep();
+  }
+
+  /** The reap hook: a pending turn addressed to the reaped INCARNATION is MARKED dead, never
+   *  settled early — no honest terminal exists for it (a completion must prove the executor's
+   *  live currency, and the hold is only expirable once due), so the entry rides to its deadline
+   *  and the deny then records both facts. The addressee's own client observes the death from
+   *  presence long before that, which is the run's L4002. */
+  private failSeatTurns(name: string, uid: string): void {
+    for (const p of this.pendingTurns.values()) {
+      if (p.seat.name !== name || p.seat.uid !== uid || p.seatDiedAt !== undefined) continue;
+      p.seatDiedAt = Date.now();
+      console.error(`turn ${p.goalId}: addressed seat ${name}/${uid} died before yielding; the deadline terminal will record it`);
+    }
+  }
+
+  /** Settle one DUE hold as its owner: the manager minted it, so once the deadline has passed it
+   *  expires the pause itself ({@link expireCheckpoint}, the guard-hold precedent) rather than
+   *  waiting on the broker's fire — which it holds no grant to read, and which a hold minted under
+   *  a predecessor's epoch would carry on a subject this incarnation never subscribes. Idempotent
+   *  by the plane: a yield that claimed the hold first is observed as `resumed` and left to its
+   *  own commit, and an already-expired hold returns its recorded settle. */
+  private async expireTurnHold(p: PendingTurn): Promise<CheckpointSettleFact | undefined> {
+    const gw = this.goalWriter;
+    if (!gw) return undefined;
+    return expireCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: { endpoint: p.ref.endpoint, token: p.holdToken }, now: Date.now() });
+  }
+
+  private ensureTurnSweep(): void {
+    if (this.turnSweepTimer !== undefined) return;
+    const t = setInterval(() => { void this.sweepTurnDeadlines().catch((e) => console.error(`! turn deadline sweep: ${(e as Error).message}`)); }, TURN_SWEEP_MS);
+    t.unref?.();
+    this.turnSweepTimer = t;
+  }
+
+  /** The answer a retried yield is served, held for {@link TURN_ANSWER_RETENTION_MS}. Only for a
+   *  turn this incarnation accepted: an entry it has no acceptance for is one it cannot vouch for. */
+  private rememberSettledTurn(goalId: string, state: string, at: number): void {
+    const entry = this.turnAcceptances.get(goalId);
+    if (entry === undefined) return;
+    entry.settled = { state, at };
+  }
+
+  /** Stamp when the pending latch dropped, so an unsettled leftover ages off that instant rather
+   *  than the original deadline. Idempotent: the first drop is the one the retry window starts at. */
+  private markTurnLatchDropped(goalId: string, at = Date.now()): void {
+    const entry = this.turnAcceptances.get(goalId);
+    if (entry === undefined || entry.leftoverSince !== undefined) return;
+    entry.leftoverSince = at;
+  }
+
+  /** Stop the sweep only when it has nothing left to do. It drives elapsed turns to their deadline
+   *  terminals AND drops settled answers once their retry window has passed, so a stop while the
+   *  second is still owed would leave one entry per turn for the process lifetime. */
+  private maybeStopTurnSweep(): void {
+    if (this.pendingTurns.size > 0) return;
+    // An acceptance with no `settled` yet is the in-flight deadline commit: pending was the
+    // latch and is already gone, the terminal CAS has not returned, and a concurrent sweep
+    // tick used to clear the map here, so rememberSettledTurn no-op'd and a late yield heard
+    // `not-found` for a deny the run already has. Prune is the only deleter; stop only when
+    // it has left nothing.
+    if (this.turnAcceptances.size > 0) return;
+    this.stopTurnSweep();
+  }
+
+  private stopTurnSweep(): void {
+    if (this.turnSweepTimer === undefined) return;
+    clearInterval(this.turnSweepTimer);
+    this.turnSweepTimer = undefined;
+  }
+
+  /** Drive every elapsed pending turn to its deadline terminal. Only entries at/past their own
+   *  `deadlineAt` are read at all; a `resumed` settle is a yield mid-commit and is left alone. */
+  private async sweepTurnDeadlines(): Promise<void> {
+    const now = Date.now();
+    // A settled answer is kept only as long as a lost reply could still be retried under it.
+    // An UNSETTLED acceptance whose pending latch is already gone is the in-flight (or failed)
+    // deadline commit: keep it for the same window so a late yield can still read the durable
+    // terminal, then drop it so a commit that never remembered cannot pin the sweep forever.
+    for (const [goalId, e] of [...this.turnAcceptances.entries()]) {
+      if (this.pendingTurns.has(goalId)) continue;
+      // Unsettled leftovers age off the latch-drop stamp, never `deadlineAt`.
+      const at = e.settled?.at ?? e.leftoverSince;
+      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
+    }
+    // The prune above is the one event after which the sweep may have nothing left to do, and
+    // the settle-time callers cannot see it: they run when an answer has just been remembered.
+    this.maybeStopTurnSweep();
+    for (const p of [...this.pendingTurns.values()]) {
+      if (now < p.deadlineAt) continue;
+      try {
+        const settle = await this.expireTurnHold(p);
+        if (settle?.settle === "expired") await this.commitTurnDeadline(p);
+      } catch (e) { console.error(`! turn deadline sweep for ${p.goalId}: ${(e as Error).message}`); }
+    }
+  }
+
+  /** Adopt one inherited TURN goal at boot (the reconcile sweep's turn branch): a non-terminal
+   *  entry carrying a parseable note rebuilds its pending relay — never an `uncertain` settle,
+   *  because the deadline hold IS this goal's bounded ending and it survived the restart. No
+   *  liveness verdict is made here (the agents map is empty during reconcile, so absence means
+   *  "not yet re-registered", never "dead"); a garbled note or a missing floor is logged and
+   *  left, the dead-pointer honesty rule. */
+  private async adoptTurnGoal(entry: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) return;
+    const status = await readGoalStatus(gw.ctx, entry.ref);
+    if (status === undefined) return; // index points at no goal record: a dead pointer, left for honesty
+    if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, entry.ref); return; }
+    if (entry.iid !== this.managerInstanceId) {
+      console.error(`turn reconcile ${entry.ref.goalId}: accepted by instance "${entry.iid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
+      return;
+    }
+    const parsed = entry.note !== undefined ? parseTurnNote(entry.note) : undefined;
+    if (entry.allocated === undefined || parsed === undefined) {
+      console.error(`turn reconcile ${entry.ref.goalId}: the relay record is garbled (no floor, or an unparseable note); left unsettled`);
+      return;
+    }
+    const spec = await readGoalSpec(gw.ctx, entry.ref);
+    if (spec === undefined) {
+      // NOW IS NOT WHEN THIS WAS ACCEPTED. `acceptedAt` is what orders a seat's queue, and a turn
+      // stamped with the boot instant sorts BEHIND every turn accepted since — a predecessor's
+      // oldest turn served last, which is the one thing the ordering exists to prevent. A goal
+      // with an index entry and no spec is a relay record that is not readable, and this is the
+      // same verdict the garbled-note branch above reaches: left unsettled, said out loud.
+      console.error(`turn reconcile ${entry.ref.goalId}: the goal spec is unreadable, so its acceptance time is unknown; left unsettled rather than re-stamped with the boot instant`);
+      return;
+    }
+    const p: PendingTurn = {
+      ref: entry.ref, goalId: entry.ref.goalId,
+      seat: { name: entry.allocated.name, owner: parsed.owner, actor: entry.allocated.actor, uid: entry.allocated.uid },
+      payload: parsed.payload,
+      acceptedAt: spec.value.acceptedAt,
+      deadlineAt: parsed.deadlineAt,
+      holdToken: turnHoldToken(entry.ref.goalId), holdEpoch: parsed.holdEpoch,
+      ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
+    };
+    // The hold is the relay's bounded ending, minted AFTER the index entry and the goal record,
+    // so a crash between them leaves a goal with no hold: nothing could ever settle it, and the
+    // sweep would report the same missing pause every tick. Left unsettled, said once.
+    if ((await readCheckpointSpec(gw.ctx.kv, { endpoint: p.ref.endpoint, token: p.holdToken })) === undefined) {
+      console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);
+      return;
+    }
+    this.pendingTurns.set(p.goalId, p);
+    // THE ACCEPTANCE TOO, or the adopted turn's answer is never remembered: `rememberSettledTurn`
+    // writes only against an acceptance this incarnation holds, and adoption rebuilt the pending
+    // relay without one, so a yield whose reply was lost after a restart still heard `not-found`
+    // on the very path adoption exists for. The acceptance is rebuilt from the same records the
+    // relay was: the spec holds the fingerprint, the index holds the seat, the note the deadline.
+    this.turnAcceptances.set(p.goalId, {
+      acceptance: {
+        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,
+        fingerprint: spec.value.fingerprint, deadlineAt: p.deadlineAt,
+        executor: { lifecycleUid: this.managerInstanceId, epoch: p.holdEpoch },
+      },
+      ref: p.ref,
+    });
+    // NO LIVENESS VERDICT AT BOOT. The agents map is empty here: seats are re-registered later,
+    // by the resume path, so `not in the map` at this moment means "not yet re-registered", never
+    // "dead". Stamping death from it marked EVERY adopted turn as a dead seat, and its deadline
+    // terminal then carried `agentDownAt`, so the run raised L4002 for a seat that was alive the
+    // whole time where the reference says L4003. The reap hook is the only honest writer of that
+    // fact: it fires when a managed seat actually dies.
+    console.error(`turn reconcile ${p.goalId}: pending relay to ${p.seat.name}/${p.seat.uid} adopted (deadline ${p.deadlineAt})`);
+    this.ensureTurnSweep();
+  }
+
   /** M4 (settle race): a despawn MID-GOAL drives the goal's cancel terminal - transition to
    *  `cancelling`, then commit the `cancel` cause on the goal-writer connection. First-terminal-fact
    *  wins: if the readiness outcome already committed (succeeded/failed/uncertain) the transition or
@@ -5922,7 +6737,7 @@ export class Manager {
     if (!this.auth) return;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     const slotRows: StaticManagedSlotRow[] = [];
     try {
       const jsm = await jetstreamManager(nc);

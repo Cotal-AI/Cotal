@@ -141,6 +141,9 @@ const cliEnv: NodeJS.ProcessEnv = {
   COTAL_HOME,
   PATH: `${SHIM}:${cleanEnv.PATH ?? ""}`,
   COTAL_CODEX_TUI: "0", // headless: deterministic text, and no TUI to own this process's stdout
+  // Isolated XDG first: this suite's claim is first-run auto-seed of the shipped
+  // connector, so the checkout writer is opted in only after the store is relocated.
+  COTAL_ALLOW_CHECKOUT_SEED: "1",
 };
 
 /** Is anything listening on `port`? The check that the broker really died, rather than trusting an

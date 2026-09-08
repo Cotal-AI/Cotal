@@ -752,6 +752,35 @@ function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
 }
 
 /** True when every element of an array literal is a record literal with a string `id`. */
+/** Every `spawn` lexically inside `root` whose options carry a LITERAL `worktree` string, as
+ *  [worktree, the value node] pairs. Computed worktrees are invisible here by design: they are
+ *  the runtime guard's (L4008) to decide, where the value exists. */
+function literalSpawnWorktrees(root: AnyNode): Array<[string, AnyNode]> {
+  const out: Array<[string, AnyNode]> = [];
+  const visit = (n: AnyNode): void => {
+    if (
+      n.type === "CallExpression" &&
+      (n.callee as AnyNode | undefined)?.type === "Identifier" &&
+      ((n.callee as AnyNode).name as string) === "spawn"
+    ) {
+      const opts = (n.arguments as AnyNode[] | undefined)?.[1];
+      if (opts !== undefined && opts.type === "ObjectExpression") {
+        for (const prop of opts.properties as AnyNode[]) {
+          if (prop.type !== "Property" || (prop.computed as boolean)) continue;
+          const key = prop.key as AnyNode;
+          const keyName = key.type === "Identifier" ? (key.name as string) : key.type === "Literal" ? String(key.value) : undefined;
+          if (keyName !== "worktree") continue;
+          const value = prop.value as AnyNode;
+          if (value.type === "Literal" && typeof value.value === "string") out.push([value.value, value]);
+        }
+      }
+    }
+    for (const child of children(n)) visit(child);
+  };
+  visit(root);
+  return out;
+}
+
 function arrayItemsCarryId(items: AnyNode): boolean {
   const els = (items.elements as (AnyNode | null)[]) ?? [];
   if (els.length === 0) return false;
@@ -961,6 +990,55 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
         `Use the record form: ${name}({ lint: () => ..., tests: () => ... }, { name: "checks" })`,
         name,
       );
+    }
+  }
+
+  // Two agents MUST NOT share a worktree concurrently (spec 6.5: L3022 statically, L4008 at the
+  // runtime guard). This is the static half, judged where the source shows it: a LITERAL worktree
+  // declared by spawns in two DIFFERENT branches of one concurrent scope is two agents in one
+  // working tree, and a literal worktree inside a fanOut's per-item function is that same sharing
+  // written once and run by every branch. Sequential reuse within one branch stays legal, and a
+  // computed worktree is the runtime guard's to decide.
+  if (name === "parallel" || name === "race") {
+    const branches = args[0];
+    if (branches !== undefined && (branches.type === "ObjectExpression" || branches.type === "ArrayExpression")) {
+      // A branch is a branch however it is spelled: a named function stands in for its body,
+      // resolved the way `branchThunks` resolves it for the walk.
+      const branchNodes = (branches.type === "ObjectExpression"
+        ? (branches.properties as AnyNode[]).filter((prop) => prop.type === "Property").map((prop) => prop.value as AnyNode)
+        : ((branches.elements as (AnyNode | null)[]).filter((el): el is AnyNode => el !== null && isNode(el))))
+        .map((branch) => resolveFunction(branch, v, scope) ?? branch);
+      const holders = new Map<string, AnyNode>();
+      for (const branch of branchNodes) {
+        for (const [wt, site] of literalSpawnWorktrees(branch)) {
+          const prior = holders.get(wt);
+          if (prior !== undefined && prior !== branch) {
+            v.fail(
+              "L3022",
+              site,
+              `Two branches of this \`${name}\` spawn agents into the worktree "${wt}", which runs them in one working tree at the same time. Concurrent writes to one working tree is data loss.`,
+              "Move one spawn out of the concurrent scope, or give it its own worktree.",
+              name,
+            );
+          } else if (prior === undefined) {
+            holders.set(wt, branch);
+          }
+        }
+      }
+    }
+  }
+  if (name === "fanOut") {
+    const fn = args[1] !== undefined && isNode(args[1]) ? resolveFunction(args[1], v, scope) ?? args[1] : undefined;
+    if (fn !== undefined && isNode(fn)) {
+      for (const [wt, site] of literalSpawnWorktrees(fn)) {
+        v.fail(
+          "L3022",
+          site,
+          `Every branch of this \`fanOut\` runs this function, so each one spawns an agent into the worktree "${wt}": two agents in one working tree at the same time. Concurrent writes to one working tree is data loss.`,
+          "Derive the worktree from the item (each branch its own tree), or move the spawn out of the fan-out.",
+          "fanOut",
+        );
+      }
     }
   }
 

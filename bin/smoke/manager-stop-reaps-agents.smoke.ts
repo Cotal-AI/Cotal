@@ -63,6 +63,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-964-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
@@ -71,6 +72,7 @@ const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, save
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
 let fail = 0;
@@ -190,9 +192,9 @@ const kids: ChildProcess[] = [];
  *  command exits the whole process on failure, which would kill the suite. */
 const cliStop = (name: string): Promise<{ code: number | null; out: string }> =>
   new Promise((resolve, reject) => {
-    const p = spawnProc("npx", ["tsx", BIN, "stop", "--name", name, "--space", SPACE], {
+    const p = spawnProc(TSX, [BIN, "stop", "--name", name, "--space", SPACE], {
       cwd: root,
-      env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     kids.push(p);
@@ -213,6 +215,7 @@ let mgr2: InstanceType<typeof Manager> | undefined;
 
 console.log("\n── #964: a stack stop reaps every managed agent ─────────────\n");
 try {
+  console.log("manager-stop-reap: first-line");
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
   const auth = await createSpaceAuth(SPACE);
   saveSpaceAuth(authDir(root), auth);
@@ -246,10 +249,10 @@ try {
     "membership.json": JSON.stringify({ accountId: auth.account.pub }),
   };
   for (const [kind, bytes] of Object.entries(daemonFiles)) writeFileSync(join(seg, kind), bytes, { mode: 0o600 });
-  daemon = spawnProc("npx", ["tsx", BIN, "deliver", "--space", SPACE, "--server", SERVER, "--creds", join(seg, DELIVERY_CREDS_KIND)], {
+  daemon = spawnProc(TSX, [BIN, "deliver", "--space", SPACE, "--server", SERVER, "--creds", join(seg, DELIVERY_CREDS_KIND)], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   daemon.stdout!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
   daemon.stderr!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
@@ -278,11 +281,13 @@ try {
   ok("instrument: seat A is still live after a settle window (its death below is stop-caused, not self-inflicted)", pidA !== undefined && alive(pidA));
 
   let stopError: string | undefined;
+  console.log("manager-stop-reap: before-mgr1-stop");
   try {
     await mgr1.stop();
   } catch (e) {
     stopError = (e as Error).message;
   }
+  console.log("manager-stop-reap: manager-stop-returned");
   mgr1 = undefined;
   ok(
     "#964 unfixed: a plain Manager.stop() - the stack-stop path bare `cotal down` drives - proceeds against a live managed seat with no refusal and no sparing mode",
@@ -332,6 +337,7 @@ try {
   if (brokerProc) await killAndAwaitExit(brokerProc, "SIGKILL");
   for (const d of [base, home, brokerStore]) if (d) rmSync(d, { recursive: true, force: true });
   releaseBroker?.();
+  console.log("manager-stop-reap: finally-complete");
 }
 
 if (fail > 0) {

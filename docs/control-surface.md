@@ -45,9 +45,41 @@ No client has compile-time knowledge of any endpoint's commands. `cotal describe
 space's content-addressed contract store, recompiled, and verified against those digests.
 Each command prints with its capability class and targeting shape. `cotal invoke <endpoint>
 <command> --args '<json>'` then calls one command by name, validating the arguments against
-the fetched input schema before publish. Every built-in manager command uses this same
-trust chain, so there is nothing the built-ins can reach that a described contract cannot.
+the fetched input schema before publish. A signed-in user invokes the same surface through their
+bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
+through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
+does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
+same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
+
+### Inspecting a managed name
+
+Manager `inspect` keeps its successful response as the live managed-agent row. A live hit does
+not read durable lifecycle state, so a temporary records-store failure cannot break inspection of
+an agent the manager currently holds.
+
+On a live miss, a static manager point-reads its durable slot row. A name with no slot, or a slot
+whose phase is `retired`, remains `not-found`. A nonterminal slot returns
+`failed-precondition` with `error.details[].kind =
+ai.cotal.manager.static-slot-observation`. The detail carries the slot's `slotPhase`,
+`owner`, `actor`, `slotLifecycleUid`, `cleanupComplete` when recorded, and `slotRevision`. It
+then carries the separate lifecycle head's `headState`, `headOp` when present,
+`headLifecycleUid`, and `headRevision`. Head fields are absent when provisioning has not written
+the lifecycle head yet.
+The error message carries the same diagnostic summary so string-only operator paths do not hide
+the structured detail.
+
+The slot is read before the head. These records do not form one atomic snapshot, so the detail
+also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
+advance between the reads. The issuance gate is not projected because the retirement operation
+needed for this diagnosis is already recorded on the head, and reading a third record would add
+another non-atomic edge without changing the per-name result.
+
+If either durable read fails or exceeds its bound, the miss returns `unavailable` with
+`ai.cotal.manager.static-slot-read-failed` rather than claiming the name is absent. That detail
+names the inspected `name`, the failed `record` (`slot`, `head`, or `slot-or-head` when the layer
+cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows,
+so their inspect misses remain live-map reads.
 
 ## Spawn is a goal
 
@@ -165,7 +197,10 @@ registration's own exit, and there are two explicit routes to it
 ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
 
 A manager that stops cleanly removes its own registration if it still owns the recorded revision,
-so an ordinary shutdown leaves no stale row. Lease trouble is not an exit path. A manager that
+so an ordinary shutdown leaves no stale row. It refuses that delete while this instance holds the
+endpoint governance slot at the live issuance-gate generation (a registration still completing
+its reopen). A leftover slot whose generation is behind that live generation is not in-flight and
+does not block the stop. Lease trouble is not an exit path. A manager that
 cannot renew or read its lease keeps serving, stays registered, and retries. If another process
 holds the same instance key, it logs the conflict and keeps serving until an operator stops one of
 them. The revision-pinned deregistration leaves a successor's registration alone.
@@ -173,17 +208,19 @@ them. The revision-pinned deregistration leaves a successor's registration alone
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
 affirmatively gone under a complete CONNZ sweep (the same composition as
-[`cotal reconcile-gate`](cli.md#reconcile-gate)),
-then runs its normal takeover. It does not invent a TTL and it does not start a new freeze over a
-still-held one.
+[`cotal reconcile-gate`](cli.md#reconcile-gate)). A committed spec write is finished under that
+same freeze; only a definite no-commit abort-reopens and then runs the normal takeover.
+It does not invent a TTL and it does not start a new freeze over a still-held one.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
 record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
 that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
 not run at all, and refuses if the instance is merely quiet, because a hung process still holds its
-subscriptions and is therefore not affirmed gone. Nothing sweeps the registry on an age threshold
-or on silence.
+subscriptions and is therefore not affirmed gone. It also refuses while that instance holds the
+endpoint governance slot at the live issuance-gate generation (a registration still completing);
+a leftover slot behind that generation is not in-flight and does not block. Nothing sweeps the
+registry on an age threshold or on silence.
 An instance that is deregistered while it is merely wedged re-registers over the tombstone on its
 next start, which is what makes the operator's decision a recoverable one.
 

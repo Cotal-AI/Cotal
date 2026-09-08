@@ -1,67 +1,71 @@
 {
   "suite": "implementations/runtime/smoke/mesh-sleep.smoke.ts",
-  "guard": "a step that resumes a durable pause attaches to the deadline already recorded for it, instead of recomputing one from the clock it happens to be running on",
+  "guard": "a step that resumes a durable pause attaches to the spec already recorded for it — the deadline AND the holder — instead of re-minting from whatever clock and identity it happens to be running under",
   "command": "pnpm smoke:runtime-mesh-sleep",
   "completionMarker": "mesh-sleep.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/resume-attach.json",
   "why": [
-    "A MINT IS IDEMPOTENT ONLY IF THE WHOLE SPEC IS IDENTICAL, and a deadline computed as",
-    "`now() + duration` is not identical to itself a second later. So a resumed step presented a",
-    "different intent under the same token and the plane refused it, which is exactly what a",
-    "one-mint token is supposed to do. The defect was upstream of that refusal: the step should",
-    "never have recomputed the deadline at all.",
+    "A MINT IS IDEMPOTENT ONLY IF THE WHOLE SPEC IS IDENTICAL, and two halves of the spec are not",
+    "identical to themselves across a resume. The deadline, because `now() + duration` is a",
+    "different deadline a second later. And the HOLDER, because a resumed run does not necessarily",
+    "arrive under the principal that minted its pause: the CLI mints a fresh holder per invocation,",
+    "and a cross-host adoption is a different principal by definition. Either way the resumed step",
+    "presented a different intent under the same token and the plane refused it, which is exactly",
+    "what a one-mint token is supposed to do. The defect was upstream of that refusal: the step",
+    "should never have re-minted at all.",
     "",
-    "Reproduced on the clock a real host has, before the repair: an eight second `sleep` armed, the",
-    "step performed again 1.2 seconds later under the id recorded before it ran, and",
-    "`already exists with a DIFFERENT spec`. The pause stayed `waiting`, correct and permanent,",
-    "with nobody attached to it. An adopting neighbour at the next epoch walks into the same door,",
-    "so the story the fire-taking was written for -- reading the fire that landed while this host",
-    "was down -- was unreachable on any clock that moves.",
+    "Both directions were reproduced live before their repairs. The deadline half on the clock a",
+    "real host has: an eight second `sleep` armed, the step performed again 1.2 seconds later under",
+    "the id recorded before it ran, and `already exists with a DIFFERENT spec`. The holder half",
+    "through the real binary: one `cotal run resume` of a checkpoint-parked run re-minted the pause",
+    "under its own fresh holder, the plane refused (`a token is minted once`), and the interpreter",
+    "journalled the refusal as the step's own failure — a stranded run, `failed (L4000)`, after a",
+    "single resume.",
     "",
-    "THE SUITE DID NOT CATCH IT BECAUSE IT HELD THE CLOCK STILL. Both attempts computed the same",
-    "arithmetic, so the mint agreed by coincidence and the cell called it attaching. A crash is a",
-    "gap in time by definition: the block that grades a resume runs on a live clock now and lets",
-    "real time pass between the attempts, which is why these changes redden anything at all.",
+    "THE SUITES DID NOT CATCH EITHER because every early cell resumed under the same frozen clock",
+    "and the same holder, so the mint agreed by coincidence and the cells called it attaching. The",
+    "blocks that grade these now let real time pass between the attempts, and mesh-checkpoint's",
+    "takeover block resumes under a DIFFERENT holder.",
     "",
     "AND A PAUSE CAN COME BACK OVERDUE. A mint refuses a deadline in the past, correctly, so an",
     "unarmed pause whose deadline elapsed while the host was away cannot be repaired by minting it",
     "again. The reconciler re-emits its schedule at the status's current generation instead, and",
-    "the fire that follows is what ends it. Without that branch the resume throws where it used to",
-    "hang, which is louder and still wrong."
+    "the fire that follows is what ends it. The reconciler is also the attach path for a successor",
+    "holder, which is why the two share one exit in arm()."
   ],
   "mutations": [
     {
-      "name": "the recorded deadline is ignored, so a resume recomputes one from its own clock",
+      "name": "the recorded deadline is ignored, so an own-holder resume re-mints from its own clock",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    const at = prior?.initialDeadline ?? deadline;",
-      "replace": "    const at = deadline;",
+      "find": "        holder: this.binding.holder,\n        deadline: prior.initialDeadline,\n        now,",
+      "replace": "        holder: this.binding.holder,\n        deadline,\n        now,",
       "command": "pnpm smoke:runtime-mesh-sleep",
       "completionMarker": "• 2 — the same step after a crash",
       "expectRed": "the resumed attempt was not refused",
       "cell": "the resumed attempt was not refused: it attaches to the recorded pause rather than re-minting",
-      "note": "THE SHIPPED STATE, and `prior` is still read, so the change is one expression wide. It reddens as a refusal rather than as a hang, which is the one merciful thing about it: the run stops on a named conflict instead of waiting forever. What it does not do is resume."
+      "note": "The shipped defect's deadline half, one expression wide inside the own-holder retry branch. Measured 2026-09-02 before this entry was written: cells print through block 1, block 2 reds on this cell with `already exists with a DIFFERENT spec`. It reddens as a refusal rather than as a hang, which is the one merciful thing about it: the run stops on a named conflict instead of waiting forever. What it does not do is resume."
     },
     {
-      "name": "the spec read is dropped entirely, which is the same defect one line earlier",
+      "name": "the spec read is dropped entirely, so every resume mints as if it were first",
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "    const prior = await readCheckpointSpec(this.kv, ref);",
-      "replace": "    const prior = undefined as { initialDeadline: number } | undefined;",
+      "replace": "    const prior = undefined as { initialDeadline: number; holder: { id: string; lifecycleUid: string } } | undefined;",
       "command": "pnpm smoke:runtime-mesh-sleep",
       "completionMarker": "• 2 — the same step after a crash",
       "expectRed": "the resumed attempt was not refused",
       "cell": "the resumed attempt was not refused: it attaches to the recorded pause rather than re-minting",
-      "note": "The same behaviour reached by deleting the read instead of the use of it. Worth its own entry because the two are separately deletable: a future edit that keeps the read for the overdue branch and stops feeding the deadline from it looks like a tidy-up and is the whole defect back."
+      "note": "The same behaviour reached by deleting the read instead of the uses of it. Worth its own entry because the two are separately deletable: a future edit that keeps the read for the attach branch and stops feeding the mint from it looks like a tidy-up and is the whole defect back. Measured 2026-09-02: same earliest red as the deadline mutant."
     },
     {
-      "name": "the overdue branch is removed, so a past deadline is minted again and refused",
+      "name": "the overdue guard is dropped, so a past deadline is re-minted and refused",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (at > now) {",
-      "replace": "    if (true) {",
+      "find": "    if (mine && prior.initialDeadline > now) {",
+      "replace": "    if (mine) {",
       "command": "pnpm smoke:runtime-mesh-sleep",
       "completionMarker": "• 3 — a resume that arrives after its own deadline, never armed",
       "expectRed": "the overdue resume is not refused",
       "cell": "the overdue resume is not refused: a past deadline is reconciled, not re-minted",
-      "note": "A mint requires a future deadline, so this turns the overdue resume into a `failed-precondition`. The distinction the branch draws is not tidiness: a pause that is due is not being armed, it is being collected, and those are different operations on the plane."
+      "note": "A mint requires a future deadline, so this turns the overdue resume into a `failed-precondition`. The distinction the guard draws is not tidiness: a pause that is due is not being armed, it is being collected, and those are different operations on the plane. Measured 2026-09-02: block 3 reds on this cell first, with the plane's own future-deadline refusal in the extra."
     },
     {
       "name": "the overdue pause is recognised and then nothing is done about it",
@@ -77,13 +81,24 @@
     {
       "name": "PAIRED: the recorded deadline is ignored, graded on the `wait` timeout rather than on `sleep`",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    const at = prior?.initialDeadline ?? deadline;",
-      "replace": "    const at = deadline;",
+      "find": "        holder: this.binding.holder,\n        deadline: prior.initialDeadline,\n        now,",
+      "replace": "        holder: this.binding.holder,\n        deadline,\n        now,",
       "command": "pnpm smoke:runtime-mesh-wait",
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the re-performed wait was not refused",
       "cell": "the re-performed wait was not refused: it attaches to the timeout already minted for it",
-      "note": "THE SAME LINE SERVES THREE EFFECTS, and a repair claimed for one of them is a claim about all three until something grades the others. `wait` arms its timeout through the same helper, and its clock was always the real one, so what it was missing was the gap: a block that performs a pending wait again after real time has passed. That block exists now and this entry is what proves it is grading the deadline rather than watching a wait time out the way it always did."
+      "note": "THE SAME BRANCH SERVES THREE EFFECTS, and a repair claimed for one of them is a claim about all three until something grades the others. `wait` arms its timeout through the same helper, and its clock was always the real one, so what it was missing was the gap: a block that performs a pending wait again after real time has passed. That block exists and this entry is what proves it is grading the deadline rather than watching a wait time out the way it always did."
+    },
+    {
+      "name": "every holder is treated as the minter, so a takeover re-mints a pause it does not hold",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const mine = prior.holder.id === this.binding.holder.id\n      && prior.holder.lifecycleUid === this.binding.holder.lifecycleUid;",
+      "replace": "    const mine = true;",
+      "command": "pnpm smoke:runtime-mesh-checkpoint",
+      "completionMarker": "mesh-checkpoint.smoke:",
+      "expectRed": "the SUCCESSOR's step reads the accepted answer through its attach",
+      "cell": "the SUCCESSOR's step reads the accepted answer through its attach — it was not refused",
+      "note": "The holder half of the shipped defect, restored one constant wide: the successor walks the own-holder retry branch, presents a spec whose holder differs from the record, and the plane refuses. Measured 2026-09-02 before this entry was written: 38 cells pass and exactly this one reds, with `already exists` in the extra — every same-holder block is correct under the mutation, so the takeover block is the ONLY thing in the tree that grades the holder comparison."
     }
   ]
 }

@@ -16,7 +16,7 @@
  */
 
 import { validate } from "../grammar.js";
-import { RuntimeFault } from "../errors.js";
+import { EngineUnavailable, RuntimeFault } from "../errors.js";
 import { Journal, RunClock } from "../journal.js";
 import { KeyScope, programHashOf } from "../keys.js";
 import { bindPins, ENGINE_LANGUAGE_VERSION, resolvePins } from "../pins.js";
@@ -63,9 +63,8 @@ export const NODE_FLOOR = 22;
 export function assertNodeFloor(version: string): void {
   const major = Number(version.split(".")[0]);
   if (Number.isFinite(major) && major < NODE_FLOOR) {
-    throw new RuntimeFault(
-      "L1000",
-      `the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}. That is the floor this repo declares it supports and the lowest this engine was measured on; below it nothing here has been tested, and an engine whose frame plumbing rests on AsyncLocalStorage will not run on untested ground and hope.`,
+    throw new EngineUnavailable(
+      `it requires node ${NODE_FLOOR} or newer and this is node ${version}. That is the floor this repo declares it supports and the lowest this engine was measured on; below it nothing here has been tested, and an engine whose frame plumbing rests on AsyncLocalStorage will not run on untested ground and hope.`,
     );
   }
 }

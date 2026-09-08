@@ -1,0 +1,147 @@
+{
+  "suite": "smoke:verify-publish-closure",
+  "guard": "pnpm smoke:verify-publish-closure",
+  "command": "pnpm smoke:verify-publish-closure",
+  "completionMarker": "SUITE COMPLETE",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/verify-publish-closure.json",
+  "why": "The gate decides whether a release version reached npm across the whole lockstep closure. Its two failure directions are silent and opposite: calling registry lag a partial publish (a false alarm, which gets a gate switched off) and calling a partial publish complete (a Release cut for a version that did not fully ship). Each mutation below breaks one of those decisions and must be caught by the cell named, so the suite is shown to discriminate rather than merely to pass. Every mutated file is the gate's own code or its generator -- no shipped product source -- which is what grades:\"tool\" asserts.",
+  "mutations": [
+    {
+      "name": "stability window collapses, so any missing set is instantly a partial publish",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  if (unchangedForMs >= opts.stableWindowMs) {",
+      "replace": "  if (missing.length > 0) {",
+      "expectRed": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish",
+      "cell": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish"
+    },
+    {
+      "name": "success tolerates one missing package, so a dropped sibling still reads as published",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  if (missing.length === 0) return { state: \"published\" };",
+      "replace": "  if (missing.length <= 1) return { state: \"published\" };",
+      "expectRed": "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)",
+      "cell": "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)"
+    },
+    {
+      "name": "closure stops being derived and becomes the single package the old gate checked",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  return [...new Set(names)].sort();",
+      "replace": "  return [\"cotal-ai\"];",
+      "expectRed": "the closure is derived from .changeset/config.json, matching every name in the fixed group",
+      "cell": "the closure is derived from .changeset/config.json, matching every name in the fixed group"
+    },
+    {
+      "name": "the deadline asserts a failure instead of reporting that it cannot tell",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  if (elapsedMs >= opts.deadlineMs) return { state: \"unsettled\", missing, why: \"deadline\" };",
+      "replace": "  if (elapsedMs >= opts.deadlineMs) return { state: \"partial\", missing, why: \"deadline\" };",
+      "expectRed": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'",
+      "cell": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'"
+    },
+    {
+      "name": "a stability window narrower than the poll interval is silently widened instead of refused",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    throw new Error(\"--stable-window-ms must be at least --poll-interval-ms\");",
+      "replace": "    opts.stableWindowMs = opts.pollIntervalMs;",
+      "expectRed": "a stability window narrower than the poll interval is refused (it would re-admit one sample)",
+      "cell": "a stability window narrower than the poll interval is refused (it would re-admit one sample)"
+    },
+    {
+      "name": "scoped package names stop being percent-encoded, so every scoped read 404s",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  return `${base}/${pkg.replace(\"@\", \"%40\").replace(\"/\", \"%2f\")}/${version}`;",
+      "replace": "  return `${base}/${pkg}/${version}`;",
+      "expectRed": "a scoped package encodes as %40scope%2fname in the per-version path",
+      "cell": "a scoped package encodes as %40scope%2fname in the per-version path"
+    },
+    {
+      "name": "the generated header stops being prepended, so the committed declaration no longer matches the emit",
+      "file": "bin/smoke/gen-publish-closure-dts.mts",
+      "find": "    return `${HEADER}\\n${emitted.replace(/^#!.*\\n/, \"\")}`;",
+      "replace": "    return `${emitted.replace(/^#!.*\\n/, \"\")}`;",
+      "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)",
+      "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)"
+    },
+    {
+      "name": "a push that published NOTHING is reported as a partial publish, reddening every version-PR push",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (missing.length === total) return { state: \"none\", missing };",
+      "replace": "    if (missing.length === total + 1) return { state: \"none\", missing };",
+      "expectRed": "a wholly absent version is NONE (published nothing), never PARTIAL",
+      "cell": "a wholly absent version is NONE (published nothing), never PARTIAL"
+    },
+    {
+      "name": "the COTAL_ scrub stops matching, so a live credential reaches the spawned child",
+      "file": "bin/smoke/verify-publish-closure.smoke.ts",
+      "find": "  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_\")) delete env[key];",
+      "replace": "  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_NEVER_MATCHES_\")) delete env[key];",
+      "expectRed": "no COTAL_ variable reaches the spawned child, even when one is set in this process",
+      "cell": "no COTAL_ variable reaches the spawned child, even when one is set in this process"
+    },
+    {
+      "name": "transport errors are merged back into the missing set, so an outage reads as absence",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "      errored.push(pkg);\n      continue;",
+      "replace": "      missing.push(pkg);\n      continue;",
+      "expectRed": "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package",
+      "cell": "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package"
+    },
+    {
+      "name": "an unclean scan is allowed to reach a decisive verdict again",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  const clean = errored.length === 0;",
+      "replace": "  const clean = true;",
+      "expectRed": "an errored scan cannot be PUBLISHED even when every reachable package is live",
+      "cell": "an errored scan cannot be PUBLISHED even when every reachable package is live"
+    },
+    {
+      "name": "any non-200 is treated as absence again, so a 5xx reads as an unpublished package",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (status === 200) continue;\n    if (status === 404) missing.push(pkg);\n    else errored.push(pkg);",
+      "replace": "    if (status !== 200) missing.push(pkg);",
+      "expectRed": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say",
+      "cell": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say"
+    },
+    {
+      "name": "404 stops counting as absence, so a genuine partial publish can never be detected",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (status === 404) missing.push(pkg);",
+      "replace": "    if (status === 410) missing.push(pkg);",
+      "expectRed": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires",
+      "cell": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires"
+    },
+    {
+      "name": "redirects are followed again, so a 302 onto a generic 200 reads as a published package",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "      fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) }),",
+      "replace": "      fetchImpl(url, { method: \"GET\", signal: AbortSignal.timeout(remainingMs) }),",
+      "expectRed": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence",
+      "cell": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence"
+    },
+    {
+      "name": "the read is awaited unbounded again, so a socket that never answers parks the gate past its own deadline",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    return await Promise.race([\n      fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) }),\n      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(\"read budget expired\")), remainingMs); }),\n    ]);",
+      "replace": "    return await fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) });",
+      "cell": "a registry that accepts the connection and never answers still settles inside the budget",
+      "expectRed": "a registry that accepts the connection and never answers still settles inside the budget"
+    },
+    {
+      "name": "the per-read budget stops shrinking, so a hung read cannot be cut short by the time already spent",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    const remainingMs = Math.max(0, budgetEndsAt - Date.now());",
+      "replace": "    const remainingMs = opts.deadlineMs;",
+      "cell": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed",
+      "expectRed": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed"
+    },
+    {
+      "name": "elapsed is read from the injected clock alone, so a run whose reads all time out polls forever",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    const elapsedMs = Math.max(now() - started, Date.now() - ioStarted);",
+      "replace": "    const elapsedMs = now() - started;",
+      "cell": "spending the real budget ends the run even when the injected clock has not moved",
+      "expectRed": "spending the real budget ends the run even when the injected clock has not moved"
+    }
+  ]
+}

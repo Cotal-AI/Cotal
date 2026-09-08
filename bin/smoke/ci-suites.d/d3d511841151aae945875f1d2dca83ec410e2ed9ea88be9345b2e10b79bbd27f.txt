@@ -1,0 +1,2 @@
+# The #1217 gate executes a synthetic known-survivor through the shipped reproof scan.
+smoke:mutation-reproof

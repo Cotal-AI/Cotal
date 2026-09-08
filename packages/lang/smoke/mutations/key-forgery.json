@@ -8,11 +8,13 @@
     "The guard exists at TWO layers and each mutation must name which one it breaks. The validator",
     "closes the static case; the mint closes the computed case the validator provably cannot see.",
     "A single mutation that reddened the suite would not say which layer was load-bearing, and the",
-    "layers cover different inputs \u2014 so removing either must be caught on its own.",
+    "layers cover different inputs — so removing either must be caught on its own.",
     "",
     "The completionMarker is the FIRST cell in the suite, printed long upstream of the mutated",
     "region: this is a fail-fast suite, so a marker at the end would be absent on every genuine",
-    "kill and grade all three INCONCLUSIVE."
+    "kill and grade all three INCONCLUSIVE.",
+    "Batch B2 (2026-09-03): `parallel` and `race` do not require a literal name, so a computed",
+    "scope name forged a whole nested path and every branch under it inherited the forgery."
   ],
   "mutations": [
     {
@@ -39,6 +41,15 @@
       "expectRed": "and a camelCase one, which is an ordinary object key",
       "cell": "and a camelCase one, which is an ordinary object key",
       "note": "The narrowness twin. Without it a guard that refused EVERY branch key would satisfy both removals above perfectly and destroy the language. The widening is to A-Z rather than to a-z on purpose: this suite is FAIL-FAST, and a-z reddens the first cell that mints any lowercase key -- far upstream of the narrowness cells -- so the mutation graded WRONG-RED, killing the suite for a true reason at an assertion that was not the one under test. `runTests` is the only uppercase value the suite ever mints, so A-Z reaches exactly the cell this twin is about. In a fail-fast suite a mutation must be no broader than the cell it names."
+    },
+    {
+      "name": "a computed SCOPE name is minted unchecked",
+      "file": "packages/lang/src/keys.ts",
+      "find": "    if (name !== null) assertKeySafe(name, `the name of this \\`${kind}\\``);",
+      "replace": "    if (false) assertKeySafe(name ?? \"\", `the name of this \\`${kind}\\``);",
+      "expectRed": "a computed SCOPE name is refused at the same mint",
+      "cell": "a computed SCOPE name is refused at the same mint",
+      "note": "Measured 2026-09-03: KILLED. The suite throws on its first failed check rather than printing a mark, so the red is the thrown line: `Error: FAIL: a computed SCOPE name is refused at the same mint`. Re-ran by hand to confirm; the anonymous and ordinary-name cells below it still mint, so the guard is narrow."
     }
   ],
   "unkillable": [

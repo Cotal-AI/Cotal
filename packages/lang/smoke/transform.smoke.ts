@@ -547,7 +547,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // scope, after the entry has begun: measured on both engines, `fanOut(xs, await choose(), {...})`
   // journals `fanOut:f` BEFORE the `sleep` inside `choose`, while the same effect in the options bag
   // journals before the scope. An eager body has journalled in the wrong place, and the host refuses
-  // one that is not a thunk (L1000).
+  // one that is not a thunk (an EngineFault: the emitter broke the seam's contract).
   const fan = transform('const a = await spawn("one"); await fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: (m) => m.agent });').module;
   ok('a fan-out\'s body travels unevaluated', /effect\("fanOut", \[.*, async \(\) => \(async \(\.\.\./.test(fan), fan.slice(-320));
   const con = transform('const a = await spawn("one"); await conclave([a], async (c) => c, { name: "k" });').module;

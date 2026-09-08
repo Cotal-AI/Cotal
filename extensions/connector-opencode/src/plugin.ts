@@ -927,14 +927,24 @@ export const cotal: Plugin = async () => {
       // rather than carried here. Two claims that do not compete, so one turn answers both and
       // neither has to wait for the other. Choosing one and re-parking the other is the deadlock.
       const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
+      // Run turns ride the same composed submission; their ids commit as surfaced only once the
+      // submission lands below (two-phase — a failed submit re-surfaces them, never a lie).
+      let turnIds: string[] = [];
+      const turnPeek = agent.peekPendingTurns();
       if (text) {
         parts.push({ type: "text", text });
       } else {
         const items = agent.peekInbox("automatic");
-        if (items.length === 0) return;
-        ids = items.map((i) => i.recvKey);
-        const inj = formatInjection(items);
-        if (inj) parts.push({ type: "text", text: inj });
+        if (items.length === 0 && !turnPeek) return;
+        if (items.length > 0) {
+          ids = items.map((i) => i.recvKey);
+          const inj = formatInjection(items);
+          if (inj) parts.push({ type: "text", text: inj });
+        }
+      }
+      if (turnPeek) {
+        turnIds = turnPeek.goalIds;
+        parts.push({ type: "text", text: turnPeek.text });
       }
       // NOT marked consumed here. Setting the flag before the submission meant a throw below cost
       // the briefing permanently, on this turn and every later one.
@@ -951,6 +961,8 @@ export const cotal: Plugin = async () => {
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
+      // The submission landed with the run turns in its prompt — they are surfaced.
+      if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // CLEARED ONLY HERE, once the submission actually landed, so no early return can lose the wake
       // it was carrying. Each return parks it explicitly and the catch does too, so every exit from
       // this function either submits the wake or leaves it pending for the next drive.
@@ -1049,18 +1061,24 @@ export const cotal: Plugin = async () => {
   function injectIntoPrompt(output: { parts?: unknown[] }): void {
     if (driving || awaitingTurnEnd) return; // drive() already injected, or one surfaced batch is open
     const items = agent.peekInbox("automatic");
-    if (items.length === 0) return;
-    const inj = formatInjection(items);
-    if (!inj) return;
+    const turnPeek = agent.peekPendingTurns();
+    if (items.length === 0 && !turnPeek) return;
+    const inj = items.length > 0 ? formatInjection(items) : undefined;
+    if (!inj && !turnPeek) return;
     const textPart = output.parts?.find(
       (p): p is { type: "text"; text: string } =>
         typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
     );
     if (!textPart) return;
-    textPart.text = `${inj}\n\n${textPart.text}`;
-    surfaced = items.map((i) => i.recvKey);
-    awaitingTurnEnd = true;
-    busy = true;
+    const prefix = [inj, turnPeek?.text].filter(Boolean).join("\n\n");
+    textPart.text = `${prefix}\n\n${textPart.text}`;
+    // The mutation IS the delivery here — the human's prompt runs with the prefix in place.
+    if (turnPeek) agent.commitSurfacedTurns(turnPeek.goalIds);
+    if (inj) {
+      surfaced = items.map((i) => i.recvKey);
+      awaitingTurnEnd = true;
+      busy = true;
+    }
   }
 
   /** A turn ended — ANY turn, ours (a driven inbox batch) OR the human's (typing into the attached

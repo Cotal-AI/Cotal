@@ -1,0 +1,18 @@
+{
+  "suite": "extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
+  "guard": "a live bridge whose launch identity is unprovable during the process exit window proceeds through teardown, while readable broken wiring still refuses",
+  "command": "pnpm smoke:jcode-private-lifecycle",
+  "progressPattern": "^  ✓ ",
+  "minTicks": 2,
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-launch-identity-proof.json",
+  "mutations": [
+    {
+      "name": "the exit window is convicted from the ownership scan again",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "  if (alive(launch.pid) && processMatches(launch) && launchIdentityProof(launch.pid, identityValue, identityProbe) === false)\n    throw new Error(`jcode connector: spawned Jcode bridge ${launch.pid} does not carry its launch-bound identity — refusing unsafe teardown`);",
+      "replace": "  if (alive(launch.pid) && processMatches(launch) && !owned.has(launch.pid))\n    throw new Error(`jcode connector: spawned Jcode bridge ${launch.pid} does not carry its launch-bound identity — refusing unsafe teardown`);",
+      "expectRed": "exit window: an unprovable launch identity does not refuse and teardown returns",
+      "cell": "exit window: an unprovable launch identity does not refuse and teardown returns"
+    }
+  ]
+}

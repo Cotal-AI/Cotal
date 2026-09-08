@@ -5,6 +5,7 @@ import { userJcodeHome } from "@1jehuang/jcode-sdk";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
+import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
 const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-main.ts"}`, import.meta.url));
@@ -108,7 +109,7 @@ export const jcodeConnector: Connector = {
   // cotal_orientation turn before it joins. A generic 30s presence window is therefore not a
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
   // bootstrap sequence (#827).
-  readinessTimeoutMs: 180_000,
+  readinessTimeoutMs: JCODE_READINESS_TIMEOUT_MS,
   // variant = Jcode's per-session reasoning effort (`set_reasoning_effort`). The accepted tiers are
   // per provider AND per model, and the Harness API publishes no ladder to check against — so the
   // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog.

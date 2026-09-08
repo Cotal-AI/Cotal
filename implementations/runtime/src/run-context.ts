@@ -1,10 +1,12 @@
 /**
  * The `<run-context>` render: what a workflow's notices look like in an agent's context.
  *
- * **A fixed key→value table, never a sentence.** The property this buys is the whole reason
- * `notify` exists in its bounded form: a notice reads as DATA in the receiving agent's context and
- * cannot be mistaken for an instruction from the workflow. Prose would be an instruction whatever
- * intended, because an agent reading prose in its prompt has no way to tell who wrote it.
+ * **Every notice is a fixed key→value table row, never a sentence.** The property this buys is the
+ * whole reason `notify` exists in its bounded form: a notice reads as DATA in the receiving agent's
+ * context and cannot be mistaken for an instruction from the workflow. Prose would be an
+ * instruction whatever intended, because an agent reading prose in its prompt has no way to tell
+ * who wrote it. The one sentence this file can emit is the empty-set constant below, which no
+ * notice contributes to.
  *
  * Eight short scalars in a labelled table is not enough room to write an instruction. That is the
  * bound's purpose rather than a side effect of it, and it is enforced at the effect boundary
@@ -49,14 +51,20 @@ interface Row {
 
 const HEADER: Row = { decision: "decision", outcome: "outcome", detail: "detail" };
 
+/** What an empty notice set says. A constant: no notice contributes to it, so nothing an author
+ *  writes can reach this line. */
+const NO_NOTICES = "no decisions have been recorded for you in this run";
+
 /**
  * Render the notices addressed to one agent, ahead of one turn.
  *
  * Columns are padded to a fixed layout so the table reads as a table; the detail column is
  * `key=value` pairs in the order the notice recorded them, which is the order the program wrote
- * them. An empty set renders as an empty table rather than as nothing: "no decisions were told to
- * you" and "nobody rendered your context" are different facts, and only one of them is this
- * renderer's to state.
+ * them. An empty set still renders, because "no decisions were told to you" and "nobody rendered
+ * your context" are different facts and only one of them is this renderer's to state. It renders
+ * as one fixed sentence rather than as a bare header row: a header with nothing under it reads to
+ * an agent as a payload that failed to arrive, and two live seats treated it as one. The sentence
+ * is a constant with no notice data in it, so it carries nothing an author could forge.
  */
 export function renderRunContext(req: RunContextRender): string {
   for (const [field, value] of [["run", req.run], ["step", req.step]] as const)
@@ -74,14 +82,20 @@ export function renderRunContext(req: RunContextRender): string {
     return { decision: fact.decision, outcome: fact.outcome, detail: detail.join("  ") };
   });
 
+  const body = rows.length === 0 ? [NO_NOTICES] : tableLines(rows);
+
+  return [
+    `<run-context run="${req.run}" step="${req.step}">`,
+    ...body,
+    "</run-context>",
+  ].join("\n");
+}
+
+/** The padded table: the header plus one line per notice. */
+function tableLines(rows: readonly Row[]): string[] {
   const all = [HEADER, ...rows];
   const dW = Math.max(...all.map((r) => r.decision.length));
   const oW = Math.max(...all.map((r) => r.outcome.length));
   const line = (r: Row): string => `${r.decision.padEnd(dW)}  ${r.outcome.padEnd(oW)}  ${r.detail}`.trimEnd();
-
-  return [
-    `<run-context run="${req.run}" step="${req.step}">`,
-    ...all.map(line),
-    "</run-context>",
-  ].join("\n");
+  return all.map(line);
 }

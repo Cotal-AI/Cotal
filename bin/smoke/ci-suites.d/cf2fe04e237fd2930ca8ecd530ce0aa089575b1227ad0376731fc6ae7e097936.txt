@@ -1,0 +1,2 @@
+# The `cotal run` verb gate with no broker: refusal before any plane opens, usage names every verb. Appended.
+smoke:runtime-run-command-usage

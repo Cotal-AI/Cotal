@@ -1,0 +1,3 @@
+# Live CLI down must prove the sandbox held before the destructive verb (#884). This scan
+# is the adoption gate; without a CI shard it only ran from `pnpm check`, which no workflow invokes.
+smoke:sandbox-guard

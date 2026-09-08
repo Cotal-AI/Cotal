@@ -21,6 +21,8 @@ const AgentEntryObject = z
     /** Connector type to spawn this agent with (claude / opencode / hermes / …). Overrides the
      *  top-level `agent:` default; one of the two must be set (no silent default — matches roster). */
     agent: z.string().min(1).optional(),
+    /** Working directory on the manager host; relative to its workspace, never this manifest. */
+    cwd: z.string().min(1).refine((s) => !s.includes("\0"), "cwd must not contain a NUL byte").optional(),
     model: z.string().min(1).optional(),
     variant: z.string().min(1).optional(),
     /** Opaque connector-specific launch options, merged per key over the persona's `launchOptions:`. */

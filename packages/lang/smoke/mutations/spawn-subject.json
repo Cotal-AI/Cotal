@@ -1,0 +1,25 @@
+{
+  "suite": "packages/lang/smoke/options.smoke.ts",
+  "guard": "An effect's option bag is read as the table says: every accepted key is forwarded to the handler, the hashed ones decide divergence on a resume, and a subject the table cannot read is refused rather than coerced",
+  "command": "pnpm smoke:lang-options",
+  "completionMarker": "options.smoke:",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/spawn-subject.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "Batch B2 (2026-09-03), from a full-code audit: the record form of `spawn` read its persona",
+    "through `String(...)`, so `spawn({ model: \"m\" })` resolved to the literal persona",
+    "\"undefined\" and carried it into the input hash, the step name and the handler's request.",
+    "A missing persona is `undefined` crossing an effect boundary, which is what L3041 names."
+  ],
+  "mutations": [
+    {
+      "name": "a spawn subject with no persona is coerced to the string \"undefined\"",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (typeof named !== \"string\" || named === \"\")\n        throw new RuntimeFault(",
+      "replace": "      if (false)\n        throw new RuntimeFault(",
+      "expectRed": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
+      "cell": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
+      "note": "Measured 2026-09-03: KILLED. Thrown red: `Error: FAIL: a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\" - {\"code\":\"L4000\",\"kind\":\"handler-fault\"}` \u2014 without the refusal the persona \"undefined\" reaches the handler and faults there instead, which is the whole point. Its completion is named on an EARLY printed line rather than the suite summary: options.smoke's `ok` THROWS on the first failure, so a killed mutant never reaches `options.smoke:` and a summary marker would grade every kill here as inconclusive.",
+      "completionMarker": "ok the object form forwards the model"
+    }
+  ]
+}

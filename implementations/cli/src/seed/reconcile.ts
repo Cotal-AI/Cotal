@@ -13,7 +13,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -129,6 +129,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
       return NOOP;
     }
   }
+  assertReleasedSeedWriter(generation, "reconcile");
   const lock = acquireReconcileLock();
   try {
     // Claim the mutation lock INSIDE the reconcile lock's finally: if it throws (an operator `cotal
@@ -230,7 +231,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     const stampProvenance = describeStampProvenance(readStamp());
     throw new Error(
       `this cotal ${generation} is older than the seed store's generation ${storeGeneration}${stampProvenance} - ` +
-        `${recovery}, or \`cotal ext seed --reset\` to rebuild the store for this version`,
+        `${recovery}, or \`cotal ext seed --force\` to rebuild the store for this version`,
     );
   }
 

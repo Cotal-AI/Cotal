@@ -1,0 +1,20 @@
+{
+  "suite": "packages/seat/smoke/lifecycle.smoke.ts",
+  "guard": "failAll still settles a pending wait-exit when the child has already exited, instead of rejecting it as seat client is closed",
+  "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:seat-lifecycle",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/wait-exit-close.json",
+  "why": [
+    "Goal-sibling-race and manager-spawn-action caught the old failAll crash only because teardown happened to be fatal. This cell closes the client while wait-exit is still pending after a real exit, so the named assertion is the property."
+  ],
+  "mutations": [
+    {
+      "name": "reject every pending op on close, including wait-exit after exit",
+      "file": "packages/seat/src/client.ts",
+      "find": "    for (const [id, pending] of this.pending) {\n      if (pending.op === \"wait-exit\" && (this.helloInfo?.status === \"exited\" || this.pendingExit)) {\n        pending.resolve({ id, ok: true, op: \"wait-exit\", exit: this.helloInfo?.exit });\n      } else {\n        pending.reject(err);\n      }\n    }",
+      "replace": "    for (const pending of this.pending.values()) pending.reject(err);",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "wait-exit still settles after close once the child has exited",
+      "cell": "wait-exit still settles after close once the child has exited"
+    }
+  ]
+}

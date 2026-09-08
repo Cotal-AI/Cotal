@@ -374,7 +374,14 @@ export async function invokeCommand(
   service: ResolvedService,
   command: string,
   args: Record<string, unknown> | undefined,
-  opts: { target?: EpVerbTarget; deadlineMs?: number; currentEpoch?: (instanceId: string) => Promise<number> | number },
+  opts: {
+    target?: EpVerbTarget;
+    deadlineMs?: number;
+    currentEpoch?: (instanceId: string) => Promise<number> | number;
+    /** A caller-pinned envelope id (see {@link EpVerbOp.id}): a goal-accepting command binds its
+     *  goal under it, which is what lets a durable caller resubmit idempotently. */
+    id?: string;
+  },
 ): Promise<EpAttributedReply> {
   const resolved = service.commands.get(command);
   if (resolved === undefined)
@@ -442,6 +449,7 @@ export async function invokeCommand(
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
     ...(bind !== undefined ? { bind } : {}),
+    ...(opts.id !== undefined ? { id: opts.id } : {}),
   }, {
     deadlineMs: opts.deadlineMs ?? 10_000,
     currentEpoch: opts.currentEpoch ?? describeBound,

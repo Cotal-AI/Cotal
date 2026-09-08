@@ -1013,7 +1013,6 @@ export function runJournalConsumerConfig(
  * system.
  */
 export function runDriverJournalGrants(space: string, runId: string, takeoverId: string): string[] {
-  const stream = wfjStreamName(space);
   // The replay consumer is named per TAKEOVER, and its name is one subject token, so it cannot be
   // covered by a pattern: NATS treats `*` as a wildcard only as a WHOLE token, and `wfj_<run>_*` is
   // a literal that matches nothing (measured: a subscription to `api.WFJ.wfj_r-1_*` received
@@ -1022,14 +1021,18 @@ export function runDriverJournalGrants(space: string, runId: string, takeoverId:
   //
   // So the takeover id belongs to the CREDENTIAL: the rows are minted for the one attempt that will
   // use them, exactly as pinned as a per-run name was, and unique the way a shared name was not.
+  return [wfjSubject(space, runId), ...runJournalReplayGrants(space, runId, takeoverId)];
+}
+
+/** The READ half of {@link runDriverJournalGrants}: one takeover attempt's replay durable, create
+ *  through delete, and no publish on the run's subject. What a reader of a run's journal holds
+ *  (the hosting manager's `run-status` / `run-answer`, SPEC 14.3) and exactly what a driver holds
+ *  beyond its append right. */
+export function runJournalReplayGrants(space: string, runId: string, takeoverId: string): string[] {
+  const stream = wfjStreamName(space);
   const cfg = runJournalConsumerConfig(space, runId, takeoverId);
   const durable = cfg.durable_name!;
-  return [
-    wfjSubject(space, runId),
-    consumeCreateRow(stream, cfg),
-    ...consumeBindRows(stream, durable),
-    consumeDeleteRow(stream, durable),
-  ];
+  return [consumeCreateRow(stream, cfg), ...consumeBindRows(stream, durable), consumeDeleteRow(stream, durable)];
 }
 
 /** A serving instance's effects rows: BIND-ONLY on the provisioner-pre-created shared `eff_<e>`

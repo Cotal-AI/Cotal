@@ -34,7 +34,7 @@ function cotal(cfg: string, args: string[]): { status: number; stdout: string; s
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   const run = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...env, XDG_CONFIG_HOME: cfg },
+    env: { ...env, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
   });
   return { status: run.status ?? -1, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
 }

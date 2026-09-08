@@ -389,6 +389,23 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "commit-path", status: "commit-path" },
     mediation: "mediated",
   },
+  program: {
+    // The RUN PROGRAM: `program.<endpoint>.<runId>`, the source a run was started from, recorded
+    // beside its spec so a resume, a takeover, or a hosting daemon's restart needs no file from
+    // anybody. It is a record and not a field of the spec because the two are decided by
+    // different principals at different times: the spec's pins are the driver's, resolved once at
+    // activation, while the source is the author's, and a resume that hands over DIFFERENT source
+    // is a fork rather than a resume (§14.5), which is a comparison this record exists to make.
+    //
+    // ATOMIC and create-only: what a run was started from is one fact, written once by the driver
+    // that pinned the run and never updated. Run-pinned by key (`<endpoint>.<runId>`), so a
+    // driver's grant can name exactly its own run's source and no other's.
+    kind: "program",
+    qualifiers: [qEndpoint, qId("runId")],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   migration: {
     // The MIGRATION: `migration.<endpoint>.<runId>.<migrationId>`, one run's move onto edited
     // source — what the walk found, which refusals a person overrode, and who they were.

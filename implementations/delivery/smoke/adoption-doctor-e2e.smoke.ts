@@ -37,7 +37,11 @@ const check = (n: string, c: boolean, x?: unknown) => { if (c) { pass++; console
 const until = async (c: () => boolean, ms: number, step = 200) => { const d = Date.now() + ms; while (!c() && Date.now() < d) await wait(step); return c(); };
 
 const runDoctor = (root: string, fix = false) => {
-  const r = spawnSync(process.execPath, [cotalJs, "doctor", "auth", ...(fix ? ["--fix"] : [])], { cwd: root, encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
+  const r = spawnSync(process.execPath, [cotalJs, "doctor", "auth", ...(fix ? ["--fix"] : [])], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1" },
+  });
   return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
 };
 // The admin responder has a brief re-arm window after boot / after a swap; retry on no-responders.

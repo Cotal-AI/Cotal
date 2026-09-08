@@ -24,6 +24,8 @@ export function genRunId(): string {
 export function hashAgent(a: PreparedAgent): string {
   const stable = JSON.stringify({
     agent: a.agentType,
+    // Preserve hashes of existing manifests that omit cwd. A directory change requires restart.
+    ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
     model: a.model ?? null,
     variant: a.variant ?? null,
     // Sort keys so an identical option set hashes identically (map insertion order must not drift).
@@ -46,6 +48,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
   return {
     name: a.name,
     agent: a.agentType,
+    cwd: a.cwd,
     role: a.role,
     model: a.model,
     variant: a.variant,

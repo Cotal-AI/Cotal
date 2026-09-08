@@ -1,0 +1,23 @@
+{
+  "suite": "bin/smoke/lang-supervise-live.smoke.ts",
+  "guard": "A cotal-lang program that spawn()s with supervise restarts the REAL seat in place after SIGKILL: the replacement pulls and yields the same turn goal, then a second kill spends the budget and the next turn fails L4002.",
+  "command": "pnpm smoke:lang-supervise-live",
+  "completionMarker": "lang-supervise-live.smoke:",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/lang-supervise-live.json",
+  "why": [
+    "SPEC 14 supervise on spawn is the manager's restart-armed branch. The suite runs the manager",
+    "from its built package, so a mutation on manager src is seen through that build and afterRestore",
+    "rebuilds so the restored source is the artifact again. One mutant, aimed at the restart-armed branch."
+  ],
+  "mutations": [
+    {
+      "name": "a supervised exit follows the ordinary terminal path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (a.restart.policy !== undefined) {\n        this.recoverManagedSession(a);\n        return;\n      }",
+      "replace": "      if (false) {\n        this.recoverManagedSession(a);\n        return;\n      }",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a supervised crash keeps the same managed row",
+      "cell": "a supervised crash keeps the same managed row"
+    }
+  ]
+}

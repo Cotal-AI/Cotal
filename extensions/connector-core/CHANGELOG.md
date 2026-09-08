@@ -1,5 +1,117 @@
 # @cotal-ai/connector-core
 
+## 0.47.0
+
+### Patch Changes
+
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+- 18a0024: The manager hosts workflow runs. `run-start`, `run-resume`, `run-answer`, `run-status` and
+  `run-ps` are served on the manager's endpoint rails; a run is validated before anything is
+  recorded, driven in the manager's process under a per-run `run-driver` credential, and taken back
+  from its journal after a manager restart. `cotal run` is a client of that surface by default,
+  with `--local` keeping the in-process drive, now under the run's own `run-driver` and
+  `run-operator` credentials rather than `admin`; an answer's writes are pinned to the one pause it
+  answers. A user-auth mesh refuses the family by name until a run can carry its user's owner. A new `run` capability mints the family into an
+  agent's credential and injects the `cotal_run` tool, so an agent can write a cotal-lang program
+  and start it from a session. `run-answer` records the answerer from the caller's credential and
+  takes no `by`; `cotal run answer` drops `--by` on the hosted path. `spawn({ supervise })` is a restart policy the manager enforces in
+  place: `{ restarts, window? }` (default `10m`) until the budget is spent, then the seat is
+  retired and the next `turn` is L4002. A policy this host cannot honour is refused at accept.
+- e986173: Make manager `inspect` distinguish a stranded static slot from an unknown name through structured durable-state details, and make `attach` stop reconnecting when those details show the seat is gone.
+
+## 0.45.0
+
+### Patch Changes
+
+- 2a34295: `cotal send` identity refusal and CLI docs now name `COTAL_NAME` as required in both accepted shapes: plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
+
+## 0.44.0
+
+### Minor Changes
+
+- ba9af19: Refuse a source-checkout `cotal` from writing or GC'ing the operator-global seed store. A missing identity answer is a refusal, not a released install. The refusal names `$XDG_CONFIG_HOME` isolation, not the test-only `COTAL_ALLOW_CHECKOUT_SEED=1` override. An older CLI that meets a newer store is pointed at `cotal ext seed --force`, not `--reset`. `COTAL_HOME` does not relocate this store.
+
+## 0.43.0
+
+### Minor Changes
+
+- 64d6131: Require a complete seat identity (`COTAL_NAME` plus `COTAL_ID`, or `COTAL_OWNER` plus `COTAL_ACTOR`) for one-shot CLI messages, so a nameless `cotal send` cannot deliver as the command verb. Isolate the send smoke's CLI subprocesses from the operator seed store (`HOME`, `XDG_CONFIG_HOME`, `TMPDIR`, strip `COTAL_*`). In-tree callers that previously relied on a missing or ambient name now set that identity: `send.smoke.ts`, `user-auth-launch.smoke.ts`, `sys-rotation-e2e.smoke.ts`, `up-tls-routes-live.smoke.ts`, `backup-usermode-live.smoke.ts`, and `backup-faults-live.smoke.ts`. A child that inherited a seat's environment is still attributed as that seat.
+
+### Patch Changes
+
+- d967f76: Bound the Jcode connector's pre-join `cotal_orientation` proof so a heavy persona cannot keep a seat alive and unreachable. A turn that overruns the declared three-minute window now exits `readiness_timeout` instead of working with no mesh presence. That teardown kills the private Jcode tree and discards the in-flight turn; nothing from it is recovered. The connector log still names the gate while the proof is running, and a later outcome line names what happened: proved (with or without a spawn `--prompt`), provider refusal, or timeout. A hang that never returns and never hits the bound has no outcome line.
+
+## 0.42.0
+
+### Minor Changes
+
+- a87709c: Every cotal-lang effect now performs on the mesh: the durable-action group is built end to end and
+  the not-yet-durable seam is gone.
+
+  `spawn` submits a real manager goal and returns the allocated seat's handle, and meters the
+  agent's `permits` (`turns`, `wallClock`; the turn that would exceed one is L4001, and a budget the
+  host cannot meter is refused at spawn); `conclave` opens a scoped sub-team as durable membership
+  rows; `ask` parks schema-checked pauses answered through `cotal run answer` and tells the agent
+  over the turn relay, one relay per attempt carrying the schema, the attempt and the previous
+  refusal, which every connector's intake renders with the answer command; `monitor` registers the
+  handle on its journal entry and `wait(down)` reads a monitored incarnation's death off presence
+  liveness, refusing an agent nobody monitored.
+  `turn` rides a new pull-shaped manager relay: the manager serves `turn` (targeted, the
+  despawn/input reach) plus `turn-pending` and `turn-yield` (self reach, manager contract revision
+  10), holds the payload on the goal-index note, pins the goal to the seat's incarnation, and denies
+  at a goal-bound deadline hold; the seat side (all connectors) pulls pending turns, surfaces them
+  two-phase into host context, auto-yields `done` when the host turn ends, and yields `blocked` or
+  `handoff` through the new `cotal_yield` tool; the run client renders context with pending notices,
+  arms its own pause on the acceptance's deadline as the L4003 authority, watches presence as the
+  L4002 authority (a death the manager marks on the deadline terminal reads the same way), and
+  honors handoffs (L4005/L4004 validation, the `handoffFrom` goal chain); the manager shows a seat
+  one turn at a time. The relay holds on an auth mesh: the agent baseline gains the self-mode
+  `turn-pending` and `turn-yield` rows, the operator seat-write set (`control-caller-admin`, the
+  `admin` capability) gains `turn` beside `input`, and the manager mints the deadline hold's
+  schedule over its serve connection and owner-expires the hold once due instead of reading a
+  fire it holds no grant for. `wait(replied)` observes the run's own turn terminals as a level, and never a
+  turn the run itself ended without an accepted yield. A `spawn` may bind a logical worktree: the
+  validator rejects two literal-worktree spawns in one concurrent scope (L3022, named branch
+  functions included) and the runtime claims a tree before it submits, refusing a second spawn into
+  a tree held by a live seat or by a spawn in flight (L4008), with sequential reuse the moment the
+  holder's presence lapses. A spawn refused at accept is L4000 (L4001 for seat capacity) and one
+  whose seat never came up is L4002; an `ask` whose deadline passes with no conforming record is
+  L4006; a fork copies a spawn that said `onFork: "adopt"` and refuses one that would have to
+  respawn (L5019). The run driver re-issues
+  recorded-but-undischarged cancellations at adoption, so recovery does not wait for completion to
+  release a dead loser's seat, pause, or tree. A migration's `--adopt <handle>` hands the orphaned
+  seat to the edited program's next spawn of that persona, and `--release <handle>` despawns it at
+  commit through the run's own discharge; both name the agent the step spawned, and a spawn that
+  produced none is an orphan like a sleep; the adopting spawn binds the orphaned spawn's goal as
+  its own, so a resume re-reads the seat and a cancellation despawns it. A turn accept the manager
+  cannot finish unwinds to a failed terminal on its bound goal, and a retry of it is refused naming
+  that terminal. The delivery daemon hosts the checkpoint timer writer, so mediated deadlines fire
+  with no suite pump.
+
+## 0.41.4
+
+## 0.41.3
+
+## 0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- 80ddc41: Re-read managed seat credential files during renewal and reconnect while pinning the original nkey.
+
+## 0.41.0
+
+### Minor Changes
+
+- 42d80da: cotal-lang DX: the conformance corpus and the language card. Every js block in the language reference is generated into a JSON artifact shipped inside @cotal-ai/lang (conformance/corpus.json) with the verdict the validator gives it, served by a new conformanceCorpus() accessor, so a second implementation can run the same claims from the file alone; pnpm gen:conformance regenerates it and smoke:lang-conformance holds the shipped bytes identical to a fresh build from the reference. The artifact states its own adjudication rule, so a reader holding only the JSON knows a refusal is checked by membership in the validator's answered codes, never by equality with a single code. docs/lang-card.md is a one-page card of the language (effects and their results, the await rule, branch keys, top refusals), validated block by block like the reference itself, carried in the connector docs bundle, and published on the docs site beside the other reference pages.
+
 ## 0.40.0
 
 ## 0.39.1

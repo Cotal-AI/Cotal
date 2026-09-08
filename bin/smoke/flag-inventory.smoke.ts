@@ -28,7 +28,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
   // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.
   setup: { flags: ["demo:boolean", "full:boolean", "skills:boolean", "yes:boolean:y"], positionals: false },
-  update: { flags: ["self:boolean"], positionals: false },
+  // `--space`/`--server`/`--creds` (2026-09): after disk reconciliation, `update` reports the
+  // selected running manager's custody generation. A legacy manager is not a hot update.
+  update: { flags: [...TARGET, "self:boolean"], positionals: false },
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
@@ -225,7 +227,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   run: {
     flags: [
       "artifact:string", "by:string", "creds:string", "endpoint:string", "file:string:f",
-      "server:string", "space:string", "timeout:string", "value:string",
+      "local:boolean", "server:string", "space:string", "timeout:string", "value:string",
     ],
     positionals: true,
   },

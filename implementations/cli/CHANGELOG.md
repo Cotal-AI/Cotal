@@ -1,5 +1,173 @@
 # @cotal-ai/cli
 
+## 0.47.0
+
+### Patch Changes
+
+- 8ec22cb: `cotal down` and `cotal describe` now dial with the TLS requirement the mesh record holds, instead
+  of passing `tls: false` at every one of their three dials. On a mesh recorded `tls://`, `wss://` or
+  added with `--tls`, those connections previously tolerated a plaintext broker; they now require the
+  handshake, which is what the recorded requirement means everywhere else. This is fail-closed on
+  `down`, a destructive command: a mesh recorded TLS-required whose broker answers plaintext now
+  fails there. Target preflight already refuses that mesh one step earlier, so no reachable mesh
+  changes behaviour.
+- f3103b3: Refresh an explicitly named local space from its matching same-server registry record instead of a record chosen by registry order.
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+- 8ec22cb: `cotal supervise` on a registered remote mesh now dials the broker URL the registry actually
+  holds. A remote broker is commonly published over a `wss://` edge, and the manager-authority
+  registration the supervisor runs first handed that URL to the raw node transport, which refuses a
+  websocket URL outright, so supervision stopped before a manager was ever constructed. That
+  registration and every other control dial this audit found can be handed a registry server URL now
+  select the transport from the scheme, including the planes `cotal run --local` opens, which failed
+  on such a mesh for the same reason. The registration also carries the record's TLS requirement
+  instead of assuming a plaintext broker, so a participant no longer downgrades its prepare
+  credential exchange on a mesh the registry describes as TLS-required. On the same path, the cluster
+  artifacts the registration reads back are now looked up by the key form the content-addressed store
+  uses, which a remote registration reached with a prefixed digest reference and could not resolve.
+- 8aee1c0: Allow generic `describe` and `invoke` to use an authorized user-mode bearer while preserving endpoint grant and TLS enforcement.
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+- 18a0024: The manager hosts workflow runs. `run-start`, `run-resume`, `run-answer`, `run-status` and
+  `run-ps` are served on the manager's endpoint rails; a run is validated before anything is
+  recorded, driven in the manager's process under a per-run `run-driver` credential, and taken back
+  from its journal after a manager restart. `cotal run` is a client of that surface by default,
+  with `--local` keeping the in-process drive, now under the run's own `run-driver` and
+  `run-operator` credentials rather than `admin`; an answer's writes are pinned to the one pause it
+  answers. A user-auth mesh refuses the family by name until a run can carry its user's owner. A new `run` capability mints the family into an
+  agent's credential and injects the `cotal_run` tool, so an agent can write a cotal-lang program
+  and start it from a session. `run-answer` records the answerer from the caller's credential and
+  takes no `by`; `cotal run answer` drops `--by` on the hosted path. `spawn({ supervise })` is a restart policy the manager enforces in
+  place: `{ restarts, window? }` (default `10m`) until the budget is spent, then the seat is
+  retired and the next `turn` is L4002. A policy this host cannot honour is refused at accept.
+
+### Patch Changes
+
+- e986173: Make manager `inspect` distinguish a stranded static slot from an unknown name through structured durable-state details, and make `attach` stop reconnecting when those details show the seat is gone.
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+  - @cotal-ai/core@0.46.0
+  - @cotal-ai/workspace@0.46.0
+
+## 0.45.0
+
+### Patch Changes
+
+- 2a34295: `cotal send` identity refusal and CLI docs now name `COTAL_NAME` as required in both accepted shapes: plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
+- Updated dependencies [299a353]
+- Updated dependencies [38d7bb7]
+  - @cotal-ai/core@0.45.0
+  - @cotal-ai/workspace@0.45.0
+
+## 0.44.0
+
+### Minor Changes
+
+- ba9af19: Refuse a source-checkout `cotal` from writing or GC'ing the operator-global seed store. A missing identity answer is a refusal, not a released install. The refusal names `$XDG_CONFIG_HOME` isolation, not the test-only `COTAL_ALLOW_CHECKOUT_SEED=1` override. An older CLI that meets a newer store is pointed at `cotal ext seed --force`, not `--reset`. `COTAL_HOME` does not relocate this store.
+
+### Patch Changes
+
+- 2850a5a: Count a smoke suite as gated only when a CI job actually runs it. join-external live coverage now rides its own live-job step; a duplicate connect classifier that only `pnpm check` reached is gone. Backup live suites stay UNGATED as already-red (#643 / #1285).
+  - @cotal-ai/core@0.44.0
+  - @cotal-ai/workspace@0.44.0
+
+## 0.43.0
+
+### Minor Changes
+
+- 64d6131: Require a complete seat identity (`COTAL_NAME` plus `COTAL_ID`, or `COTAL_OWNER` plus `COTAL_ACTOR`) for one-shot CLI messages, so a nameless `cotal send` cannot deliver as the command verb. Isolate the send smoke's CLI subprocesses from the operator seed store (`HOME`, `XDG_CONFIG_HOME`, `TMPDIR`, strip `COTAL_*`). In-tree callers that previously relied on a missing or ambient name now set that identity: `send.smoke.ts`, `user-auth-launch.smoke.ts`, `sys-rotation-e2e.smoke.ts`, `up-tls-routes-live.smoke.ts`, `backup-usermode-live.smoke.ts`, and `backup-faults-live.smoke.ts`. A child that inherited a seat's environment is still attributed as that seat.
+- e5412a1: Add per-agent `cwd` to mesh manifests. Relative paths resolve on the manager host against its workspace, matching the imperative spawn option. The directory survives launch-spec validation and contributes to stale-entry detection without changing hashes for manifests that omit it.
+
+  This implements the working-directory part of #963. Manifest session continuity remains separate work.
+
+### Patch Changes
+
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/core@0.43.0
+  - @cotal-ai/workspace@0.43.0
+
+## 0.42.0
+
+### Patch Changes
+
+- Updated dependencies [a87709c]
+  - @cotal-ai/core@0.42.0
+  - @cotal-ai/workspace@0.42.0
+
+## 0.41.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.4
+- @cotal-ai/workspace@0.41.4
+
+## 0.41.3
+
+### Patch Changes
+
+- Updated dependencies [436f7d4]
+  - @cotal-ai/core@0.41.3
+  - @cotal-ai/workspace@0.41.3
+
+## 0.41.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.2
+- @cotal-ai/workspace@0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.1
+- @cotal-ai/workspace@0.41.1
+
+## 0.41.0
+
+### Minor Changes
+
+- dbd7d98: Keep agent-profile minting within one resolved mesh root.
+
+  `cotal mint` now reads the persona ACL, loads the signing authority, and stores the default credential under the selected mesh root. If the current folder holds trust for a different space or account, it refuses before writing and names both roots instead of combining authority material from one root with persona policy from another.
+
+- 96e1d54: Resolve the persona catalog from the target mesh rather than the current directory.
+
+  `cotal personas` listed the personas of whatever directory it ran in, while `cotal spawn` launched from the mesh it resolves — so from one directory the two could name completely different sets, with neither saying anything was wrong. Every `cotal personas` subcommand now reads and writes the resolved mesh's catalog, which also makes `--space` and `--server` real for the listing rather than only for the live `--running` overlay: naming a mesh now moves the catalog, and an unresolvable target refuses instead of silently acting on another directory's files. `cotal spawn --role`/`--subscribe` and `cotal send msg`/`ask` complete from that same catalog.
+
+  The library functions behind this (`personasDir`, `listPersonas`, `listPersonaNames`, `listDeclaredChannels`, `listDeclaredRoles`) now require an explicit root instead of defaulting to the current directory, so a caller that omits one fails to compile rather than answering about the wrong place.
+
+- 5ec7feb: Pin every stack pidfile to its process's creation identity before teardown. `up` writes a sibling `<pidfile>.identity` containing the pid and process start where the OS reports one. Every stop path checks it before signalling: a reused pid or torn pin is refused and preserved, and rerunning after the process is stopped clears the stale record automatically. A live pre-pin record warns and proceeds so the first teardown after an upgrade still works; relaunching writes the pin and enables full match and mismatch protection.
+
+### Patch Changes
+
+- bc2f328: Seed personas into the catalog `cotal spawn` reads, and name that directory in the output.
+
+  `cotal setup` wrote `.cotal/agents/default.md` under the directory it ran in, while `cotal spawn` loads its persona from the mesh it resolves. On a machine where those differ — a shell outside any project, plus a mesh whose root is elsewhere — setup created a file spawn would never open, so `no default persona yet - run cotal setup to seed one` survived running exactly the command it named. Setup now seeds into the resolved mesh's catalog, including when that mesh was registered against a brand-new directory with no `.cotal` in it yet.
+
+  Every seed states its destination as an absolute path, and when the mesh's root is not the current directory both are shown, so the choice is visible rather than assumed. With no mesh running at all the current directory is still the answer — setup has to work before the first `cotal up` — but it says that it fell back and why. With several meshes running and none selected it refuses and asks you to pick, instead of choosing a root on your behalf.
+
+  `cotal spawn`'s refusal now names the absolute directory it searched and the mesh that directory came from, so a persona that is missing from one catalog and present in another is diagnosable from the message itself.
+
+- 7dab05c: `cotal status` now names the root behind every persona row, and flags the case where the folder you are standing in is not the one a bare `cotal spawn` will use.
+
+  Status could print `personas  default` in green under "This Folder" while `cotal spawn` refused in the same second with "no default persona yet". Both were right about their own root and neither said which root that was: the folder's catalog is `<root>/.cotal/agents`, while spawn loads the resolved mesh's, and the two diverge whenever `cotal use`, a `--space`, or a registry entry points elsewhere. The personas status listed and the personas spawn could launch could be completely disjoint.
+
+  When the two roots differ, status now names both, says what the spawn root actually offers, and drops the green from a `default` that will not launch. When they agree, the output stays as short as it was.
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+- Updated dependencies [5ec7feb]
+  - @cotal-ai/core@0.41.0
+  - @cotal-ai/workspace@0.41.0
+
 ## 0.40.0
 
 ### Patch Changes

@@ -61,6 +61,15 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
 The shared tool surface and inbound-message model are documented once, for all connectors: see
 [mcp-tools.md](mcp-tools.md) and [connect-claude.md](connect-claude.md).
 
+## How presence follows the turn
+
+The hooks map Hermes's lifecycle onto presence: `pre_llm_call` and `pre_tool_call` write `working`,
+`approval_wait` writes `waiting`, `post_llm_call` and `on_session_end` write `idle`. That last
+working-to-idle transition is the turn boundary the run relay reads (a surfaced run turn yields
+`done` there), so `gateway_startup` and `on_session_start` write their `idle` through a path that
+moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
+lifecycle event, and treating it as an ending would yield work the model had not finished.
+
 ## Limits
 
 - **Unix-only** (no Windows).

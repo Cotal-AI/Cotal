@@ -23,6 +23,33 @@
       "completionMarker": "ok every js block in docs/workflows.md validates as written",
       "cell": "Appendix A lists exactly the catalog's codes, 99 of them, each once",
       "note": "The other direction, and the one a title comparison alone would miss: the document keeps a row whose code no longer exists. L5021 is chosen because no cell in this suite raises or names it, so the mutant reaches the set comparison rather than reding something upstream. The set cell runs BEFORE the title cell, so under this mutant it is the first red and the title cell never runs."
+    },
+    {
+      "name": "a code outside the catalog is thrown again",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      throw new InterpreterDefect(`the primitive ${name}`);",
+      "replace": "      throw new RuntimeFault(\"L1000\", `${name} is not implemented in this interpreter`);",
+      "expectRed": "every code this package THROWS is one the catalog carries",
+      "cell": "every code this package THROWS is one the catalog carries",
+      "note": "Appendix A and the catalog agree perfectly about a code that is in NEITHER. L1000 was thrown at eight sites and no reader could look it up."
+    },
+    {
+      "name": "an engine site throws a code outside the catalog, one directory down from the walker",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          throw new InterpreterDefect(`the operator ${op}`);",
+      "replace": "          throw new RuntimeFault(\"L1000\", `unsupported operator ${op}`);",
+      "expectRed": "every code this package THROWS is one the catalog carries",
+      "cell": "every code this package THROWS is one the catalog carries",
+      "note": "The scan read src/*.ts and called the package clean while src/engine/ threw L1000 at eleven sites, seven of them in the multi-line spelling a per-line match could not see either. The scan now walks every file the package ships and matches across lines; this mutant puts the code back at the walker's twin and must red the same cell."
+    },
+    {
+      "name": "an engine site throws a code outside the catalog in the MULTI-LINE spelling",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          throw new InterpreterDefect(`the operator ${op}`);",
+      "replace": "          throw new RuntimeFault(\n            \"L1000\",\n            `unsupported operator ${op}`,\n          );",
+      "expectRed": "every code this package THROWS is one the catalog carries",
+      "cell": "every code this package THROWS is one the catalog carries",
+      "note": "The other half of the scan fix. Seven of the engine's eleven L1000 sites were spelled with the code on the line after the constructor, and a per-line match read them as clean; the single-line mutant above cannot tell a whole-file match from a per-line one. A scan refactored back to lines keeps the recursive walk, keeps the single-line mutant red, and ships this spelling again."
     }
   ]
 }

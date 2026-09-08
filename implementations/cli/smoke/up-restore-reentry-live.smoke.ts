@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join, resolve as resolvePath } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 
 const freePort = (): Promise<number> =>
@@ -48,6 +49,8 @@ const freePort = (): Promise<number> =>
 const scratch = makeScratch("cotal-up-restore-reentry-");
 const home = mkdtempSync(join(scratch, "home-"));
 const root = mkdtempSync(join(scratch, "root-"));
+const configDir = join(home, "xdg");
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 process.env.COTAL_HOME = home;
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
@@ -77,17 +80,19 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const baseEnv = (() => {
   const copy = { ...process.env };
   for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
-  return { ...copy, COTAL_HOME: home };
+  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 })();
 
 /** Blocking `cotal <args>`, the way an operator runs it. */
 function runSync(args: string[], extraEnv: Record<string, string> = {}) {
-  return spawnSync(TSX, [CLI, ...args], {
+  const options = {
     cwd: root,
     env: { ...baseEnv, ...extraEnv },
-    encoding: "utf8",
+    encoding: "utf8" as const,
     timeout: 240_000,
-  });
+  };
+  assertSmokeSandboxDown(sandbox, args, options);
+  return spawnSync(TSX, [CLI, ...args], options);
 }
 
 const tail = (r: { stdout?: string; stderr?: string }) => `${r.stdout ?? ""}${r.stderr ?? ""}`;

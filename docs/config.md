@@ -94,6 +94,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin) | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works | off |
+| `COTAL_ALLOW_CHECKOUT_SEED` | seed store | Permit a source-checkout CLI to write the operator-global seed store (`1`) after isolating `$XDG_CONFIG_HOME`. Used by in-tree seed smokes that spawn the checkout-shaped `bin/` CLI into a scratch config. Any other value is ignored. The checkout refusal does not name this variable. | off |
 | `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (`ctrl-<char>` / `^<char>`) | `ctrl-]` |
 | `COTAL_FEEDBACK_KEY` | `feedback`, connector | Beta feedback key → keyed intake | none (public intake) |
 | `COTAL_FEEDBACK_EMAIL` | `feedback`, connector | Contact email for the keyless public intake | your git email |
@@ -177,9 +178,13 @@ asked for any of it.
 
 So a launcher-spawned seat does not get them in its environment. The launcher writes them to a single
 **0600 file inside a 0700 private directory** and exports only its path, as `COTAL_LAUNCH_MATERIAL`.
-The session reads the file once at startup. This is the same shape `cotal agent-bearer` already uses
-for its spawn-time secret: the material rides a file, never argv (which is visible in a process
-listing) and never the ambient environment (which is inherited).
+The session reads the launch-material file once at startup. For a managed creds path, it reads the
+credential once to pin the seat's nkey, then keeps the path as a renewal source. A re-signed file is
+read by renewal and by reconnect after the cached credential expires, and a file for a different
+nkey is refused. An unbounded credential has no renewal point and remains a static boot-time value.
+This is the same shape
+`cotal agent-bearer` already uses for its spawn-time secret: the material rides a file, never argv
+(which is visible in a process listing) and never the ambient environment (which is inherited).
 
 Three connectors drop the path once they have read it, so the shells and tools those seats run
 inherit no reference at all: **pi** and **codex**, whose sessions run in the seat process, and
@@ -280,14 +285,18 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 
 Both `extensions/` and `seed/store/` are operator-global: shared by every space, project directory, and
 checkout on the machine, and moved only by `$XDG_CONFIG_HOME` (a fresh project dir isolates `.cotal/`,
-not these). Running `cotal up`, or any command that seeds, from a tree that is not a released install
-re-seeds `seed/store/<version>` with that tree's packages under the same version key, so every later
-mesh on the machine materializes those bytes while `cotal ext ls` still reports the published version.
-To keep the machine-wide store untouched when running from a non-released checkout, point
-`$XDG_CONFIG_HOME` at an isolated dir (on Windows, `%APPDATA%` relocates them). The reconcile names on
-stderr both the store payloads it writes and any old generation it removes, so a machine-wide re-seed
-or cleanup is visible when it happens. Those lines are provenance output: a run whose stderr is closed
-or redirected away keeps the write and loses the line.
+not these). `COTAL_HOME` does not relocate them. A CLI running from a source checkout (`pnpm cotal`,
+`tsx bin/cotal.ts`, `node bin/cotal.ts`, or a suite child of those, identified by a `bin/` package
+root next to `implementations/` or `pnpm-workspace.yaml`) refuses to write, stamp, or
+garbage-collect that store: the refusal names the store path, the generation it declined, and
+`$XDG_CONFIG_HOME` as the isolation remedy. An entry that cannot be proven as a released `cotal-ai`
+install is refused the same way. Isolate with `$XDG_CONFIG_HOME` (on Windows, `%APPDATA%`). A
+released install or an `npx` unpack still seeds as before. The in-tree seed smokes that must seed
+from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` against an isolated config; an
+opt-in write still records that checkout path in `seed/stamp.json` as `writtenBy`. The reconcile
+names on stderr both the store payloads it writes and any old generation it removes, so a
+machine-wide re-seed or cleanup is visible when it happens. Those lines are provenance output: a
+run whose stderr is closed or redirected away keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).

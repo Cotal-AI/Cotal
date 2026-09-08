@@ -110,7 +110,7 @@ async function openMesh(label: string, space: string): Promise<Mesh> {
   const configDir = join(home, "xdg");
   const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   const server = `nats://127.0.0.1:${await freePort()}`;
-  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
   const run = (...args: string[]) => {
     const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(sandbox, args, options);

@@ -58,8 +58,28 @@ check("the API path identifies the newer run for the same PR as intentional supe
   supersededVerdict.kind === "superseded" && supersededVerdict.supersedingRunId === 11, supersededVerdict);
 
 console.log("\nB. the real CI aggregate reaches the classifier without adding another queued job");
-check("ci-ok remains the one dependent aggregate over unit, smoke and live",
-  /  ci-ok:\n(?:.|\n)*?    if: always\(\)\n    needs: \[unit, smoke, live\]/.test(workflow));
+function workflowJobs(src: string): Array<{ name: string; body: string }> {
+  const idx = src.search(/^jobs:\s*$/m);
+  const body = idx >= 0 ? src.slice(idx) : src;
+  const matches = [...body.matchAll(/^  ([A-Za-z0-9_-]+):\n/gm)];
+  return matches.map((m, i) => {
+    const start = m.index! + m[0].length;
+    const end = i + 1 < matches.length ? matches[i + 1].index! : body.length;
+    return { name: m[1]!, body: body.slice(start, end) };
+  });
+}
+function jobLevelAlways(body: string): boolean {
+  const header = body.split(/^    steps:\n/m)[0] ?? body;
+  return /^    if: always\(\)\s*$/m.test(header);
+}
+const jobs = workflowJobs(workflow);
+const ciOk = jobs.find((j) => j.name === "ci-ok");
+const alwaysJobs = jobs.filter((j) => jobLevelAlways(j.body)).map((j) => j.name);
+const ciOkNeeds = ciOk?.body.match(/^\s+needs:\s*\[([^\]]+)\]/m)?.[1] ?? "";
+const needNames = ciOkNeeds.split(",").map((n) => n.trim()).filter(Boolean);
+const requiredNeeds = ["unit", "smoke", "live", "seat-pack", "seat-linux-arm64"];
+check("ci-ok needs include unit, smoke, live, and the ARM validation leaves",
+  requiredNeeds.every((n) => needNames.includes(n)), needNames);
 check("the aggregate check name makes its live-outcome role visible",
   workflow.includes("name: ci-ok (live outcome classified)"));
 check("the aggregate grants only read access needed for checkout and the Actions jobs API",
@@ -68,7 +88,15 @@ check("the workflow calls the committed classifier with the measured 25-minute b
   workflow.includes("node scripts/live-job-conclusion.mjs")
   && workflow.includes("--timeout-seconds 1500"));
 check("the classifier is inside ci-ok and runs before the aggregate gate",
-  workflow.indexOf("node scripts/live-job-conclusion.mjs") < workflow.indexOf("      - name: Gate"));
+  workflow.indexOf("node scripts/live-job-conclusion.mjs") < workflow.indexOf("      - name: Gate")
+  && (ciOk?.body.indexOf("node scripts/live-job-conclusion.mjs") ?? -1) >= 0
+  && (ciOk?.body.indexOf("node scripts/live-job-conclusion.mjs") ?? 0) < (ciOk?.body.indexOf("- name: Gate") ?? -1));
+check("ci-ok is the sole job-level always aggregate",
+  alwaysJobs.length === 1 && alwaysJobs[0] === "ci-ok", alwaysJobs);
+const gateBody = ciOk?.body.slice(ciOk.body.indexOf("- name: Gate")) ?? "";
+check("Gate fails unless all five direct needs succeed",
+  requiredNeeds.every((n) => gateBody.includes(`[ "\${{ needs.${n}.result }}" = "success" ]`)),
+  gateBody);
 
 console.log(`\n${fail === 0 ? "LIVE JOB CONCLUSION SMOKE OK ✅" : "LIVE JOB CONCLUSION SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);

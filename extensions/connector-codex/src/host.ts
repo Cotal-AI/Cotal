@@ -545,14 +545,24 @@ export async function runCodexHost(): Promise<void> {
     try {
       const parts: string[] = [];
       let ids: string[] = [];
+      let turnIds: string[] = [];
+      // Run turns ride the same composed injection; their ids commit as surfaced only once the
+      // turn start is ACCEPTED below (two-phase — a failed start re-surfaces them, never a lie).
+      const turnPeek = agent.peekPendingTurns();
       if (override) {
         parts.push(override);
       } else {
         const items = agent.peekInbox("automatic");
-        if (items.length === 0) return;
-        ids = items.map((i) => i.recvKey);
-        const inj = formatInjection(items);
-        if (inj) parts.push(inj);
+        if (items.length === 0 && !turnPeek) return;
+        if (items.length > 0) {
+          ids = items.map((i) => i.recvKey);
+          const inj = formatInjection(items);
+          if (inj) parts.push(inj);
+        }
+      }
+      if (turnPeek) {
+        turnIds = turnPeek.goalIds;
+        parts.push(turnPeek.text);
       }
       if (parts.length === 0) return;
       if (!briefed) {
@@ -568,6 +578,8 @@ export async function runCodexHost(): Promise<void> {
       // The turn ACCEPTED the pull hint — only now is the latch consumed. (A failed start keeps
       // it latched; the retry rail re-drives it, since no inbox copy can.)
       if (override && override === pendingPullHint) pendingPullHint = undefined;
+      // Same acceptance commits the run turns: the injection is in the model's prompt now.
+      if (turnIds.length) agent.commitSurfacedTurns(turnIds);
     } catch (e) {
       surfaced = [];
       awaitingTurnEnd = false;

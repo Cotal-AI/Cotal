@@ -102,12 +102,13 @@ rather than choosing a catalog.
 ## update
 
 ```bash
-cotal update [--self]
+cotal update [--self] [--space <s>] [--server <url>] [--creds <path>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
+| `--space`, `--server`, `--creds` | resolved mesh | Select the running manager whose continuity state is reported |
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
 binary: it force-reconciles the four built-in connectors, then reinstalls other `@cotal-ai/*`
@@ -115,12 +116,22 @@ operator extensions at the binary's exact version. Each extension runs in an iso
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
 
-With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
-version it validated, resolves and verifies that package in npm's global root, then launches that
-binary to reconcile connectors and first-party extensions to the new generation. An npx or dev-clone
-invocation therefore installs and continues through a separate global copy; it never claims the
-already-running process changed. If the binary is current, `--self` performs the normal local
-reconcile without reinstalling it.
+After disk reconciliation, `update` reads the selected running manager. A manager without a
+custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
+command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
+for every seat. This report sends no stop, preservation-commit, or replacement command.
+It does not preserve a running PTY on a legacy manager. On Linux a detached custodian
+owns each PTY, so a manager-worker death no longer closes the seat and `status` reports
+`custodied`. Other platforms still spawn in-process and report `legacy`. An incompatible native
+`@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
+
+With `--self`, the selected running manager is reported before any global install. When a newer
+release exists, Cotal then installs the exact version it validated, resolves and verifies that
+package in npm's global root, then launches that binary with the same `--space` / `--server` /
+`--creds` selection to reconcile connectors and first-party extensions to the new generation. An npx
+or dev-clone invocation therefore installs and continues through a separate global copy; it never
+claims the already-running process changed. If the binary is current, `--self` performs the normal
+local reconcile without reinstalling it.
 
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
@@ -264,6 +275,20 @@ it works from any directory; the other components always stop under the folder y
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
+
+**Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
+so a recorded pid alone is not a durable target identity. `up` records each stack process's
+creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the process start
+reported by the OS. Every stop path, including `down` for the broker, web and extension components,
+and the manager, delivery and auth-service stops, applies the same rule. A pin that names a different
+start means the pid was reused, so teardown refuses and preserves it. A torn or unreadable pin also
+refuses. Once the recorded process is stopped, rerunning teardown clears the stale record
+automatically.
+
+The first teardown after upgrading a running pre-pin stack has a narrower guarantee. A live record
+with no identity pin is signalled after a loud warning that it predates identity pinning. Restarting
+the component writes the pin, so later teardowns receive full match and mismatch protection. The
+same warning applies on platforms where no stable start token is available.
 
 Normal `down` remains destructive at the logical identity/durable layer. `--preserve-state` is a
 different maintenance transition: it suppresses leave/deprovision cleanup, persists the manager's
@@ -622,13 +647,13 @@ wire - the reserved `describe` command answers the registered contract digests, 
 fetched from the space's content-addressed contract store, recompiled, and verified against those
 digests - and prints each command with its capability class and targeting shape. `invoke` calls one
 command by name: `--args` is a JSON object validated against the fetched input schema *before*
-publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal via
-`ps`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
+publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
+`inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
 endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
 auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
-rides their bearer; cross-agent reach needs the `admin` scope). An open mesh has no service
-registry.
+rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
+reach needs the `admin` scope). An open mesh has no service registry.
 
 ## Managed seats
 
@@ -905,6 +930,12 @@ loopback-only `manager-service` view; `spawn` and `admin` do not substitute for 
 host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
 → renew protocol, never by handing the participant a signer or static provisioner credential.
 
+The broker URL in the registry entry decides the transport. A remote broker is often published
+over a `wss://` edge rather than a raw `nats://` port, and `supervise` dials whichever scheme the
+record holds, starting with the manager-authority registration it runs before the manager exists.
+The record also decides whether that registration requires TLS, so a participant never downgrades
+the credential exchange to a plaintext connection the registry did not describe.
+
 Without that advertised host service or scope, `supervise` refuses before it starts a manager.
 Run `cotal spawn` without `--detach` to launch a foreground agent, or ask the space host to enable
 the authority service and grant `supervise` for detached agents. If a running remote manager loses
@@ -930,8 +961,10 @@ incarnation finishes leaves the endpoint's issuance gate *frozen*, held by a
 process that no longer exists. The freeze is what stops two incarnations serving at once, which is
 correct. The successor manager now completes that dead registration itself on boot, using the same
 guard this command uses: it acts only when the freeze-holder is affirmatively gone under a complete
-CONNZ sweep (`gone` and `sweepComplete=true`), then abort-reopens the gate at generation+1 with
-processEpoch unchanged and continues the normal takeover. Live, unknown, unestablishable, and
+CONNZ sweep (`gone` and `sweepComplete=true`). If that registration's spec write already committed,
+it finishes the same freeze at the committed registration revision. If the spec did not advance, it
+abort-reopens the gate at generation+1 with processEpoch unchanged and continues the normal takeover.
+Live, unknown, unestablishable, and
 wrong-op-kind still refuse; there is no TTL.
 
 Use this command when the boot path cannot run: the delivery daemon is down, the repair targets a
@@ -1000,6 +1033,7 @@ no connection and therefore no subscription, so a real corpse is still removed.
 | `instance-not-affirmed-gone` | It did not answer, and the broker did not report its rail empty, which is what a held subscription looks like: slow or hung, not affirmed gone | Nothing was removed. Stop the process; its record goes on its own clean stop, or re-run this once it is down |
 | `liveness-unestablishable` | The probe itself failed, so nothing was learned | Fix the probe's path (credential, broker) and re-run. A probe that could not run is never read as death |
 | `not-registered` | No registration at that coordinate | Check `--instance` and `--endpoint`. This takes the whole id, never a prefix |
+| `registration-in-flight` | The instance holds the endpoint governance slot at the live issuance-gate generation, so a registration is still completing | Nothing was removed. Wait for that registration to finish, then re-run |
 | `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
 
 There is no `--force` and no sweep: silence is not death, and a rule that removed rows on silence
@@ -1046,6 +1080,16 @@ cotal send ask <role> "<text>"
 One-shot messaging: connect, send a single direct message (`dm`), channel post (`msg`), or role
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
+
+`cotal send` requires `COTAL_NAME` plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
+If that tuple is missing, `send` refuses before connecting so the recipient never sees a message
+attributed to a nameless command principal. A child that inherited a
+seat's environment is attributed as that seat; this command does not distinguish the two. An operator
+who is not a live seat can set both variables for the one shot:
+
+```bash
+COTAL_NAME=<name> COTAL_ID=<id> cotal send ...
+```
 
 ## channels
 
@@ -1332,8 +1376,17 @@ Legacy generation-only stamps remain readable; their refusal simply has no write
 An older `cotal` refuses a seed store written by a newer version. When it can verify a sufficient
 `cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the refusal names
 that absolute path so a reduced service PATH does not select the older binary again. Otherwise it
-keeps the generic newer-version instruction. `--reset` remains the explicit way to rebuild the store
-for the running older version.
+keeps the generic newer-version instruction. `--force` rebuilds the store for the running older
+version without discarding the ever-seeded authority. `--reset` still exists for corrupt state and
+resurrects deliberately-removed connectors.
+
+A source-checkout CLI (`pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, or a suite child of
+those) refuses to write or garbage-collect that store. The refusal names the path, the generation
+it declined, and `$XDG_CONFIG_HOME` as the isolation remedy. `COTAL_HOME` does not relocate this
+store. An entry that cannot be proven as a released install is refused the same way. Isolated
+release tests that must seed from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` after
+pointing `$XDG_CONFIG_HOME` at a scratch dir; that override is documented here, not on the refusal
+line. An opt-in write still records the checkout path in `seed/stamp.json` as `writtenBy`.
 
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
@@ -1380,19 +1433,28 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 Operate durable workflow runs (cotal-lang programs) from the terminal.
 
 ```bash
-cotal run start --file <program> [--timeout <dur>] [--endpoint <ep>]
-cotal run resume <runId> --file <program>
-cotal run ps
-cotal run journal <runId>
-cotal run answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]
+cotal run start --file <program> [--timeout <dur>] [--local]
+cotal run resume <runId> [--local --file <program>]
+cotal run ps [--endpoint <ep>]
+cotal run journal <runId> [--endpoint <ep>]
+cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 ```
 
-`start` mints the run id (the record never takes a caller-supplied one), prints it, and drives the
-run to quiescence. `resume` takes an existing run over and continues it from its step journal.
-`ps` lists the run records on the endpoint and `journal` renders one run's durable records; both
-only inspect, driving nothing. `answer` resolves an open checkpoint, presenting as the holder that
-armed it, with `--by` naming the answerer inside the resolution. `--timeout` sets the default
-checkpoint timeout for a drive (default 1h). The guide is [workflows](workflows.md).
+`start` hands the program to the mesh's manager, which validates it, mints the run id (the record
+never takes a caller-supplied one), drives it in its own process, and answers with the id once the
+run is recorded; a program that does not validate is refused with every problem listed. `resume`
+asks the manager to take an existing run back and continue it from its step journal; the source is
+the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
+its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
+`journal` renders one run's durable records; both only inspect. `answer` resolves an open
+checkpoint through the manager, presenting as the holder that armed it; the manager records the
+answerer from your credential, so no `--by` is taken there. `--timeout` sets the default
+checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
+connection per invocation under the run's own credential minted from the project folder's trust
+material, and is the path on a bare broker with no manager or for a run with no recorded program
+(`cotal run resume <runId> --local --file <program>`); `answer --local` takes `--by <who>`. A
+user-auth mesh runs no programs yet: the manager refuses the family by name, and `--local` has no
+credential there. The guide is [workflows](workflows.md).
 
 ## Server daemons
 

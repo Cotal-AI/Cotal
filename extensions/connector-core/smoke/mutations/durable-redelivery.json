@@ -1,0 +1,51 @@
+{
+  "suite": "extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+  "guard": "a JetStream redelivery of an item that is still pending re-announces it through the ordinary incoming path and commits the freshest ack handle, so a wake the host dropped comes back on its own",
+  "command": "pnpm smoke:cross-path-dedup",
+  "progressPattern": "  ✓ ",
+  "completionMarker": "CROSS-PATH DEDUP SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/durable-redelivery.json",
+  "why": [
+    "The re-announce is what turns JetStream redelivery into a timer-free retry for a wake the host",
+    "dropped, and it is two lines doing two jobs: refresh the ack handle so the commit lands on the",
+    "live one, and tell the policy the message is still there. A mutation on either alone leaves the",
+    "other in place, which is why they are graded separately rather than as one removal.",
+    "",
+    "THE MUTANTS LIVE HERE BECAUSE THIS IS THE SUITE THAT DRIVES THEM. They were filed against the",
+    "claude boot-wake suite, whose own header says the durable redelivery guard moved out to this one",
+    "and to `smoke:claude-wake`. That suite settles every scenario inside a 500ms window and never",
+    "waits for a redelivery, so removing the re-announce changed nothing it observes and the mutation",
+    "graded UNGRADABLE for months: the suite passed, and no other mutation in the same file was",
+    "killed in that run to show whether the suite reached the file at all.",
+    "",
+    "This suite drives both deliveries by hand through `agent.ep.emit`, so the redelivery case is a",
+    "deterministic two-emit sequence rather than a wait on ack_wait, and it reads MeshAgent from",
+    "source (`../src/agent.js`), so no build sits between the mutation and the run.",
+    "",
+    "EACH MUTATION NAMES THE FIRST CELL IT REDDENS, which is in the live-first/durable-second case",
+    "rather than the redelivery case below it. The two lines serve both: a durable delivery that",
+    "finds a pending entry upgrades it the same way whether the first copy arrived live or durable.",
+    "This suite asserts through `assert.ok` and so stops at its first red, and naming a later cell",
+    "would grade a line the run never reaches."
+  ],
+  "mutations": [
+    {
+      "name": "R1 a durable redelivery of a still-pending item refreshes the ack handle without re-announcing it",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        existing.ack = delivery.ack;\n        this.emit(\"incoming\", existing.item);",
+      "replace": "        existing.ack = delivery.ack;",
+      "expectRed": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
+      "cell": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
+      "note": "Restores the swallow this branch had before the re-announce landed: the redelivery arrives, the ack handle is refreshed, and nothing tells the wake policy the message is still there. A session in that state sits idle with the message buffered and un-acked for as long as anything waits on it."
+    },
+    {
+      "name": "R2 a durable redelivery re-announces but keeps the stale ack handle, so the commit lands on a handle the server has already replaced",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        existing.ack = delivery.ack;\n        this.emit(\"incoming\", existing.item);",
+      "replace": "        this.emit(\"incoming\", existing.item);",
+      "expectRed": "live-first/durable-second: the DURABLE ack committed (upgraded from the live no-op)",
+      "cell": "live-first/durable-second: the DURABLE ack committed (upgraded from the live no-op)",
+      "note": "The other half of the same two lines, and the positive control for R1: a run that kills this one has demonstrably reached this file, so an R1 that survived would be a reportable coverage gap rather than an ungradable one."
+    }
+  ]
+}

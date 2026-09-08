@@ -1,0 +1,5 @@
+# `ask` on the real planes: one checkpoint-plane pause per attempt answered through the run
+# driver's own door, the §6.5 shorthand enforced (L4022/L4006, attempts default 1), the refusal
+# reason bound for the answerer, a resume re-judging the settle it crashed over, and the
+# discharge and adoption re-arm addressing the attempt actually armed.
+smoke:runtime-mesh-ask

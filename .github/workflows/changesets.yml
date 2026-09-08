@@ -24,9 +24,52 @@ concurrency:
   queue: max
 
 jobs:
+  seat-native-linux-x64:
+    name: seat native (linux-x64)
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build host native
+        run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: packages/seat/build/Release/linux-x64/peercred.node
+          if-no-files-found: error
+          retention-days: 7
+
+  seat-native-linux-arm64:
+    name: seat native (linux-arm64)
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build host native
+        run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: packages/seat/build/Release/linux-arm64/peercred.node
+          if-no-files-found: error
+          retention-days: 7
+
   version:
     if: github.event_name == 'push' || inputs.snapshot == ''
-    timeout-minutes: 15
+    needs: [seat-native-linux-x64, seat-native-linux-arm64]
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,6 +93,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: ${{ runner.temp }}/seat-native-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: ${{ runner.temp }}/seat-native-linux-arm64
+
       - name: Create versions and publish
         id: changesets
         uses: changesets/action@v1
@@ -61,6 +113,8 @@ jobs:
           setupGitUser: true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
 
       # Keep the "version packages" PR out of the generated release notes (excluded via .github/release.yml).
       - name: Label the release PR
@@ -126,7 +180,8 @@ jobs:
   # dist-tag so a branch can be tried out without merging. No commits, no git tags.
   snapshot:
     if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''
-    timeout-minutes: 15
+    needs: [seat-native-linux-x64, seat-native-linux-arm64]
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -146,10 +201,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: ${{ runner.temp }}/seat-native-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: ${{ runner.temp }}/seat-native-linux-arm64
+
       - name: Version snapshot
         run: pnpm changeset version --snapshot ${{ inputs.snapshot }}
 
-      - name: Build and publish
+      - name: Build, assemble natives, and publish
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
         run: |
           pnpm build
+          node scripts/seat-assemble-natives.mjs
           pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}

@@ -26,6 +26,31 @@
       "replace": "          node --version\n",
       "expectRed": "the workflow calls the committed classifier with the measured 25-minute budget",
       "cell": "the workflow calls the committed classifier with the measured 25-minute budget"
+    },
+    {
+      "name": "seat-linux-arm64 becomes a second always-running aggregate",
+      "file": ".github/workflows/ci.yml",
+      "find": "  seat-linux-arm64:\n    name: seat load (linux-arm64, same artifact)\n    timeout-minutes: 15\n    needs: [seat-pack]\n    runs-on: ubuntu-24.04-arm\n",
+      "replace": "  seat-linux-arm64:\n    name: seat load (linux-arm64, same artifact)\n    timeout-minutes: 15\n    needs: [seat-pack]\n    if: always()\n    runs-on: ubuntu-24.04-arm\n",
+      "expectRed": "ci-ok is the sole job-level always aggregate",
+      "cell": "ci-ok is the sole job-level always aggregate",
+      "note": "The #1043 queue-hold was two always-running dependent jobs chained after cancel. ARM leaves may be needs of ci-ok, but they must not be always aggregates."
+    },
+    {
+      "name": "ci-ok drops the ARM load leaf from needs",
+      "file": ".github/workflows/ci.yml",
+      "find": "    needs: [unit, smoke, live, seat-pack, seat-linux-arm64]\n",
+      "replace": "    needs: [unit, smoke, live, seat-pack]\n",
+      "expectRed": "ci-ok needs include unit, smoke, live, and the ARM validation leaves",
+      "cell": "ci-ok needs include unit, smoke, live, and the ARM validation leaves"
+    },
+    {
+      "name": "Gate stops requiring the ARM load leaf",
+      "file": ".github/workflows/ci.yml",
+      "find": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ] && [ \"${{ needs.seat-linux-arm64.result }}\" = \"success\" ]\n",
+      "replace": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ]\n",
+      "expectRed": "Gate fails unless all five direct needs succeed",
+      "cell": "Gate fails unless all five direct needs succeed"
     }
   ]
 }

@@ -1262,13 +1262,24 @@ export interface GoalIndexEntry {
    *  field existed; absent means the floor was never persisted and a reader must refuse rather
    *  than invent one. */
   allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number };
+  /** An OPAQUE relay payload the accepting endpoint must be able to serve back after a restart —
+   *  the durable half of a goal whose work is handed to another process (a seat's `turn` rides
+   *  this: the run coordinates and rendered context the seat pulls). The substrate gives it no
+   *  meaning and no shape beyond "a bounded string": what it says is the endpoint's contract with
+   *  its puller, exactly as the goal command's args are. Absent on every goal that carries none. */
+  note?: string;
 }
+
+/** The one bound the substrate puts on a relay note: it rides a KV record beside identity fields,
+ *  so it is a payload cap, not a schema. 64 KiB matches the manager `input` contract's ceiling
+ *  and sits under the broker's max payload. */
+const GOAL_INDEX_NOTE_MAX = 65536;
 
 function goalIndexKey(ref: GoalRef): string {
   return recordAtomicKey(RECORD_KINDS.goalidx, [ref.endpoint, ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId]);
 }
 
-function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number }): GoalIndexEntry {
+function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number }, note?: string): GoalIndexEntry {
   // Refuse a hollow floor AT THE WRITE, not only when someone reads it back: an entry naming an
   // empty identity is the exact defect this field exists to end, and letting it land would just
   // move the failure to whichever unlucky retry reads it.
@@ -1276,9 +1287,14 @@ function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string;
     throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an empty component; a hollow identity is never recorded (SPEC 13.6)`);
   if (allocated?.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(allocated.readinessDeadlineMs) || allocated.readinessDeadlineMs <= 0))
     throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an invalid readiness deadline; an unbounded follower is never recorded (SPEC 13.6)`);
+  // Same discipline for the note: an empty relay payload is a caller bug (record nothing instead),
+  // and an unbounded one belongs on an artifact plane, not in a KV identity record.
+  if (note !== undefined && (note.length === 0 || note.length > GOAL_INDEX_NOTE_MAX))
+    throw new EpEnvelopeError("internal", `the relay note for goal "${ref.goalId}" is ${note.length === 0 ? "empty" : `${note.length} bytes (max ${GOAL_INDEX_NOTE_MAX})`}; a hollow or oversized note is never recorded (SPEC 13.6)`);
   return {
     v: 1, endpoint: ref.endpoint, owner: ref.caller.owner, actor: ref.caller.actor, uid: ref.caller.uid, goalId: ref.goalId, iid,
     ...(allocated !== undefined ? { allocated: { name: allocated.name, actor: allocated.actor, uid: allocated.uid, ...(allocated.readinessDeadlineMs !== undefined ? { readinessDeadlineMs: allocated.readinessDeadlineMs } : {}) } } : {}),
+    ...(note !== undefined ? { note } : {}),
   };
 }
 
@@ -1286,7 +1302,7 @@ function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated"], `goal-index entry ${key}`);
+  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"], `goal-index entry ${key}`);
   if (o.v !== 1 || typeof o.endpoint !== "string" || typeof o.owner !== "string" || typeof o.actor !== "string"
     || typeof o.uid !== "string" || typeof o.goalId !== "string" || typeof o.iid !== "string")
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is malformed; garbled reconcile state never authorizes (SPEC 13.6)`);
@@ -1302,6 +1318,8 @@ function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
     if (a.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(a.readinessDeadlineMs) || (a.readinessDeadlineMs as number) <= 0))
       throw new EpEnvelopeError("internal", `goal-index entry ${key} carries an invalid readiness deadline; garbled acceptance state never authorizes (SPEC 13.6)`);
   }
+  if (o.note !== undefined && (typeof o.note !== "string" || o.note.length === 0 || o.note.length > GOAL_INDEX_NOTE_MAX))
+    throw new EpEnvelopeError("internal", `goal-index entry ${key} carries a malformed relay note; garbled reconcile state never authorizes (SPEC 13.6)`);
   return o as unknown as GoalIndexEntry;
 }
 
@@ -1312,13 +1330,13 @@ function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
  *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
 export async function recordGoalIndex(
-  ctx: ActionContext, ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number },
+  ctx: ActionContext, ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number }, note?: string,
 ): Promise<{ recorded: true } | { recorded: false; existing: GoalIndexEntry }> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
   const key = goalIndexKey(snap);
   try {
-    await createRecordEntry(ctx.kv, key, goalIndexEntryOf(snap, iid, allocated));
+    await createRecordEntry(ctx.kv, key, goalIndexEntryOf(snap, iid, allocated, note));
     return { recorded: true };
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
@@ -1360,14 +1378,19 @@ export async function readGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<G
  *  (which holds no enumeration grant), and settles each unterminal goal so an accepted goal is
  *  never dropped across a manager restart. Returns each recorded GoalRef + the accepting `iid` (the
  *  hook a multi-instance sweep filters on so it never settles a live sibling's goal). */
-export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: GoalRef; iid: string }[]> {
+export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[]> {
   const filter = `${RECORD_KINDS.goalidx.kind}.${endpointToken(endpoint)}.>`;
-  const out: { ref: GoalRef; iid: string }[] = [];
+  const out: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
   for await (const key of await kv.keys(filter)) {
     const e = await kv.get(key);
     if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
     const v = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
-    out.push({ ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId }, iid: v.iid });
+    out.push({
+      ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId },
+      iid: v.iid,
+      ...(v.allocated !== undefined ? { allocated: v.allocated } : {}),
+      ...(v.note !== undefined ? { note: v.note } : {}),
+    });
   }
   return out;
 }

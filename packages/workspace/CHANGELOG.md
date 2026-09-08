@@ -1,5 +1,101 @@
 # @cotal-ai/workspace
 
+## 0.47.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.47.0
+
+## 0.46.0
+
+### Minor Changes
+
+- 18a0024: The manager hosts workflow runs. `run-start`, `run-resume`, `run-answer`, `run-status` and
+  `run-ps` are served on the manager's endpoint rails; a run is validated before anything is
+  recorded, driven in the manager's process under a per-run `run-driver` credential, and taken back
+  from its journal after a manager restart. `cotal run` is a client of that surface by default,
+  with `--local` keeping the in-process drive, now under the run's own `run-driver` and
+  `run-operator` credentials rather than `admin`; an answer's writes are pinned to the one pause it
+  answers. A user-auth mesh refuses the family by name until a run can carry its user's owner. A new `run` capability mints the family into an
+  agent's credential and injects the `cotal_run` tool, so an agent can write a cotal-lang program
+  and start it from a session. `run-answer` records the answerer from the caller's credential and
+  takes no `by`; `cotal run answer` drops `--by` on the hosted path. `spawn({ supervise })` is a restart policy the manager enforces in
+  place: `{ restarts, window? }` (default `10m`) until the budget is spent, then the seat is
+  retired and the next `turn` is L4002. A policy this host cannot honour is refused at accept.
+
+### Patch Changes
+
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+  - @cotal-ai/core@0.46.0
+
+## 0.45.0
+
+### Patch Changes
+
+- Updated dependencies [299a353]
+- Updated dependencies [38d7bb7]
+  - @cotal-ai/core@0.45.0
+
+## 0.44.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.44.0
+
+## 0.43.0
+
+### Patch Changes
+
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/core@0.43.0
+
+## 0.42.0
+
+### Patch Changes
+
+- Updated dependencies [a87709c]
+  - @cotal-ai/core@0.42.0
+
+## 0.41.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.4
+
+## 0.41.3
+
+### Patch Changes
+
+- Updated dependencies [436f7d4]
+  - @cotal-ai/core@0.41.3
+
+## 0.41.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.41.1
+
+## 0.41.0
+
+### Minor Changes
+
+- 5ec7feb: Pin every stack pidfile to its process's creation identity before teardown. `up` writes a sibling `<pidfile>.identity` containing the pid and process start where the OS reports one. Every stop path checks it before signalling: a reused pid or torn pin is refused and preserved, and rerunning after the process is stopped clears the stale record automatically. A live pre-pin record warns and proceeds so the first teardown after an upgrade still works; relaunching writes the pin and enables full match and mismatch protection.
+
+### Patch Changes
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+  - @cotal-ai/core@0.41.0
+
 ## 0.40.0
 
 ### Patch Changes

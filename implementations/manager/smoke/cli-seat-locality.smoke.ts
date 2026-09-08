@@ -39,6 +39,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -97,8 +98,8 @@ const releaseBroker = teardownOnSignal(srv, dir);
 type Run = { status: number | null; out: string };
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
   new Promise((res) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], {
-      cwd, env: { ...process.env, COTAL_HOME: home, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+    const child = spawn(TSX, [BIN, ...args], {
+      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
@@ -111,9 +112,9 @@ const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
 
 const interactiveJoin = (cwd: string): Promise<Run> =>
   new Promise((res) => {
-    const child = pty.spawn("npx", ["tsx", BIN, "join", "--space", space, "--server", SERVERS], {
+    const child = pty.spawn(TSX, [BIN, "join", "--space", space, "--server", SERVERS], {
       cwd,
-      env: { ...process.env, COTAL_HOME: home, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+      env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       cols: 120,
       rows: 30,
     });

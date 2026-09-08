@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/grammar.smoke.ts",
-  "guard": "The dead zone is refused when the program is read (L2004), a named function expression binds its own name, and bigint literals are refused (L1030). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The dead zone is refused when the program is read (L2004), a named function expression binds its own name, bigint literals are refused (L1030), and a literal worktree shared across branches of one concurrent scope is refused while one branch keeps its own tree (L3022). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-grammar",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/static-bindings.json",
   "mutations": [
@@ -22,7 +22,7 @@
       "expectRed": "a nested function may reference a binding declared later: it runs later",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a nested function may reference a binding declared later: it runs later",
-      "note": "The exemption is load-bearing in the other direction: without it every closure over a later binding \u2014 the mutual-recursion shape \u2014 is refused. Note the marker here is the L2004 cell itself (upstream), proving the refusal side still held while the acceptance side broke."
+      "note": "The exemption is load-bearing in the other direction: without it every closure over a later binding — the mutual-recursion shape — is refused. Note the marker here is the L2004 cell itself (upstream), proving the refusal side still held while the acceptance side broke."
     },
     {
       "name": "parameters bind all-at-once instead of left to right",
@@ -32,7 +32,7 @@
       "expectRed": "a parameter default may not read a LATER parameter",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a parameter default may not read a LATER parameter",
-      "note": "Without the pending marks a default sees every parameter, and `f(a = b, b = 1)` resolves \u2014 the measured pre-fix behavior, where the interpreter then read the OUTER `b` and returned 9."
+      "note": "Without the pending marks a default sees every parameter, and `f(a = b, b = 1)` resolves — the measured pre-fix behavior, where the interpreter then read the OUTER `b` and returned 9."
     },
     {
       "name": "a named function expression does not bind its own name",
@@ -52,7 +52,57 @@
       "expectRed": "a bigint literal is not a value here",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a bigint literal is not a value here",
-      "note": "With the refusal gone `1n` validates and runs, producing a value whose typeof no admitted kind names \u2014 the measured pre-fix behavior."
+      "note": "With the refusal gone `1n` validates and runs, producing a value whose typeof no admitted kind names — the measured pre-fix behavior."
+    },
+    {
+      "name": "the parallel/race worktree check is gone, so two branches share one tree",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "  if (name === \"parallel\" || name === \"race\") {\n    const branches = args[0];",
+      "replace": "  if (false) {\n    const branches = args[0];",
+      "expectRed": "two parallel branches spawning into one literal worktree",
+      "completionMarker": "ok even in arithmetic that never crosses a boundary",
+      "cell": "two parallel branches spawning into one literal worktree",
+      "note": "The whole branch-collision arm deleted at its guard. Measured 2026-09-03: the parallel cell is the first red (the race cell is behind it in this fail-fast suite), with 118 upstream oks ending at the bigint arithmetic cell."
+    },
+    {
+      "name": "the fanOut worktree check is gone, so every branch spawns into one tree",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "  if (name === \"fanOut\") {\n    const fn = args[1] !== undefined",
+      "replace": "  if (false) {\n    const fn = args[1] !== undefined",
+      "expectRed": "a fanOut whose function spawns a literal worktree runs it in every branch",
+      "completionMarker": "ok two race branches spawning into one literal worktree",
+      "cell": "a fanOut whose function spawns a literal worktree runs it in every branch",
+      "note": "The fanOut arm is deletable separately from the branch-collision arm, which is why it has its own mutant. Measured 2026-09-03: the fanOut cell reds with 120 upstream oks, the parallel and race rejects among them still holding."
+    },
+    {
+      "name": "the same-branch exemption is gone, so one branch reusing its own tree is refused",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "          if (prior !== undefined && prior !== branch) {",
+      "replace": "          if (prior !== undefined) {",
+      "expectRed": "one branch spawning the same worktree twice runs alone in it",
+      "completionMarker": "ok branches with their own worktrees are legal",
+      "cell": "one branch spawning the same worktree twice runs alone in it",
+      "note": "The distinctness check is what keeps L3022 about CONCURRENT sharing rather than any repetition: a branch runs alone in its own tree, so spawning into it twice is legal. Measured 2026-09-03: the acceptance cell reds (expected acceptance, got L3022) with 123 upstream oks, every reject cell still holding."
+    },
+    {
+      "name": "a named branch is not resolved, so its spawns are invisible to the check",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "        .map((branch) => resolveFunction(branch, v, scope) ?? branch);",
+      "replace": "        .map((branch) => branch);",
+      "expectRed": "named branch functions are branches too: two of them into one literal worktree",
+      "completionMarker": "ok a fanOut whose function spawns a literal worktree runs it in every branch",
+      "cell": "named branch functions are branches too: two of them into one literal worktree",
+      "note": "A branch written as a named function is walked as an opaque reference, so two named branches spawning into one literal worktree pass L3022. Measured 2026-09-03: the grammar suite stops at its first failing check, on 'named branch functions are branches too: two of them into one literal worktree', the program accepted where L3022 is owed."
+    },
+    {
+      "name": "a named fanOut function is not resolved",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "    const fn = args[1] !== undefined && isNode(args[1]) ? resolveFunction(args[1], v, scope) ?? args[1] : undefined;",
+      "replace": "    const fn = args[1];",
+      "expectRed": "a named fanOut function that spawns a literal worktree runs it in every branch",
+      "completionMarker": "ok the array form resolves its named branches the same way",
+      "cell": "a named fanOut function that spawns a literal worktree runs it in every branch",
+      "note": "Same defect for fanOut's function argument. Measured 2026-09-03: the suite stops on 'a named fanOut function that spawns a literal worktree runs it in every branch', the program accepted where L3022 is owed."
     }
   ]
 }

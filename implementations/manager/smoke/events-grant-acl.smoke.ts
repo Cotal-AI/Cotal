@@ -590,6 +590,14 @@ try {
     );
   }
 
+} catch (e) {
+  // A THROW IS A FAILING RUN, NOT AN ABSENT ONE. Several cells here feed the next: a rule that
+  // stops refusing lets a spawn through, and the section that parses the refusal then mints on an
+  // empty profile and dies inside `mintCreds`. Without this arm the process ended before the
+  // summary below, so a run that had already reddened the right cell printed no verdict at all and
+  // graded INCONCLUSIVE rather than as the failure it was.
+  failures++;
+  console.log(`✗ the scenario threw before it finished — ${(e as Error).stack ?? (e as Error).message}`);
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });

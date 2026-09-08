@@ -39,6 +39,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 // A run started from a session that is itself joined to a mesh inherits `COTAL_*`, and every child
 // spawned below is `cotal attach`, which READS connection material. Blanking three names by hand
@@ -192,7 +193,7 @@ type Attached = {
 };
 const started: Attached[] = [];
 function attachUnderPty(root: string): Attached {
-  const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
+  const child = pty.spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } as Record<string, string>,
   });
@@ -227,7 +228,7 @@ function attachUnderPty(root: string): Attached {
 type Piped = { seen: () => string; write: (s: string) => void; exit: () => number | undefined; waitExit: (ms: number) => Promise<boolean>; kill: () => void };
 const pipedChildren: Piped[] = [];
 function attachPiped(root: string): Piped {
-  const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
+  const child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
     cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
     stdio: ["pipe", "pipe", "pipe"],

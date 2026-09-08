@@ -163,6 +163,7 @@ function resolveAgents(
   return Object.entries(raw.agents ?? {}).map(([name, entry]) => ({
     name,
     agentType: connector(name, entry.agent),
+    cwd: entry.cwd,
     persona: entry.persona ? personaPath(entry.persona) : undefined,
     model: entry.model,
     variant: entry.variant,

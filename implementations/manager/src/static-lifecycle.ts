@@ -24,6 +24,8 @@ import {
   type LifecycleKvEntry,
   type StaticManagedSlotRow,
   type StaticSlotPhase,
+  type LifecycleMapping,
+  type EpErrorDetail,
   type CredentialLedgerRow,
   staticSlotKey,
   parseStaticSlotRow,
@@ -53,6 +55,93 @@ export interface StaticLifecycleAuditSpec {
   managerInstance: string; managerProcessUid: string; retirementOpId: string;
   broker: Pick<EvictionResult, "kicked" | "remaining" | "scanComplete" | "verifiedGone">;
   timestamp: string;
+}
+
+/** `inspect` miss detail for a durable static slot. Slot and lifecycle head are separate records,
+ * read in that order, so this shape carries both revisions and states explicitly rather than
+ * presenting a torn pair as one snapshot. The issuance gate is deliberately excluded: the
+ * retirement op needed for this diagnosis is already on the head, and a third record would add
+ * another non-atomic edge without changing the per-name verdict. */
+export const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
+export interface StaticSlotObservationDetail extends EpErrorDetail {
+  kind: typeof STATIC_SLOT_OBSERVATION_DETAIL;
+  name: string;
+  owner: string;
+  actor: string;
+  slotLifecycleUid: string;
+  slotPhase: StaticSlotPhase;
+  cleanupComplete?: boolean;
+  slotRevision: number;
+  headState?: LifecycleMapping["state"];
+  headOp?: NonNullable<LifecycleMapping["op"]>;
+  headLifecycleUid?: string;
+  headRevision?: number;
+  readOrder: ["slot", "head"];
+  consistency: "ordered-not-atomic";
+}
+
+/** Stable string projection for callers that render only `error.message`. The structured detail is
+ * still authoritative; this suffix prevents the shipped CLI path from hiding its fields. */
+export function renderStaticSlotObservation(detail: StaticSlotObservationDetail): string {
+  const head = detail.headState === undefined
+    ? "head=absent"
+    : `headState=${detail.headState} headUid=${detail.headLifecycleUid} headRevision=${detail.headRevision}${detail.headOp ? ` headOp=${detail.headOp.kind}:${detail.headOp.opId}` : ""}`;
+  return `[static-slot slotPhase=${detail.slotPhase} slotUid=${detail.slotLifecycleUid} cleanupComplete=${detail.cleanupComplete === undefined ? "unknown" : String(detail.cleanupComplete)} slotRevision=${detail.slotRevision} ${head} readOrder=slot,head consistency=${detail.consistency}]`;
+}
+
+export const STATIC_SLOT_READ_FAILED_DETAIL = "ai.cotal.manager.static-slot-read-failed";
+export class StaticSlotReadError extends Error {
+  constructor(readonly record: "slot" | "head", cause: unknown) {
+    super((cause as Error).message);
+    this.name = "StaticSlotReadError";
+  }
+}
+const STATIC_SLOT_READ_TIMEOUT_MS = 2_000;
+
+function boundedStaticRead<T>(record: "slot" | "head", read: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${record} read timed out after ${STATIC_SLOT_READ_TIMEOUT_MS}ms`)), STATIC_SLOT_READ_TIMEOUT_MS);
+  });
+  return Promise.race([read.finally(() => clearTimeout(timer)), timeout])
+    .catch((error) => { throw new StaticSlotReadError(record, error); });
+}
+
+/** Point-read one durable slot, then its principal-keyed lifecycle head. Absence is returned only
+ * after the slot read itself succeeded; callers must surface a store failure rather than converting
+ * an unknown observation into `not-found`, which is the ambiguity this projection removes. */
+export async function observeStaticSlot(
+  recordsKv: KV,
+  owner: string,
+  alias: string,
+  managerInstanceId: string,
+): Promise<StaticSlotObservationDetail | undefined> {
+  const t = staticLifecycleTransport(recordsKv, recordsKv);
+  const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
+  if (slot === undefined) return undefined;
+  // `inspect` remains an instance-local reader. A sibling manager's durable row is not a miss on
+  // this manager becoming global by accident. Legacy rows predate multi-manager ownership and keep
+  // the existing single-manager interpretation used by boot reconciliation.
+  if (slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId) return undefined;
+  const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
+  return {
+    kind: STATIC_SLOT_OBSERVATION_DETAIL,
+    name: slot.row.alias,
+    owner: slot.row.owner,
+    actor: slot.row.actor,
+    slotLifecycleUid: slot.row.lifecycleUid,
+    slotPhase: slot.row.phase,
+    ...(slot.row.cleanupComplete !== undefined ? { cleanupComplete: slot.row.cleanupComplete } : {}),
+    slotRevision: slot.revision,
+    ...(head !== undefined ? {
+      headState: head.mapping.state,
+      ...(head.mapping.op !== undefined ? { headOp: head.mapping.op } : {}),
+      headLifecycleUid: head.mapping.lifecycleUid,
+      headRevision: head.revision,
+    } : {}),
+    readOrder: ["slot", "head"],
+    consistency: "ordered-not-atomic",
+  };
 }
 
 function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): boolean {
@@ -279,6 +368,42 @@ export async function activateStaticLifecycle(
   return { slotRevision: revision };
 }
 
+/** Run the terminal's footprint cleanup AT MOST ONCE across resumes, and record that it finished
+ *  DURABLY on the `terminalizing` slot BEFORE the caller's final CAS to `retired`.
+ *
+ *  This is the marker #1274 asks for. A row observed at `terminalizing` was previously consistent
+ *  with three worlds — cleanup not started, cleanup in flight, or cleanup COMPLETED with the process
+ *  dead before the `retired` CAS — with one remedy (re-run cleanup, the only total option) that could
+ *  never assert cleanup was already done. `cleanupComplete` on the row splits world 3 off: a resume
+ *  that reads it SKIPS the re-run.
+ *
+ *  Total, and it moves no ambiguity it cannot recover. The new durable point is AFTER cleanup and
+ *  BEFORE the marker CAS; a crash there re-enters here, reads `cleanupComplete` unset, and re-runs the
+ *  idempotent cleanup — the same total default as before, so worlds 1 and 2 stay merged (they share
+ *  that remedy) rather than the marker pretending to separate them. A crash AFTER the marker CAS but
+ *  before `retired` re-enters here, reads `cleanupComplete` set, skips cleanup, and the caller finishes
+ *  the `retired` CAS. No new unrecoverable state.
+ *
+ *  Returns the slot revision the marker CAS produced (or the observed revision when the marker was
+ *  already set), so a caller that CASes `retired` from a held revision advances off the right one. */
+async function cleanupStaticSlotOnce(
+  t: LifecycleStateTransport,
+  args: { owner: string; alias: string; lifecycleUid: string },
+  cleanup: () => Promise<void>,
+  log: (line: string) => void,
+): Promise<{ revision: number }> {
+  const slot = await readStaticSlot(t, args.owner, args.alias);
+  if (slot === undefined || slot.row.lifecycleUid !== args.lifecycleUid)
+    throw new EpEnvelopeError("internal", `the static slot for "${args.owner}/${args.alias}" ${slot === undefined ? "vanished" : `moved to uid ${slot.row.lifecycleUid}`} mid-terminal; a slot row is never deleted and a terminal never crosses incarnations`);
+  if (slot.row.cleanupComplete === true) {
+    log(`footprint cleanup already recorded complete for uid ${args.lifecycleUid}; skipping the re-run (#1274 marker)`);
+    return { revision: slot.revision };
+  }
+  await cleanup();
+  const revision = await casStaticSlot(t, { ...slot.row, cleanupComplete: true }, slot.revision);
+  return { revision };
+}
+
 /** The static TERMINAL (F1, the (b2) order): freeze-under-the-retirement-op -> head
  *  `active -> retiring` -> B1 ledger revoke -> broker connection eviction -> cleanup (the injected
  *  footprint teardown; on a normal stop the manager separately proves runtime exit) -> gate
@@ -302,10 +427,11 @@ export async function runStaticTerminal(
     throw new EpEnvelopeError("failed-precondition", `the static slot for "${args.owner}/${args.alias}" is at uid ${slot.row.lifecycleUid}, not ${args.lifecycleUid}; a terminal never addresses another incarnation (SPEC 13.1)`);
   if (slot.row.phase === "retired") return "retired"; // completed terminal, idempotent
   // Latch the DURABLE terminal intent first: after this CAS the slot can never mint again
-  // (recordSlotCredential refuses terminalizing), the exact window the F5 renewal gate needs.
-  let slotRevision = slot.revision;
+  // (recordSlotCredential refuses terminalizing), the exact window the F5 renewal gate needs. Every
+  // final `retired` CAS below re-reads the slot (or takes the marker CAS's revision), so this latch
+  // needs no return.
   if (slot.row.phase !== "terminalizing")
-    slotRevision = await casStaticSlot(t, { ...slot.row, phase: "terminalizing" }, slot.revision);
+    await casStaticSlot(t, { ...slot.row, phase: "terminalizing" }, slot.revision);
   const gate = await gateObserve(t, args.lifecycleUid);
   if (gate === undefined) {
     // Crash before the saga's first durable write (or before gate creation): only the intent
@@ -315,8 +441,10 @@ export async function runStaticTerminal(
       throw new EpEnvelopeError("internal", `the head for "${args.owner}/${args.actor}" names uid ${args.lifecycleUid} but its gate does not exist; an active head without a gate is corruption (SPEC 13.1)`);
     const preGateHolders = await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
     await evictAndAudit(t, args, preGateHolders, hooks.evict, hooks.log);
-    await hooks.cleanup();
-    await casStaticSlot(t, { ...slot.row, phase: "retired" }, slotRevision);
+    await cleanupStaticSlotOnce(t, args, hooks.cleanup, hooks.log);
+    const cur = await readStaticSlot(t, args.owner, args.alias);
+    if (cur !== undefined && cur.row.lifecycleUid === args.lifecycleUid && cur.row.phase !== "retired")
+      await casStaticSlot(t, { ...cur.row, phase: "retired" }, cur.revision);
     return "retired";
   }
   if (gate.row.state === "frozen" && gate.row.op?.kind === "activation") {
@@ -333,7 +461,7 @@ export async function runStaticTerminal(
       await gateRetire(t, { lifecycleUid: args.lifecycleUid, revision: gate.revision, opId: gate.row.op.opId });
       const lostHeadHolders = await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
       await evictAndAudit(t, args, lostHeadHolders, hooks.evict, hooks.log);
-      await hooks.cleanup();
+      await cleanupStaticSlotOnce(t, args, hooks.cleanup, hooks.log);
       const cur = await readStaticSlot(t, args.owner, args.alias);
       if (cur !== undefined && cur.row.lifecycleUid === args.lifecycleUid && cur.row.phase !== "retired")
         await casStaticSlot(t, { ...cur.row, phase: "retired" }, cur.revision);
@@ -382,7 +510,7 @@ export async function runStaticTerminal(
   for (const principal of holders) hooks.log(`verify-evicting orphan seat principal ${principal} before lifecycle cleanup`);
   await evictAndAudit(t, args, holders, hooks.evict, hooks.log);
   for (const principal of holders) hooks.log(`verified orphan seat principal gone: ${principal}`);
-  await hooks.cleanup();
+  await cleanupStaticSlotOnce(t, args, hooks.cleanup, hooks.log);
   // The terminal tail, in the (b2) order: gate frozen->retired FIRST (retains the opId, the
   // recovery coordinate), head retiring->retired LAST (drops the op; the alias frees only now).
   // gateRetire is called UNCONDITIONALLY: on a frozen gate it terminalizes; on an already-retired

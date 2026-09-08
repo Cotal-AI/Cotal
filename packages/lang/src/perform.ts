@@ -8,7 +8,7 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
@@ -63,10 +63,14 @@ export function option(bag: unknown, key: string): unknown {
  * A WeakMap off the host rather than a field on it, so neither engine's host construction
  * changes. The map holds only a settled-swallowed tail per agent; each caller still observes its
  * own dispatch's outcome, and a failed turn does not dam the queue behind it.
+ *
+ * BOTH DISPATCH SITES SHARE IT. `ask` is relayed to the seat as a turn, so an ask queued
+ * separately from `turn` would still be a second concurrent turn on the same agent.
  */
 const TURN_QUEUES = new WeakMap<EffectHost, Map<string, Promise<unknown>>>();
 
-/** Serialize live `turn` dispatches per agent handle: the next begins when the previous settled. */
+/** Serialize live `turn` and `ask` dispatches per agent handle: the next begins when the previous
+ *  settled. */
 function serializeTurn(host: EffectHost, agent: string, dispatch: () => Promise<unknown>): Promise<unknown> {
   let queues = TURN_QUEUES.get(host);
   if (queues === undefined) {
@@ -344,8 +348,16 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // handler was never told which model to run. This was missed by an audit that exercised
       // only the string form, which is the same defect one level up.
       const spawnSubject = args[0];
-      const persona =
-        typeof spawnSubject === "string" ? spawnSubject : String(option(spawnSubject, "persona"));
+      const named = typeof spawnSubject === "string" ? spawnSubject : option(spawnSubject, "persona");
+      // `String(undefined)` is the literal persona "undefined", and it was reaching the input hash,
+      // the step name and the handler. A missing persona is `undefined` crossing an effect
+      // boundary, which is what L3041 names.
+      if (typeof named !== "string" || named === "")
+        throw new RuntimeFault(
+          "L3041",
+          `spawn names no persona: its first argument is ${JSON.stringify(spawnSubject) ?? "undefined"}, and a spawn takes a persona name or a record carrying one`,
+        );
+      const persona = named;
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
       // Every accepted option is forwarded, including the three that are policy rather than
@@ -418,15 +430,19 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         stepName as string,
         { agent: agent.agent, schema: schema ?? null, deadline: deadline ?? null, attempts: attempts ?? null },
         (ctx) =>
-          handler.ask(
-            {
-              agent,
-              schema,
-              ...(deadline !== undefined ? { deadline } : {}),
-              ...(attempts !== undefined ? { attempts } : {}),
-            },
-            ctx,
-          ),
+          // THE SAME QUEUE AS `turn`. A host relays an ask to the seat as a turn, so an unqueued
+          // ask beside a queued turn on one handle hands that agent two turns at once, which 6.5
+          // forbids by name. One queue per agent covers both dispatch sites.
+          serializeTurn(host, agent.agent, () =>
+            handler.ask(
+              {
+                agent,
+                schema,
+                ...(deadline !== undefined ? { deadline } : {}),
+                ...(attempts !== undefined ? { attempts } : {}),
+              },
+              ctx,
+            )),
         frame,
       );
     }
@@ -591,7 +607,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       );
     }
     default:
-      throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
+      throw new InterpreterDefect(`the primitive ${name}`);
   }
 }
 
@@ -1417,5 +1433,5 @@ export async function runScope(
     return { branches: [branchKey], value, closed: true };
   }
 
-  throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
+  throw new InterpreterDefect(`the primitive ${name}`);
 }

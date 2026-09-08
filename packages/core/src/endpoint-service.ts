@@ -446,9 +446,6 @@ export async function registerServiceInstance(
   //    mismatch is a raced transfer — a loud `conflict`, never a stale-owner registration.
   let current: Awaited<ReturnType<KV["get"]>>;
   const govKey = recordAtomicKey(GOVERN_HEAD, [spec.endpoint]);
-  // Assigned in PHASE 1 on every non-throwing path (the slot-take is PHASE 1's last act).
-  let governSlotRevision!: number;
-  let governPromote!: EndpointGovernance;
   try {
     const authorizedNameRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
     if (authorizedNameRevision !== obs.nameAuthorityRevision)
@@ -470,9 +467,11 @@ export async function registerServiceInstance(
     //  - CAS-TAKE the slot — every registration takes it, an ungoverned/`changed:false` one
     //    included, or a pure head READER could decide against one governance state and publish
     //    under another (the cross-instance launder). The slot is stamped with this gate's frozen
-    //    `generation`; it is HELD through the spec publish and PROMOTED to binding only after the
-    //    publish commits, so no imposition ever binds for a descriptor that never published (the
-    //    phantom-obligation orphan) and no publish ever slips past a concurrent imposition.
+    //    `generation`; it is HELD through the spec publish AND the Phase-4 reopen, and PROMOTED
+    //    to binding after the publish commits (the slot is released only after reopen). No
+    //    imposition ever binds for a descriptor that never published (the phantom-obligation
+    //    orphan) and neither a concurrent publish nor a concurrent deregister of this instance
+    //    slips past the hold.
     // Every failure in this block is a DEFINITE no-spec-write, so the outer catch reopens the
     // ORIGINAL coordinate: a slot-take CAS loss is a raced endpoint registration (`conflict`);
     // an AMBIGUOUS slot-take is also safe to reopen because a committed-but-unacked slot is
@@ -500,15 +499,13 @@ export async function registerServiceInstance(
       }
     }
     assertGovernedDeclarationContinuity(gov.commands, next);
-    governPromote = { commands: serializeGovernanceCommands(mergeEndpointGovernance(gov.commands, next)) };
     const slotValue: EndpointGovernance = {
       commands: serializeGovernanceCommands(gov.commands),
       provisional: { instanceId: args.instanceId, generation: obs.generation, commands: serializeGovernanceCommands(next) },
     };
     try {
-      governSlotRevision = gov.revision === null
-        ? await createRecordEntry(kv, govKey, slotValue)
-        : await updateRecordEntry(kv, govKey, slotValue, gov.revision);
+      if (gov.revision === null) await createRecordEntry(kv, govKey, slotValue);
+      else await updateRecordEntry(kv, govKey, slotValue, gov.revision);
     } catch (e) {
       // createRecordEntry/updateRecordEntry translate the broker CAS loss (err_code 10071/10164)
       // into EpEnvelopeError("conflict") — classify on THAT, the numeric code never reaches here.
@@ -539,11 +536,14 @@ export async function registerServiceInstance(
     throw new EpEnvelopeError("unavailable", `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen for reconciliation, no new spec published (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
 
-  // PHASE 3 — publish the new spec. ANY write error stays FROZEN for reconciliation, never
-  // reopening the old coordinate: the KV may have committed while the ack was lost (an ambiguous
-  // outcome), and reopening old would release stale-surface credentials against a spec that
-  // advanced. Under the frozen gate THIS barrier is the sole spec-key writer, so a write error is
-  // genuinely infra/ambiguous — never a concurrent-CAS loss we could treat as a definite no-write.
+  // PHASE 3 — publish the new spec. A write error is infra/ambiguous under this freeze (this
+  // registration holds the endpoint governance slot, and {@link deregisterServiceInstance}
+  // refuses a spec delete while that slot names this instance at the live gate generation),
+  // so we never reopen the OLD coordinate: that would release stale-surface credentials
+  // against a spec that may have advanced. A lost ack is
+  // recoverable to a fact by reading the spec key back. Matching proposed bytes at a successor
+  // revision means THIS write committed, and we continue Phase 3b/4 for the same freeze. A
+  // no-commit or unreadable read stays frozen (#1243).
   let newRev: number;
   try {
     // A DEREGISTRATION TOMBSTONE IS RE-REGISTRABLE, and it is the only record kind here that is.
@@ -564,21 +564,26 @@ export async function registerServiceInstance(
       ? await updateRecordEntry(kv, key, spec, current.revision)
       : await createRecordEntry(kv, key, spec);
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `the re-registration spec-write outcome is ambiguous (it may have committed); the gate is left frozen for reconciliation, never reopened at the old coordinate (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    newRev = await recoverCommittedSpecWrite(kv, key, spec, current, err);
   }
 
   // PHASE 3b — PROMOTE the governance slot to binding, now that the spec publish committed: the
-  // held provisional impositions merge into the binding map and the slot clears. Only HERE does
-  // an imposition become permanent, so a registration that failed in PHASE 2/3 never binds
-  // governance for a descriptor that never published (the phantom-obligation orphan), and the
-  // slot's hold from decision through publish is what serializes every concurrent registration
-  // of this endpoint. Nothing else can have CAS'd the head while we held the slot (a foreign
-  // registration refuses on it), so ANY failure — a lost ack, or a CAS loss to a reconciler that
-  // stole the slot — leaves the gate FROZEN for reconciliation, consistent with PHASE 3: the
-  // spec is published, so reopening without the promote would activate a surface whose
-  // imposition never bound. The promote is idempotent for the reconciler (re-CAS the same merge).
+  // held provisional impositions merge into the binding map and the SAME slot is RETAINED
+  // (instanceId + frozen generation). Clearing it here would let a concurrent deregister
+  // delete the just-published spec before Phase 4 reopens, and the reopen would then adopt a
+  // DEL. The slot is the exclusion: {@link deregisterServiceInstance} refuses while it names
+  // this instance at the live gate generation. Only HERE does an imposition become permanent,
+  // so a registration that failed in PHASE 2/3 never binds governance for a descriptor that
+  // never published (the phantom-obligation orphan), and the slot's hold from decision through
+  // reopen is what serializes every concurrent registration of this endpoint AND a concurrent
+  // deregister of this instance. Nothing else can have CAS'd the head while we held the slot
+  // (a foreign registration refuses on it), so ANY failure — a lost ack, or a CAS loss to a
+  // reconciler that stole the slot — leaves the gate FROZEN for reconciliation, consistent
+  // with PHASE 3: the spec is published, so reopening without the promote would activate a
+  // surface whose imposition never bound. The promote is idempotent for the reconciler
+  // (re-CAS the same merge, still holding the slot).
   try {
-    await updateRecordEntry(kv, govKey, governPromote, governSlotRevision);
+    await promoteHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation);
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${newRev} but the governance promote did not complete; the gate is left frozen for reconciliation (the promote is an idempotent re-CAS of the held slot to binding, SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}`);
   }
@@ -604,7 +609,159 @@ export async function registerServiceInstance(
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
+  await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation);
   return { registrationRevision: newRev };
+}
+
+/** Classify a lost spec-write ack. Sole writer under the freeze: proposed bytes at a revision
+ *  past the pre-write snapshot means this write committed. Anything else stays frozen. */
+async function recoverCommittedSpecWrite(
+  kv: KV,
+  key: string,
+  proposed: unknown,
+  prior: Awaited<ReturnType<KV["get"]>>,
+  cause: unknown,
+): Promise<number> {
+  const fail = (extra: string): never => {
+    throw new EpEnvelopeError(
+      "unavailable",
+      `the re-registration spec-write outcome is ambiguous (it may have committed); the gate is left frozen for reconciliation, never reopened at the old coordinate (SPEC 13.1): ${(cause as Error)?.message ?? String(cause)}${extra}`,
+    );
+  };
+  let again: Awaited<ReturnType<KV["get"]>>;
+  try {
+    again = await kv.get(key);
+  } catch (e) {
+    return fail(`; spec read-back failed: ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (!again || again.operation !== "PUT") return fail("; spec read-back shows the write did not commit");
+  if (prior && again.revision === prior.revision) return fail("; spec read-back shows the write did not commit");
+  let got: unknown;
+  try {
+    got = decodeJson(again.value, key);
+  } catch (e) {
+    return fail(`; spec read-back is garbled: ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (JSON.stringify(got) !== JSON.stringify(proposed)) return fail("; spec read-back does not match the proposed registration");
+  return again.revision;
+}
+
+/** After holder-gone eviction, complete a frozen registration whose Phase-3 spec write committed
+ *  (gate.registrationRevision still names the pre-write spec). Returns `completed: false` when the
+ *  spec has not advanced, so the caller may abort-reopen. A failed spec/governance read stays frozen. */
+export async function completeFrozenRegistrationFromSpec(
+  recordsKv: KV,
+  args: {
+    endpoint: string;
+    instanceId: string;
+    barrier: EpIssuanceBarrier;
+    freezeToken: number;
+    gate: { generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number };
+  },
+): Promise<{ completed: false } | { completed: true; registrationRevision: number; processEpoch: number }> {
+  const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, assertLifecycleToken(args.instanceId, "instanceId")]);
+  let specEntry: Awaited<ReturnType<KV["get"]>>;
+  try {
+    specEntry = await recordsKv.get(specKey);
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `the frozen registration's spec read-back failed; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (!specEntry || specEntry.operation !== "PUT" || specEntry.revision <= args.gate.registrationRevision)
+    return { completed: false };
+  try {
+    parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `the frozen registration's spec is unreadable; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+  }
+  await promoteHeldGovernance(recordsKv, args.endpoint, args.instanceId, args.gate.generation);
+  const processEpoch = args.gate.registrationRevision === 0 ? args.gate.processEpoch : args.gate.processEpoch + 1;
+  const successor: EpGateSuccessor = {
+    generation: args.gate.generation + 1,
+    processEpoch,
+    registrationRevision: specEntry.revision,
+    nameAuthorityRevision: args.gate.nameAuthorityRevision,
+  };
+  try {
+    if (!(await args.barrier.reopen(args.freezeToken, successor)))
+      throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
+  } catch (err) {
+    throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${specEntry.revision} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+  }
+  await releaseHeldGovernance(recordsKv, args.endpoint, args.instanceId, args.gate.generation);
+  return { completed: true, registrationRevision: specEntry.revision, processEpoch };
+}
+
+/** Merge the held provisional declarations into binding WITHOUT clearing the slot. The
+ *  retained slot is the exclusion that keeps {@link deregisterServiceInstance} from
+ *  deleting the spec until after the issuance gate reopens. Promote only when the slot
+ *  names this instance AND its generation equals the frozen gate's generation — that is
+ *  what proves the provisional declarations were prepared under THIS freeze, not a stale
+ *  same-instance stamp. A generation mismatch stays frozen. */
+async function promoteHeldGovernance(kv: KV, endpoint: string, instanceId: string, frozenGeneration: number): Promise<void> {
+  const gov = await readEndpointGovernance(kv, endpoint);
+  if (!gov.provisional) return;
+  if (gov.provisional.instanceId !== instanceId)
+    throw new EpEnvelopeError("unavailable", `the governance slot for endpoint "${endpoint}" is held by instance "${gov.provisional.instanceId}", not "${instanceId}"; the gate stays frozen (SPEC 13.7)`);
+  if (gov.provisional.generation !== frozenGeneration)
+    throw new EpEnvelopeError("unavailable", `the governance slot for endpoint "${endpoint}" is held at generation ${gov.provisional.generation}, not the frozen generation ${frozenGeneration}; the gate stays frozen (SPEC 13.7)`);
+  if (gov.revision === null)
+    throw new EpEnvelopeError("internal", `the governance head for endpoint "${endpoint}" has a provisional slot but no store revision; garbled state never promotes (SPEC 13.7)`);
+  const retained: EndpointGovernance = {
+    commands: serializeGovernanceCommands(mergeEndpointGovernance(gov.commands, gov.provisional.commands)),
+    provisional: {
+      instanceId,
+      generation: frozenGeneration,
+      commands: serializeGovernanceCommands(gov.provisional.commands),
+    },
+  };
+  try {
+    await updateRecordEntry(kv, recordAtomicKey(GOVERN_HEAD, [endpoint]), retained, gov.revision);
+  } catch (err) {
+    let again: Awaited<ReturnType<typeof readEndpointGovernance>>;
+    try {
+      again = await readEndpointGovernance(kv, endpoint);
+    } catch (readErr) {
+      throw new EpEnvelopeError("unavailable", `the spec is published but the governance promote did not complete; the gate is left frozen for reconciliation (SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}; promote read-back failed: ${(readErr as Error)?.message ?? String(readErr)}`);
+    }
+    if (!again.provisional
+      || again.provisional.instanceId !== instanceId
+      || again.provisional.generation !== frozenGeneration
+      || JSON.stringify(serializeGovernanceCommands(again.commands)) !== JSON.stringify(retained.commands)) {
+      throw new EpEnvelopeError("unavailable", `the spec is published but the governance promote did not complete; the gate is left frozen for reconciliation (the promote is an idempotent re-CAS of the held slot to binding, SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}`);
+    }
+  }
+}
+
+/** Drop the retained slot after a successful Phase-4 reopen. Binding commands stay.
+ *  A lost release ack is recovered by re-read: already-cleared is done; still ours at
+ *  this generation retries once; anything else leaves the stamp. A leftover stamp is
+ *  a slot whose generation is behind the live gate (reopen already advanced past it).
+ *  {@link deregisterServiceInstance} treats that as orphaned, not in-flight. The gate
+ *  stays OPEN — the reopen already committed. */
+async function releaseHeldGovernance(kv: KV, endpoint: string, instanceId: string, frozenGeneration: number): Promise<void> {
+  const attempt = async (): Promise<"done" | "retry"> => {
+    const gov = await readEndpointGovernance(kv, endpoint);
+    if (!gov.provisional) return "done";
+    if (gov.provisional.instanceId !== instanceId || gov.provisional.generation !== frozenGeneration) return "done";
+    if (gov.revision === null)
+      throw new EpEnvelopeError("internal", `the governance head for endpoint "${endpoint}" has a provisional slot but no store revision; garbled state never releases (SPEC 13.7)`);
+    const cleared: EndpointGovernance = { commands: serializeGovernanceCommands(gov.commands) };
+    try {
+      await updateRecordEntry(kv, recordAtomicKey(GOVERN_HEAD, [endpoint]), cleared, gov.revision);
+      return "done";
+    } catch (err) {
+      let again: Awaited<ReturnType<typeof readEndpointGovernance>>;
+      try {
+        again = await readEndpointGovernance(kv, endpoint);
+      } catch (readErr) {
+        throw new EpEnvelopeError("unavailable", `the issuance gate reopened but the governance slot release did not complete; the leftover slot is behind the live gate generation and does not block deregistration (SPEC 13.7): ${(err as Error)?.message ?? String(err)}; release read-back failed: ${(readErr as Error)?.message ?? String(readErr)}`);
+      }
+      if (!again.provisional) return "done";
+      if (again.provisional.instanceId === instanceId && again.provisional.generation === frozenGeneration) return "retry";
+      return "done";
+    }
+  };
+  if (await attempt() === "retry") await attempt();
 }
 
 /** Reopen a barrier-frozen gate (token-pinned) after a registration aborted before any spec write
@@ -747,7 +904,10 @@ export type ServiceDeregistration =
   /** A key moved between the read and its revision-pinned delete: something is WRITING to this
    *  registration, so it is not the dead record that was inspected. Nothing was removed — the
    *  status delete is attempted first precisely so this outcome leaves the record whole. */
-  | { removed: false; reason: "superseded" };
+  | { removed: false; reason: "superseded" }
+  /** This instance currently holds the endpoint governance slot at the live gate generation
+   *  (a registration is in flight through spec publish and gate reopen). Nothing was removed. */
+  | { removed: false; reason: "registration-in-flight" };
 
 /**
  * DEREGISTER one service instance: the §13.5 explicit deregistration, which is the DELETE of its
@@ -776,16 +936,54 @@ export type ServiceDeregistration =
  * the §13.1 issuance gate is NOT. The same instance can register again and does so on its next
  * start — {@link registerServiceInstance} writes over the tombstone under a revision-pinned CAS and
  * advances the epoch as it does for any other restart.
+ *
+ * A LIVE GOVERNANCE SLOT AT THE CURRENT GATE GENERATION IS ALSO A REFUSAL. Registration holds that
+ * slot from decision through reopen so a delete cannot invalidate the spec the freeze is completing.
+ * `observeGeneration` is a READ of this instance's issuance-gate generation, never a freeze. The
+ * observation is classified, not trusted as a typed number:
+ *   - throw, absent, or not a non-negative safe integer → fail closed (`unavailable`)
+ *   - equal to the slot generation → in-flight (refuse)
+ *   - strictly greater than the slot generation → leftover after reopen (delete proceeds)
+ *   - strictly less than the slot generation → ahead of the live gate (fail closed)
+ * Non-equal is not "behind". Only `slot.generation < liveGeneration` is the permissive proof.
  */
 export async function deregisterServiceInstance(
   kv: KV,
-  args: { endpoint: string; instanceId: string },
+  args: {
+    endpoint: string;
+    instanceId: string;
+    /** Read this instance's live issuance-gate generation. A read, never a freeze. */
+    observeGeneration: () => Promise<number> | number;
+  },
 ): Promise<ServiceDeregistration> {
   const iId = assertLifecycleToken(args.instanceId, "instanceId");
   const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId]);
   const statusKey = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT") return { removed: false, reason: "absent" };
+  // Read the spec FIRST, then the governance slot, never the reverse. A govern-then-spec
+  // order would let a delete of a LATER spec ride an earlier empty-slot read: Phase 1
+  // takes the slot after the previous release, so an empty-slot snapshot can predate a
+  // successor PUT that this GET then observes. Spec-then-govern serializes against the
+  // slot this instance holds for the PUT just read.
+  {
+    const gov = await readEndpointGovernance(kv, args.endpoint);
+    if (gov.provisional?.instanceId === iId) {
+      let observed: unknown;
+      try {
+        observed = await args.observeGeneration();
+      } catch (e) {
+        throw new EpEnvelopeError("unavailable", `could not observe the issuance-gate generation for "${args.endpoint}/${iId}" while its governance slot is held; refusing the delete rather than racing an in-flight registration (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
+      }
+      if (!wireInt(observed))
+        throw new EpEnvelopeError("unavailable", `could not observe the issuance-gate generation for "${args.endpoint}/${iId}" while its governance slot is held; refusing the delete rather than racing an in-flight registration (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
+      const liveGeneration = observed;
+      if (gov.provisional.generation === liveGeneration) return { removed: false, reason: "registration-in-flight" };
+      if (gov.provisional.generation > liveGeneration)
+        throw new EpEnvelopeError("unavailable", `the governance slot for "${args.endpoint}/${iId}" is held at generation ${gov.provisional.generation}, ahead of the observed live gate generation ${liveGeneration}; refusing the delete rather than treating an ahead or garbled observation as a leftover (SPEC 13.7)`);
+      // slot.generation < liveGeneration: leftover after a successful reopen whose release ack was lost.
+    }
+  }
   const statusEntry = await kv.get(statusKey);
   const casLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
   let statusRevision: number | undefined;

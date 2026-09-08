@@ -40,6 +40,8 @@ export interface ResolvedAgent {
   name: string;
   /** Connector type to spawn with (agent-entry `agent:` ?? top-level `agent:`). */
   agentType: string;
+  /** Manager-host directory. Relative paths are resolved by the manager against its workspace. */
+  cwd?: string;
   /** Resolved persona path (absolute), or undefined for an inline agent. */
   persona?: string;
   /** Manifest override of the persona's model (or the inline model). */

@@ -1,0 +1,23 @@
+{
+  "suite": "bin/smoke/ci-suites-freeze.smoke.ts",
+  "guard": "a new suite line on ci-suites.txt is named as an offender; comment edits and deletions are not",
+  "command": "pnpm smoke:ci-suites-freeze",
+  "completionMarker": "CI SUITES FREEZE SMOKE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/ci-suites-freeze.json",
+  "grades": "tool",
+  "why": [
+    "Issue #1237: the freeze on ci-suites.txt is a comment. A tail append is shard-stable and inventory-green, then conflicts the next PR on a line neither cares about. GitHub will not build a CONFLICTING PR, so that branch also gets zero CI.",
+    "",
+    "The scan is addedLegacySuites in ci-suites.mjs. The suite calls that function on a real file plus an appended line and asserts the SET of names it returns. Blinding the scan must redden the append cell; re-applying the rule in the test would stay green."
+  ],
+  "mutations": [
+    {
+      "name": "the freeze scan never reports an added suite",
+      "file": "bin/smoke/ci-suites.mjs",
+      "find": "    if (!base.has(suite) && !added.includes(suite)) added.push(suite);",
+      "replace": "    if (!base.has(suite) && !added.includes(suite)) void suite;",
+      "expectRed": "an appended suite is named as the set of offenders",
+      "cell": "an appended suite is named as the set of offenders"
+    }
+  ]
+}

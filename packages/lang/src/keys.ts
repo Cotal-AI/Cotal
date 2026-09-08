@@ -175,6 +175,11 @@ export class KeyScope {
    * per combinator call, then {@link branch} once per branch.
    */
   nextScope(kind: ScopeKind, name: string | null = null): number {
+    // The THIRD place the same value can be computed, and the one that forges the most. `parallel`
+    // and `race` do not require a literal name, so `parallel(b, { name: user.id })` puts outside
+    // data straight into a scope frame; a value carrying `/` and `#` produced a path a genuinely
+    // nested scope also produces, and the branches under it inherited the forgery.
+    if (name !== null) assertKeySafe(name, `the name of this \`${kind}\``);
     const tag = `${kind}:${name ?? ""}`;
     const occurrence = this.scopeCounts.get(tag) ?? 0;
     this.scopeCounts.set(tag, occurrence + 1);

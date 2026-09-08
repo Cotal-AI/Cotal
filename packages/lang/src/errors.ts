@@ -324,6 +324,41 @@ export class RuntimeFault extends Error {
   }
 }
 
+/**
+ * An invariant THIS IMPLEMENTATION owns broke.
+ *
+ * One syntax table drives the validator and the walker, so a node the validator admitted and the
+ * walker cannot walk means the two have drifted. That is a defect in the pair, and it used to be
+ * thrown as `L1000` — a code the catalogue does not carry and Appendix A does not list, handed to
+ * a program as if it were one of the things a program can meet. The `L` space is the LANGUAGE's
+ * errors: every code in it is a condition a program can cause, read about and act on. This is
+ * none of those, so it does not take one.
+ */
+export class InterpreterDefect extends Error {
+  constructor(what: string) {
+    super(
+      `interpreter defect: ${what}. The validator admitted this and the walker does not implement it, `
+      + `so the two have drifted apart. Please report it with the program that produced it.`,
+    );
+    this.name = "InterpreterDefect";
+  }
+}
+
+/**
+ * The engine cannot run at all here, or was not assembled the way its own contract requires: a
+ * node below the floor its frame plumbing was measured on, a transformed module that does not
+ * evaluate to a factory, a thread started without the bridge its request names, a handler module
+ * with no constructor export. None of these is a condition a PROGRAM can cause, so none takes an
+ * `L` code: the catalog is the language's, and a reader looking a code up there should find one.
+ * The sibling of {@link InterpreterDefect}, which is the validator and the walker disagreeing.
+ */
+export class EngineUnavailable extends Error {
+  constructor(what: string) {
+    super(`the cotal-lang engine cannot run here: ${what}`);
+    this.name = "EngineUnavailable";
+  }
+}
+
 /** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
 export function messageOf(v: unknown): string {
   if (v instanceof Error) return v.message;

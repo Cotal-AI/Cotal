@@ -24,6 +24,7 @@ import {
   ScopeBranchMissing,
   UnwalkableScope,
   messageOf,
+  InterpreterDefect,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
@@ -741,7 +742,7 @@ class Interpreter {
           case "typeof":
             return typeof v;
           default:
-            throw new RuntimeFault("L1000", `unsupported unary operator ${String(node.operator)}`);
+            throw new InterpreterDefect(`the unary operator ${String(node.operator)}`);
         }
       }
       case "UpdateExpression": {
@@ -783,7 +784,7 @@ class Interpreter {
               ? await this.evaluate(node.right as AnyNode, env, frame)
               : l;
           default:
-            throw new RuntimeFault("L1000", `unsupported logical operator ${String(node.operator)}`);
+            throw new InterpreterDefect(`the logical operator ${String(node.operator)}`);
         }
       }
       case "ConditionalExpression":
@@ -800,7 +801,7 @@ class Interpreter {
       case "CallExpression":
         return await this.call(node, env, frame);
       default:
-        throw new RuntimeFault("L1000", `unsupported expression ${node.type}`);
+        throw new InterpreterDefect(`the expression ${node.type}`);
     }
   }
 
@@ -954,7 +955,7 @@ class Interpreter {
         return;
       }
       default:
-        throw new RuntimeFault("L1000", `unsupported binding pattern ${pattern.type}`);
+        throw new InterpreterDefect(`the binding pattern ${pattern.type}`);
     }
   }
 
@@ -1317,7 +1318,7 @@ class Interpreter {
       case "EmptyStatement":
         return NORMAL;
       default:
-        throw new RuntimeFault("L1000", `unsupported statement ${node.type}`);
+        throw new InterpreterDefect(`the statement ${node.type}`);
     }
   }
 }
@@ -1422,7 +1423,7 @@ function applyBinary(op: string, l: unknown, r: unknown): unknown {
     case ">>>":
       return a >>> b;
     default:
-      throw new RuntimeFault("L1000", `unsupported operator ${op}`);
+      throw new InterpreterDefect(`the operator ${op}`);
   }
 }
 

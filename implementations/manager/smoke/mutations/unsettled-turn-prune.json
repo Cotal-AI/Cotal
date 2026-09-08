@@ -1,0 +1,16 @@
+{
+  "suite": "implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
+  "guard": "A leftover unsettled turn acceptance whose pending latch is gone is aged off leftoverSince, never the original deadline, so a failed deadline commit cannot pin the sweep forever and a long-outage leftover is not pruned on the first tick.",
+  "command": "pnpm smoke:manager-reconcile-startup",
+  "completionMarker": "MANAGER RECONCILE STARTUP SMOKE",
+  "mutations": [
+    {
+      "name": "an unsettled leftover ages off the original deadline, not the latch-drop stamp",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const at = e.settled?.at ?? e.leftoverSince;",
+      "replace": "      const at = e.settled?.at ?? e.acceptance.deadlineAt;",
+      "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
+      "cell": "the sweep drops a stale unsettled acceptance once its retry window has passed, and keeps a fresh one"
+    }
+  ]
+}

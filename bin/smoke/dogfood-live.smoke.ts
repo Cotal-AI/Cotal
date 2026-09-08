@@ -50,7 +50,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home };
+const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");

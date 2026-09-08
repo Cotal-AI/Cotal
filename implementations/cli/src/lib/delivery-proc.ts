@@ -7,7 +7,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -147,7 +147,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
-  writeFileSync(canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space)), String(child.pid)); // canonical, never a pre-upgrade name
+  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space));
+  writeFileSync(pidPath, String(child.pid)); // canonical, never a pre-upgrade name
+  // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
+  writeIdentityPin(pidPath, child.pid ?? 0);
   return child.pid ?? 0;
 }
 
@@ -245,6 +248,7 @@ export async function stopDelivery(
     for (const k of keys) await credsStore().delete(k);
   };
   const removeRecords = async (): Promise<void> => {
+    removeIdentityPin(p); // records go only on proven death; the pin goes with the pidfile (#969)
     rmSync(p, { force: true });
     await dropCreds();
   };
@@ -278,6 +282,13 @@ export async function stopDelivery(
         `The pidfile and standing credential are LEFT IN PLACE: removing them would strand a daemon that may still be connected, with its renewal source gone.\n` +
         `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`${p}\` if it is gone.`,
     );
+  // #969 OPEN-VERIFY-TERMINATE: identity before signal. The `dead` branch above already cleared
+  // the record; everything here is alive or raced-dead, so the pin decides whether the pid still
+  // fronts the recorded process before anything is signalled.
+  const identity = verifyIdentityPin(p);
+  if (identity.kind === "mismatch") throw identityRefusal("the delivery daemon", p, identity.record, identity.liveToken);
+  if (identity.kind === "legacy") console.error(identityLegacyWarning("the delivery daemon", p));
+  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the delivery daemon", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {

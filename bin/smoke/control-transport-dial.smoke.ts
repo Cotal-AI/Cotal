@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 const freePort = (): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -110,7 +111,7 @@ writeFileSync(
 );
 
 const runCli = (args: string[], timeout = 60_000) => {
-  const result = spawnSync("npx", ["tsx", cli, ...args], {
+  const result = spawnSync(TSX, [cli, ...args], {
     cwd: root,
     env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
     encoding: "utf8",

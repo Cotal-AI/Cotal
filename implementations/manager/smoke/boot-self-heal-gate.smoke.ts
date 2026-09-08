@@ -267,6 +267,11 @@ try {
     const familyBefore = await endpointRegistrationBarrier(kv, SPACE, { endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: mintLifecycleUid() }).enumerate();
 
     const r = await startSuccessor();
+    // A SUCCESSOR THAT STARTED WHEN IT SHOULD HAVE REFUSED MUST STILL BE STOPPED. It is a live
+    // manager with timers and a broker connection, so leaving it running holds the event loop open
+    // and the whole suite hangs after its last cell. A hang prints no verdict and grades as no
+    // evidence, which is the opposite of what a cell that just went red is for.
+    if (r.ok) await r.mgr.stop().catch(() => {});
     check("LIVE HOLDER: successor start REFUSES", r.ok === false, r.ok ? "started" : undefined);
     check("LIVE HOLDER: the refusal is named `holder-alive`",
       r.ok === false && conditionOf(r.error) === "holder-alive",
@@ -292,6 +297,7 @@ try {
     const { kv, nc } = await execKv(iid);
     const before = await readGate(kv, iid);
     const r = await startSuccessor();
+    if (r.ok) await r.mgr.stop().catch(() => {}); // same reason as CELL 2: a started successor keeps the process alive
     check("NO ORACLE: successor start REFUSES", r.ok === false, r.ok ? "started" : undefined);
     check("NO ORACLE: the refusal is named `liveness-unestablishable` (silence is not death)",
       r.ok === false && conditionOf(r.error) === "liveness-unestablishable",

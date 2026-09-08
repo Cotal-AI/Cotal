@@ -29,7 +29,7 @@ import { createUser } from "@nats-io/nkeys";
 import type { KV } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
-  openRecordsBucket, registerServiceInstance, authorizeServeGrant, serveEndpoint,
+  openRecordsBucket, registerServiceInstance, deregisterServiceInstance, authorizeServeGrant, serveEndpoint,
   compileContract, contractDigest,
   epRequestSubject, epCallerReplyFilter,
   signArtifact, signatureInput,
@@ -654,9 +654,9 @@ try {
   // ── the governance head is the ENDPOINT-WIDE registration serialization point (panel: the
   //    cross-instance changed=false reader race and the phantom obligation are duals of ONE
   //    missing linearization). EVERY registration CAS-takes the head's provisional slot under
-  //    its frozen gate, holds it through spec publication, and PROMOTES to binding only after
-  //    the publish commits. Real broker, real CAS — only the schedule is staged via a thin KV
-  //    wrapper with injectable per-key hooks. ──
+  //    its frozen gate, holds it through spec publication AND gate reopen, and PROMOTES to
+  //    binding after the publish commits (the slot is released only after reopen). Real broker,
+  //    real CAS — only the schedule is staged via a thin KV wrapper with injectable per-key hooks. ──
   const hookedKv = (hooks: { beforeWrite?: (key: string) => Promise<void> | void }): KV =>
     ({
       get: (k: string) => kv.get(k),
@@ -696,6 +696,117 @@ try {
     const head = await readHead("wpool");
     c("the settled head BINDS the imposition and holds no provisional slot",
       head.provisional === undefined && (head.commands["work"] ?? []).includes(TRAIT_GUARDED));
+  }
+
+  // Held-slot exclusion: shipped deregister during a live slot at the CURRENT gate
+  // generation returns registration-in-flight. A slot whose generation is BEHIND the
+  // live gate does not block (lost-release leftover after a successful reopen).
+  {
+    const DC_HOLD = register({ urn: "ai.cotal.whold", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const holdSpec: ServiceSpec = { endpoint: "whold", owner: "u_op", clusterDigests: [DC_HOLD], protocol: { v: 1 } };
+    let duringHold: Awaited<ReturnType<typeof deregisterServiceInstance>> | undefined;
+    const kvHold = hookedKv({ beforeWrite: async (k) => {
+      if (k !== "govern.whold" || duringHold !== undefined) return;
+      const spec = await kv.get(`svc.whold.${IID_A}.spec`);
+      if (!spec || spec.operation !== "PUT") return; // slot-take precedes the spec; wait for the promote
+      const g = gateStates.get(`whold/${IID_A}`)!;
+      duringHold = await deregisterServiceInstance(kv, {
+        endpoint: "whold", instanceId: IID_A, observeGeneration: () => g.generation,
+      });
+    } });
+    await regOn(kvHold, holdSpec, IID_A);
+    c("shipped deregister during a held slot at the live gate generation returns registration-in-flight",
+      duringHold?.removed === false && duringHold.reason === "registration-in-flight", duringHold);
+    {
+      const head = await readHead("whold");
+      c("the held-slot refuse leaves the registration to complete; the settled head is bound",
+        head.provisional === undefined && (head.commands["work"] ?? []).includes(TRAIT_GUARDED));
+    }
+    const DC_BEHIND = register({ urn: "ai.cotal.wbehind", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const behindSpec: ServiceSpec = { endpoint: "wbehind", owner: "u_op", clusterDigests: [DC_BEHIND], protocol: { v: 1 } };
+    await regOn(kv, behindSpec, IID_A);
+    {
+      const head = await readHead("wbehind");
+      head.provisional = { instanceId: IID_A, generation: 0, commands: { work: [TRAIT_GUARDED] } };
+      await kv.put("govern.wbehind", new TextEncoder().encode(JSON.stringify(head)));
+    }
+    const liveGen = gateStates.get(`wbehind/${IID_A}`)!.generation;
+    const behind = await deregisterServiceInstance(kv, {
+      endpoint: "wbehind", instanceId: IID_A, observeGeneration: () => liveGen,
+    });
+    c("a slot held at a generation behind the live gate does NOT block deregistration",
+      behind.removed === true && liveGen > 0, { behind, liveGen });
+    const DC_UNDEF = register({ urn: "ai.cotal.wundef", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const undefSpec: ServiceSpec = { endpoint: "wundef", owner: "u_op", clusterDigests: [DC_UNDEF], protocol: { v: 1 } };
+    let duringUndef: Awaited<ReturnType<typeof deregisterServiceInstance>> | undefined | "threw";
+    let undefErr: { code?: string; message?: string } | undefined;
+    const kvUndef = hookedKv({ beforeWrite: async (k) => {
+      if (k !== "govern.wundef" || duringUndef !== undefined) return;
+      const spec = await kv.get(`svc.wundef.${IID_A}.spec`);
+      if (!spec || spec.operation !== "PUT") return;
+      try {
+        duringUndef = await deregisterServiceInstance(kv, {
+          endpoint: "wundef", instanceId: IID_A, observeGeneration: () => undefined as unknown as number,
+        });
+      } catch (e) {
+        duringUndef = "threw";
+        undefErr = { code: (e as EpEnvelopeError).code, message: (e as Error).message };
+      }
+    } });
+    await regOn(kvUndef, undefSpec, IID_A);
+    c("an undefined observeGeneration with a held slot FAILS CLOSED (does not delete)",
+      duringUndef === "threw" && undefErr?.code === "unavailable" && /not an unsigned generation/.test(undefErr.message ?? ""), { duringUndef, undefErr });
+    {
+      const spec = await kv.get(`svc.wundef.${IID_A}.spec`);
+      c("the undefined observation left the spec in place", spec?.operation === "PUT", spec?.operation);
+    }
+    const DC_THROW = register({ urn: "ai.cotal.wthrow", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const throwSpec: ServiceSpec = { endpoint: "wthrow", owner: "u_op", clusterDigests: [DC_THROW], protocol: { v: 1 } };
+    let duringThrow: Awaited<ReturnType<typeof deregisterServiceInstance>> | undefined | "threw";
+    let throwErr: { code?: string; message?: string } | undefined;
+    const kvThrow = hookedKv({ beforeWrite: async (k) => {
+      if (k !== "govern.wthrow" || duringThrow !== undefined) return;
+      const spec = await kv.get(`svc.wthrow.${IID_A}.spec`);
+      if (!spec || spec.operation !== "PUT") return;
+      try {
+        duringThrow = await deregisterServiceInstance(kv, {
+          endpoint: "wthrow", instanceId: IID_A, observeGeneration: () => { throw new Error("no issuance gate at auth.wthrow"); },
+        });
+      } catch (e) {
+        duringThrow = "threw";
+        throwErr = { code: (e as EpEnvelopeError).code, message: (e as Error).message };
+      }
+    } });
+    await regOn(kvThrow, throwSpec, IID_A);
+    c("a thrown observeGeneration with a held slot FAILS CLOSED as unavailable",
+      duringThrow === "threw" && throwErr?.code === "unavailable" && /could not observe the issuance-gate generation/.test(throwErr.message ?? "") && /no issuance gate/.test(throwErr.message ?? ""), { duringThrow, throwErr });
+    {
+      const spec = await kv.get(`svc.wthrow.${IID_A}.spec`);
+      c("the thrown observation left the spec in place", spec?.operation === "PUT", spec?.operation);
+    }
+    const DC_AHEAD = register({ urn: "ai.cotal.wahead", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+    const aheadSpec: ServiceSpec = { endpoint: "wahead", owner: "u_op", clusterDigests: [DC_AHEAD], protocol: { v: 1 } };
+    await regOn(kv, aheadSpec, IID_A);
+    const aheadLive = gateStates.get(`wahead/${IID_A}`)!.generation;
+    {
+      const head = await readHead("wahead");
+      head.provisional = { instanceId: IID_A, generation: aheadLive + 1, commands: { work: [TRAIT_GUARDED] } };
+      await kv.put("govern.wahead", new TextEncoder().encode(JSON.stringify(head)));
+    }
+    let aheadErr: { code?: string; message?: string } | undefined;
+    try {
+      await deregisterServiceInstance(kv, {
+        endpoint: "wahead", instanceId: IID_A, observeGeneration: () => aheadLive,
+      });
+    } catch (e) {
+      aheadErr = { code: (e as EpEnvelopeError).code, message: (e as Error).message };
+    }
+    c("a slot AHEAD of the observed live generation FAILS CLOSED (ahead is not a leftover)",
+      aheadErr?.code === "unavailable" && /ahead of the observed live gate generation/.test(aheadErr.message ?? "") && aheadLive >= 0, { aheadErr, aheadLive });
+    {
+      const spec = await kv.get(`svc.wahead.${IID_A}.spec`);
+      c("the ahead observation left the spec in place", spec?.operation === "PUT", spec?.operation);
+    }
   }
 
   // A definite slot-take CAS loss is a loud CONFLICT (finding: the record helpers wrap the

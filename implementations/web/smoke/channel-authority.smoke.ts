@@ -15,8 +15,9 @@
  *
  * WHAT IS DRIVEN, AND WHAT IS NOT.
  *   - Block 1 drives the real `parseSubject` / `chatSubject` from `@cotal-ai/core`.
- *   - Block 2 EXTRACTS the shipped decision statements — the server's derivation and all four
- *     browser ingresses — out of the files that ship them, and EXECUTES them. It does not match
+ *   - Block 2 EXTRACTS the shipped decision statements — the server's derivation, the read's own
+ *     subject-to-channel derivation in `@cotal-ai/core`, and all four browser ingresses — out of the
+ *     files that ship them, and EXECUTES them. It does not match
  *     their text. A substring check proves a line was TYPED; it goes red on a harmless reformat and
  *     stays green on a statement that no longer does what its name says. Neither page can be
  *     evaluated whole (both drive the DOM at load), so the statement is extracted rather than the
@@ -36,7 +37,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
+import { assertValidChannel, chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -168,20 +169,70 @@ check("web.ts declares the forward in one extractable statement", Boolean(forwar
   check("and it still carries the verified sender token", ctx.out?.senderId === "local.SENDER", { got: ctx.out?.senderId });
 }
 
-// The backfill mapper. Extracted and executed with a stub `ch`, so the cell measures which channel
-// the entry ends up tagged with. `as const` is a type-only annotation and is stripped to run it;
-// that is the one transform applied, and it cannot change the value produced.
-const mapper = /\.map\(\(msg\) => \(\{[\s\S]*?\}\)\)/.exec(webTs)?.[0];
+// The backfill mapper. Extracted and executed, so the cell measures which channel the entry ends up
+// tagged with. `as const` is a type-only annotation and is stripped to run it; that is the one
+// transform applied, and it cannot change the value produced.
+//
+// WHERE THE TAG COMES FROM MOVED, AND THE CHAIN GREW A LINK. The backfill used to read one channel
+// at a time, so the tag was the channel the server had ASKED for, server-owned by construction. It
+// now reads every chat channel in one consumer, so the tag is whatever the READ hands back per
+// message, and the read derives that from the subject the broker delivered on. The web mapper below
+// is therefore only half the claim; the other half is the derivation inside `multiChannelHistory`,
+// extracted and driven the same way further down. Checking only the mapper would leave the actual
+// trust decision unmeasured.
+const mapper = /\.map\(\(\{ channel, msg \}\) => \(\{[\s\S]*?\}\)\)/.exec(webTs)?.[0];
 check("web.ts declares the backfill mapper in one extractable expression", Boolean(mapper), { mapper });
 {
   const expr = mapper!.replace(/^\.map\(/, "").replace(/\)$/, "").replace(/ as const/g, "");
-  const ctx: { ch: { channel: string }; out?: Record<string, unknown> } = { ch: { channel: "requested-by-server" } };
-  runInContext(`out = (${expr})({ channel: "attacker-claimed", id: "m1" });`, createContext(ctx),
-    { filename: "web.ts (backfill mapper)" });
-  check("a backfilled entry is tagged with the channel the SERVER requested, not the payload's",
-    ctx.out?.channel === "requested-by-server", { got: ctx.out?.channel });
+  const ctx: { out?: Record<string, unknown> } = {};
+  runInContext(
+    `out = (${expr})({ channel: "derived-by-read", msg: { channel: "attacker-claimed", id: "m1" } });`,
+    createContext(ctx), { filename: "web.ts (backfill mapper)" });
+  check("a backfilled entry is tagged with the channel the READ derived, not the payload's",
+    ctx.out?.channel === "derived-by-read", { got: ctx.out?.channel });
   check("and the untouched payload travels alongside it for the client to overwrite at ingress",
     (ctx.out?.msg as { channel?: string })?.channel === "attacker-claimed", { got: ctx.out?.msg });
+}
+
+// The other half: the read's own derivation. `multiChannelHistory` maps the delivered subject to a
+// channel, and this is the statement that decides whether the dashboard's backfill is keyed on the
+// broker's routing or on a payload field. Extracted from the shipped core source and executed
+// against the real `parseSubject`, with a payload whose claim DISAGREES with its subject.
+const endpointTs = read("../../../packages/core/src/endpoint.ts");
+const readMapper = /return rows\.map\(\(\{ subject, msg \}\) => \{[\s\S]*?\n {4}\}\);/.exec(endpointTs)?.[0];
+check("endpoint.ts declares the read's channel derivation in one extractable statement", Boolean(readMapper), { readMapper });
+{
+  const expr = readMapper!.replace(/^return /, "").replace(/;$/, "");
+  const ctx: { rows: unknown[]; parseSubject: typeof parseSubject; out?: { channel: string; msg: { channel?: string } }[] } =
+    { rows: [], parseSubject };
+  const run = (rows: unknown[]) => {
+    ctx.rows = rows;
+    runInContext(`out = ${expr};`, createContext(ctx), { filename: "endpoint.ts (read derivation)" });
+  };
+  run([{ subject: chatSubject(SPACE, OWNER, ACTOR, "policed-channel"), msg: { channel: "attacker-claimed", id: "m1" } }]);
+  check("the read tags a message with the channel in the SUBJECT the broker delivered it on",
+    ctx.out?.[0]?.channel === "policed-channel", { got: ctx.out?.[0]?.channel });
+  check("and it does not overwrite the payload, which the client still resolves at its own ingress",
+    ctx.out?.[0]?.msg.channel === "attacker-claimed", { got: ctx.out?.[0]?.msg });
+  check("a dotted channel survives the derivation whole, where a naive token index would truncate it",
+    (run([{ subject: chatSubject(SPACE, OWNER, ACTOR, "team.backend"), msg: {} }]), ctx.out?.[0]?.channel === "team.backend"),
+    { got: ctx.out?.[0]?.channel });
+
+  // THE KIND GATE, DRIVEN. `.rest` is the RECIPIENT on `inst` and the ROUTE on `svc`, so a
+  // derivation that skipped the kind check would label a DM's recipient as a channel on the one
+  // path that reads across channels. It must refuse, not guess.
+  // Matched on the MESSAGE, not on `instanceof Error`: the statement runs in its own vm realm, so
+  // the error it constructs is not this realm's `Error` and an identity check would read a correct
+  // refusal as a pass-through.
+  let threw: unknown;
+  try { run([{ subject: `${spacePrefix(SPACE)}.inst.${OWNER}.${ACTOR}.${OWNER}.${ACTOR}`, msg: {} }]); }
+  catch (e) { threw = e; }
+  check("a non-chat subject RAISES rather than becoming a channel",
+    /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
+  threw = undefined;
+  try { run([{ subject: "garbage", msg: {} }]); } catch (e) { threw = e; }
+  check("and so does an unparseable one",
+    /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
 }
 
 // All four browser ingresses. Each shipped statement is executed against a payload whose claim
@@ -904,6 +955,38 @@ check("extractBackfill returns undefined when the loop is absent (negative contr
 for (const [label, file] of [["app.js", "../src/web/app.js"], ["graph.js", "../src/web/graph.js"]] as const) {
   check(`${label} — exactly ONE backfill loop is identified in the shipped file (positive control)`,
     findBackfillLoops(read(file), label).length === 1, { n: findBackfillLoops(read(file), label).length });
+}
+
+// THE FILTER LIST IS THE PROMISE, so a channel name the wire layer would REWRITE has to be refused
+// rather than rewritten. `chatSubject` builds each filter through `token()`, which maps an unusable
+// character to `_`, trims each segment and drops empty ones. So "foo/bar" would filter on `foo_bar`
+// and ".lead" on `lead`: the caller names one channel, the broker returns another, and the read's
+// own guarantee that an unlisted channel never crosses the link is inverted. `isConcreteChannel`
+// does not catch it, because none of these carry a wildcard. Found by an ordering-and-filtering
+// review against a live broker, which returned a message on `foo_bar` for a read of `foo/bar`.
+{
+  const build = /const subjects = \[\.\.\.new Set\(channels\.map\(\(channel\) => \{[\s\S]*?\}\)\)\];/.exec(endpointTs)?.[0];
+  check("endpoint.ts declares the filter-subject construction in one extractable statement", Boolean(build), { build });
+  // `indexOf` returns -1 for an ABSENT guard, and -1 is less than any real index, so an ordering
+  // comparison alone passes on a build with no guard at all. Measured: removing the call left this
+  // cell green. Presence is asserted first, and the ordering only after both are real indices.
+  const guardAt = build ? build.indexOf("assertValidChannel(channel)") : -1;
+  const buildAt = build ? build.indexOf("return chatSubject(") : -1;
+  check("multiChannelHistory calls assertValidChannel on each requested channel", guardAt >= 0, { build });
+  check("and it does so BEFORE building that channel's filter subject",
+    guardAt >= 0 && buildAt >= 0 && guardAt < buildAt, { guardAt, buildAt });
+  // And the guard is not decorative: it refuses every shape that would alias, and still admits the
+  // names the dashboard actually passes, so this cell cannot pass by refusing everything.
+  for (const bad of ["foo/bar", "team..b", ".lead"]) {
+    let refused = false;
+    try { assertValidChannel(bad); } catch { refused = true; }
+    check(`assertValidChannel refuses ${JSON.stringify(bad)}, which would have filtered on ${JSON.stringify(parseSubject(chatSubject("sp", "*", "*", bad))?.rest)}`, refused);
+  }
+  for (const good of ["general", "team.backend", "ok-chan"]) {
+    let accepted = true;
+    try { assertValidChannel(good); } catch { accepted = false; }
+    check(`assertValidChannel still admits ${JSON.stringify(good)} (the refusal is not swallowing everything)`, accepted);
+  }
 }
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);

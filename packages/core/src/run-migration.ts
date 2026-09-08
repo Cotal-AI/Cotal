@@ -32,6 +32,7 @@ import {
   assertStatusValue,
 } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
+import { walkKvEntries } from "./kv-scan.js";
 
 /** One journal entry the new source no longer reaches, as the record keeps it. */
 export interface MigrationOrphanValue {
@@ -220,11 +221,11 @@ export async function listRunMigrations(
   const prefix = recordSpecKey(RECORD_KINDS.migration, qualifiers(endpoint, runId, "m")).slice(0, -"m.spec".length);
   // ONE wildcard token: only the migration id varies under this prefix, and a KV filter's `*`
   // matches exactly one token — one too few matches a key shape that does not exist and silently
-  // returns nothing.
-  const seen = await kv.keys(`${prefix}*.spec`);
+  // returns nothing. A CONSUMER-FREE walk, because the run driver that lists its own migrations
+  // holds no consumer verb on the records authority stream (SPEC 14.6, §13.9).
   const ids: string[] = [];
-  for await (const key of seen) {
-    const parts = key.split(".");
+  for (const e of await walkKvEntries(kv, `${prefix}*.spec`)) {
+    const parts = e.key.split(".");
     ids.push(parts[parts.length - 2] as string);
   }
   const found: RunMigrationRead[] = [];

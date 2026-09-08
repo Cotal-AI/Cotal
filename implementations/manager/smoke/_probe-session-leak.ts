@@ -32,6 +32,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -154,8 +155,8 @@ try {
     if (!started.ok) throw new Error(`seat did not start: ${JSON.stringify(started)}`);
 
     const before = liveSessions();
-    const args = ["tsx", BIN, "attach", "--name", arm.seat, "--space", space, "--server", PROXY, ...(arm.reconnect ? [] : ["--no-reconnect"])];
-    const child = pty.spawn("npx", args, {
+    const args = [BIN, "attach", "--name", arm.seat, "--space", space, "--server", PROXY, ...(arm.reconnect ? [] : ["--no-reconnect"])];
+    const child = pty.spawn(TSX, args, {
       name: "xterm-256color", cols: 100, rows: 30, cwd: root,
       env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
     });

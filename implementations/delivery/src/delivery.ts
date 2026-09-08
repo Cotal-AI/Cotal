@@ -5,13 +5,17 @@ import {
   LEASE_TTL_MS,
   accountFromCreds,
   credsClaims,
+  dialerFor,
   idFromCreds,
   isReachable,
   mintCreds,
   newIdentity,
+  standaloneConnectOpts,
+  startTimerWriter,
   type MembershipFeedHandle,
   type ParsedArgs,
   type SecretStore,
+  type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
@@ -313,6 +317,46 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   }
 
   let stopping = false;
+
+  // The TIMER WRITER (SPEC 13.2): the pump that turns workflow `.schedule` requests into armed
+  // broker schedules. Hosted here because this daemon is the space's standing server-side process;
+  // without a running writer no pause on the space ever expires. Its OWN connection under the same
+  // daemon cred (the endpoint's connection is private to it, and membership set the precedent of
+  // module-per-connection isolation), re-dialed with the FRESHEST cred by a supervised restart
+  // loop: a fault never kills delivery, is never silent (each attempt logs why the space cannot
+  // expire pauses right now), and a cred that gains rows at renewal is picked up on the next dial.
+  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
+  void (async () => {
+    let backoffMs = 5_000;
+    for (;;) {
+      if (stopping) return;
+      let nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> | undefined;
+      try {
+        nc = await dialerFor(server)({
+          servers: server,
+          ...standaloneConnectOpts({ creds: latestCreds, tls }),
+          name: "cotal-delivery-timer-writer",
+          maxReconnectAttempts: -1,
+        });
+        const handle = await startTimerWriter(nc, space);
+        timerWriter = { handle, nc };
+        backoffMs = 5_000;
+        console.log(`✓ timer writer up (space ${space}) — workflow pauses on this space expire`);
+        await handle.done; // resolves only through stop(); a fault rejects
+        return;
+      } catch (e) {
+        if (stopping) return;
+        console.error(
+          `! timer writer: down (${(e as Error).message}) — retrying in ${Math.round(backoffMs / 1000)}s; pauses on this space do not expire until it is back`,
+        );
+        try { await nc?.drain(); } catch { /* connection already gone */ }
+        timerWriter = undefined;
+        await new Promise((r) => setTimeout(r, backoffMs).unref());
+        backoffMs = Math.min(backoffMs * 2, 300_000);
+      }
+    }
+  })();
+
   const shutdown = (code: number): void => {
     if (stopping) return;
     stopping = true;
@@ -323,6 +367,8 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     setTimeout(() => process.exit(code), 2000);
     void (async () => {
       try { await membership?.stop(); } catch { /* broker may be gone */ }
+      try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
+      try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
       try { await ep.releaseDeliveryLease(shard); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);

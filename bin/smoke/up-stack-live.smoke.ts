@@ -49,7 +49,7 @@ const anchors = new Map([
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -157,7 +157,10 @@ try {
   //     dependence on how much of the bucket TTL is left by the time the refresh reaches its CAS.
   const deliveryPidFile = record(DELIVERY_PIDFILE);
   const liveDelivery = readFileSync(deliveryPidFile, "utf8");
+  const deliveryIdentityFile = `${deliveryPidFile}.identity`;
+  const liveDeliveryIdentity = readFileSync(deliveryIdentityFile, "utf8");
   rmSync(deliveryPidFile);
+  rmSync(deliveryIdentityFile);
   const lost = cli("up", "--server", SERVER);
   const lostOut = plain(lost.stdout + lost.stderr);
   ok("a refresh whose delivery launch loses the single-flight lease exits non-zero", lost.status !== 0, lostOut);
@@ -166,6 +169,7 @@ try {
   // The losing launch overwrote the record with its own (dead) pid; put back the one `down` needs to
   // stop the daemon that is actually serving.
   writeFileSync(deliveryPidFile, liveDelivery);
+  writeFileSync(deliveryIdentityFile, liveDeliveryIdentity);
 
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.

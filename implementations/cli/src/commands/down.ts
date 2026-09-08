@@ -36,9 +36,10 @@ import {
   type JsonValue,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import type { NatsConnection } from "@nats-io/transport-node";
 import {
   DEV_OWNER,
+  dialerFor,
   isReachable,
   LEASE_TTL_MS,
   MANAGER_LEASE_KEY,
@@ -55,7 +56,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -313,6 +314,13 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
         `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
       );
     }
+    // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule the manager, delivery and
+    // auth helpers apply. This is the path `cotal down` uses for the BROKER, the web dashboard and
+    // every extension component, so all four teardown surfaces share one identity rule.
+    const identity = verifyIdentityPin(pidPath);
+    if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
+    if (identity.kind === "legacy") console.error(identityLegacyWarning(component.label, pidPath));
+    else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     try {
       process.kill(pid, "SIGTERM");
     } catch (e) {
@@ -347,7 +355,10 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
     // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
     // `unknown` as gone and deleted a live process's record; it is gone.
-    if (stopped) rmSync(pidPath, { force: true });
+    if (stopped) {
+      removeIdentityPin(pidPath); // proven death: the pin goes with the pidfile (#969)
+      rmSync(pidPath, { force: true });
+    }
     rmSync(marker, { force: true });
   }
 }
@@ -648,9 +659,9 @@ async function directKvValue<T>(
 async function assertControlPlaneQuiesced(space: string, server: string): Promise<void> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
-  const nc = await connect({
+  const nc = await dialerFor(server)({
     servers: server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -691,9 +702,9 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
 export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
-  const nc = await connect({
+  const nc = await dialerFor(server)({
     servers: server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
     maxReconnectAttempts: 0,
   });
   try {

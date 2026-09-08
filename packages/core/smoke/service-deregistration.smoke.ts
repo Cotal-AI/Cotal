@@ -113,6 +113,9 @@ function barrierFor(instanceId: string): EpIssuanceBarrier {
 }
 const register = (kv: KV, instanceId: string) =>
   registerServiceInstance(kv, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(instanceId), readClusterArtifact: (d: string) => artifacts.get(d) });
+const observeGeneration = (instanceId: string) => () => gates.get(`${ENDPOINT}/${instanceId}`)!.generation;
+const deregister = (kv: KV, instanceId: string) =>
+  deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId, observeGeneration: observeGeneration(instanceId) });
 /** Converge an instance so the freeze counts it: `ready` at the current registration + gate epoch. */
 const converge = async (kv: KV, instanceId: string, registrationRevision: number) => {
   const epoch = gates.get(`${ENDPOINT}/${instanceId}`)!.processEpoch;
@@ -144,7 +147,7 @@ try {
     frozen0.has(IID_LIVE) && frozen0.has(IID_DEAD), [...frozen0]);
 
   console.log("2. deregistration removes the record, and says exactly what it removed");
-  const removed = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_DEAD });
+  const removed = await deregister(kv, IID_DEAD);
   c("it reports removed with the spec revision it deleted", removed.removed === true && removed.specRevision > 0, removed);
   c("...and the status revision, so a caller can say what is gone rather than that something is",
     removed.removed === true && removed.statusRevision !== undefined, removed);
@@ -157,9 +160,9 @@ try {
     !frozen1.has(IID_DEAD) && frozen1.has(IID_LIVE), [...frozen1]);
 
   console.log("3. idempotence - a shutdown racing an operator must not fail");
-  const twice = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_DEAD });
+  const twice = await deregister(kv, IID_DEAD);
   c("a second deregistration is ABSENT, not an error", twice.removed === false && twice.reason === "absent", twice);
-  const never = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_NEVER });
+  const never = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_NEVER, observeGeneration: () => 0 });
   c("deregistering something never registered is ABSENT too", never.removed === false && never.reason === "absent", never);
 
   console.log("4. THE ORDER: which half-deleted state a concurrent reader can catch");
@@ -208,7 +211,7 @@ try {
   // rewritten means the manager never comes back at all, a status that cannot be means it comes
   // back registered and never converges, which reads to every scatter as a live instance that
   // answers nothing. Each is caught rather than awaited bare, so a regression names its own cell.
-  const after = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_PIN });
+  const after = await deregister(kv, IID_PIN);
   c("the instance is deregistered again (setting up the tombstone)", after.removed === true, after);
   const epochBefore = gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch;
   let reborn: { registrationRevision: number } | undefined;
@@ -225,7 +228,7 @@ try {
   c("...and it is a live class member again", frozen2.has(IID_PIN), [...frozen2]);
 
   console.log("7. the endpoint token is validated, not trusted");
-  const bad = await errOf(() => deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: "not a valid token!" }));
+  const bad = await errOf(() => deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: "not a valid token!", observeGeneration: () => 0 }));
   c("a malformed instance id is refused at the seam rather than widening a subject", bad.message !== "NO THROW", bad);
 
   await nc.drain().catch(() => nc.close());

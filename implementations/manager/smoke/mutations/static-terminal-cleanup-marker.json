@@ -1,0 +1,37 @@
+{
+  "suite": "implementations/manager/smoke/static-lifecycle.smoke.ts",
+  "guard": "The static terminal records a durable cleanup-complete marker on the `terminalizing` slot BEFORE its final CAS to `retired` (#1274). A resumed terminal reads the marker and skips a completed cleanup instead of re-running it; a terminal that ran cleanup settles a row that carries the marker.",
+  "command": "pnpm smoke:static-lifecycle",
+  "completionMarker": "STATIC-LIFECYCLE SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/static-terminal-cleanup-marker.json",
+  "why": [
+    "§7c plants two crashed-terminal shapes over a real JWT broker and drives the real",
+    "runStaticTerminal as a resume would. `resumemarked` carries the durable cleanupComplete",
+    "marker already set (world 3: cleanup finished, the process died before the retired CAS);",
+    "`resumeplain` does not (worlds 1/2: cleanup never ran or was in flight).",
+    "",
+    "The two mutations are each other's control. Dropping the skip-when-marked branch makes the",
+    "resume re-run a cleanup it should have skipped, and the marked cell must notice. Dropping the",
+    "marker write leaves a completed cleanup unrecorded, and the plain cell (which asserts the",
+    "settled row carries the marker, written before the retired CAS) must notice. A repair that did",
+    "only one would have left the marker unreadable or unwritten one layer down."
+  ],
+  "mutations": [
+    {
+      "name": "the skip-when-cleanupComplete branch is removed, so a resume re-runs a completed cleanup",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "  if (slot.row.cleanupComplete === true) {\n    log(`footprint cleanup already recorded complete for uid ${args.lifecycleUid}; skipping the re-run (#1274 marker)`);\n    return { revision: slot.revision };\n  }\n",
+      "replace": "",
+      "expectRed": "SKIPS cleanup (world 3: already done)",
+      "cell": "a resume over a cleanupComplete=true terminalizing slot SKIPS cleanup (world 3: already done)"
+    },
+    {
+      "name": "the cleanup-complete marker write is dropped, so a completed cleanup is never recorded",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "  const revision = await casStaticSlot(t, { ...slot.row, cleanupComplete: true }, slot.revision);",
+      "replace": "  const revision = await casStaticSlot(t, { ...slot.row }, slot.revision);",
+      "expectRed": "then RETIRES marking cleanup complete",
+      "cell": "a resume over an UNMARKED terminalizing slot re-runs cleanup once, then RETIRES marking cleanup complete (write before the retired CAS)"
+    }
+  ]
+}

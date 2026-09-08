@@ -15,10 +15,20 @@ import { scopePathString } from "./keys.js";
 /** Deep-freeze a value on its way across an effect boundary. Cycles are not reachable here: a
  *  value that crosses a boundary has to canonicalize, and a cycle does not. */
 export function deepFreeze<T>(value: T): T {
+  return freezeThrough(value, new WeakSet<object>());
+}
+
+/** ALREADY FROZEN IS NOT ALREADY DEEP-FROZEN. Returning early on `Object.isFrozen` stopped the
+ *  walk at the first frozen node, so a handler returning `Object.freeze({ a: { b: 1 } })` handed
+ *  back a value whose `a` was still writable: `assertWritable` then saw an unfrozen container and
+ *  allowed the write, and a program mutated a recorded value with no L2031. The `seen` set is what
+ *  keeps the walk finite, which is the job the frozen check was doing by accident. */
+function freezeThrough<T>(value: T, seen: WeakSet<object>): T {
   if (value === null || typeof value !== "object") return value;
-  if (Object.isFrozen(value)) return value;
+  if (seen.has(value as object)) return value;
+  seen.add(value as object);
   Object.freeze(value);
-  for (const v of Object.values(value as Record<string, unknown>)) deepFreeze(v);
+  for (const v of Object.values(value as Record<string, unknown>)) freezeThrough(v, seen);
   return value;
 }
 

@@ -58,7 +58,7 @@ const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
 function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {}): Run {
   const r = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, ...extraEnv },
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1", ...extraEnv },
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
@@ -146,7 +146,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   // BEFORE the connect attempt, so the connectors appear regardless of the connect outcome — poll the
   // manifest on disk (not `ext list`, which would itself seed) and kill the daemon once they exist.
   const child = spawn("node", [BIN, "supervise", "--space", "seedsmoke", "--server", "nats://127.0.0.1:59998"], {
-    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg },
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
     stdio: "ignore",
   });
   const deadline = Date.now() + 90000;
@@ -406,7 +406,9 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   const cfg = track(freshCfg());
   const boot = (): Promise<{ code: number; err: string }> =>
     new Promise((resolve) => {
-      const p = spawn("node", [BIN, "ext", "list"], { env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg } });
+      const p = spawn("node", [BIN, "ext", "list"], {
+        env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
+      });
       let err = "";
       p.stderr.on("data", (d) => (err += d.toString()));
       p.on("close", (code) => resolve({ code: code ?? -1, err }));
@@ -431,7 +433,10 @@ if (process.platform !== "win32") {
   const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
   const link = join(linkDir, "cotal");
   symlinkSync(BIN, link);
-  const r = spawnSync("node", [link, "ext", "list"], { encoding: "utf8", env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg } });
+  const r = spawnSync("node", [link, "ext", "list"], {
+    encoding: "utf8",
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
+  });
   const out = r.stdout ?? "";
   const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
   if (names.length !== 6) console.log(`[diag] symlinked boot status=${r.status}\n--stdout--\n${out}\n--stderr--\n${r.stderr}`);
@@ -467,16 +472,20 @@ if (process.platform !== "win32") {
   const said = `${r.stdout}${r.stderr}`;
   check("downgrade: an older binary REFUSES a store stamped newer", r.status !== 0, r.status);
   check("downgrade: the refusal names both generations", /is older than the seed store's generation 99\.0\.0/.test(said), said.slice(0, 300));
-  check("downgrade: the refusal names the way out", /ext seed --reset/.test(said), said.slice(0, 300));
+  check(
+    "downgrade: the refusal names the way out",
+    /ext seed --force/.test(said) && !/ext seed --reset/.test(said),
+    said.slice(0, 300),
+  );
   // The point of the guard is that it writes NOTHING, so assert the bytes, not just the exit code.
   check("downgrade: stamp.json is byte-identical after the refusal", readFileSync(stamp).equals(before));
   check("downgrade: no store generation added or removed", readdirSync(join(seedDir(cfg), "store")).sort().join(",") === storeBefore, storeBefore);
 
   // A refusal that prescribes a fix has to have a working fix, or it is a wedge with instructions.
-  const reset = cotal(cfg, ["ext", "seed", "--reset"]);
-  check("downgrade: `ext seed --reset` recovers the store", reset.status === 0, reset.stderr.slice(0, 300));
+  const force = cotal(cfg, ["ext", "seed", "--force"]);
+  check("downgrade: `ext seed --force` recovers the store", force.status === 0, force.stderr.slice(0, 300));
   check("downgrade: the stamp is this binary's generation again", readJson(stamp).generation === readJson(join(REPO, "bin", "package.json")).version);
-  check("downgrade: ordinary commands work after the reset", listNames(cfg).length === 6);
+  check("downgrade: ordinary commands work after the force rebuild", listNames(cfg).length === 6);
 }
 
 // ── downgrade recovery names a concrete executable only after proving its version ───────────────

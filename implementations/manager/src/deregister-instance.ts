@@ -42,6 +42,7 @@
  */
 import {
   deregisterServiceInstance, describeEndpoint, epProbeInstanceInterest, unansweredRequest,
+  epgateKey, parseEndpointGate,
   type EpCaller, type EpInstanceLiveness, type ServiceDeregistration,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
@@ -61,7 +62,9 @@ export type InstanceDeregisterCondition =
   /** No live spec key at the coordinate: never registered, or already deregistered. */
   | "not-registered"
   /** A key moved between the read and its revision-pinned delete: a live writer owns this record. */
-  | "superseded";
+  | "superseded"
+  /** This instance holds the endpoint governance slot at the live gate generation: a registration is in flight. */
+  | "registration-in-flight";
 
 /** A refusal carrying its condition as DATA, not only as prose. */
 export class InstanceDeregisterRefused extends Error {
@@ -155,12 +158,14 @@ export interface InstanceDeregisterReport {
  */
 export async function deregisterEndpointInstance(opts: {
   kv: KV;
+  /** Auth-store KV for a read of this instance's issuance-gate generation. Never frozen here. */
+  authKv: KV;
   endpoint: string;
   instanceId: string;
   probeInstance: () => Promise<InstanceProbe>;
   log: (line: string) => void;
 }): Promise<InstanceDeregisterReport> {
-  const { kv, endpoint, instanceId, log } = opts;
+  const { kv, authKv, endpoint, instanceId, log } = opts;
 
   // ---- 1. THE GUARD. Read-only, and nothing is mutated until it passes.
   //
@@ -194,11 +199,26 @@ export async function deregisterEndpointInstance(opts: {
     );
 
   // ---- 2. The §13.5 delete, revision-pinned inside (status first, then spec).
-  const outcome: ServiceDeregistration = await deregisterServiceInstance(kv, { endpoint, instanceId });
+  const outcome: ServiceDeregistration = await deregisterServiceInstance(kv, {
+    endpoint,
+    instanceId,
+    observeGeneration: async () => {
+      const key = epgateKey(endpoint, instanceId);
+      const entry = await authKv.get(key);
+      if (!entry || entry.operation !== "PUT")
+        throw new Error(`no issuance gate at ${key}`);
+      return parseEndpointGate(entry.value, key).generation;
+    },
+  });
   if (!outcome.removed && outcome.reason === "absent")
     throw new InstanceDeregisterRefused(
       "not-registered",
       `${endpoint}/${instanceId} has no registration to remove - it never registered, or it was already deregistered. Check the instance id: \`cotal ps\` prints the whole id, and this takes nothing shorter.`,
+    );
+  if (!outcome.removed && outcome.reason === "registration-in-flight")
+    throw new InstanceDeregisterRefused(
+      "registration-in-flight",
+      `the registration for ${endpoint}/${instanceId} is still in flight (its governance slot is held at the live gate generation), so nothing was removed. Wait for that registration to finish, or re-observe after it completes.`,
     );
   if (!outcome.removed)
     throw new InstanceDeregisterRefused(

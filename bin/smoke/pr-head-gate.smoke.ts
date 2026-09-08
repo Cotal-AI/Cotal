@@ -29,11 +29,14 @@ function check(name: string, condition: unknown, detail?: unknown): void {
   else { failed++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
 }
 
-const expectedNames = ["CI", "Docs", "Windows"];
+// "Mutation reproof" is expected on every PR: mutation-reproof.yml (#1272, closing #1217) declares a
+// pull_request trigger with no paths filter, so the declaration-derived set includes it for any
+// changed-path set. Added in sorted position. The matching run row lives in the #1087 fixture below.
+const expectedNames = ["CI", "Docs", "Mutation reproof", "Windows"];
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Windows"]) &&
-    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Windows"]),
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Mutation reproof", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Mutation reproof", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;
 try {

@@ -8,11 +8,11 @@
  * needs no claude/mesh; tmux/cmux are skipped (logged) when not present on the machine.
  */
 import { execFileSync } from "node:child_process";
-import { createRuntime } from "../src/index.js";
+import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
+import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { detachKey } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
 import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
-import type { LaunchSpec } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean): void {
@@ -21,6 +21,10 @@ function check(label: string, cond: boolean): void {
 }
 function skip(label: string, why: string): void {
   console.log(`• ${label} skipped (${why})`);
+}
+function closeHandle(h: unknown): void {
+  const closer = h as { close?: () => void } | undefined;
+  closer?.close?.();
 }
 function attachError(fn: () => unknown): string {
   try {
@@ -32,7 +36,7 @@ function attachError(fn: () => unknown): string {
 }
 
 const SESSION = "cotal-smoke";
-const spec: LaunchSpec = { command: "sleep", args: ["60"] };
+const spec: LaunchSpec = { command: "sleep", args: ["60"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } };
 const cwd = process.cwd();
 
 // pty (default) — the one streamable backend: attach() returns a live session, never throws.
@@ -45,6 +49,7 @@ const cwd = process.cwd();
     err === "" && typeof sess?.onData === "function" && typeof sess?.cols === "number",
   );
   h.stop({ graceful: false });
+  closeHandle(h);
 }
 
 // Runtime-selection contract (no fallbacks): `auto` is deterministic pty — even inside $TMUX. tmux
@@ -137,6 +142,35 @@ const cwd = process.cwd();
       h.stop({ graceful: false });
     }
   }
+}
+
+{
+  const unsupported: Runtime = { kind: "fixture", spawn: () => { throw new Error("unused"); } };
+  const err = attachError(() => requireRuntimeAdopt(unsupported, { kind: "fixture", id: "opaque" }));
+  check('absent adopt refuses by runtime name', err === 'runtime "fixture" does not support adopt');
+
+  const handle: AgentHandle = { name: "ok", kind: "capable", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error("unused"); } };
+  const capable: Runtime = { kind: "capable", spawn: () => handle, adopt: () => handle };
+  check("present adopt returns the runtime handle", requireRuntimeAdopt(capable, { kind: "capable", id: "opaque" }) === handle);
+
+  const pty = createRuntime("pty", SESSION);
+  const spawned = pty.spawn("smoke-pty-adopt", spec, cwd);
+  let adopted: AgentHandle | undefined;
+  const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(pty, spawned.reference ?? { kind: "pty", id: "missing" })));
+  if (process.platform === "linux") {
+    check(
+      "pty adopt returns a live proxy",
+      ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid !== undefined,
+    );
+  } else {
+    check(
+      `pty adopt throws custody transport unsupported on ${process.platform}`,
+      ptyErr === `custody transport unsupported on ${process.platform}`,
+    );
+  }
+  spawned.stop({ graceful: false });
+  closeHandle(spawned);
+  closeHandle(adopted);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

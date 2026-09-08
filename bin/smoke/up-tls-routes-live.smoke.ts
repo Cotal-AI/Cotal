@@ -57,6 +57,7 @@ import net from "node:net";
 import tls from "node:tls";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 const CLI = join(import.meta.dirname, "..", "cotal.ts");
 
@@ -142,10 +143,19 @@ function cotal(args: string[], home: string, cwd: string, env: Record<string, st
     // through the documented escape hatch is not a workaround for the test's benefit: it is the
     // exact remedy the changeset tells private-CA operators to use, so this exercises it rather than
     // asserting it works.
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), NODE_EXTRA_CA_CERTS: caFile, ...env },
+    env: {
+      ...process.env,
+      COTAL_HOME: home,
+      XDG_CONFIG_HOME: join(home, "xdg"),
+      COTAL_SKIP_CONNECTOR_SEED: "1",
+      NODE_EXTRA_CA_CERTS: caFile,
+      COTAL_NAME: "tlsprobe",
+      COTAL_ID: "tlsprobe_send",
+      ...env,
+    },
   } as const;
   assertSmokeSandboxDown(sandboxAnchors.get(cwd), args, options);
-  const r = spawnSync("npx", ["tsx", CLI, ...args], options);
+  const r = spawnSync(TSX, [CLI, ...args], options);
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { z } from "zod";
-import { jcodeConnector, listJcodeModels } from "../src/index.js";
+import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
 
 let pass = 0;
 let fail = 0;
@@ -60,7 +61,20 @@ try {
   const base = jcodeConnector.buildLaunch({ space: "space", name: "seat" });
   check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
-  check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === 180_000, jcodeConnector.readinessTimeoutMs);
+  check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === JCODE_READINESS_TIMEOUT_MS && JCODE_READINESS_TIMEOUT_MS === 180_000, jcodeConnector.readinessTimeoutMs);
+  const here = dirname(fileURLToPath(import.meta.url));
+  const extensionSrc = readFileSync(join(here, "../src/extension.ts"), "utf8");
+  const hostSrc = readFileSync(join(here, "../src/host.ts"), "utf8");
+  check(
+    "the manager window is the exported bound, not a second literal",
+    /readinessTimeoutMs:\s*JCODE_READINESS_TIMEOUT_MS/.test(extensionSrc) && !/\b180_000\b/.test(extensionSrc),
+    extensionSrc.match(/readinessTimeoutMs[\s\S]{0,80}/)?.[0],
+  );
+  check(
+    "the host default bound is that same export, not a second literal",
+    /return JCODE_READINESS_TIMEOUT_MS/.test(hostSrc) && !/\b180_000\b/.test(hostSrc),
+    hostSrc.match(/readinessTurnTimeoutMs[\s\S]{0,200}/)?.[0],
+  );
   check("feeds the declared catalog into the connector hook", jcodeConnector.listModels === listJcodeModels);
   const realJcodeHome = process.env.JCODE_HOME;
   const catalogHome = join(dir, "catalog-home");

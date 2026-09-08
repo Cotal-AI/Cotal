@@ -10,6 +10,13 @@
  * §13.10 is not weakened by a millimetre. The cost is that the driver must be reachable to answer a
  * checkpoint, which is the same condition under which the run advances at all.
  *
+ * **The presenter is the ARMING holder, read off the pause's own record,** never supplied by the
+ * caller. The holder is immutable at mint, and the principal answering is not necessarily the one
+ * that minted: the CLI mints a fresh holder per invocation, and a run adopted by another host is a
+ * different principal by definition (#533). Reading it here is what keeps "resolvable from
+ * anywhere" true across takeovers, with the run's own ACL — not the presenting identity — as the
+ * authorization.
+ *
  * **The answer is written BEFORE the token is presented,** and the two are separate facts on
  * purpose. The record is the payload; the settle is the one-use arbiter that releases the run. In
  * that order a crash in between leaves an answer nobody accepted — orphaned, read by nothing, and
@@ -26,6 +33,7 @@ import {
   newTakeoverId,
   recordCheckpointAnswer,
   checkpointAnswerId,
+  readCheckpointSpec,
   resumeCheckpoint,
   type CheckpointSettleFact,
 } from "@cotal-ai/core";
@@ -33,7 +41,7 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 
-/** No open checkpoint answers to this address in this run. */
+/** No open checkpoint (or ask) answers to this address in this run. */
 export class CheckpointNotOpen extends Error {
   constructor(
     readonly runId: string,
@@ -45,7 +53,7 @@ export class CheckpointNotOpen extends Error {
         {
           unknown: "no step is recorded under that key",
           settled: "that step has already settled",
-          "not-a-checkpoint": "that step is not a checkpoint",
+          "not-a-checkpoint": "that step is neither a checkpoint nor an ask",
           "no-identity": "that step is pending but carries no request id, so the checkpoint it is waiting on cannot be named",
         }[why]
       }`,
@@ -64,6 +72,12 @@ export interface ResolveCheckpointRequest {
   /** The digest of what the answerer actually saw — an approval as evidence, not as a claim. */
   readonly artifact?: string;
   readonly now: number;
+  /**
+   * The takeover id the journal replay rides. A caller whose credential pins its replay durable
+   * (the hosting manager's per-call `run-operator`, SPEC 14.3) passes the id its rows were minted
+   * for; a caller on a standing credential omits it and a fresh one is minted, as before.
+   */
+  readonly takeoverId?: string;
 }
 
 export interface ResolveCheckpointResult {
@@ -77,13 +91,22 @@ export interface ResolveCheckpointDeps {
   readonly js: JetStreamClient;
   readonly jsm: JetStreamManager;
   readonly space: string;
-  /** The endpoint hosting the driver, and the holder it presents as. */
+  /** The endpoint hosting the driver. The presenter is never supplied: it is the arming holder,
+   *  read off the checkpoint's own record. */
   readonly endpoint: string;
+}
+
+/** The open pause at a step, located: its token and the holder that armed it. */
+export interface OpenCheckpoint {
+  readonly token: string;
   readonly holder: { readonly id: string; readonly lifecycleUid: string };
 }
 
 /**
- * Answer a run's open checkpoint.
+ * Answer a run's open checkpoint over ONE set of planes: {@link locateOpenCheckpoint} then
+ * {@link answerOpenCheckpoint}. A caller whose credential must be pinned to the pause before it may
+ * write (the hosting manager, `cotal run --local`) performs the two halves on two credentials; a
+ * caller on a standing credential composes them here.
  *
  * Refusals are the plane's own and are not softened here: a checkpoint already resumed is a
  * `conflict` (resume authorization is one-use) and one already expired is a `failed-precondition`
@@ -95,9 +118,47 @@ export async function resolveCheckpoint(
   deps: ResolveCheckpointDeps,
   req: ResolveCheckpointRequest,
 ): Promise<ResolveCheckpointResult> {
-  const entries = await replayRunEntries(deps, req.runId);
-  const token = openCheckpointToken(entries, req.runId, req.stepKey);
+  const open = await locateOpenCheckpoint(deps, { runId: req.runId, stepKey: req.stepKey, takeoverId: req.takeoverId ?? newTakeoverId() });
+  return await answerOpenCheckpoint(deps, {
+    open,
+    by: req.by,
+    ...(req.value !== undefined ? { value: req.value } : {}),
+    ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
+    now: req.now,
+  });
+}
 
+/**
+ * The READ half of an answer: replay the run's journal to the open pause at `stepKey` and read the
+ * holder off its record. Nothing is written. The replay durable is named by `takeoverId`, the one
+ * the caller's credential row pins.
+ */
+export async function locateOpenCheckpoint(
+  deps: ResolveCheckpointDeps,
+  req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
+): Promise<OpenCheckpoint> {
+  const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
+  const token = openCheckpointToken(entries, req.runId, req.stepKey);
+  const spec = await readCheckpointSpec(deps.kv, { endpoint: deps.endpoint, token });
+  if (spec === undefined) {
+    throw new Error(
+      `checkpoint "${token}" has a journal entry but no record on endpoint ${deps.endpoint}; `
+      + `refusing to guess a presenter — reconcile the store before answering`,
+    );
+  }
+  return { token, holder: spec.holder };
+}
+
+/**
+ * The WRITE half of an answer: file the answer record for the located pause, then present its
+ * token as the arming holder. Every write is keyed by `open.token`, so a credential minted for this
+ * half is pinned to the one pause being answered (SPEC 14.3).
+ */
+export async function answerOpenCheckpoint(
+  deps: ResolveCheckpointDeps,
+  req: { readonly open: OpenCheckpoint; readonly by: string; readonly value?: unknown; readonly artifact?: string; readonly now: number },
+): Promise<ResolveCheckpointResult> {
+  const { token, holder } = req.open;
   const answerId = checkpointAnswerId({
     token,
     by: req.by,
@@ -116,14 +177,17 @@ export async function resolveCheckpoint(
 
   const settle = await resumeCheckpoint(deps.kv, deps.js, deps.jsm, deps.space, {
     ref: { endpoint: deps.endpoint, token },
-    presenter: deps.holder,
+    presenter: holder,
     now: req.now,
     answerId,
   });
   return { token, answerId, settle };
 }
 
-/** The token of the open checkpoint at this address, or a loud refusal naming which it is not. */
+/** The token of the open checkpoint (or ask attempt) at this address, or a loud refusal naming
+ *  which it is not. An `ask` parks on the checkpoint plane too — one pause per attempt — and the
+ *  CURRENT attempt's token rides the entry's external state as `askToken` (attempt 1 is the
+ *  request id itself), so an answer always lands on the pause that is actually open. */
 export function openCheckpointToken(
   entries: readonly JournalEntry[],
   runId: string,
@@ -134,16 +198,17 @@ export function openCheckpointToken(
   let entry: JournalEntry | undefined;
   for (const e of entries) if (journalEntryKeyString(e) === stepKey) entry = e;
   if (entry === undefined) throw new CheckpointNotOpen(runId, stepKey, "unknown");
-  if (entry.kind !== "checkpoint") throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
+  if (entry.kind !== "checkpoint" && entry.kind !== "ask") throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
   if (entry.state !== "pending") throw new CheckpointNotOpen(runId, stepKey, "settled");
   if (entry.requestId === undefined) throw new CheckpointNotOpen(runId, stepKey, "no-identity");
+  if (entry.kind === "ask" && typeof entry.external?.askToken === "string") return entry.external.askToken;
   return entry.requestId;
 }
 
 /** The run's step entries, in append order. Read-only: this replays under its own consumer name and
  *  activates nothing, so it never contends with the driver actually holding the run. */
-async function replayRunEntries(deps: ResolveCheckpointDeps, runId: string): Promise<JournalEntry[]> {
-  const replay = await replayRunJournal(deps.js, deps.jsm, deps.space, runId, newTakeoverId());
+async function replayRunEntries(deps: ResolveCheckpointDeps, runId: string, takeoverId: string): Promise<JournalEntry[]> {
+  const replay = await replayRunJournal(deps.js, deps.jsm, deps.space, runId, takeoverId);
   const entries: JournalEntry[] = [];
   for (const stored of replay.records) {
     if (stored.record.kind === "step") entries.push(stored.record.entry as JournalEntry);

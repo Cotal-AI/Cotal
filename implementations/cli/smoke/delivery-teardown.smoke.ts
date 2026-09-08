@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stopDelivery } from "../src/lib/delivery-proc.js";
+import { defaultStartToken } from "@cotal-ai/workspace";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`); } };
@@ -27,6 +28,10 @@ const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { 
 let victimExited = false;
 victim.on("exit", () => { victimExited = true; });
 writeFileSync(join(cotal, "delivery.pid"), String(victim.pid));
+// #969: a real `up` pins the pidfile to its process start; the planted record must match that
+// shape or the identity gate correctly refuses it as a legacy record before the kill this suite
+// grades ever runs.
+writeFileSync(join(cotal, "delivery.pid.identity"), `${victim.pid} ${defaultStartToken(victim.pid ?? 0)}`);
 
 const prevCwd = process.cwd();
 process.chdir(sandbox); // stopDelivery resolves .cotal by walking up from cwd

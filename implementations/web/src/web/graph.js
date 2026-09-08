@@ -728,6 +728,10 @@
       markStale("roster", null);
       return;
     }
+    if (view.state === "unpopulated") {
+      markStale("roster", { name: "roster", reason: "observer presence snapshot still loading" });
+      return;
+    }
     const since = typeof view.staleSince === "number" ? new Date(view.staleSince).toISOString() : "unknown";
     markStale("roster", { name: "roster", reason: `observer presence watch silent since ${since}` });
   }
