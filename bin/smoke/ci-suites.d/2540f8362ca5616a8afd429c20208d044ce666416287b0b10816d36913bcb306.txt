@@ -1,0 +1,3 @@
+# spawn's supervise policy: parse { restarts, window? }, default the window to 10m, refuse an
+# unknown key, and put restarts plus windowMs on the manager spawn args.
+smoke:runtime-spawn-policy

@@ -6,6 +6,7 @@ export * from "./agent-health.js";
 export * from "./bin-path.js";
 export * from "./colors.js";
 export * from "./connect.js";
+export * from "./control-target.js";
 export * from "./default-agent.js";
 export * from "./official-connectors.js";
 export * from "./extensions.js";

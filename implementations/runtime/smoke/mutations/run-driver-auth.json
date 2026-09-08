@@ -1,0 +1,44 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver-auth.smoke.ts",
+  "guard": "The run-driver profile (SPEC 14.6) on an enforcing broker: its rows drive a program across the journal, the run and program records, a fired sleep and a channel wait; the records enumeration is a consumer-free walk; the credential is pinned to one run, one takeover attempt and one set of timer coordinates.",
+  "command": "pnpm smoke:runtime-run-driver-auth",
+  "completionMarker": "run-driver-auth.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-driver-auth.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "Every other runtime suite runs on an open broker, so a grant row can be missing, mis-spelled or pattern-shaped and nothing goes red. Each mutation below removes or widens one thing the profile is built on, and the cell it names is the one that refuses the connection.",
+    "The walk mutation matters most: the enumeration replaced a consumer-backed pass so the profile could hold no consumer verb on the records store, and a walk that quietly went back to the pass would only fail under enforcement."
+  ],
+  "mutations": [
+    {
+      "name": "the program record is never written",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    await recordRunProgram(req.kv, req.endpoint, {",
+      "replace": "    if (false as boolean) await recordRunProgram(req.kv, req.endpoint, {",
+      "expectRed": "and the program record was pinned beside the run record, verbatim",
+      "cell": "and the program record was pinned beside the run record, verbatim",
+      "note": "A resume reads its source from this record. A driver that stops writing it leaves every run resumable only by whoever still has the file."
+    },
+    {
+      "name": "the timer schedule row loses its epoch pin",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "    `${p}.ept.${e}.${iid}.${args.epoch}.*.schedule`,",
+      "replace": "    `${p}.ept.${e}.${iid}.*.*.schedule`,",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a schedule request under any other epoch is refused: the timer coordinates are this attempt's own",
+      "cell": "a schedule request under any other epoch is refused: the timer coordinates are this attempt's own",
+      "note": "A credential that can schedule under any epoch can arm fires at coordinates a later attempt of the same instance listens on. The D32 matrix pins the row's text; this proves the broker enforces it."
+    },
+    {
+      "name": "the records enumeration falls back to the consumer-backed pass",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "  const bucket: Bucket = kv;\n  const subject = `${bucket.prefix}.${filter}`;",
+      "replace": "  const bucket: Bucket = kv;\n  if (filter.length > 0) return await liveKvEntries(kv, filter);\n  const subject = `${bucket.prefix}.${filter}`;",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
+      "cell": "the `ps` walk lists the run over the profile's own STREAM.MSG.GET row",
+      "note": "The walk exists so a principal with no consumer verb on the records store can list its keys. Routed back through the ordered consumer it works on every open broker and fails on every authed one."
+    }
+  ]
+}

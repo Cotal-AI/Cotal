@@ -142,6 +142,10 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    supervise: {
+      type: "object", additionalProperties: false, required: ["restarts", "windowMs"],
+      properties: { restarts: { type: "integer", minimum: 1 }, windowMs: { type: "integer", minimum: 1 } },
+    },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -386,7 +390,7 @@ const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
 const mk = (runId: string): MeshHandler => new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-  new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+  new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => Date.now(),
 );
 const stepCtx = (requestId: string, opts: { resume?: Record<string, unknown>; key?: Record<string, unknown> } = {}) => {
@@ -920,13 +924,17 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
   c("a turns budget that is not a positive integer is refused as malformed",
     (zero as { threw?: boolean })?.threw === true && String((zero as { message?: string })?.message).includes("positive integer") && spawnAccepts.size === before,
     JSON.stringify(zero));
-  // THE OTHER POLICY OPTION, THE SAME RULE. `supervise` is "a declarative restart policy" in the
-  // reference and nothing more: no keys, no restart semantics, no code. It was accepted and
-  // silently enforced by nothing, so a program that asked for a restart got none and no refusal.
-  const sup = await withDeadline(safe(handler.spawn({ persona: "builder", supervise: { restart: "always" } }, stepCtx(token("Z")).ctx)), 10_000, "the supervised spawn");
-  c("a supervise policy this host does not implement is refused, never accepted and ignored",
-    (sup as { threw?: boolean })?.threw === true && String((sup as { message?: string })?.message).includes("supervise is a restart policy") && spawnAccepts.size === before,
+  // THE OTHER POLICY OPTION, THE SAME RULE. `supervise` is a restart policy this host can
+  // enforce: unknown keys and malformed values are refused before a spawn is submitted, and a
+  // well-formed policy travels as `{ restarts, windowMs }` so the manager can restart in place.
+  const sup = await withDeadline(safe(handler.spawn({ persona: "builder", supervise: { restart: "always" } }, stepCtx(token("Z")).ctx)), 10_000, "the unknown-key supervise spawn");
+  c("an unknown supervise key is refused, never accepted and ignored",
+    (sup as { threw?: boolean })?.threw === true && String((sup as { message?: string })?.message).includes("not a restart policy this host enforces") && spawnAccepts.size === before,
     JSON.stringify(sup));
+  const well = await withDeadline(safe(handler.spawn({ persona: "builder", supervise: { restarts: 2, window: "5m" } }, stepCtx(token("S1")).ctx)), 10_000, "the well-formed supervise spawn");
+  c("a well-formed supervise travels as restarts and windowMs and the spawn is submitted",
+    (well as { threw?: boolean })?.threw !== true && spawnAccepts.size === before + 1,
+    JSON.stringify({ well, accepts: spawnAccepts.size, before }));
 }
 
 async function readGoalResultData(goalId: string): Promise<Record<string, unknown> | undefined> {
@@ -938,7 +946,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 48;
+const EXPECTED_CELLS = 49;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

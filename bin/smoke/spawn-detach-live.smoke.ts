@@ -355,9 +355,11 @@ try {
   console.log(`\nspawn-detach live e2e: ${pass} checks passed`);
 } finally {
   await mgr?.stop().catch(() => {});
+  console.log("spawn-detach:live manager-stop-returned");
   await Promise.all(kids.map((k) => {
     k.kill("SIGKILL");
     return awaitExit(k);
   }));
   releaseBroker?.();
+  console.log("spawn-detach:live finally-complete");
 }

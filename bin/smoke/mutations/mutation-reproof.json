@@ -1,6 +1,6 @@
 {
   "suite": "bin/smoke/mutation-reproof.smoke.ts",
-  "guard": "changed guarded source re-proves its fixture; a deleted or renamed-away source is a loud dangling failure naming the exact fixture; both sides of a rename enter the changed set",
+  "guard": "changed fixture config, suite, or guarded source re-proves its fixture; a deleted or renamed-away source is a loud dangling failure naming the exact fixture; both sides of a rename enter the changed set",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
@@ -20,6 +20,14 @@
       "replace": "      if (parts[2]) changed.add(parts[2]);",
       "expectRed": "the gate FAILS on a renamed-away guarded source and names exactly the dangling fixture",
       "cell": "the gate FAILS on a renamed-away guarded source and names exactly the dangling fixture"
+    },
+    {
+      "name": "a changed configured suite is ignored by changed-set selection",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  || (typeof suite === \"string\" && changed.has(suite))\n",
+      "replace": "",
+      "expectRed": "a suite-only change selects exactly the fixture that names that suite",
+      "cell": "a suite-only change selects exactly the fixture that names that suite"
     },
     {
       "name": "a dangling fixture is no longer refused, so a deleted source stops being a loud failure",

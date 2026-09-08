@@ -1,0 +1,2 @@
+# Seat custody: length-prefixed frames, SO_PEERCRED, and FrameReader size bounds.
+smoke:seat-protocol

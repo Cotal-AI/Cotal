@@ -1,5 +1,60 @@
 # @cotal-ai/manager
 
+## 0.47.0
+
+### Minor Changes
+
+- e6d3c96: Split Linux PTY ownership out of the manager worker: a one-shot launcher starts one detached custodian process per seat, and `Runtime.adopt` returns a live proxy over a permissioned Unix socket. Off Linux, pty spawn stays in-process and `adopt` throws a named custody-transport error.
+
+### Patch Changes
+
+- cf294e7: Settle pending wait-exit after a real child exit, drop the redundant handle catch, keep launch-failed when backlog throws on a closed attach stream, bound manager control-rail disconnects after a broker exit, refresh the bundled custody docs, and grade ci-ok as the sole always-running aggregate plus both pack polarities.
+- 8ec22cb: `cotal supervise` on a registered remote mesh now dials the broker URL the registry actually
+  holds. A remote broker is commonly published over a `wss://` edge, and the manager-authority
+  registration the supervisor runs first handed that URL to the raw node transport, which refuses a
+  websocket URL outright, so supervision stopped before a manager was ever constructed. That
+  registration and every other control dial this audit found can be handed a registry server URL now
+  select the transport from the scheme, including the planes `cotal run --local` opens, which failed
+  on such a mesh for the same reason. The registration also carries the record's TLS requirement
+  instead of assuming a plaintext broker, so a participant no longer downgrades its prepare
+  credential exchange on a mesh the registry describes as TLS-required. On the same path, the cluster
+  artifacts the registration reads back are now looked up by the key form the content-addressed store
+  uses, which a remote registration reached with a prefixed digest reference and could not resolve.
+- Updated dependencies [e6d3c96]
+- Updated dependencies [30cf300]
+- Updated dependencies [f43d842]
+- Updated dependencies [4ea4257]
+- Updated dependencies [cf294e7]
+  - @cotal-ai/seat@0.47.0
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+
+## 0.46.0
+
+### Minor Changes
+
+- 9d745af: Add the local durable runtime adoption seam and report legacy manager continuity before a running update can be described as hot. `Runtime.adopt` is optional: runtimes without durable custody omit it, and the manager refuses by name rather than requiring a throwing stub on every adapter. `cotal update --self` reports the selected manager before a global install and hands `--space` / `--server` / `--creds` to the replacement child.
+- 18a0024: The manager hosts workflow runs. `run-start`, `run-resume`, `run-answer`, `run-status` and
+  `run-ps` are served on the manager's endpoint rails; a run is validated before anything is
+  recorded, driven in the manager's process under a per-run `run-driver` credential, and taken back
+  from its journal after a manager restart. `cotal run` is a client of that surface by default,
+  with `--local` keeping the in-process drive, now under the run's own `run-driver` and
+  `run-operator` credentials rather than `admin`; an answer's writes are pinned to the one pause it
+  answers. A user-auth mesh refuses the family by name until a run can carry its user's owner. A new `run` capability mints the family into an
+  agent's credential and injects the `cotal_run` tool, so an agent can write a cotal-lang program
+  and start it from a session. `run-answer` records the answerer from the caller's credential and
+  takes no `by`; `cotal run answer` drops `--by` on the hosted path. `spawn({ supervise })` is a restart policy the manager enforces in
+  place: `{ restarts, window? }` (default `10m`) until the budget is spent, then the seat is
+  retired and the next `turn` is L4002. A policy this host cannot honour is refused at accept.
+- e986173: Make manager `inspect` distinguish a stranded static slot from an unknown name through structured durable-state details, and make `attach` stop reconnecting when those details show the seat is gone.
+
+### Patch Changes
+
+- Updated dependencies [9d745af]
+- Updated dependencies [18a0024]
+  - @cotal-ai/core@0.46.0
+  - @cotal-ai/workspace@0.46.0
+
 ## 0.45.0
 
 ### Minor Changes

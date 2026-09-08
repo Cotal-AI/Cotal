@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, renderLifecycleBlocked, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -36,6 +36,33 @@ function controlFailure(action: string, e: unknown): ToolResult {
     return err(
       `${action}: this session isn't allowed to — its persona needs \`capabilities: [spawn]\` ` +
         `(which grants the privileged manager control subject). Add it and respawn so its creds re-mint. [${detail}]`,
+    );
+  }
+  return err(`${action}: no manager reachable (${detail}). Is the manager running?`);
+}
+
+/** A `run-*` refusal for the model: the manager's sentence, plus every validation problem it
+ *  carried (the language's own records: code, title, where, cause, fix) so the program can be
+ *  fixed in one round. */
+function renderRunRefusal(verb: string, reply: ControlReply): string {
+  const problems = (reply.details ?? []).filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
+  const head = `cotal_run ${verb}: ${reply.error ?? "the manager refused"}`;
+  if (problems.length === 0) return head;
+  const lines = problems.map((d) => {
+    const where = d.where as { file?: string; line?: number; column?: number } | undefined;
+    const at = where ? `${where.file ?? "<program>"}:${where.line ?? "?"}:${where.column ?? "?"}` : "<program>";
+    return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
+  });
+  return [head, ...lines].join("\n");
+}
+
+/** Like {@link controlFailure}, naming the `run` capability rather than `spawn`. */
+function runFailure(action: string, e: unknown): ToolResult {
+  const detail = (e as Error)?.message ?? String(e);
+  if (isPermissionDenied(e)) {
+    return err(
+      `${action}: this session isn't allowed to — its persona needs \`capabilities: [run]\` ` +
+        `(which grants the manager's run-* commands). Add it and respawn so its creds re-mint. [${detail}]`,
     );
   }
   return err(`${action}: no manager reachable (${detail}). Is the manager running?`);
@@ -522,6 +549,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // construction, so `!config.creds` read every one of them as open mode and advertised both tools
   // to every agent on a user-auth mesh — inverting the guarantee the paragraph above states.
   const canSpawn = !isAuthed(config) || (config.capabilities?.includes("spawn") ?? false);
+  // The same rule for the workflow-run door (SPEC 14.3): the `run` capability mints the manager's
+  // run-* rows, so cotal_run is advertised only where the wire would admit it.
+  const canRun = !isAuthed(config) || (config.capabilities?.includes("run") ?? false);
   // The default broadcast target, the same one the endpoint resolves: the first CONCRETE channel of
   // the read set (a wildcard subscription like `team.>` is not a destination). Undefined when the
   // agent is on no channel, in which case there IS no default and a send without one is refused.
@@ -1225,6 +1255,76 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
     {
+      name: "cotal_run",
+      title: "Cotal: run a workflow program",
+      description:
+        "Write a cotal-lang program and run it durably on the mesh's manager. `start` takes the program SOURCE inline: the manager validates it (a refusal lists every problem with its line, cause and fix), mints a run id, and drives it from its own process, so the run outlives your session, survives a manager restart, and can be answered from anywhere. It returns the run id at once; the run keeps going. Use it for coordination that must survive restarts: multi-step plans, human checkpoints, timed waits, fan-out over agents. Read the `workflows` and `lang-card` docs (cotal_docs) before writing a program. `status` returns a run's record and its step journal (an open pause shows what it asks under the step key an answer takes back); `ps` lists the runs; `answer` resolves an open checkpoint or ask by its step key; `resume` takes a released or held run over from its recorded program.",
+      schema: {
+        verb: z.enum(["start", "status", "ps", "answer", "resume"]).describe("start = validate and drive a new program; status = one run's record + journal; ps = list runs; answer = resolve an open checkpoint/ask; resume = take a released or held run over."),
+        source: z.string().min(1).optional().describe("start only: the cotal-lang program source, inline. Required for start."),
+        file: z.string().min(1).optional().describe("start only: a file name to attribute the source to in error messages. Diagnostic only; nothing is read from disk."),
+        timeout: z.string().min(1).optional().describe("start/resume: the default checkpoint timeout for the drive, as a duration (e.g. `1h`, `30m`). Default 1h."),
+        runId: z.string().min(1).optional().describe("status/answer/resume: the run id (`run-<32 hex>`), as `start` or `ps` returned it."),
+        stepKey: z.string().min(1).optional().describe("answer only: the open step's key as `status` prints it, e.g. `/checkpoint:approve#0`."),
+        value: z.unknown().optional().describe("answer only: the answer payload; its shape is the program's (a checkpoint takes what its schema says)."),
+        artifact: z.string().min(1).optional().describe("answer only: a reference to what you reviewed before answering, recorded beside the answer."),
+        endpoint: z.string().min(1).optional().describe("status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts."),
+      },
+      async run(
+        agent,
+        config,
+        a: { verb: "start" | "status" | "ps" | "answer" | "resume"; source?: string; file?: string; timeout?: string; runId?: string; stepKey?: string; value?: unknown; artifact?: string; endpoint?: string },
+      ) {
+        const need = (field: keyof typeof a, verb: string): ToolResult | undefined =>
+          a[field] === undefined ? err(`cotal_run ${verb}: \`${String(field)}\` is required`) : undefined;
+        try {
+          if (a.verb === "start") {
+            const missing = need("source", "start");
+            if (missing) return missing;
+            const reply = await agent.run("start", { source: a.source, file: a.file, timeout: a.timeout });
+            if (!reply.ok) return err(renderRunRefusal("start", reply));
+            const { runId } = reply.data as { runId: string };
+            return ok(`Started run ${runId} on the manager. It runs there until it completes or is held; cotal_run(verb="status", runId="${runId}") follows its steps, and an open checkpoint is answered with verb="answer".`);
+          }
+          if (a.verb === "resume") {
+            const missing = need("runId", "resume");
+            if (missing) return missing;
+            const reply = await agent.run("resume", { runId: a.runId, timeout: a.timeout });
+            if (!reply.ok) return err(renderRunRefusal("resume", reply));
+            return ok(`Resumed run ${a.runId} on the manager from its recorded program.`);
+          }
+          if (a.verb === "ps") {
+            const reply = await agent.run("ps", { endpoint: a.endpoint });
+            if (!reply.ok) return err(renderRunRefusal("ps", reply));
+            const rows = reply.data as Array<{ runId: string; endpoint: string; state?: string; holder?: string; journalHigh?: number; forkedFrom?: { run: string; step: string } }>;
+            if (rows.length === 0) return ok("No workflow runs are recorded in this space.");
+            return ok(rows.map((r) => `${r.runId}  ${r.endpoint}  ${r.state ?? "(no status)"}  holder=${r.holder ?? "-"}  journal=${r.journalHigh ?? "-"}${r.forkedFrom ? `  forked-from=${r.forkedFrom.run}@${r.forkedFrom.step}` : ""}`).join("\n"));
+          }
+          if (a.verb === "status") {
+            const missing = need("runId", "status");
+            if (missing) return missing;
+            const reply = await agent.run("status", { runId: a.runId, endpoint: a.endpoint });
+            if (!reply.ok) return err(renderRunRefusal("status", reply));
+            const v = reply.data as { runId: string; endpoint: string; status?: { state: string; holder: string; epoch: number }; journal: Array<{ n: number; kind: string; holder?: string; epoch?: number; replayedTo?: number; step?: string; outcome?: string; asks?: string; addressee?: string }> };
+            const head = `run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : "(no status)"}`;
+            const lines = v.journal.map((r) => r.kind === "activation"
+              ? `#${r.n}  activation  holder=${r.holder} epoch=${r.epoch} replayedTo=${r.replayedTo}`
+              : `#${r.n}  step  ${r.step}  ${r.outcome}${r.asks !== undefined ? `\n      asks: ${r.asks}${r.addressee !== undefined ? ` (escalates to ${r.addressee})` : ""}` : ""}`);
+            return ok([head, ...(lines.length ? lines : ["(no journal records: never started, or retired)"])].join("\n"));
+          }
+          const missing = need("runId", "answer") ?? need("stepKey", "answer");
+          if (missing) return missing;
+          // The manager records the answerer from the caller's own credential (SPEC 14.5); the
+          // tool sends no name, so it cannot answer as anyone else.
+          const reply = await agent.run("answer", { runId: a.runId, stepKey: a.stepKey, value: a.value, artifact: a.artifact, endpoint: a.endpoint });
+          if (!reply.ok) return err(renderRunRefusal("answer", reply));
+          return ok(`Answered ${a.stepKey} on run ${a.runId} as ${config.name}: ${JSON.stringify(reply.data)}`);
+        } catch (e) {
+          return runFailure(`cotal_run ${a.verb}`, e);
+        }
+      },
+    },
+    {
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:
@@ -1371,5 +1471,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // same refusal everywhere and "takes nothing" never degrades into "takes anything".
   return specs
     .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona" && spec.name !== "cotal_personas"))
+    .filter((spec) => canRun || spec.name !== "cotal_run")
     .map((spec) => ({ ...spec, schema: z.strictObject(spec.schema ?? {}) }));
 }

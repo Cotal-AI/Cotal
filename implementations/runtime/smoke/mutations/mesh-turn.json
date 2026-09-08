@@ -222,13 +222,13 @@
       "note": "Measured 2026-09-03: KILLED. mesh-turn.smoke: 46 passed, 1 failed Named cell red: a seat that died between the submit and the acceptance re-read is the catchable L4002"
     },
     {
-      "name": "a supervise policy this host cannot enforce is accepted and ignored",
+      "name": "an unknown supervise key is accepted and ignored",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (req.supervise !== undefined)\n      throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement",
-      "replace": "    if (false)\n      throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement",
-      "expectRed": "a supervise policy this host does not implement is refused, never accepted and ignored",
-      "cell": "a supervise policy this host does not implement is refused, never accepted and ignored",
-      "note": "`supervise` is 'a declarative restart policy' in the reference and nothing more: no keys, no semantics, no code. Accepting it and restarting nothing is the silent no-op `readPermits` refuses by name."
+      "find": "      throw new Error(`spawn(${persona}): supervise.${key} is not a restart policy this host enforces; it takes restarts and window, and a policy it cannot enforce is refused rather than ignored`);",
+      "replace": "      continue;",
+      "expectRed": "an unknown supervise key is refused, never accepted and ignored",
+      "cell": "an unknown supervise key is refused, never accepted and ignored",
+      "note": "An unknown key skipped: `{ restart: always }` parses as an empty policy and then fails on missing restarts, or worse travels. The named cell requires the unknown-key sentence."
     }
   ]
 }

@@ -324,7 +324,7 @@ const armPending = async (expect = 4): Promise<void> => {
 const mk = (runId: string): MeshHandler => new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
-  new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+  new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => Date.now(),
 );
 const stepCtx = (requestId: string, resume?: Record<string, unknown>, attempt = 0, kind = "ask") => {

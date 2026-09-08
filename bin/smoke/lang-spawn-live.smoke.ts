@@ -143,7 +143,7 @@ try {
   const mk = (runId: string) => new MeshHandler(
     nc, kv, js, jsm,
     { space: SPACE, endpoint: "manager", runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: { id: "cli-run", lifecycleUid: "u_langspawn" }, defaultCheckpointTimeout: "1h" },
-    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
     () => Date.now(),
   );
   const lease = (() => { let n = 0; return () => ({ holder: "m1", epoch: 1, fencingToken: (n += 1), takeoverId: newTakeoverId() }); })();

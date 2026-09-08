@@ -120,8 +120,9 @@ After disk reconciliation, `update` reads the selected running manager. A manage
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
 for every seat. This report sends no stop, preservation-commit, or replacement command.
-It does not preserve a running PTY. Custody transfer is not available until the custody runtime is
-implemented. Even after compatible custody generations exist, an incompatible native
+It does not preserve a running PTY on a legacy manager. On Linux a detached custodian
+owns each PTY, so a manager-worker death no longer closes the seat and `status` reports
+`custodied`. Other platforms still spawn in-process and report `legacy`. An incompatible native
 `@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
 
 With `--self`, the selected running manager is reported before any global install. When a newer
@@ -646,13 +647,13 @@ wire - the reserved `describe` command answers the registered contract digests, 
 fetched from the space's content-addressed contract store, recompiled, and verified against those
 digests - and prints each command with its capability class and targeting shape. `invoke` calls one
 command by name: `--args` is a JSON object validated against the fetched input schema *before*
-publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal via
-`ps`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
+publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
+`inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
 endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
 auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
-rides their bearer; cross-agent reach needs the `admin` scope). An open mesh has no service
-registry.
+rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
+reach needs the `admin` scope). An open mesh has no service registry.
 
 ## Managed seats
 
@@ -928,6 +929,12 @@ and the signed-in actor has the dedicated `supervise` ledger scope. The CLI obta
 loopback-only `manager-service` view; `spawn` and `admin` do not substitute for that scope. The
 host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
 → renew protocol, never by handing the participant a signer or static provisioner credential.
+
+The broker URL in the registry entry decides the transport. A remote broker is often published
+over a `wss://` edge rather than a raw `nats://` port, and `supervise` dials whichever scheme the
+record holds, starting with the manager-authority registration it runs before the manager exists.
+The record also decides whether that registration requires TLS, so a participant never downgrades
+the credential exchange to a plaintext connection the registry did not describe.
 
 Without that advertised host service or scope, `supervise` refuses before it starts a manager.
 Run `cotal spawn` without `--detach` to launch a foreground agent, or ask the space host to enable
@@ -1422,19 +1429,28 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 Operate durable workflow runs (cotal-lang programs) from the terminal.
 
 ```bash
-cotal run start --file <program> [--timeout <dur>] [--endpoint <ep>]
-cotal run resume <runId> --file <program>
-cotal run ps
-cotal run journal <runId>
-cotal run answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]
+cotal run start --file <program> [--timeout <dur>] [--local]
+cotal run resume <runId> [--local --file <program>]
+cotal run ps [--endpoint <ep>]
+cotal run journal <runId> [--endpoint <ep>]
+cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 ```
 
-`start` mints the run id (the record never takes a caller-supplied one), prints it, and drives the
-run to quiescence. `resume` takes an existing run over and continues it from its step journal.
-`ps` lists the run records on the endpoint and `journal` renders one run's durable records; both
-only inspect, driving nothing. `answer` resolves an open checkpoint, presenting as the holder that
-armed it, with `--by` naming the answerer inside the resolution. `--timeout` sets the default
-checkpoint timeout for a drive (default 1h). The guide is [workflows](workflows.md).
+`start` hands the program to the mesh's manager, which validates it, mints the run id (the record
+never takes a caller-supplied one), drives it in its own process, and answers with the id once the
+run is recorded; a program that does not validate is refused with every problem listed. `resume`
+asks the manager to take an existing run back and continue it from its step journal; the source is
+the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
+its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
+`journal` renders one run's durable records; both only inspect. `answer` resolves an open
+checkpoint through the manager, presenting as the holder that armed it; the manager records the
+answerer from your credential, so no `--by` is taken there. `--timeout` sets the default
+checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
+connection per invocation under the run's own credential minted from the project folder's trust
+material, and is the path on a bare broker with no manager or for a run with no recorded program
+(`cotal run resume <runId> --local --file <program>`); `answer --local` takes `--by <who>`. A
+user-auth mesh runs no programs yet: the manager refuses the family by name, and `--local` has no
+credential there. The guide is [workflows](workflows.md).
 
 ## Server daemons
 

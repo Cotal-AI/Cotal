@@ -691,7 +691,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // operator explicitly asked for a second space in the same `.cotal/` root (unsupported today: pid,
     // auth, and logs are root-scoped). Different root / unrecorded broker on the implicit default port
     // gets a fresh free port instead of making the user hunt for one.
-    const held = loadMeshes().find((m) => m.server === server);
+    const meshes = loadMeshes();
+    // An explicit refresh names a complete identity. Selecting only by server makes the result depend
+    // on registry order when that broker has records for several spaces. A bare refresh keeps its
+    // existing resolution behaviour.
+    const held = values.space === undefined
+      ? meshes.find((m) => m.server === server)
+      : meshes.find((m) => m.server === server && m.root === root && m.space === space);
     if (held && held.root === root && (held.space === space || values.space === undefined)) {
       // A refresh of the SAME already-running mesh — its mode is fixed by how the live broker was
       // started. A flag asking for a DIFFERENT mode must fail loud (silently preserving the old

@@ -1,0 +1,4 @@
+# manager-hosted workflow runs against the real manager and runtime host: run-start refuses an
+# invalid program with the language's records, a pure run completes, a checkpoint parks and is
+# answered from outside, and a manager restart takes a parked run back under the next epoch.
+smoke:run-host-live

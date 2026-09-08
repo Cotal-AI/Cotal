@@ -3,13 +3,14 @@
   "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
   "progressPattern": "  \u2713 ",
-  "completionMarker": "SUITE COMPLETE: 20 cells",
+  "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
   "why": [
     "The deterministic status queues grade the exact nats.js lifecycle contract without timing a broker outage. The companion broker smoke separately proves real public disconnect and reconnect events reach these paths.",
     "Core is rebuilt before each run and after every restore because connector-core resolves @cotal-ai/core through dist. Connector-core's agent source is imported relatively by the suite.",
     "The full predicted kill sets, including every exclusion, are recorded in the suite header before this config is run.",
-    "M16 is defensive-only, not a real-entry claim. Temporary instrumentation around the real watchStatus catch fired zero times across five complete broker-companion runs on pinned nats.js 3.4.0, each covering loss, reconnect, manual epoch replacement, and terminal close. The client's status iterator closes normally on those paths. The controlled rejection cell and mutation keep catch behavior epoch-consistent if a runtime or future client version can reject, but no real cell is claimed because no reachable rejection was measured."
+    "M16 is defensive-only, not a real-entry claim. Temporary instrumentation around the real watchStatus catch fired zero times across five complete broker-companion runs on pinned nats.js 3.4.0, each covering loss, reconnect, manual epoch replacement, and terminal close. The client's status iterator closes normally on those paths. The controlled rejection cell and mutation keep catch behavior epoch-consistent if a runtime or future client version can reject, but no real cell is claimed because no reachable rejection was measured.",
+    "The completion marker carries no cell count on purpose. Each of these suites prints `SUITE COMPLETE: ${ran} cells` and separately refuses a run whose `ran` is not its EXPECTED_CELLS, so a count in the marker duplicates a check the suite already makes and rots the moment a cell is added. It did: a cell landed in the suite, the marker still said 15, and every mutant here graded INCONCLUSIVE for a week because a finished run printed a line the marker could never match."
   ],
   "mutations": [
     {

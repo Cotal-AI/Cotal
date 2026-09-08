@@ -455,16 +455,26 @@ type Established =
  *  else is worth another attempt. */
 export type AttachRefusal = "denied" | "gone" | "transient";
 
+/** `inspect` found durable nonterminal state after the live seat disappeared. The manager owns the
+ *  detail shape; the CLI keys only on its namespaced discriminator so the manager's rich diagnostic
+ *  remains intact for operator commands while reconnect can act on the one fact it needs. */
+const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
+
 /**
- * Classify a refusal on the manager's error CODE, never on its wording. The wording is operator
- * copy and changes; the code is the contract. Getting this wrong in either direction is a real
- * failure: reading `permission-denied` as transient turns a refusal into an infinite retry loop
- * against a manager that has already said no, and reading `not-found` as transient does the same
- * to a seat that no longer exists.
+ * Classify a refusal on the manager's structured error, never on its wording. The wording is
+ * operator copy and changes; the code and namespaced detail are the contract. Getting this wrong in
+ * either direction is a real failure: reading `permission-denied` as transient turns a refusal into
+ * an infinite retry loop against a manager that has already said no, and reading `not-found` or an
+ * `inspect` static-slot observation as transient does the same to a seat that no longer exists.
+ * Other `failed-precondition` refusals remain transient, including the session ceiling.
  */
-export function attachRefusal(code: string | undefined): AttachRefusal {
+export function attachRefusal(
+  code: string | undefined,
+  details?: Array<{ kind: string }>,
+): AttachRefusal {
   if (code === "permission-denied") return "denied";
   if (code === "not-found") return "gone";
+  if (code === "failed-precondition" && details?.some((detail) => detail.kind === STATIC_SLOT_OBSERVATION_DETAIL)) return "gone";
   return "transient";
 }
 
@@ -536,7 +546,7 @@ async function establishAttachSession(
   const t = await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-  if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code), message: reply.error ?? "error", fromManager: true };
+  if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
   // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the

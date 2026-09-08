@@ -130,7 +130,7 @@ const binding = {
   space: SPACE, endpoint: EP, runId: "r-cp", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER,
   defaultCheckpointTimeout: "1h",
 };
-const handler = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+const handler = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(jsm, SPACE, 3_000), () => NOW);
 const deps = { kv, js, jsm, space: SPACE, endpoint: EP };
 
 const PROGRAM = `
@@ -243,7 +243,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   // Its OWN handler, on a clock that MOVES. Everywhere else here the clock is pinned so a deadline
   // is a value the cells can name; this block's subject is a deadline actually passing, and a clock
   // frozen before its own deadline judges every real fire premature and re-arms instead of expiring.
-  const expiring = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => Date.now());
+  const expiring = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(jsm, SPACE, 3_000), () => Date.now());
   const driven = startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "cp-3", source, lease: lease("m1", 1, takeovers + 1), handler: expiring,
   });
@@ -469,7 +469,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
     ...binding, runId: "cp-7b", instanceId: "j".repeat(26), epoch: EPOCH + 1,
     holder: { id: "cli-run-successor", lifecycleUid: "u_meshcp_b" },
   };
-  const h2 = new MeshHandler(nc, kv, js, jsm, successor, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+  const h2 = new MeshHandler(nc, kv, js, jsm, successor, new EpfSettleWatcher(jsm, SPACE, 3_000), () => NOW);
   // The rejection shim is part of the cell: an attach that REFUSES (the pre-repair behaviour)
   // must fail the cell that names it, never kill the suite as an unhandled rejection.
   const attached = h2.checkpoint({ prompt: "Ship it?", timeout: "1h" } as never, { requestId: token, attempt: 0, bind: async () => { /* the successor's own bind; nothing here reads it back */ }, signal: { cancelled: false, onCancel() { /* never fires here */ } } } as never)
@@ -506,7 +506,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
     typeof deadlineAt === "number" && deadlineAt === NOW + 3_600_000 && bound[0]?.asks === "Ship it?", JSON.stringify(bound[0]));
   // A successor re-entering the same attempt is handed the bound state and a clock that has
   // moved on. What it arms and relays must be the RECORDED instant, never a fresh one.
-  const later = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW + 600_000);
+  const later = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(jsm, SPACE, 3_000), () => NOW + 600_000);
   const rebound: Record<string, unknown>[] = [];
   const again = later.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed" } as never,
     { requestId: k.requestId, attempt: 0, resume: bound[0], bind: async (v: Record<string, unknown>) => { rebound.push(v); }, signal: { cancelled: false, onCancel() { /* never */ } } } as never)

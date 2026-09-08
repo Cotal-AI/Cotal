@@ -67,6 +67,8 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 | **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
+| **run-driver** | One workflow run's driver, minted per takeover attempt: its own journal subject and replay durable, its run's records, the timer schedule at its own coordinates, and the manager's lifecycle commands as the run's caller; endpoint-wide on the checkpoint plane and the store reads, which [workflows](workflows.md#what-is-on-the-wire) names as its residual. |
+| **run-operator** | One served run read, or one half of an answer, minted per call: a read holds the records walk and one run's replay; the answering half is minted for one checkpoint token and holds that pause's answer record and settle alone. |
 
 **An agent's channel scope is three verbs**: `subscribe` (reads at boot),
 `allowSubscribe` (read ACL), `allowPublish` (post ACL, default-deny), declared in its
@@ -78,13 +80,17 @@ inbox prefixes, and the DM/task consumers are provisioner-pre-created and bind-o
 agent cannot create a consumer filtered to someone else's inbox
 ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) items 1–5).
 
-## Spawn capability
+## Declared capabilities
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
 plus stop/despawn of its *own* children, plus persona definition. Without it, an agent can
-only self-despawn and pull or yield the run turns addressed to it. The tool surface mirrors the grant: `cotal_spawn` / `cotal_persona` / `cotal_personas` are
-injected only where they can actually succeed ([agent files](agent-files.md)). Destructive
+only self-despawn and pull or yield the run turns addressed to it. `capabilities: [run]` mints
+the manager's workflow-run commands (start, resume, answer, status, list) together with the spawn
+set, since a program the agent starts may spawn; the manager drives the run under a per-run
+`run-driver` credential of its own, never the caller's. The tool surface mirrors the grant:
+`cotal_spawn` / `cotal_persona` / `cotal_personas` are injected only for `spawn`, and `cotal_run`
+only for `run` ([agent files](agent-files.md)). Destructive
 operator ops (history purge, cross-agent stop) live on a third tier no agent credential
 reaches. Persona redefinition separates content from policy; the write path takes only
 `model`/`persona`, so a peer cannot grant itself a capability by redefining a file.

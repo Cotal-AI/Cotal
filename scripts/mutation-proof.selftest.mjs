@@ -60,6 +60,7 @@ writeFileSync(
   join(root, "suite.mjs"),
   [
     "import { admit } from './src/impl.js';",
+    "if (process.env.pnpm_config_verify_deps_before_run !== 'false') { console.error('AssertionError: mutation child disables pnpm dependency verification'); process.exit(1); }",
     "console.log('  ✓ admits a small value');",
     "if (admit(5) !== true) { console.error('AssertionError: small values are admitted'); process.exit(1); }",
     "console.log('  ✓ the guard refuses an oversized value');",
@@ -71,7 +72,14 @@ writeFileSync(
 execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm fixture", { cwd: root });
 
 const runTool = (args) =>
-  spawnSync(process.execPath, [TOOL, ...args], { cwd: root, encoding: "utf8", timeout: 120_000 });
+  spawnSync(process.execPath, [TOOL, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 120_000,
+    // Prove the tool overrides this only for commands it launches rather than relying on ambient
+    // configuration already carrying the desired value.
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
+  });
 
 // 1. A mutation the suite DOES catch, named. The everyday case.
 let r = runTool([
@@ -339,6 +347,15 @@ execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm completi
 r = runTool(["--config", "completion-optin.json"]);
 check("a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
   r.status !== 0 && verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("SELFTEST SUITE DONE"), r.stdout.slice(-400));
+// The unfinished run DID execute and DID print, and where it stopped is the evidence a reader needs.
+// The first excerpt release dropped `transcript` from this one return, so the report said
+// "(no run: ...)" about a run that had printed the red and the crash. Pinned here.
+{
+  const out = stripAnsi(r.stdout);
+  check("...and the echo shows WHERE the unfinished run stopped, instead of claiming there was no run",
+    out.includes("|   ✗ FAIL: the guard refuses an oversized value") && out.includes("and then a crash") && !out.includes("(no run:"),
+    out.slice(-900));
+}
 r = runTool(["--config", "completion-control.json"]);
 check("...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
   r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
@@ -608,6 +625,60 @@ check("a restored file keeps its original mtime, not the time of the restore",
   { mtimeBefore, mtimeAfter, startedMs, movedMs: mtimeAfter - mtimeBefore });
 check("...and the content is unchanged too, so the time was not preserved by skipping the restore",
   readFileSync(timed, "utf8").includes("if (n > 10)"));
+
+// ---- the transcript echo attributes evidence to the RUN it came from, and keeps the cause ----
+//
+// The #1328 review reproduced two defects in the first version of this feature. (1) Transcripts
+// were held in a Map keyed by label, and duplicate mutation names are accepted, so two WRONG-REDs
+// both echoed the SECOND run's output. (2) The echo was tail-only, so an early cause followed by a
+// long teardown printed the teardown and omitted the cause. Both cells below fail against that
+// version and pass against the per-result head+tail excerpt.
+//
+// A suite that prints a run-specific first line and then a long tail. `TRIP` selects which
+// distinct red each mutant produces, so the two runs are distinguishable by content alone.
+writeFileSync(
+  join(root, "echo-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "const v = admit(5);",
+    "const marker = v === 'A' ? 'CAUSE-ALPHA' : v === 'B' ? 'CAUSE-BETA' : 'CAUSE-NONE';",
+    "console.error('first line: ' + marker);",
+    "for (let i = 0; i < 30; i++) console.log('teardown line ' + i);",
+    "console.log('  ✓ tail cell');",
+    "// green when unmutated (the tool refuses a red baseline); red for either mutant",
+    "process.exit(v === true ? 0 : 1);",
+    "",
+  ].join("\n"),
+);
+// Two mutations with the SAME name, each turning `admit` into a different constant. Both are
+// WRONG-RED (the named assertion never prints), so both echo; the question is WHICH run each echoes.
+writeFileSync(join(root, "dup-labels.json"), JSON.stringify({
+  command: `${process.execPath} echo-suite.mjs`,
+  mutations: [
+    { name: "same name", file: "src/impl.js", find: "  return true;", replace: "  return 'A';", expectRed: "never printed" },
+    { name: "same name", file: "src/impl.js", find: "  return true;", replace: "  return 'B';", expectRed: "never printed" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm echo-fixtures", { cwd: root });
+r = runTool(["--config", "dup-labels.json"]);
+{
+  const out = stripAnsi(r.stdout);
+  const alpha = out.indexOf("first line: CAUSE-ALPHA");
+  const beta = out.indexOf("first line: CAUSE-BETA");
+  check("two mutations sharing a label each echo THEIR OWN run, not the last one's",
+    alpha !== -1 && beta !== -1 && alpha < beta, out.slice(-900));
+  check("...and the cause on the FIRST line survives a 30-line teardown after it",
+    out.includes("| first line: CAUSE-ALPHA") && out.includes("middle line(s) omitted") && out.includes("| teardown line 29"),
+    out.slice(-900));
+}
+// A verdict reached BEFORE any run has no transcript, and must say so rather than claim an empty run.
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js", "--find", "this string is not in the file", "--replace", "x",
+  "--expect-red", "oversized values are refused",
+]);
+check("an ERROR raised before the run says there was no run, not that the run was silent",
+  stripAnsi(r.stdout).includes("(no run:") && !stripAnsi(r.stdout).includes("produced NO output"), r.stdout.slice(-400));
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);

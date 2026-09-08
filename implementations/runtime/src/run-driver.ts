@@ -32,6 +32,7 @@ import {
   readRunRecord,
   listRunMigrations,
   createRunSpec,
+  recordRunProgram,
   writeRunStatus,
   assertJournalTailIntact,
   RunJournalTailTruncated,
@@ -636,6 +637,16 @@ async function drive(
     await createRunSpec(req.kv, req.endpoint, req.runId, {
       pins,
       createdAt: pins.startedAt,
+    });
+    // The source beside the spec, so a resume, a takeover or a hosting daemon's restart reads the
+    // program back instead of being handed a file. After the spec for the same reason the spec is
+    // after the activation: a run that has a program record has a driver that pinned it.
+    await recordRunProgram(req.kv, req.endpoint, {
+      v: 1,
+      run: req.runId,
+      source: req.source,
+      ...(req.file !== undefined ? { file: req.file } : {}),
+      at: pins.startedAt,
     });
   }
   // READ ON THE FAR SIDE OF THE FENCE, both revisions, from one read. The activation is what makes

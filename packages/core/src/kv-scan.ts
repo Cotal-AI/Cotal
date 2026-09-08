@@ -1,5 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
+import type { MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
 
 /**
  * The ONE sanctioned way to read every live entry of a KV bucket.
@@ -172,6 +173,65 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
+  const out: KvEntry[] = [];
+  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
+  return out;
+}
+
+/**
+ * Every currently-live entry a key filter matches, read WITHOUT a consumer.
+ *
+ * The same answer as {@link liveKvEntries}, by a different verb: a forward walk of the bucket's
+ * backing stream through `STREAM.MSG.GET` with `next_by_subj`, one leader-served read per stored
+ * message, starting at sequence 1 and stopping when the stream reports no further match. It exists
+ * for principals that hold NO consumer verb on the bucket and never may: the records bucket is a
+ * §13.9 authority stream whose consumer surface is an exact, audited list (a consumer-create body is
+ * not subject-ACL confinable, nats-server#8274), so a per-run driver credential reads its own run's
+ * notice, migration and program keys this way, over the `STREAM.MSG.GET` row it already holds for
+ * every point read.
+ *
+ * COMPLETENESS is by construction rather than by a bind-time count: each read either returns the next
+ * stored message at or after the requested sequence, or the stream's own "no message" answer, which is
+ * the only thing that ends the walk. A broker failure mid-walk propagates as the error it is; there is
+ * no iterator that can end cleanly short of the answer, so a short result cannot wear a clean end.
+ *
+ * COST is one round trip per matching stored message, so it is for bounded, per-run key families
+ * (a run's notices, its migrations, its programs, the run records of a space), never for a bucket
+ * whose matching set grows with the mesh. `liveKvEntries` remains the pass for those.
+ *
+ * Markers are carried through the collapse for the reason the header gives: a bucket with
+ * `history > 1` shows a key at several revisions and only the greatest decides.
+ */
+export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> {
+  if (!(kv instanceof Bucket))
+    throw new Error(
+      `walkKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`,
+    );
+  const bucket: Bucket = kv;
+  const subject = `${bucket.prefix}.${filter}`;
+  const latest = new Map<string, KvEntry>();
+  let seq = 1;
+  for (;;) {
+    let sm;
+    try {
+      // The client types `next_by_subj` only on its Direct Get request; the STREAM.MSG.GET API takes
+      // the same `{seq, next_by_subj}` body (measured on nats-server 2.14.5: walks forward through a
+      // wildcard filter and answers "no message" past the last match), so the request is passed as
+      // the API's own shape rather than the narrower one the typing declares.
+      const req: NextMsgRequest = { seq, next_by_subj: subject };
+      sm = await bucket.jsm.streams.getMessage(bucket.stream, req as unknown as MsgRequest);
+    } catch (e) {
+      // 10037 is the stream saying nothing at or after `seq` matches: the end of the walk. The
+      // pinned client answers `null` for it; older ones threw. Every other error is the broker.
+      if ((e as { code?: unknown })?.code === 10037) break;
+      throw e;
+    }
+    if (sm === null || sm === undefined) break;
+    const e = bucket.smToEntry(sm);
+    const prior = latest.get(e.key);
+    if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+    seq = sm.seq + 1;
+  }
   const out: KvEntry[] = [];
   for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
   return out;

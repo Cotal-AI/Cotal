@@ -3,6 +3,13 @@
   "progressPattern": "^  ok   ",
   "mutations": [
     {
+      "name": "PREDICTED KILLED (1 red) - POSITIVE CONTROL: an idle renew tick returns before doing any work, so the manager never renews its lease once",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (this.leaseRenewInFlight) return;\n",
+      "replace": "    if (!this.leaseRenewInFlight) return;\n",
+      "expectRed": "[acklost] the child manager started, acquired its own per-instance lease, and renewed it at least once"
+    },
+    {
       "name": "PREDICTED KILLED (1 red) - D3: the next tick may start a second renew while one is in flight, on the same cached revision",
       "file": "implementations/manager/src/manager.ts",
       "find": "    if (this.leaseRenewInFlight) return;\n",
@@ -26,5 +33,5 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ],
-  "_note": "THE SUITE LOADS dist FOR CORE. It imports `@cotal-ai/core`, whose exports point at ./dist/index.js, so mutating packages/core/src leaves the module the run actually uses untouched; the command rebuilds core from the mutated source, and `afterRestore` rebuilds it from the restored source so dist is not left carrying the last mutant. The manager mutation needs no build: the child loads ../src/manager.js through tsx. D2a and D2b are graded on the numbers rather than on behaviour ON PURPOSE: each leaves the reconcile in place, so the manager still survives the stall and every behavioural cell still passes while the slack needed for several timely attempts is gone. Arithmetic is the only thing that catches that. The old fail-close and unconfirmed-TTL-budget mutations were removed with the behaviour they graded: lease loss no longer ends this process or consumes a local serving budget."
+  "_note": "THE SUITE LOADS dist FOR CORE. It imports `@cotal-ai/core`, whose exports point at ./dist/index.js, so mutating packages/core/src leaves the module the run actually uses untouched; the command rebuilds core from the mutated source, and `afterRestore` rebuilds it from the restored source so dist is not left carrying the last mutant. The manager mutations need no build: the child loads ../src/manager.js through tsx. The positive control inverts the in-flight guard so every ordinary timer tick returns before renewing; the first child-start cell must therefore redden, proving this suite executes the same manager.ts lease path that D3 mutates. D2a and D2b are graded on the numbers rather than on behaviour ON PURPOSE: each leaves the reconcile in place, so the manager still survives the stall and every behavioural cell still passes while the slack needed for several timely attempts is gone. Arithmetic is the only thing that catches that. The old fail-close and unconfirmed-TTL-budget mutations were removed with the behaviour they graded: lease loss no longer ends this process or consumes a local serving budget."
 }

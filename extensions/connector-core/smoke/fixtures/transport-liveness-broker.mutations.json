@@ -3,7 +3,7 @@
   "guard": "real NATS transport edges reach CotalEndpoint and MeshAgent without flapping readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness:broker",
   "progressPattern": "  \u2713 ",
-  "completionMarker": "SUITE COMPLETE: 13 cells",
+  "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness-broker.mutations.json",
   "why": [
     "The unit transport-liveness suite proves the stop-versus-bind race by replacing connectAndBind",
@@ -23,7 +23,8 @@
     "doRebuild's tearDownIfStopped. That helper is what prevents a rebuild that already emitted",
     "connection:true (the shared tail ran before stop completed) from leaving nc+heartbeat+supervisor",
     "live and from supervising a stopped endpoint. A shared-tail mutation is deliberately NOT used to",
-    "grade the rebuild cell."
+    "grade the rebuild cell.",
+    "The completion marker carries no cell count on purpose. Each of these suites prints `SUITE COMPLETE: ${ran} cells` and separately refuses a run whose `ran` is not its EXPECTED_CELLS, so a count in the marker duplicates a check the suite already makes and rots the moment a cell is added. It did: a cell landed in the suite, the marker still said 15, and every mutant here graded INCONCLUSIVE for a week because a finished run printed a line the marker could never match."
   ],
   "mutations": [
     {

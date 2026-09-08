@@ -38,6 +38,7 @@
  * fences) have no emitting builder yet; when those daemons land, their rows join the fixture
  * AND the holder-set test below must be consciously extended.
  */
+import { createHash } from "node:crypto";
 import {
   canonicalizerGrants, canonicalizerWorkGrants, effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, provisionerConsumerGrants, admissionMediatorGrants, retirementCleanerGrants, goalWriterGrants,
@@ -47,6 +48,7 @@ import {
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   createSpaceAuth, mintCreds, newIdentity, permissionsFor, DEV_OWNER, mintLifecycleUid,
+  runDriverGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -751,6 +753,144 @@ console.log("5. the endpoint-evictor profile (P2 item 3): a re-registration's ve
   c("the endpoint-evictor is NARROWER than supervisor: NO lease, presence, chat/inst/svc, consumer, or KV write anywhere",
     ev.pub.every((r) => r === rail || r === "$JS.API.INFO")
     && !ev.pub.some((r) => r.includes("CONSUMER.") || r.startsWith("$KV.") || r.includes(".chat.") || r.includes(".inst.") || r.includes(".svc.") || r.toUpperCase().includes("LEASE") || r.includes(".presence.")));
+}
+
+// ---- 6. the run-driver profile (SPEC 14.6): one run, one takeover attempt, pinned EXACTLY --------
+// Its OWN section, like the two above, and not a `gen` entry, for a reason the rows make plain: a
+// `wait` holds its channel position in a durable named per STEP (`wfw_<requestId>`), and the
+// presence read is the ordered consumer every agent uses, whose name the client picks at watch time.
+// Neither name exists at mint, so the CHAT and presence consumer rows are stream-scoped (`.>` in the
+// name token) and would fail (2a)'s literalness grep. They are the observer/admin rows on the same
+// two world-readable resources, minus the bare create form; the residual is named in the builder and
+// pinned here so it is a reviewed shape and not an escape. The AUTHORITY-stream claim survives in
+// full: this profile holds NO consumer verb on the records or auth store, and NO read of WFJ except
+// through its own filtered replay durable.
+console.log("6. the run-driver profile (SPEC 14.6): per run, per takeover attempt");
+{
+  const RUN = "run-aa11", TK = "tk0001", IID = "i".repeat(26), EPOCH = 3;
+  const g = runDriverGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
+  // The caller triple is DERIVED from the run id; spell the derivation out rather than call it.
+  const h = createHash("sha256").update(RUN, "utf8").digest("hex");
+  const cO = DEV_OWNER, cA = `wf_${h.slice(0, 12)}`, cU = h.slice(12, 38);
+  c("the run-driver caller triple is the run id's own digest (owner local, actor wf_<12 hex>, uid <26 hex>)",
+    JSON.stringify(runDriverCaller(RUN)) === JSON.stringify({ owner: cO, actor: cA, uid: cU }), runDriverCaller(RUN));
+  c("the run-driver mint is EXACTLY its journal + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + its own manager rails + the store fetch, and nothing else",
+    JSON.stringify(g) === JSON.stringify({
+      publish: [
+        `cotal.${S}.wfj.${RUN}`,
+        `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
+        `$JS.API.CONSUMER.INFO.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$JS.ACK.WFJ_${S}.wfj_${RUN}_${TK}.>`,
+        `$JS.API.CONSUMER.DELETE.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$KV.cotal_records_${S}.run.${EP}.${RUN}.>`,
+        `$KV.cotal_records_${S}.program.${EP}.${RUN}`,
+        `$KV.cotal_records_${S}.notice.${EP}.${RUN}.>`,
+        `$KV.cotal_records_${S}.migration.${EP}.${RUN}.>`,
+        `$KV.cotal_records_${S}.cp.${EP}.>`,
+        `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+        `cotal.${S}.epf.${EP}.cp.>`,
+        `$JS.API.STREAM.MSG.GET.EPF_${S}`,
+        `cotal.${S}.ept.${EP}.${IID}.${EPOCH}.*.schedule`,
+        `$JS.API.STREAM.MSG.GET.EPT_${S}`,
+        `$JS.API.STREAM.INFO.CHAT_${S}`,
+        `$JS.API.STREAM.MSG.GET.CHAT_${S}`,
+        `$JS.API.CONSUMER.CREATE.CHAT_${S}.>`,
+        `$JS.API.CONSUMER.INFO.CHAT_${S}.>`,
+        `$JS.API.CONSUMER.MSG.NEXT.CHAT_${S}.>`,
+        `$JS.API.CONSUMER.DELETE.CHAT_${S}.>`,
+        `$JS.ACK.CHAT_${S}.>`,
+        `$JS.API.STREAM.INFO.KV_cotal_presence_${S}`,
+        `$JS.API.CONSUMER.CREATE.KV_cotal_presence_${S}.>`,
+        `$JS.API.CONSUMER.INFO.KV_cotal_presence_${S}.>`,
+        `$JS.API.CONSUMER.DELETE.KV_cotal_presence_${S}.>`,
+        "$JS.FC.>",
+        `$KV.cotal_channels_${S}.>`,
+        `$JS.API.STREAM.MSG.GET.KV_cotal_channels_${S}`,
+        `$KV.cotal_members_${S}.>`,
+        `$JS.API.STREAM.MSG.GET.KV_cotal_members_${S}`,
+        `cotal.${S}.ep.one.*.describe.${cO}.${cA}.${cU}.*`,
+        `cotal.${S}.ep.one.${EP}.spawn.${cO}.${cA}.${cU}.*`,
+        `cotal.${S}.ep.one.${EP}.turn.owner.${cO}.${cO}.${cA}.${cU}.*`,
+        `cotal.${S}.ep.one.${EP}.despawn.owner.${cO}.${cO}.${cA}.${cU}.*`,
+        `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`,
+        "$JS.API.INFO",
+      ],
+      subscribe: [`cotal.${S}.ep.reply.*.*.*.${cO}.${cA}.${cU}.*`, `_INBOX_${CONN}.>`],
+    }), g);
+  const rows = [...g.publish, ...g.subscribe];
+  c("NO consumer verb and NO ACK on the records or auth authority streams: its enumeration of notices and migrations is a consumer-free STREAM.MSG.GET walk",
+    !rows.some((r) => /^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_(?:auth|records)_/.test(r) || /^\$JS\.ACK\.KV_cotal_(?:auth|records)_/.test(r)), rows);
+  c("NO bare ephemeral-create form anywhere (the settle watcher polls the fact; it binds no EPF consumer)",
+    !rows.some((r) => /^\$JS\.API\.CONSUMER\.CREATE\.[^.]+$/.test(r)), rows);
+  c("NO read of the journal stream except through its own filtered replay durable (no STREAM.MSG.GET / DIRECT.GET on WFJ)",
+    !rows.some((r) => /^\$JS\.API\.(?:STREAM\.MSG\.GET|DIRECT\.GET)\.WFJ_/.test(r)), rows);
+  c("NO destructive stream verb, NO auth-store read, NO goal fact publish, NO epj submission, NO chat publish",
+    !rows.some((r) => DESTRUCTIVE_JS.test(r) || r.includes("KV_cotal_auth_") || /\.epf\.[^.]+\.goal\./.test(r) || r.includes(".epj.") || /\.chat\./.test(r)), rows);
+  const other = runDriverGrants(S, { endpoint: EP, runId: "run-bb22", takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
+  const runPinned = (rs: string[]) => rs.filter((r) => r.includes(RUN) || r.includes("run-bb22"));
+  c("a second run's credential shares NO run-pinned row (journal, replay durable, run/program/notice/migration records, caller rails) with the first",
+    runPinned(other.publish).every((r) => !g.publish.includes(r)) && runPinned([...other.subscribe]).every((r) => !g.subscribe.includes(r))
+    && !other.publish.some((r) => r.includes(cA)) && runPinned(g.publish).length === 10,
+    { mine: runPinned(g.publish), theirs: runPinned(other.publish) });
+  c("the takeover id is pinned: a different attempt names a different replay durable and this one is refused a foreign one",
+    !runDriverGrants(S, { endpoint: EP, runId: RUN, takeoverId: "tk0002", instanceId: IID, epoch: EPOCH }, CONN).publish.some((r) => r.includes(`wfj_${RUN}_${TK}`)));
+  c("the timer schedule row is pinned to THIS attempt's instance and epoch (a resumed attempt mints its own)",
+    g.publish.filter((r) => r.includes(".ept.")).length === 1 && g.publish.some((r) => r === `cotal.${S}.ept.${EP}.${IID}.${EPOCH}.*.schedule`)
+    && !runDriverGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH + 1 }, CONN).publish.includes(`cotal.${S}.ept.${EP}.${IID}.${EPOCH}.*.schedule`));
+  const minted = decode(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: EP, runId: RUN, takeoverId: TK, instanceId: IID, epoch: EPOCH } }));
+  c("mintCreds(run-driver) emits exactly the builder's rows (the inbox keyed on the connection nkey)",
+    JSON.stringify(minted.pub) === JSON.stringify(g.publish) && minted.sub.length === 2 && minted.sub[0] === g.subscribe[0] && minted.sub[1]!.startsWith("_INBOX_"), minted);
+  const refused = await mintCreds(auth, newIdentity(), "run-driver", {}).then(() => undefined, (e: Error) => e.message);
+  c("and refuses to mint without the run/takeover/instance pin", typeof refused === "string" && refused.includes("opts.runDriver"), refused);
+  c("the driver holds NO write on the answer record: an answer is filed by a resolver under the operator profile, and the driver only reads the one a settle names",
+    !g.publish.some((r) => r.includes(`.answer.`)), g.publish);
+}
+
+// ---- 7. the run-operator profile (SPEC 14.3): one served read or answer, pinned EXACTLY -------------
+// Two forms of one profile: a READ (run-status, run-ps, and the first half of run-answer) holds the
+// records point read and, when a run is named, that run's replay durable, and NOTHING it can write;
+// an ANSWER (the second half of run-answer) is minted for ONE checkpoint token, found by the read,
+// and holds that pause's answer record, its checkpoint status, its settle fact, and the fact read
+// the settle's convergence performs. Every other read a served call could make is absent from both,
+// and no answering row spans a second pause.
+console.log("7. the run-operator profile (SPEC 14.3): a read form and an answering form");
+{
+  const RUN = "run-cc33", TK = "tk0009", TOKEN = "t".repeat(43);
+  const read = runOperatorGrants(S, { endpoint: EP, runId: RUN, takeoverId: TK }, CONN);
+  const replay = [
+    `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
+    `$JS.API.CONSUMER.INFO.WFJ_${S}.wfj_${RUN}_${TK}`,
+    `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
+    `$JS.ACK.WFJ_${S}.wfj_${RUN}_${TK}.>`,
+    `$JS.API.CONSUMER.DELETE.WFJ_${S}.wfj_${RUN}_${TK}`,
+  ];
+  c("a READ of one run is EXACTLY the records point read + that run's replay durable + INFO, and nothing it can write",
+    JSON.stringify(read) === JSON.stringify({
+      publish: [`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, ...replay, "$JS.API.INFO"],
+      subscribe: [`_INBOX_${CONN}.>`],
+    }), read);
+  const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
+  c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
+    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, "$JS.API.INFO"]), list.publish);
+  const ans = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } }, CONN);
+  c("an ANSWER of one pause is EXACTLY the records point read + THAT token's answer record, checkpoint status and settle fact + the EPF fact read + INFO: no replay row, and no row that spans a second token",
+    JSON.stringify(ans.publish) === JSON.stringify([
+      `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+      `$KV.cotal_records_${S}.answer.${EP}.${TOKEN}.>`, `$KV.cotal_records_${S}.cp.${EP}.${TOKEN}.>`, `cotal.${S}.epf.${EP}.cp.${TOKEN}`, `$JS.API.STREAM.MSG.GET.EPF_${S}`,
+      "$JS.API.INFO",
+    ]), ans.publish);
+  const otherTok = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: "u".repeat(43) } }, CONN);
+  c("an answer minted for another pause shares NO write row with this one (the token pins every write)",
+    !ans.publish.filter((r) => r.includes(TOKEN)).some((r) => otherTok.publish.includes(r)) && ans.publish.filter((r) => r.includes(TOKEN)).length === 3, { mine: ans.publish, theirs: otherTok.publish });
+  c("neither form holds a journal publish, a run or program record write, a consumer verb on the records store, a destructive stream verb, or an endpoint-wide `cp`/`answer`/settle row",
+    [...read.publish, ...ans.publish].every((r) => !/^cotal\.[^.]+\.wfj\./.test(r) && !/\.(?:run|program)\./.test(r) && !/^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_records_/.test(r) && !DESTRUCTIVE_JS.test(r)
+      && !/\.(?:cp|answer)\.[^.]+\.>$/.test(r) && !/\.epf\.[^.]+\.cp\.>$/.test(r)), { read: read.publish, ans: ans.publish });
+  const badTok = (() => { try { runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: "not a token" } }, CONN); return undefined; } catch (e) { return (e as Error).message; } })();
+  c("an answering form with a malformed token is refused at the builder (the token is a subject token, never interpolated unchecked)", typeof badTok === "string" && badTok.includes("checkpoint token"), badTok);
+  const minted = decode(await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } } }));
+  c("mintCreds(run-operator) emits exactly the builder's rows (the inbox keyed on the connection nkey)",
+    JSON.stringify(minted.pub) === JSON.stringify(ans.publish) && minted.sub.length === 1 && minted.sub[0]!.startsWith("_INBOX_"), minted);
 }
 
 console.log(fail === 0 ? `\nD32 MATRIX AUDIT OK ✅  (${ok} passed, ${fail} failed)` : `\nD32 MATRIX AUDIT FAILED ❌  (${ok} passed, ${fail} failed)`);

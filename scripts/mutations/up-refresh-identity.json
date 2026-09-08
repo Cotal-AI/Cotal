@@ -1,0 +1,20 @@
+{
+  "suite": "implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
+  "grades": "suite",
+  "guard": "an explicit cotal up refresh chooses the requested same-root space record rather than the first same-server registry record",
+  "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/up-refresh-identity.json",
+  "mutations": [
+    {
+      "name": "the refresh returns to the first same-server registry record",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    const held = values.space === undefined\n      ? meshes.find((m) => m.server === server)\n      : meshes.find((m) => m.server === server && m.root === root && m.space === space);",
+      "replace": "    const held = meshes.find((m) => m.server === server);",
+      "expectRed": "explicit refresh selects omega-root even with same-server records",
+      "cell": "explicit refresh selects omega-root even with same-server records",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    }
+  ]
+}

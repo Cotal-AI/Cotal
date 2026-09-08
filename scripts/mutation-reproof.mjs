@@ -81,7 +81,7 @@ function loadCorpus(root, paths) {
       errors.push(`${path}: no top-level "mutations" array`);
       continue;
     }
-    fixtures.push({ path, mutations: config.mutations });
+    fixtures.push({ path, suite: config.suite, mutations: config.mutations });
   }
   return { fixtures, errors };
 }
@@ -158,7 +158,8 @@ if (errors.length) {
 
 const { changed, diffSize } = a.all ? { changed: new Set(), diffSize: 0 } : changedSet(root, a.base, head);
 
-let selected = fixtures.filter(({ path, mutations }) => a.all || changed.has(path)
+let selected = fixtures.filter(({ path, suite, mutations }) => a.all || changed.has(path)
+  || (typeof suite === "string" && changed.has(suite))
   || mutations.some((mutation) => typeof mutation?.file === "string" && changed.has(mutation.file)));
 if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));
 
@@ -186,7 +187,7 @@ console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fix
     ? " for a full sweep"
     : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
 if (selected.length === 0) {
-  console.log("No mutation fixtures to re-prove: no fixture config or guarded source intersects the diff.");
+  console.log("No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
   process.exit(0);
 }
 console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);

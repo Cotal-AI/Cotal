@@ -87,6 +87,11 @@ lifecycle-bound prepare → activate → renew exchange. It never exports the sp
 provisioner credential, or generic storage authority. The manager may provision only descendants
 of that same owner, with host validation at each provision.
 
+The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
+dialed as a websocket. The manager-authority registration it runs first also takes its TLS
+requirement from that entry, so the prepare credential is not exchanged over a plaintext
+connection the record did not describe. `cotal meshes add` records both.
+
 When the authority service, login, or renewal is unavailable, the remote manager degrades
 fail-closed: it refuses new agents, restarts, and credential replacement rather than pretending
 local authority exists. Existing agents remain live only while their independent credentials are
@@ -134,7 +139,9 @@ How a spawn resolves:
 Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it with
 `COTAL_DETACH_KEY=ctrl-<char>` when it clashes with a keybinding inside the agent's TUI.
 
-**Runtimes.** The manager spawns into a **pty** it owns by default. Optional runtimes are installed
+**Runtimes.** The manager spawns into a **pty** by default. On Linux a detached per-seat
+custodian owns that PTY, so replacing the manager worker does not close the seat. Other
+platforms still spawn the PTY in-process; `adopt` throws until their transport lands. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
 `--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Runtime names are open-ended and resolved from
@@ -150,6 +157,8 @@ running mesh with the right credentials instead of mistaking the cwd for a space
 
 - `cotal use <name>` sets the default from every directory, including inside another mesh's
   project. `--space <name>` overrides it for one command.
+- When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
+  space.
 - With no live selected default, a project with its own `.cotal/` resolves to that project's
   mesh; otherwise one running mesh is used automatically and several are an error.
 - `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
