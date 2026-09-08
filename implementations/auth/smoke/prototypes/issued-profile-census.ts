@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, patternCovers,
+  CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
@@ -50,6 +50,14 @@ export function profileFixtures(space: string): ProfileFixture[] {
     "endpoint-serve"() {
       const grant = epServeGrantRows(space, { endpoint: "manager", instanceId: instance, epoch: 1, ephemeralCommands: ["ps", "run-start", "run-resume"] });
       rows.push({ profile: "endpoint-serve", variant: "raw-serve-rows", permissions: { pub: { allow: grant.pub }, sub: { allow: grant.sub } }, producer: "epServeGrantRows" });
+      // What a real fenced mint composes on top of those rows: the journal-class effects bind, one
+      // owned pool bind, `$JS.API.INFO`, and the connection inbox. The fence itself belongs to
+      // endpoint-serve-auth.smoke.ts; this row covers the widest shape the fence can release.
+      const binds = [...effectsBindGrants(space, "manager"), ...poolOwnerBindGrants(space, "manager", "work"), "$JS.API.INFO"];
+      rows.push({
+        profile: "endpoint-serve", variant: "serve-rows-with-binds", producer: "epServeGrantRows",
+        permissions: { pub: { allow: [...grant.pub, ...binds] }, sub: { allow: [...grant.sub, `_INBOX_${instance}.>`] } },
+      });
     },
     "goal-writer": () => one("goal-writer", { goalWriter: { endpoint: "manager" } }),
     "session-caller": () => one("session-caller", { sessionCaller: { endpoint: "manager", sessionId: session, epoch: 1 } }),
@@ -149,6 +157,9 @@ export function writeAndRawReadStreams(permissions: Record<string, unknown>, spa
   const table = streamSubjects(space);
   const pub = ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? []).map((row) => row.split(" ")[0]);
   const rawRead = new Set<string>();
+  // Only the two reads that deliver UNDER a caller-chosen reply subject count here. A pull
+  // `CONSUMER.MSG.NEXT` also delivers to a chosen reply, but the frame keeps its original captured
+  // subject, which the ingress-origin suite measures, so it cannot place bytes on the rail.
   for (const row of pub) {
     const direct = /^\$JS\.API\.DIRECT\.GET\.([^.]+)/.exec(row) ?? /^\$JS\.API\.STREAM\.MSG\.GET\.([^.]+)/.exec(row);
     if (!direct) continue;
