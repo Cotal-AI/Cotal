@@ -79,6 +79,7 @@ await rejects("phase update cannot rewrite the operation's immutable input", () 
 await updateSessionOperation(kv, terminal, row.revision);
 const result = await queryOperation(kv, resource, "op-1");
 c("queryOperation returns terminal result and native proof origin", result.state === "terminal-success" && result.proofOrigin?.proves === "native-effect" && (result.result as { bindingState: string }).bindingState === "released");
+await rejects("terminal-success cannot rewind to prepared", () => updateSessionOperation(kv, { ...first.record, state: "prepared" }, (kv as unknown as MemKv).rows.values().next().value!.revision), "conflict");
 const journalOnly: SessionOperationRecord = {
   ...terminal,
   proofOrigin: { kind: "journal-receipt", journalRevision: 9, proves: "journal-transition-only" },

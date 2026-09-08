@@ -24,8 +24,29 @@ import {
   type ResourceKey,
   type Binding,
   type SessionOperationRecord,
+  type SessionOperationState,
   type SessionTrustedState,
 } from "./session-lifecycle-records.js";
+
+const SESSION_OPERATION_STATE_RANK: Record<SessionOperationState, number> = {
+  prepared: 0,
+  executing: 1,
+  "terminal-success": 2,
+  "terminal-refusal": 2,
+  indeterminate: 2,
+};
+
+function assertSessionOperationStateMonotonic(from: SessionOperationState, to: SessionOperationState): void {
+  if (
+    SESSION_OPERATION_STATE_RANK[to] < SESSION_OPERATION_STATE_RANK[from]
+    || (SESSION_OPERATION_STATE_RANK[from] >= 2 && from !== to)
+  ) {
+    throw new EpEnvelopeError(
+      "conflict",
+      `session operation cannot regress from ${from} to ${to}; persist the receipt and never replay`,
+    );
+  }
+}
 
 export type NativeLifecycleBindingLookup =
   | { readonly status: "known"; readonly bindings: readonly Binding[] }
@@ -98,6 +119,7 @@ export async function updateSessionOperation(
     throw new EpEnvelopeError("conflict", `session operation ${parsed.operationId} cannot advance because its prepared input fence is absent`);
   if (existing.record.inputDigest !== parsed.inputDigest || !sameSessionOperationInput(existing.record, parsed))
     throw new EpEnvelopeError("conflict", `operationId ${parsed.operationId} is already bound to different transition input and cannot be rewritten during a phase update`);
+  assertSessionOperationStateMonotonic(existing.record.state, parsed.state);
   return await updateRecordEntry(kv, sessionOperationKey(parsed.resourceKey, parsed.operationId), parsed, expectedRevision);
 }
 
