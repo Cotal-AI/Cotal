@@ -1,58 +1,63 @@
 {
-  "suite": [
-    "scripts/mutation-coverage.selftest.mjs"
-  ],
   "grades": "tool",
-  "guard": "mutation coverage accepts only direct execution witnesses that reach the mutated file without a package resolver",
+  "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
   "command": "node scripts/mutation-coverage.selftest.mjs",
   "progressPattern": "^  ✓ ",
+  "minTicks": 18,
+  "completionMarker": "MUTATION-COVERAGE SELF-TEST:",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
   "why": [
-    "The seat packaging suite executes the root native assembler directly, while the launcher smoke executes its own mutated source. Both are stronger witnesses than a by-name package import, and neither should be rejected as a dist trap.",
-    "A quoted path in prose is not execution. The self-test keeps that negative control beside both accepted direct paths."
+    "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
+    "The continuation mutation restores the first-error abort. The subprocess mutation restores the false refusal for declared entrypoints. The two parser mutations restore the completed-but-ungraded outputs reproduced by real suites. The final mutation makes incomplete grading look green again."
   ],
   "mutations": [
     {
-      "name": "a suite mutating its own directly executed source is rejected",
+      "name": "a refused config aborts the process before later configs are examined",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
-      "replace": "  if (invokesFile(suiteSource, m.file)) return true;",
-      "expectRed": "a suite is gradable when it directly executes the file being mutated"
+      "find": "    refusals.push([path, reason]);\n    console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
+      "replace": "    throw new Error(`REFUSED ${path}: ${reason}`);",
+      "expectRed": "one bad config does not hide later configs",
+      "cell": "one bad config does not hide later configs"
     },
     {
-      "name": "a suite launching the exact mutated repo script is rejected",
+      "name": "declared subprocess entrypoints are ignored",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
-      "replace": "  if (m.file === suite) return true;",
-      "expectRed": "a suite is gradable when it launches the exact mutated script path"
+      "find": "  if (executedWitness(cfg.suite, source, cfg.command, mutation, cfg.executes ?? [])) return;",
+      "replace": "  void executedWitness(cfg.suite, source, cfg.command, mutation, cfg.executes ?? []);",
+      "expectRed": "a spawned repo entrypoint plus target-package build is gradable",
+      "cell": "a spawned repo entrypoint plus target-package build is gradable"
     },
     {
-      "name": "any quoted mutation path is treated as a direct execution witness",
+      "name": "completed all-passed fractions are not parsed",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
-      "replace": "  if (m.file === suite || referencesRoot(suiteSource, m.file)) return true;",
-      "expectRed": "a quoted script path without an invocation is refused"
+      "find": "    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };",
+      "replace": "    void fraction;",
+      "expectRed": "a completed all-passed fraction supplies the executed total",
+      "cell": "a completed all-passed fraction supplies the executed total"
     },
     {
-      "name": "launcher aliases are ignored",
+      "name": "completed progress-marker suites are not parsed",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);",
-      "replace": "      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[1]);",
-      "expectRed": "a launcher imported under an alias still witnesses the script it runs"
+      "find": "    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };",
+      "replace": "    void completed; void executed;",
+      "expectRed": "anchored progress plus an explicit completion marker supplies a total",
+      "cell": "anchored progress plus an explicit completion marker supplies a total"
     },
     {
-      "name": "bound entry names are ignored",
+      "name": "incomplete aggregate grading exits successfully",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  const names = boundNames(suiteSource, basename);",
-      "replace": "  const names = [];",
-      "expectRed": "a target bound to a const before the launcher call still witnesses it"
+      "find": "if (refused || unparsed || failed || examined !== configs.length || graded !== configs.length) process.exitCode = 1;",
+      "replace": "void refused; void unparsed; void failed; void examined; void graded;",
+      "expectRed": "zero failures without a total stays unparsed",
+      "cell": "zero failures without a total stays unparsed"
     },
     {
-      "name": "a bound entry anywhere after a launcher is treated as its argument",
+      "name": "the audit summary omits the checkout tree",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  for (const m of suiteSource.matchAll(new RegExp(`${call}((?:[^()]|\\\\([^()]*\\\\))*)\\\\)`, \"g\"))) {",
-      "replace": "  for (const m of suiteSource.matchAll(new RegExp(`${call}([\\\\s\\\\S]{0,500})`, \"g\"))) {",
-      "expectRed": "a name bound to the target but never passed to a launcher is still refused"
+      "find": "  `MUTATION COVERAGE SUMMARY head=${head} enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
+      "replace": "  `MUTATION COVERAGE SUMMARY head=unknown enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
+      "expectRed": "the audit summary names the exact checkout tree",
+      "cell": "the audit summary names the exact checkout tree"
     }
   ]
 }

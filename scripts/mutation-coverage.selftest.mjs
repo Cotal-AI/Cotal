@@ -61,6 +61,7 @@ try {
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "."], { cwd: root });
   execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
+  const fixtureHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 
   const tally = summaryCommand("FIXTURE: 3 passed, 0 failed");
   const seatBuild = `${JSON.stringify(process.execPath)} fake-build.mjs --filter @cotal-ai/seat build && ${tally}`;
@@ -150,6 +151,7 @@ try {
     result.status !== 0 && /enumerated=3 examined=3 graded=1 refused-with-reason=1 unparsed=1/.test(result.stdout),
     report(result),
   );
+  check("the audit summary names the exact checkout tree", result.stdout.includes(`head=${fixtureHead}`), report(result));
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
