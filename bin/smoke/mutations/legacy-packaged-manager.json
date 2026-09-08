@@ -3,7 +3,6 @@
   "guard": "the packaged-manager fixture keeps a $0-relative pnpm launcher at its original path rather than symlinking it into the isolated bin",
   "command": "pnpm build > /dev/null && pnpm smoke:legacy-packaged-manager",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/legacy-packaged-manager.json",
-  "grades": "tool",
   "why": [
     "pnpm/action-setup's launcher resolves its payload relative to $0. Symlinking it into the isolated fixture changes $0 and makes package lifecycle scripts fail before the seat pack can be tested.",
     "The smoke creates that launcher shape deterministically, proves the direct path works and the symlink path fails, then keeps the launcher's real directory on PATH. The mutation restores the broken symlink path and must fail on the path assertion."
