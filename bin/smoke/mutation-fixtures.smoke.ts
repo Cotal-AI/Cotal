@@ -157,7 +157,7 @@ cell("missing suite metadata is diagnosed", suiteDiagnosis(undefined)?.includes(
 cell("an empty suite array is diagnosed", suiteDiagnosis([])?.includes("EMPTY SUITE METADATA") === true);
 cell("the legacy suite string is diagnosed as malformed", suiteDiagnosis("probe/a.smoke.ts")?.includes("MALFORMED SUITE METADATA") === true);
 cell("a non-string suite member is diagnosed as malformed", suiteDiagnosis([42])?.includes("MALFORMED SUITE METADATA") === true);
-cell("a syntactically non-path suite member is diagnosed", suiteDiagnosis(["not-a-path"])?.includes("NON-PATH SUITE SOURCE") === true);
+cell("a non-normalized suite path is diagnosed", suiteDiagnosis(["./probe.smoke.ts"])?.includes("NON-PATH SUITE SOURCE") === true);
 cell("a normalized but missing suite source is diagnosed", suiteDiagnosis(["probe/missing.smoke.ts"])?.includes("SUITE SOURCE MISSING") === true);
 cell(
   "a valid multi-source suite array passes and every member is checked",
@@ -176,6 +176,12 @@ function proofMetadata(value: unknown, configMode = true): { status: number | nu
     writeFileSync(join(root, "src", "impl.mjs"), "export const value = 1;\n");
     writeFileSync(join(root, "smoke", "suite.mjs"), [
       "import { value } from '../src/impl.mjs';",
+      "if (value !== 1) { console.error('FAIL metadata proof control'); process.exit(1); }",
+      "console.log('✓ metadata proof control');",
+      "",
+    ].join("\n"));
+    writeFileSync(join(root, "suite.mjs"), [
+      "import { value } from './src/impl.mjs';",
       "if (value !== 1) { console.error('FAIL metadata proof control'); process.exit(1); }",
       "console.log('✓ metadata proof control');",
       "",
@@ -205,7 +211,7 @@ for (const [name, value, diagnosis] of [
   ["empty", [], "EMPTY SUITE METADATA"],
   ["legacy string", "smoke/suite.mjs", "MALFORMED SUITE METADATA"],
   ["non-string member", [42], "MALFORMED SUITE METADATA"],
-  ["non-path member", ["suite.mjs"], "NON-PATH SUITE SOURCE"],
+  ["non-normalized path member", ["./smoke/suite.mjs"], "NON-PATH SUITE SOURCE"],
   ["missing source", ["smoke/missing.mjs"], "SUITE SOURCE MISSING"],
 ] as const) {
   const result = proofMetadata(value);
@@ -213,6 +219,8 @@ for (const [name, value, diagnosis] of [
 }
 const validProof = proofMetadata(["smoke/suite.mjs", "src/impl.mjs"]);
 cell("mutation-proof config mode accepts valid multi-source metadata", validProof.status === 0 && validProof.output.includes("KILLED"));
+const validRootProof = proofMetadata(["suite.mjs"]);
+cell("mutation-proof config mode accepts valid root-level source metadata", validRootProof.status === 0 && validRootProof.output.includes("KILLED"));
 const adHocProof = proofMetadata(undefined, false);
 cell("mutation-proof ad-hoc CLI mode remains usable without suite metadata", adHocProof.status === 0 && adHocProof.output.includes("KILLED"));
 

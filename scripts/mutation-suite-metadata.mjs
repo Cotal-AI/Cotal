@@ -36,7 +36,7 @@ export function parseSuiteSources(root, configPath, value, { checkExists = true 
     seen.add(source);
 
     const segments = source.split("/");
-    if (!source.includes("/") || source.startsWith("/") || source.endsWith("/")
+    if (source.startsWith("/") || source.endsWith("/")
         || segments.some((segment) => segment === "" || segment === "." || segment === "..")
         || /[\s:\\]/u.test(source) || /[\u0000-\u001f\u007f]/u.test(source)
         || posix.normalize(source) !== source) {

@@ -124,9 +124,10 @@ writeConfig("metadata-missing.json", OMIT_SUITE);
 writeConfig("metadata-empty.json", []);
 writeConfig("metadata-string.json", "suite.mjs");
 writeConfig("metadata-element.json", [42]);
-writeConfig("metadata-nonpath.json", ["suite.mjs"]);
+writeConfig("metadata-nonpath.json", ["./suite.mjs"]);
 writeConfig("metadata-missing-source.json", ["smoke/missing.mjs"]);
 writeConfig("metadata-valid.json", ["smoke/suite.mjs", "src/impl.js"]);
+writeConfig("metadata-root-valid.json", ["suite.mjs"]);
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm metadata", { cwd: root });
 for (const [name, diagnosis] of [
   ["metadata-missing.json", "MISSING SUITE METADATA"],
@@ -141,6 +142,8 @@ for (const [name, diagnosis] of [
 }
 r = runTool(["--config", "metadata-valid.json"]);
 check("config mode accepts a valid multi-source array", r.status === 0 && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
+r = runTool(["--config", "metadata-root-valid.json"]);
+check("config mode accepts a valid root-level source path", r.status === 0 && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
 r = runTool([
   "--command", `${process.execPath} suite.mjs`,
   "--file", "src/impl.js",

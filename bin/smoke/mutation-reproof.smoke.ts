@@ -383,7 +383,7 @@ try {
     ["empty", [], "EMPTY SUITE METADATA"],
     ["legacy string", "suites/a.suite.mjs", "MALFORMED SUITE METADATA"],
     ["non-string member", [42], "MALFORMED SUITE METADATA"],
-    ["non-path member", ["not-a-path"], "NON-PATH SUITE SOURCE"],
+    ["non-normalized path member", ["./a.mjs"], "NON-PATH SUITE SOURCE"],
   ] as const) {
     const { root, base, head } = build((r) => {
       const path = join(r, "smoke", "mutations", "a.mutations.json");

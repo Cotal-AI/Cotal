@@ -72,6 +72,14 @@
       "cell": "a normalized but missing suite source is diagnosed"
     },
     {
+      "name": "root-level suite source paths are rejected again",
+      "file": "scripts/mutation-suite-metadata.mjs",
+      "find": "    if (source.startsWith(\"/\") || source.endsWith(\"/\")",
+      "replace": "    if (!source.includes(\"/\") || source.startsWith(\"/\") || source.endsWith(\"/\")",
+      "expectRed": "mutation-proof config mode accepts valid root-level source metadata",
+      "cell": "mutation-proof config mode accepts valid root-level source metadata"
+    },
+    {
       "name": "mutation-proof config mode stops validating suite metadata",
       "file": "scripts/mutation-proof.mjs",
       "find": "  try {\n    parseSuiteSources(cwd, a.config, cfg.suite);\n  } catch (error) {\n    usage(error.message);\n  }",
