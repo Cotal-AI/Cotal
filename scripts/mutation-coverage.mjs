@@ -11,7 +11,8 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
-import { dirname, extname, relative, resolve } from "node:path";
+import { dirname, extname, resolve } from "node:path";
+import ts from "typescript";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const args = process.argv.slice(2);
@@ -52,10 +53,21 @@ const candidateFiles = (path) => {
   return [...new Set(out)].find(existsSync);
 };
 
-const relativeImports = (source) => {
+const ast = (path, source) => ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+const stringValue = (node) => ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+const relativeImports = (path, source) => {
   const found = [];
-  const re = /(?:import\s+(?:[^"'()]*?\s+from\s+)?|import\s*\(|export\s+[^"']*?\s+from\s+)["']([^"']+)["']/g;
-  for (const match of source.matchAll(re)) found.push(match[1]);
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      const value = stringValue(node.moduleSpecifier);
+      if (value !== undefined) found.push(value);
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const value = stringValue(node.arguments[0]);
+      if (value !== undefined) found.push(value);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast(path, source));
   return found;
 };
 
@@ -89,7 +101,7 @@ const entryPackages = (entry) => {
     if (!actual || seenFiles.has(actual)) return;
     seenFiles.add(actual);
     const source = readFileSync(actual, "utf8");
-    for (const specifier of relativeImports(source)) {
+    for (const specifier of relativeImports(actual, source)) {
       if (specifier.startsWith(".")) visitFile(resolve(dirname(actual), specifier));
       else if (specifier === "cotal-ai" || specifier.startsWith("@cotal-ai/")) visitPackage(specifier.split("/").slice(0, 2).join("/"));
     }
@@ -99,23 +111,57 @@ const entryPackages = (entry) => {
   return packages;
 };
 
-const pathReference = (suite, entry) => {
-  const rel = relative(dirname(suite), entry).replaceAll("\\", "/");
-  const forms = [entry, rel, rel.startsWith(".") ? rel : `./${rel}`];
-  const relativePieces = rel.split("/").map(quoted).join("\\s*,\\s*");
-  const repoPieces = entry.split("/").map(quoted).join("\\s*,\\s*");
-  return new RegExp([...forms.map(quoted), relativePieces, repoPieces].join("|"));
-};
-
-/** The declaration is evidence only when the suite passes that entrypoint to a Node/tsx/pty subprocess. */
+const normalizedPath = (value) => resolve(value).replaceAll("\\", "/");
 const spawnsEntrypoint = (suite, entry, source) => {
-  const reference = pathReference(suite, entry);
-  const aliases = [];
-  for (const match of source.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=([^;\n]+(?:\n[^;]+)?);/g)) {
-    if (reference.test(match[2])) aliases.push(match[1]);
-  }
-  const token = aliases.length ? `(?:${aliases.join("|")}|${reference.source})` : reference.source;
-  return new RegExp(`(?:spawn(?:Sync|Proc)?|pty\\.spawn)\\s*\\([^;]*?\\[[^\\]]*?${token}`, "s").test(source);
+  const variables = new Map();
+  const target = normalizedPath(entry);
+  const evalPath = (node) => {
+    if (!node) return undefined;
+    const literal = stringValue(node);
+    if (literal !== undefined) return literal;
+    if (ts.isIdentifier(node)) return variables.get(node.text);
+    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
+      if (node.name.text === "dirname") return dirname(resolve(suite));
+      if (node.name.text === "url") return resolve(suite);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const parts = node.arguments.map(evalPath);
+      if (parts.some((part) => part === undefined)) return undefined;
+      if (node.expression.text === "dirname" && parts.length === 1) return dirname(parts[0]);
+      if (node.expression.text === "join" || node.expression.text === "resolve") return resolve(...parts);
+      if (node.expression.text === "fileURLToPath" && parts.length === 1) return parts[0];
+    }
+    return undefined;
+  };
+  const entryArray = (node) => {
+    if (ts.isIdentifier(node)) node = variables.get(node.text);
+    if (!ts.isArrayLiteralExpression(node)) return false;
+    return node.elements.some((element) => {
+      const value = evalPath(element);
+      return value !== undefined && normalizedPath(value) === target;
+    });
+  };
+  const executableIsNode = (node) => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === "process" && node.name.text === "execPath") return true;
+    const value = evalPath(node);
+    return value !== undefined && /(?:^|\/)tsx(?:\.cmd)?$/.test(value.replaceAll("\\", "/"));
+  };
+  let witnessed = false;
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      variables.set(node.name.text, ts.isArrayLiteralExpression(node.initializer) ? node.initializer : evalPath(node.initializer));
+    }
+    if (ts.isCallExpression(node)) {
+      const callee = ts.isIdentifier(node.expression) ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression) ? `${node.expression.expression.getText()}.${node.expression.name.text}` : "";
+      if (["spawn", "spawnSync", "spawnProc", "pty.spawn"].includes(callee)
+        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast(suite, source));
+  return witnessed;
 };
 
 const packageName = (file) => {
@@ -126,8 +172,17 @@ const packageName = (file) => {
 
 const buildsPackage = (command, name) => {
   if (!name) return false;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:pnpm\\s+build|--filter\\s+${escaped}(?:\\.\\.\\.)?[^&;\\n]*\\bbuild\\b)`).test(command);
+  for (const segment of command.split(/&&|;/)) {
+    const tokens = segment.trim().split(/\s+/);
+    if (tokens[0] !== "pnpm") continue;
+    if (tokens[1] === "build") return true;
+    const filter = tokens.findIndex((token) => token === "--filter" || token.startsWith("--filter="));
+    if (filter < 0) continue;
+    const value = tokens[filter].startsWith("--filter=") ? tokens[filter].slice(9) : tokens[filter + 1];
+    if (value?.replace(/\.\.\.$/, "") !== name) continue;
+    if (tokens.slice(filter + (tokens[filter].startsWith("--filter=") ? 1 : 2)).includes("build")) return true;
+  }
+  return false;
 };
 
 const executedWitness = (suite, source, command, mutation, executes) => {
@@ -176,9 +231,11 @@ const parseSummary = (cfg, output) => {
     if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };
   }
   if (typeof cfg.progressPattern === "string" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {
+    const lines = output.trimEnd().split(/\r?\n/);
+    const terminal = lines.at(-1) ?? "";
     const completed = typeof cfg.completionMarker === "string"
-      ? output.includes(cfg.completionMarker)
-      : /(?:^|\n)[^\n]*(?:PASSED|\bOK\b)[^\n]*(?:\n|$)/.test(output);
+      ? terminal.includes(cfg.completionMarker)
+      : /(?:^|\s)(?:PASSED|OK)(?:\s|$)/.test(terminal) && !(new RegExp(cfg.progressPattern).test(terminal));
     const executed = progressCount(output, cfg.progressPattern);
     if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };
   }
@@ -190,6 +247,19 @@ const validate = (path, cfg) => {
   const suites = parseSuiteSources(process.cwd(), path, cfg.suite);
   if (typeof cfg.command !== "string" || cfg.command === "") throw new Error('is missing "command"');
   if (!Array.isArray(cfg.mutations)) throw new Error('is missing a "mutations" array');
+  if (cfg.completionMarker !== undefined && (typeof cfg.completionMarker !== "string" || cfg.completionMarker === "")) {
+    throw new Error('"completionMarker" must be a non-empty string');
+  }
+  if (cfg.progressPattern !== undefined) {
+    if (typeof cfg.progressPattern !== "string" || cfg.progressPattern === "") throw new Error('"progressPattern" must be a non-empty regular expression string');
+    try { new RegExp(cfg.progressPattern, "gm"); } catch (error) { throw new Error(`"progressPattern" is invalid: ${error.message}`); }
+  }
+  if (cfg.minTicks !== undefined && (!Number.isInteger(cfg.minTicks) || cfg.minTicks < 1)) {
+    throw new Error('"minTicks" must be a positive integer');
+  }
+  if ((cfg.progressPattern === undefined) !== (cfg.minTicks === undefined)) {
+    throw new Error('"progressPattern" and "minTicks" must be supplied together');
+  }
   for (const key of ["assembles", "executes"]) {
     if (cfg[key] !== undefined && !validStringArray(cfg[key])) throw new Error(`"${key}" must be an array of non-empty repo paths`);
   }
