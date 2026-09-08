@@ -131,13 +131,14 @@ const inventoryOf = (...agents: ManagerResumeAgent[]): ManagerResumeInventory =>
 
 function managerWith(
   runtimeSpawn: (name: string, spec: LaunchSpec, cwd: string) => AgentHandle,
-  opts: { resumeAttemptId?: string; resumeDurableCommitToken?: string } = {},
+  opts: { resumeAttemptId?: string; resumeDurableCommitToken?: string; commandDrainTimeoutMs?: number } = {},
 ): Manager {
   const manager = new Manager({
     space: "preserve-smoke",
     runtime: "pty",
     workspaceRoot: root,
     preserveStopTimeoutMs: 50,
+    commandDrainTimeoutMs: opts.commandDrainTimeoutMs,
     resumeAttemptId: opts.resumeAttemptId,
     resumeDurableCommitToken: opts.resumeDurableCommitToken,
   });
@@ -284,6 +285,54 @@ const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | 
   },
 };
 registry.register(preserveAuth as unknown as AuthProvider);
+
+// Manager replacement may report a clean drain only after every request that crossed admission has
+// a conclusive disposition. This request deliberately never releases its admission. Before the fix
+// there was no request ledger and the lifecycle wait could only hang forever or be treated as a
+// generic timeout, losing the exact accepted request that requires recovery.
+{
+  const manager = managerWith((name) => fakeHandle(name), { commandDrainTimeoutMs: 5 });
+  const m = manager as unknown as {
+    admitControl(caller: string, accepted: { requestId: string; command: string }): { refusal?: string; release?: () => void };
+    drainAcceptedCommands(): Promise<{
+      status: "drained" | "recovery-required";
+      accepted: number;
+      settled: number;
+      unaccounted: Array<{ requestId: string; command: string }>;
+    }>;
+  };
+  const accepted = m.admitControl("local.operator", { requestId: "accepted-unknown", command: "stop" });
+  const drain = await m.drainAcceptedCommands();
+  check("an unaccounted accepted request reports recovery-required rather than drain success",
+    accepted.refusal === undefined && drain.status === "recovery-required"
+      && drain.accepted === 1 && drain.settled === 0
+      && drain.unaccounted[0]?.requestId === "accepted-unknown"
+      && drain.unaccounted[0]?.command === "stop",
+    drain);
+  accepted.release?.();
+}
+
+// Positive control through the same ledger: a conclusively settled request is absent from the drain
+// report. A broken counter that always returns zero cannot satisfy both this and the cell above.
+{
+  const manager = managerWith((name) => fakeHandle(name), { commandDrainTimeoutMs: 5 });
+  const m = manager as unknown as {
+    admitControl(caller: string, accepted: { requestId: string; command: string }): { refusal?: string; release?: () => void };
+    drainAcceptedCommands(): Promise<{
+      status: "drained" | "recovery-required";
+      accepted: number;
+      settled: number;
+      unaccounted: Array<{ requestId: string }>;
+    }>;
+  };
+  const accepted = m.admitControl("local.operator", { requestId: "accepted-settled", command: "models" });
+  accepted.release?.();
+  const drain = await m.drainAcceptedCommands();
+  check("a conclusively settled accepted request drains cleanly",
+    accepted.refusal === undefined && drain.status === "drained"
+      && drain.accepted === 1 && drain.settled === 1 && drain.unaccounted.length === 0,
+    drain);
+}
 
 // Fence and drain: an accepted async control request completes before children stop, while later
 // lifecycle work is rejected immediately. The exit watcher fires from stop() but must not clean up.

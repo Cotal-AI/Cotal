@@ -308,6 +308,9 @@ export interface ManagerOptions {
   attachHost?: string;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
+  /** Internal/test override for the manager-command drain deadline. A maintenance exit must not
+   * wait forever and then call an unaccounted request "drained". */
+  commandDrainTimeoutMs?: number;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
   resumeAttemptId?: string;
   /** Fsynced coordinator evidence recovered after commit but before finalize. */
@@ -357,6 +360,13 @@ export interface ManagerOptions {
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
+
+export interface ManagerCommandDrainResult {
+  status: "drained" | "recovery-required";
+  accepted: number;
+  settled: number;
+  unaccounted: ReadonlyArray<{ requestId: string; command: string; acceptedAt: number }>;
+}
 
 
 /** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
@@ -844,6 +854,7 @@ export class Manager {
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
+  private readonly commandDrainTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
@@ -1033,6 +1044,12 @@ export class Manager {
   private maintenanceState: ManagerMaintenanceState = "active";
   private lifecycleInFlight = 0;
   private lifecycleDrainWaiters: Array<() => void> = [];
+  /** Every manager command that crossed the shared admission fence but has not yet reached a
+   * conclusive success/refusal. Request id is the wire id, not a generated counter: a drain can name
+   * the exact accepted request whose outcome needs recovery. */
+  private readonly acceptedCommands = new Map<string, { command: string; acceptedAt: number }>();
+  private acceptedCommandCount = 0;
+  private settledCommandCount = 0;
   private preservationTask?: Promise<ManagerPreserveResult>;
   private preparationTask?: Promise<ManagerPreservationPlan>;
   private preservationGeneration = 0;
@@ -1079,6 +1096,7 @@ export class Manager {
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
+    this.commandDrainTimeoutMs = opts.commandDrainTimeoutMs ?? 30_000;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
       throw new Error("resumeAttemptId must be a safe token (letters, digits, _, -; max 128)");
     if (opts.resumeDurableCommitToken && !/^[a-f0-9]{64}$/.test(opts.resumeDurableCommitToken))
@@ -2305,7 +2323,7 @@ export class Manager {
    *  AUTHENTICATED principal holds no control authority even with a valid JWT). Refusal carries
    *  WHICH fence refused so the ep door can map onto the §13.3 catalog; admission returns the
    *  accepted-work release. Never re-implemented per door — a fence on one door is a bypass. */
-  private admitControl(caller: string):
+  private admitControl(caller: string, accepted?: { requestId: string; command: string }):
     | { refusal: string; fence: "maintenance" | "membership"; release?: undefined }
     | { refusal?: undefined; release: () => void } {
     const release = this.beginLifecycle();
@@ -2315,7 +2333,52 @@ export class Manager {
       release();
       return { refusal: membership, fence: "membership" };
     }
-    return { release };
+    if (!accepted) return { release };
+    if (this.acceptedCommands.has(accepted.requestId)) {
+      release();
+      return {
+        refusal: `manager request ${accepted.requestId} is already accepted and has not reached a conclusive disposition`,
+        fence: "maintenance",
+      };
+    }
+    this.acceptedCommands.set(accepted.requestId, { command: accepted.command, acceptedAt: Date.now() });
+    this.acceptedCommandCount++;
+    let settled = false;
+    return { release: () => {
+      if (settled) return;
+      settled = true;
+      this.acceptedCommands.delete(accepted.requestId);
+      this.settledCommandCount++;
+      release();
+    } };
+  }
+
+  /** Close admission synchronously, then account for every accepted manager request. A timed-out
+   * request is not silently dropped from the set: its exact id remains in the recovery-required
+   * result so the manager replacement operation can reconcile it. */
+  async drainAcceptedCommands(): Promise<ManagerCommandDrainResult> {
+    if (this.maintenanceState === "active") this.maintenanceState = "preserving";
+    const drained = this.awaitLifecycleDrain();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        drained,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => { timedOut = true; resolve(); }, this.commandDrainTimeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const unaccounted = [...this.acceptedCommands.entries()].map(([requestId, value]) => ({ requestId, ...value }));
+    return {
+      status: timedOut || unaccounted.length > 0 ? "recovery-required" : "drained",
+      accepted: this.acceptedCommandCount,
+      settled: this.settledCommandCount,
+      unaccounted,
+    };
   }
 
   /** Run one v0.4 service-command handler through the SHARED admission chokepoint
@@ -2324,7 +2387,7 @@ export class Manager {
    *  `permission-denied`. The serve boundary publishes the structured error reply. */
   private async serveGated<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
     const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
-    const admission = this.admitControl(caller);
+    const admission = this.admitControl(caller, { requestId: ctx.request.id, command: ctx.subject.command });
     if (admission.refusal !== undefined)
       throw new EpEnvelopeError(admission.fence === "membership" ? "permission-denied" : "unavailable", admission.refusal);
     try {
