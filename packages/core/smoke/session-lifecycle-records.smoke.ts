@@ -89,6 +89,8 @@ for (const bad of ["cooperative", "exclusive", "receiver-checked"]) {
 throws("legacy spawn is not a session-manage right", () => parseBinding(enc({ ...binding, rights: ["spawn"] }), bindingKey));
 throws("legacy admin is not a session-manage right", () => parseBinding(enc({ ...binding, rights: ["admin"] }), bindingKey));
 throws("legacy supervise is not a session-manage right", () => parseBinding(enc({ ...binding, rights: ["supervise"] }), bindingKey));
+throws("observed mode cannot carry control authority", () => parseBinding(enc({ ...binding, mode: "observed", rights: ["control"] }), bindingKey));
+c("observed mode may carry discovery only", parseBinding(enc({ ...binding, mode: "observed", rights: ["discover"] }), bindingKey).rights[0] === "discover");
 throws("duplicate management rights are refused rather than normalized", () => parseBinding(enc({ ...binding, rights: ["control", "control"] }), bindingKey));
 throws("unknown binding state cannot authorize", () => parseBinding(enc({ ...binding, state: "active" }), bindingKey));
 throws("manager principal is a canonical authenticated owner.actor", () => parseBinding(enc({ ...binding, managerPrincipal: "manager" }), bindingKey));

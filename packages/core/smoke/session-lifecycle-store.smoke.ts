@@ -84,6 +84,12 @@ const journalOnly: SessionOperationRecord = {
   proofOrigin: { kind: "journal-receipt", journalRevision: 9, proves: "journal-transition-only" },
 };
 await rejects("a journal receipt cannot prove terminal native success", () => updateSessionOperation(kv, journalOnly, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
+await rejects("receiver receipt must persist at least the operation's expected epoch", () => updateSessionOperation(kv, {
+  ...terminal, proofOrigin: { kind: "receiver-receipt", receiver: "native-1", highestEpoch: 6, proves: "native-effect" },
+}, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
+await rejects("native proof must come from the ResourceKey provider", () => updateSessionOperation(kv, {
+  ...terminal, proofOrigin: { kind: "native-readback", provider: "com.cotal.opencode", evidence: { operation: "op-1" }, proves: "native-effect" },
+}, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
 
 console.log("B. monotonic trusted state, rollback read-only, and retired fences");
 const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, retireBindingIds: ["binding-old"] });

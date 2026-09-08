@@ -256,6 +256,8 @@ export function parseBinding(raw: Uint8Array, key: string, expectedResourceKey?:
     || !Array.isArray(value.rights) || value.rights.length === 0
     || value.rights.some((r) => typeof r !== "string" || !ACTIONS.has(r))
     || new Set(value.rights).size !== value.rights.length) return fail(`session binding ${key}`, "does not validate");
+  if (value.mode === "observed" && (value.rights as string[]).some((r) => r !== "discover"))
+    return fail(`session binding ${key}`, "is observed but carries management write authority");
   const canonicalKey = sessionBindingKey(resourceKey);
   if (key !== canonicalKey) return fail(`session binding ${key}`, `does not match its embedded ResourceKey (canonical key ${canonicalKey})`);
   if (expectedResourceKey !== undefined && resourceKeyId(expectedResourceKey) !== resourceKeyId(resourceKey))
@@ -355,6 +357,11 @@ export function parseSessionOperation(raw: Uint8Array, key: string, expectedReso
     return fail(`session operation ${key}`, "claims terminal success without native-effect proof");
   if (value.state === "terminal-refusal" && proofOrigin?.proves !== "no-native-effect")
     return fail(`session operation ${key}`, "claims terminal refusal without no-native-effect proof");
+  if (proofOrigin?.kind === "receiver-receipt" && proofOrigin.highestEpoch < value.expectedControllerEpoch)
+    return fail(`session operation ${key}`, "carries a receiver receipt below its expected controller epoch");
+  if ((proofOrigin?.kind === "native-readback" || proofOrigin?.kind === "provider-refusal")
+    && proofOrigin.provider !== resourceKey.provider)
+    return fail(`session operation ${key}`, "carries proof from a provider other than its ResourceKey provider");
   return {
     operationId, resourceKey, incarnationProof, bindingId,
     expectedBindingRevision: value.expectedBindingRevision,
