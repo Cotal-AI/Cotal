@@ -30,3 +30,21 @@ not understand is an error, not a silently ignored or literal filter.
 
 The guard is read-only. It does not drain GitHub's queue, retrigger a run, or diagnose or fix the
 external scheduler that creates workflow runs.
+
+## Mutation coverage
+
+Run every tracked mutation config from the current checkout:
+
+```bash
+pnpm mutation-coverage
+```
+
+Pass config paths to grade only those files. The validator examines every selected config even when
+an earlier one is refused, its command fails, or its completed output has no trustworthy executed
+cell total. It exits non-zero after the full selection and reports the checkout HEAD with counts for
+enumerated, examined, graded, refused-with-reason, unparsed, and command-failed configs.
+
+`unparsed` means the suite command completed but did not prove how many cells it executed. A zero
+failure count without a total is not enough. Configs whose suite launches a repository entrypoint
+may declare it in `executes`; the declaration is accepted only when the suite passes that entrypoint
+to a Node or tsx subprocess and the command builds each mutated package reached through it.
