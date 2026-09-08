@@ -1,0 +1,26 @@
+{
+  "suite": "bin/smoke/seat-installed-dist.smoke.ts",
+  "assembles": ["packages/seat"],
+  "guard": "an assembled seat source tree with no dist packs declared entrypoints that support fresh seat import, manager import, and packaged CLI help",
+  "command": "pnpm --filter cotal-ai... build > /dev/null && pnpm smoke:seat-installed-dist",
+  "completionMarker": "SUITE COMPLETE: seat installed distribution",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-installed-dist.json",
+  "mutations": [
+    {
+      "name": "M1 seat prepack omits the TypeScript compile",
+      "file": "packages/seat/package.json",
+      "find": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs && pnpm run build:ts\",",
+      "replace": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs\",",
+      "expectRed": "seat package inventory contains dist/index.js",
+      "cell": "seat package inventory contains dist/index.js"
+    },
+    {
+      "name": "M2 the TypeScript-only lifecycle build becomes a no-op",
+      "file": "packages/seat/package.json",
+      "find": "    \"build:ts\": \"tsc -p tsconfig.json\",",
+      "replace": "    \"build:ts\": \"node -e \\\"void 0\\\"\",",
+      "expectRed": "fresh installed @cotal-ai/seat import succeeds",
+      "cell": "fresh installed @cotal-ai/seat import succeeds"
+    }
+  ]
+}
