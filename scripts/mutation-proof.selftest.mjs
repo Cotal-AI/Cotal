@@ -83,9 +83,10 @@ const runTool = (args) =>
     env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
   });
 
-const writeConfig = (name, suite, extra = {}) => {
-  writeFileSync(join(root, name), JSON.stringify({ suite: ["smoke/suite.mjs"],
-    ...(suite === undefined ? {} : { suite }),
+const OMIT_SUITE = Symbol("omit suite metadata");
+const writeConfig = (name, suite = ["smoke/suite.mjs"], extra = {}) => {
+  writeFileSync(join(root, name), JSON.stringify({
+    ...(suite === OMIT_SUITE ? {} : { suite }),
     command: `${process.execPath} suite.mjs`,
     mutations: [{ name: "metadata control", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
     ...extra,
@@ -119,7 +120,7 @@ writeFileSync(join(root, "survivor-with-control.json"), JSON.stringify({
 }));
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm survivor-control", { cwd: root });
 
-writeConfig("metadata-missing.json", undefined);
+writeConfig("metadata-missing.json", OMIT_SUITE);
 writeConfig("metadata-empty.json", []);
 writeConfig("metadata-string.json", "suite.mjs");
 writeConfig("metadata-element.json", [42]);
