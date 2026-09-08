@@ -810,6 +810,11 @@ try {
     "value" in forked && forked.value.admissible
       && keys(forked.value.cut).join() === "/sleep:before#0"
       && JSON.stringify(forked.value.pins) === JSON.stringify(pins), forked);
+  const invalidDuration = await planFork({ ...request, source: source.replace('"1m"', '"invalid duration"') })
+    .then((value) => ({ value }), (error: Error) => ({ error: { name: error.name, message: error.message } }));
+  c("a compiled fork propagates a duration error instead of reporting an unreached cut",
+    "error" in invalidDuration && invalidDuration.error.name === "DurationError"
+      && invalidDuration.error.message.includes('"invalid duration" is not a duration'), invalidDuration);
   const migrated = await migrateRun({
     runId, endpoint: EP, kv, source, entries, pins, actor: "migration-control", now: () => NOW,
   }).then((value) => ({ value }), (error: Error) => ({ error: error.message }));

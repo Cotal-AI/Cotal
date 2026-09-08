@@ -1,10 +1,13 @@
 {
   "kind": "unasserted-probe",
   "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
-  "guard": "the guards in fork.ts that NO cell was written for",
+  "guard": "fork option refusals, unreachable cuts, and propagation of errors outside the known stop classes",
   "command": "pnpm smoke:runtime-fork",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/fork-unasserted.json",
   "why": [
+    "The duration-error cell now covers the last active probe, so all three active mutations expect KILLED.",
+    "The notes below record the original probe experiment and its earlier findings.",
+    "",
     "Every mutation in fork-cut.json was authored against a cell that had just been written for it,",
     "so its clean sweep measures the guards that were aimed at and says nothing about the rest. This",
     "config is the opposite experiment: it mutates guards NO cell was written for and PREDICTS",
@@ -52,14 +55,14 @@
       "completionMarker": "fork-run.smoke:"
     },
     {
-      "name": "PROBE (expect SURVIVED): an unexpected error class is swallowed instead of rethrown",
+      "name": "a duration error is swallowed instead of rethrown",
       "file": "implementations/runtime/src/fork.ts",
       "find": "    } else if (!(err instanceof ForkFrontier) && !(err instanceof JournalReadOnlyError)) {",
       "replace": "    } else if (false && !(err instanceof JournalReadOnlyError)) {",
-      "expectRed": "(none \u2014 no cell drives an unexpected error class through planFork)",
-      "cell": "an unexpected error class propagates out of planFork rather than becoming a false L5018",
+      "expectRed": "a compiled fork propagates a duration error instead of reporting an unreached cut",
+      "cell": "a compiled fork propagates a duration error instead of reporting an unreached cut",
       "completionMarker": "fork-run.smoke:",
-      "note": "SURVIVED, NOT CONFIRMED AS A FINDING. A survivor is evidence only once the mutant is shown to reproduce a defect, and this one is not: nothing has demonstrated that an error outside the five known classes is raised on any path the cells drive, so 'swallowed' may be unobservable for a reason that has nothing to do with assertion. Recorded as unconfirmed rather than counted as an unasserted guard. SURVIVED 2026-08-16 as predicted, and left as a live finding rather than half-closed. Swallowing here is not silent \u2014 `reached` stays false and the caller gets L5018 \u2014 so the failure is a TRUE-shaped refusal with a FALSE reason, the same defect the L5014 pairing just fixed one branch of. To assert it a cell needs the walk to raise an error outside the five known classes, which the DSL gives no direct way to do from a source string; the cheapest honest route is a stub source module that throws, and that is a suite-harness change rather than a cell."
+      "note": "The earlier unconfirmed probe survived because no cell reached an error outside the planner's known stop classes. A real broker-recorded compiled parent now supplies pins and entries to a plan with an invalid duration. Duration parsing throws before journal lookup. The planner must propagate that error; swallowing it returns a false L5018 refusal. This exercises the existing error path without stubbing modules or changing production behavior."
     }
   ],
   "resolved": [
