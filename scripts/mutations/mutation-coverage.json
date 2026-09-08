@@ -14,8 +14,8 @@
       "file": "scripts/mutation-coverage.mjs",
       "find": "    refusals.push([path, reason]);\n    console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
       "replace": "    throw new Error(`REFUSED ${path}: ${reason}`);",
-      "expectRed": "one bad config does not hide later configs",
-      "cell": "one bad config does not hide later configs"
+      "expectRed": "an invalid progress regex is refused without hiding the next config",
+      "cell": "an invalid progress regex is refused without hiding the next config"
     },
     {
       "name": "declared subprocess entrypoints are ignored",
@@ -60,8 +60,8 @@
     {
       "name": "a non-terminal OK line is accepted as completion",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    const lines = output.trimEnd().split(/\\r?\\n/);\n    const terminal = lines.at(-1) ?? \"\";",
-      "replace": "    const lines = output.split(/\\r?\\n/);\n    const terminal = lines.find((line) => /(?:PASSED|OK)/.test(line)) ?? \"\";",
+      "find": "      : /(?:^|\\s)(?:PASSED|OK)(?:\\s|$)/.test(terminal) && !(new RegExp(cfg.progressPattern).test(terminal));",
+      "replace": "      : /(?:^|\\n)[^\\n]*(?:PASSED|OK)/.test(output);",
       "expectRed": "early-ok is not a terminal completion witness",
       "cell": "early-ok is not a terminal completion witness"
     },
@@ -92,8 +92,8 @@
     {
       "name": "printed build text counts as a package build",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (tokens[0] !== \"pnpm\") continue;",
-      "replace": "    if (!tokens.includes(\"pnpm\")) continue;",
+      "find": "    if (tokens[0] !== \"pnpm\") continue;\n    if (tokens[1] === \"build\") return true;",
+      "replace": "    if (tokens.includes(\"pnpm\") && tokens.includes(\"build\")) return true;",
       "expectRed": "printed-build cannot fabricate executes evidence",
       "cell": "printed-build cannot fabricate executes evidence"
     },
