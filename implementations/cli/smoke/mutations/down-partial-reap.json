@@ -1,0 +1,20 @@
+{
+  "suite": "implementations/cli/smoke/down-partial-reap.smoke.ts",
+  "command": "pnpm smoke:down-partial-reap",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-partial-reap.json",
+  "why": [
+    "The live smoke drives two real manager control calls: one seat stops and one seat cannot prove",
+    "exit. M1 removes the successful outcome from the summary, restoring the old false all-or-nothing",
+    "claim in effect. The named assertion must fail because seat-a disappears from stdout."
+  ],
+  "mutations": [
+    {
+      "name": "M1 omit successful seats from the partial-reap summary",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "    if (stopped.ok) outcomes.stopped.push(row);",
+      "replace": "    if (stopped.ok) void row;",
+      "expectRed": "seat-a",
+      "cell": "seat-a"
+    }
+  ]
+}

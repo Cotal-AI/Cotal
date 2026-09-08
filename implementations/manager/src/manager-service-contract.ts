@@ -57,7 +57,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors"],
+  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "staticReconciliation"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
@@ -84,6 +84,49 @@ const STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    /** Current startup/post-adoption static lifecycle convergence state. */
+    staticReconciliation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["state", "failures"],
+      properties: {
+        state: { enum: ["idle", "running", "retry-wait", "retrying", "recovered", "failed"] },
+        lastSweep: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "startedAt", "attempted", "succeeded", "failed"],
+          properties: {
+            kind: { enum: ["startup", "post-adoption"] },
+            startedAt: { type: "string" },
+            completedAt: { type: "string" },
+            attempted: { type: "integer", minimum: 0 },
+            succeeded: { type: "integer", minimum: 0 },
+            failed: { type: "integer", minimum: 0 },
+          },
+        },
+        failures: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["alias", "actor", "lifecycleUid", "phase", "attempts", "maxAttempts", "disposition"],
+            properties: {
+              alias: { type: "string" },
+              actor: { type: "string" },
+              lifecycleUid: { type: "string" },
+              phase: { enum: ["provisioning", "active", "terminalizing", "retired"] },
+              attempts: { type: "integer", minimum: 0 },
+              maxAttempts: { type: "integer", minimum: 1 },
+              disposition: { enum: ["retry-scheduled", "retrying", "recovered", "refused", "refused-foreign", "retry-exhausted"] },
+              lastError: { type: "string" },
+              nextRetryAt: { type: "string" },
+              recoveredAt: { type: "string" },
+              remedy: { type: "string" },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -95,6 +138,36 @@ export interface ManagerStatus {
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
+  staticReconciliation: ManagerStaticReconciliationStatus;
+}
+
+export interface ManagerStaticReconciliationSweep {
+  kind: "startup" | "post-adoption";
+  startedAt: string;
+  completedAt?: string;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface ManagerStaticReconciliationFailure {
+  alias: string;
+  actor: string;
+  lifecycleUid: string;
+  phase: "provisioning" | "active" | "terminalizing" | "retired";
+  attempts: number;
+  maxAttempts: number;
+  disposition: "retry-scheduled" | "retrying" | "recovered" | "refused" | "refused-foreign" | "retry-exhausted";
+  lastError?: string;
+  nextRetryAt?: string;
+  recoveredAt?: string;
+  remedy?: string;
+}
+
+export interface ManagerStaticReconciliationStatus {
+  state: "idle" | "running" | "retry-wait" | "retrying" | "recovered" | "failed";
+  lastSweep?: ManagerStaticReconciliationSweep;
+  failures: ManagerStaticReconciliationFailure[];
 }
 
 export interface ManagerConnectorStatus {
@@ -698,7 +771,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  14 = `despawn` / `stop` accept optional `waitForExit`. The mass-reap caller passes it so
  *  proof of exit is not derived from `graceful`. A changed input contract is a changed described
- *  surface even though the command names are unchanged. */
+ *  surface even though the command names are unchanged.
+ *
+ *  15 = manager `status` adds static reconciliation state. Its output digest changed again, so
+ *  cached revision-14 descriptions cannot name the new required output contract. This is a
+ *  second, independent output change landing on the same command as 13, so it cannot fold into
+ *  it: a caller holding a revision-14 descriptor would be told the surface it already knows. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -716,7 +794,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 14,
+    revision: 15,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

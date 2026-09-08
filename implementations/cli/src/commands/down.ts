@@ -195,7 +195,9 @@ export async function down(args: ParsedArgs): Promise<void> {
       leftover = listed.rows;
       if (withAgents && listed.rows.length) {
         try {
-          await reapListedSeats(contextFor(managerComp), listed.rows);
+          const reaped = await reapListedSeats(contextFor(managerComp), listed.rows);
+          printReapOutcomes(reaped);
+          if (reaped.failed.length) withAgentsUnreaped = true;
         } catch (e) {
           printWithAgentsUnreaped((e as Error).message);
           withAgentsUnreaped = true;
@@ -273,6 +275,10 @@ function meshForContext(context: LocalProcessContext) {
 }
 
 type SeatList = { ok: true; rows: DownSeatRow[] } | { ok: false; reason: string };
+type SeatReapOutcomes = {
+  stopped: DownSeatRow[];
+  failed: Array<{ row: DownSeatRow; reason: string }>;
+};
 
 /** Best-effort `ps`. Failure is a named leftover, never a refuse-to-signal. */
 async function listManagerSeats(context: LocalProcessContext): Promise<SeatList> {
@@ -296,7 +302,7 @@ async function listManagerSeats(context: LocalProcessContext): Promise<SeatList>
   return { ok: true, rows: Array.isArray(reply.data) ? (reply.data as DownSeatRow[]) : [] };
 }
 
-async function reapListedSeats(context: LocalProcessContext, rows: DownSeatRow[]): Promise<void> {
+async function reapListedSeats(context: LocalProcessContext, rows: DownSeatRow[]): Promise<SeatReapOutcomes> {
   const mesh = meshForContext(context);
   if (!mesh) throw new Error("--with-agents could not stop every managed seat: this folder has no recorded mesh");
   // Same class as listing: a broker that dies between ps and the reap must not `process.exit`
@@ -308,18 +314,22 @@ async function reapListedSeats(context: LocalProcessContext, rows: DownSeatRow[]
     if (!findMesh(mesh.space)) recordMesh(mesh);
     throw new Error(`--with-agents could not stop every managed seat: the manager control plane could not be reached (${(e as Error).message})`);
   }
-  const failures: string[] = [];
+  const outcomes: SeatReapOutcomes = { stopped: [], failed: [] };
   for (const row of rows) {
     const stopped = await askManager(target.space, target.server, "stop", { name: row.name, graceful: false, waitForExit: true }, target.auth, "any", 30_000);
-    if (!stopped.ok) failures.push(`${row.name}: ${stopped.error ?? "stop failed"}`);
+    if (stopped.ok) outcomes.stopped.push(row);
+    else outcomes.failed.push({ row, reason: stopped.error ?? "stop failed" });
   }
-  if (failures.length)
-    throw new Error(`--with-agents could not stop every managed seat: ${failures.join("; ")}`);
+  return outcomes;
 }
 
 function printSeatRow(row: DownSeatRow): void {
+  console.log(seatRowText(row));
+}
+
+function seatRowText(row: DownSeatRow): string {
   const bits = [row.name, row.mode, row.pid !== undefined ? `pid ${row.pid}` : undefined, row.agent, row.cwd, row.status].filter(Boolean);
-  console.log(`  ${bits.join("  ·  ")}`);
+  return `  ${bits.join("  ·  ")}`;
 }
 
 function printLeftRunning(rows: DownSeatRow[]): void {
@@ -342,7 +352,21 @@ function printCouldNotList(reason: string): void {
   console.error(c.dim(`could not list managed seats (${reason}); leftovers may remain after the stack stops`));
 }
 
-/** `--with-agents` asked for a reap that did not happen. The stack still stops; success is not claimed. */
+function printReapOutcomes(outcomes: SeatReapOutcomes): void {
+  if (outcomes.stopped.length) {
+    console.log(c.dim(`stopped ${outcomes.stopped.length} managed agent${outcomes.stopped.length === 1 ? "" : "s"}:`));
+    for (const row of outcomes.stopped) printSeatRow(row);
+  }
+  if (outcomes.failed.length) {
+    console.error(c.red(`✗ could not stop ${outcomes.failed.length} managed agent${outcomes.failed.length === 1 ? "" : "s"}; ${outcomes.failed.length === 1 ? "it is" : "they are"} still running unmanaged:`));
+    for (const { row, reason } of outcomes.failed) {
+      console.error(c.red(seatRowText(row)));
+      console.error(c.red(`    ${reason}`));
+    }
+  }
+}
+
+/** `--with-agents` could not begin a reap. The stack still stops; success is not claimed. */
 function printWithAgentsUnreaped(reason: string): void {
   console.error(c.red(`✗ --with-agents could not stop every managed seat (${reason}); no seats were reaped and they are still running unmanaged`));
 }

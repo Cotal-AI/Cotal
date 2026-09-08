@@ -303,7 +303,10 @@ const SEAMS: Seam[] = [
   // credential to prove the broker refuses an answer on any other pause.
   // 127/94 -> 128/94: the local workflow mediator adds one typechecked connection,
   // inheriting the same resolved broker and TLS requirement as its driver.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 128, untypecheckedSites: 94 },
+  // 128/94 -> 133/98: #774 adds one typechecked provisioner re-read before each static reconcile
+  // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
+  // observer, caller, and exact terminal gate inspection). Every site states tls: false.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 133, untypecheckedSites: 98 },
 ];
 
 /**

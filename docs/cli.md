@@ -280,7 +280,9 @@ without listing leftover seats. An older manager whose `stop()` still reaps will
 SIGTERM. `--with-agents`
 cannot be combined with `--preserve-state`, component names, `--space`, `--file`, or `--run`.
 `--with-agents --dry-run` prints the seats that would be reaped and mutates nothing. `--with-agents`
-waits for each seat's runtime to prove exit before signalling the manager. Positional
+waits for each seat's runtime to prove exit before signalling the manager. If only some seats stop,
+the command prints the stopped seats and the still-running seats separately, with each failure, and
+exits non-zero. Positional
 component names stop only those self-registered local processes; for example, `cotal down manager` leaves delivery and
 the broker running, and `cotal down web` is available when the web extension is installed. A
 component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
@@ -545,8 +547,9 @@ sibling as proof that the component serves. It prints one of `serving`, `absent`
 state wins):
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
-  `status` service reachability from this host. Builds without a startup-phase report say
-  `phase not reported by this manager build`; that is never a blank green state.
+  `status` service reachability from this host. Manager builds that do not report static
+  reconciliation say `static reconciliation not reported by this manager build`; the line stays
+  visible even when the manager is otherwise `serving`.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.json` adoption verdict. A re-signed credential and a
   broker-accepted adoption stay distinct facts.
