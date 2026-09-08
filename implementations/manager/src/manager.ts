@@ -47,7 +47,6 @@ import {
   parseEpSubject,
   controlServiceSubject,
   eventChannelPrincipal,
-  lookupNativeLifecycleBindingsForManager,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, NativeLifecycleBindingLookup, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
@@ -110,8 +109,6 @@ import {
   epcredRowKey,
   epgateKey,
   parseEndpointGate,
-  parseLedgerRow,
-  epcredFamilyPrefix,
   registerServiceInstance,
   deregisterServiceInstance,
   type ServiceDeregistration,
@@ -314,6 +311,15 @@ export interface ManagerOptions {
   /** Internal/test override for the manager-command drain deadline. A maintenance exit must not
    * wait forever and then call an unaccounted request "drained". */
   commandDrainTimeoutMs?: number;
+  /** Narrow read-only native lifecycle lookup supplied by the sessionbinding reader composition.
+   * Absent is an explicit missing-authority result, never a raw KV scan under a serving credential. */
+  nativeLifecycleLookup?: (managerPrincipal: string) => Promise<NativeLifecycleBindingLookup>;
+  /** Canonical §13.8/§13.9 session transfer/retirement barrier. It may report success only after
+   * every accepted native request has a conclusive disposition and old effect authority is fenced. */
+  nativeMaintenanceBarrier?: () => Promise<
+    | { status: "settled" }
+    | { status: "recovery-required"; reason: string; requestIds?: readonly string[] }
+  >;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
   resumeAttemptId?: string;
   /** Fsynced coordinator evidence recovered after commit but before finalize. */
@@ -858,6 +864,8 @@ export class Manager {
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly commandDrainTimeoutMs: number;
+  private readonly nativeLifecycleLookup?: NonNullable<ManagerOptions["nativeLifecycleLookup"]>;
+  private readonly nativeMaintenanceBarrier?: NonNullable<ManagerOptions["nativeMaintenanceBarrier"]>;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
@@ -1100,6 +1108,8 @@ export class Manager {
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
     this.commandDrainTimeoutMs = opts.commandDrainTimeoutMs ?? 30_000;
+    this.nativeLifecycleLookup = opts.nativeLifecycleLookup;
+    this.nativeMaintenanceBarrier = opts.nativeMaintenanceBarrier;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
       throw new Error("resumeAttemptId must be a safe token (letters, digits, _, -; max 128)");
     if (opts.resumeDurableCommitToken && !/^[a-f0-9]{64}$/.test(opts.resumeDurableCommitToken))
@@ -1619,12 +1629,14 @@ export class Manager {
    * unreadable or malformed answer is returned as unknown and therefore blocks destructive shutdown. */
   async nativeLifecycleBindings(): Promise<NativeLifecycleBindingLookup> {
     const managerPrincipal = this.ep.ref().id;
+    if (!this.nativeLifecycleLookup)
+      return {
+        status: "unknown",
+        bindings: [],
+        reason: "missing session lifecycle reader authority: this manager was not composed with the narrow sessionbinding reader",
+      };
     try {
-      if (this.auth || this.remoteAuthority)
-        return await this.withEndpointServeExecutor(({ recordsKv }) =>
-          lookupNativeLifecycleBindingsForManager(recordsKv, managerPrincipal));
-      return await this.withOpenServeConnection(({ recordsKv }) =>
-        lookupNativeLifecycleBindingsForManager(recordsKv, managerPrincipal));
+      return await this.nativeLifecycleLookup(managerPrincipal);
     } catch (e) {
       return { status: "unknown", bindings: [], reason: (e as Error).message };
     }
@@ -2008,7 +2020,10 @@ export class Manager {
   }
 
   async stopForSignal(): Promise<void> {
-    if (await this.hasLiveNativeLifecycleBindings()) await this.stopPreservingNative();
+    const native = await this.nativeLifecycleBindings();
+    if (native.status === "unknown")
+      throw new Error(`manager signal shutdown refused before cleanup: ${native.reason}`);
+    if (native.bindings.length > 0) await this.stopPreservingNative();
     else await this.stop();
   }
 
@@ -2035,68 +2050,28 @@ export class Manager {
     if ((this.runHosting?.liveCount ?? 0) > 0)
       throw new Error(`manager maintenance exit blocked: ${this.runHosting!.liveCount} hosted run(s) have no transfer/disown receipt`);
 
+    const nativeBarrier = this.nativeMaintenanceBarrier
+      ? await this.nativeMaintenanceBarrier()
+      : { status: "recovery-required" as const, reason: "the canonical session transfer/retirement barrier is not composed" };
+    if (nativeBarrier.status !== "settled")
+      throw new Error(
+        `manager maintenance exit requires recovery: ${nativeBarrier.reason}; ` +
+        `${nativeBarrier.requestIds?.length ? `unsettled native requests: ${nativeBarrier.requestIds.join(", ")}; ` : ""}` +
+        "broker rail retirement is not native effect proof",
+      );
+
     // Legacy manager-owned seats are not native lifecycle bindings and keep their existing teardown.
     await this.teardownManagedAgents();
-    const registered = this.serviceServe !== undefined;
     await this.stopServiceServe(); // no new manager command can enter; all accepted handlers drained above
-    await this.retireManagerControlAuthority(); // effect fence BEFORE lease/registration turnover
     await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);
-    if (registered) await this.deregisterServiceOnStop();
+    await this.deregisterServiceOnStop();
     await this.runHosting?.stop();
     this.runHosting = undefined;
     await this.stopGoalWriter();
-    // Old attach/session-serving rails are collected only after the manager effect fence.
+    // Old attach/session-serving rails are collected only after the native effect fence.
     await this.stopSessionPlane();
     await this.ep.stop();
     await this.attach.stop();
-  }
-
-  /** Fence and terminally retire this manager instance's endpoint credential family in the same KV
-   * serialization domain as endpoint effects. A failure leaves the gate frozen for recovery; it is
-   * never reopened after a maintenance exit. */
-  private async retireManagerControlAuthority(): Promise<void> {
-    if (this.remoteAuthority)
-      throw new Error("manager maintenance exit cannot retire remote manager authority without a host-auth verified eviction seam");
-    const run = async ({ authKv }: { authKv: KV }): Promise<void> => {
-      const key = epgateKey(MANAGER_ENDPOINT, this.managerInstanceId);
-      const opId = retireOpId(this.managerInstanceId);
-      let entry = await authKv.get(key);
-      if (!entry || entry.operation !== "PUT") throw new Error(`manager effect gate ${key} is absent or unreadable`);
-      let gate = parseEndpointGate(entry.value, key);
-      if (gate.state === "retired" && gate.op?.kind === "retirement" && gate.op.opId === opId) return;
-      let token: number;
-      if (gate.state === "open") {
-        token = await authKv.update(key, new TextEncoder().encode(JSON.stringify({ ...gate, state: "frozen", op: { opId, kind: "retirement" } })), entry.revision);
-      } else if (gate.state === "frozen" && gate.op?.kind === "retirement" && gate.op.opId === opId) {
-        token = entry.revision;
-      } else {
-        throw new Error(`manager effect gate ${key} is ${gate.state} under ${gate.op?.kind ?? "no"} operation ${gate.op?.opId ?? "<none>"}; recovery must finish that operation first`);
-      }
-
-      const holders = new Set<string>();
-      const prefix = `${epcredFamilyPrefix(MANAGER_ENDPOINT, this.managerInstanceId)}.`;
-      for await (const rowKey of await authKv.keys(`${epcredFamilyPrefix(MANAGER_ENDPOINT, this.managerInstanceId)}.>`)) {
-        if (!rowKey.startsWith(prefix)) continue;
-        const rowEntry = await authKv.get(rowKey);
-        if (!rowEntry || rowEntry.operation !== "PUT") throw new Error(`manager credential row ${rowKey} is absent or not PUT during retirement`);
-        const row = parseLedgerRow(rowEntry.value, rowKey);
-        holders.add(row.holderPrincipal);
-        if (row.state === "active") await markLedgerRowRevoked(authKv, rowKey);
-      }
-      if (holders.size > 0) {
-        if (!this.auth) throw new Error("manager credential family is non-empty but no verified cluster eviction authority is available");
-        const evict = makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth: this.auth, log: (line) => console.error(line) });
-        for (const holder of holders) if (!(await evict(holder))) throw new Error(`manager credential holder ${holder} could not be verified evicted`);
-      }
-      entry = await authKv.get(key);
-      if (!entry || entry.operation !== "PUT" || entry.revision !== token) throw new Error(`manager effect gate ${key} moved during retirement; recovery required`);
-      gate = parseEndpointGate(entry.value, key);
-      if (gate.state !== "frozen" || gate.op?.kind !== "retirement" || gate.op.opId !== opId)
-        throw new Error(`manager effect gate ${key} no longer carries this retirement freeze; recovery required`);
-      await authKv.update(key, new TextEncoder().encode(JSON.stringify({ ...gate, state: "retired" })), token);
-    };
-    if (this.auth) await this.withEndpointServeExecutor(run);
-    else await this.withOpenServeConnection(run);
   }
 
   async stop(): Promise<void> {
