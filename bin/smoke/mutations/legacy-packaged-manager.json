@@ -2,7 +2,6 @@
   "suite": "implementations/cli/smoke/legacy-packaged-manager.smoke.ts",
   "guard": "the packaged-manager fixture keeps a $0-relative pnpm launcher at its original path rather than symlinking it into the isolated bin",
   "command": "pnpm build > /dev/null && pnpm smoke:legacy-packaged-manager",
-  "completionMarker": "legacy packaged manager smoke OK",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/legacy-packaged-manager.json",
   "grades": "tool",
   "why": [
