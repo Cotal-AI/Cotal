@@ -17,6 +17,7 @@ Run from the repository worktree:
 
 ```sh
 pnpm exec tsx packages/core/smoke/issued-subject-permissions.smoke.ts
+pnpm mutation-proof --config packages/core/smoke/mutations/issued-subject-permissions-prototype.json
 pnpm exec tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node packages/core/smoke/issued-subject-permissions.smoke.ts
 ```
 

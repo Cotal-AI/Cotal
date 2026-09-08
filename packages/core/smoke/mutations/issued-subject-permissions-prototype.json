@@ -45,5 +45,6 @@
       "expectRed": "publish and subscribe are independent",
       "cell": "publish and subscribe are independent"
     }
-  ]
+  ],
+  "progressPattern": "^  ok "
 }
