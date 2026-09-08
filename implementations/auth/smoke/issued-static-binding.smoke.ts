@@ -20,6 +20,7 @@ import { openIssuedLifecycle, type IssuedRef } from "../../../packages/core/smok
 import { importNativeSubjectPermissions, permitsSubject } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { connectIssuedStatic, issuedStaticTag, issuedRequestRows, issuedReplyFilter, issuedRequestSubject } from "../../../packages/core/smoke/prototypes/issued-static-connection.js";
 import { discoverIssuedAuthority, ISSUED_DISCOVERY_GRANT } from "../../../packages/core/smoke/prototypes/issued-generation-discovery.js";
+import { classifyIssuedArrival, UNBOUND_REFUSAL } from "../../../packages/core/smoke/prototypes/issued-request-admission.js";
 
 let passed = 0;
 async function check(name: string, run: () => Promise<void>) {
@@ -68,9 +69,12 @@ try {
   const request = () => ({ route: { mode: "one" as const }, endpoint: capability.endpoint, command: capability.command, nonce: randomBytes(16).toString("hex") });
   const received = new Set<string>();
   const requestSub = issuer.subscribe(`cotal.${space}.ep.v1.one.>`, { queue: "bound-proof" });
+  const arrivals: string[] = [];
+  const legacySub = issuer.subscribe(`cotal.${space}.ep.one.>`, { queue: "bound-proof" });
+  void (async () => { for await (const message of legacySub) arrivals.push(message.subject); })();
   const channelSub = issuer.subscribe("proof.>");
   for (const sub of [requestSub, channelSub]) void (async () => {
-    for await (const message of sub) received.add(new TextDecoder().decode(message.data));
+    for await (const message of sub) { arrivals.push(message.subject); received.add(new TextDecoder().decode(message.data)); }
   })();
   await issuer.flush();
   async function mint(channels: string[], abort = false, opts: { discoverable?: boolean; tagRef?: IssuedRef } = {}) {
@@ -249,6 +253,24 @@ try {
     parts[1] = Buffer.from(JSON.stringify(payload)).toString("base64url");
     const tampered = fmtCreds(parts.join("."), first.key);
     await assert.rejects(connectIssuedStatic(server, tampered));
+  });
+
+  await check("an endpoint serving both rails names the refusal for an unbound arrival", async () => {
+    const legacy = epRequestSubject(space, { route: { mode: "one" }, ...capability, caller, nonce: randomBytes(16).toString("hex") });
+    const bound = issuedRequestSubject(first.ref, request());
+    issuer.publish(legacy, enc("legacy")); a.nc.publish(bound, enc("bound"));
+    await issuer.flush(); await a.nc.flush();
+    await until(() => arrivals.includes(legacy) && arrivals.includes(bound), "both rails arrive");
+    assert.deepEqual(classifyIssuedArrival(space, legacy), { kind: "legacy", reason: UNBOUND_REFUSAL });
+    assert.deepEqual(classifyIssuedArrival(space, bound), { kind: "issued", ref: first.ref });
+  });
+
+  await check("a malformed binding on the versioned rail is refused rather than read as legacy", async () => {
+    const parts = issuedRequestSubject(first.ref, request()).split(".");
+    parts[parts.length - 2] = "not-a-generation";
+    assert.throws(() => classifyIssuedArrival(space, parts.join(".")), /invalid issued generation/);
+    assert.throws(() => classifyIssuedArrival(space, `cotal.${space}.ep.v1.bogus.x.y.local.a.${caller.uid}.${"a".repeat(32)}.n`), /unsupported endpoint rail/);
+    assert.throws(() => classifyIssuedArrival("elsewhere", issuedRequestSubject(first.ref, request())), /not an endpoint subject/);
   });
 
   await check("the prototype refuses journal capabilities instead of adding a partial rail", async () => {

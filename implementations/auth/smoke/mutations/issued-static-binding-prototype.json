@@ -93,6 +93,30 @@
       "replace": "const [owner, actor, uid, generation] = parts.slice(-6, -2);",
       "expectRed": "the client discovers its accepted generation from the server, not from its own credentials",
       "cell": "the client discovers its accepted generation from the server, not from its own credentials"
+    },
+    {
+      "name": "a versioned arrival is read as legacy",
+      "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
+      "find": "  const versioned = parts[3] === \"v1\";",
+      "replace": "  const versioned = false;",
+      "expectRed": "an endpoint serving both rails names the refusal for an unbound arrival",
+      "cell": "an endpoint serving both rails names the refusal for an unbound arrival"
+    },
+    {
+      "name": "a malformed binding falls through to the legacy refusal",
+      "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
+      "find": "  evidenceKey(ref); // a malformed binding on the versioned rail is a refusal, never a legacy arrival",
+      "replace": "  if (!/^[a-f0-9]{32}$/.test(generation)) return Object.freeze({ kind: \"legacy\" as const, reason: UNBOUND_REFUSAL });",
+      "expectRed": "a malformed binding on the versioned rail is refused rather than read as legacy",
+      "cell": "a malformed binding on the versioned rail is refused rather than read as legacy"
+    },
+    {
+      "name": "arrivals from another space are admitted",
+      "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
+      "find": "parts[0] !== \"cotal\" || parts[1] !== space || parts[2] !== \"ep\"",
+      "replace": "parts[0] !== \"cotal\" || parts[2] !== \"ep\"",
+      "expectRed": "a malformed binding on the versioned rail is refused rather than read as legacy",
+      "cell": "a malformed binding on the versioned rail is refused rather than read as legacy"
     }
   ]
 }
