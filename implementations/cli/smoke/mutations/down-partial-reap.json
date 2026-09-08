@@ -13,8 +13,8 @@
       "file": "implementations/cli/src/commands/down.ts",
       "find": "    if (stopped.ok) outcomes.stopped.push(row);",
       "replace": "    if (stopped.ok) void row;",
-      "expectRed": "seat-a",
-      "cell": "seat-a"
+      "expectRed": "stopped 1 managed agent",
+      "cell": "stopped 1 managed agent"
     }
   ]
 }
