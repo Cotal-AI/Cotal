@@ -1,6 +1,6 @@
 {
   "suite": "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
-  "guard": "The test-only issued lifecycle stages source indexes before the existing agent-mint fence, activates only at the original prepared revision and refuses resolution after revocation. This is a localhost gate-composition proof, without production issuer or barrier attachment.",
+  "guard": "The test-only issued lifecycle stages source indexes before the existing agent-mint fence, activates only at the original prepared revision and refuses resolution after revocation. This is a localhost gate-composition proof, without production issuer or barrier attachment. Root-source resolution also uses the real credential reader with signature-validated bearer provenance and refuses revoked, expired or head-mismatched credentials. Root-release race serialization is not proved here.",
   "command": "pnpm exec tsx implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-authority-lifecycle-prototype.json",
@@ -69,6 +69,30 @@
       "replace": "false",
       "expectRed": "modified evidence fails its attempt digest before returning permissions",
       "cell": "modified evidence fails its attempt digest before returning permissions"
+    },
+    {
+      "name": "credential reader ignores individual revocation",
+      "file": "implementations/auth/src/connect-reader.ts",
+      "find": "if (row.state !== \"active\")",
+      "replace": "if (false)",
+      "expectRed": "individual root revocation denies active evidence before its index walk",
+      "cell": "individual root revocation denies active evidence before its index walk"
+    },
+    {
+      "name": "credential reader ignores the current root head",
+      "file": "implementations/auth/src/connect-reader.ts",
+      "find": "if (head.mapping.currentCredentialId !== credid)",
+      "replace": "if (false)",
+      "expectRed": "a mismatched root head denies evidence even while its credential remains active",
+      "cell": "a mismatched root head denies evidence even while its credential remains active"
+    },
+    {
+      "name": "credential reader ignores row expiry",
+      "file": "implementations/auth/src/connect-reader.ts",
+      "find": "if (row.exp <= now())",
+      "replace": "if (false)",
+      "expectRed": "an expired credential row denies otherwise active issued evidence",
+      "cell": "an expired credential row denies otherwise active issued evidence"
     }
   ]
 }

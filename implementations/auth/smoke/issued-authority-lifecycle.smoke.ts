@@ -7,13 +7,19 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { createEndpointStreams, epAuthBucket, isReachable } from "@cotal-ai/core";
+import { createEndpointStreams, epAuthBucket, recordsBucket, lifecycleHeadKey, credRowKey, isReachable } from "@cotal-ai/core";
+import { SignJWT, generateKeyPair } from "jose";
+import { ensureRootCredential } from "../src/root-credential.js";
+import { authorizeConnectCredential, openConnectReader } from "../src/connect-reader.js";
+import { deriveOwnerToken } from "../src/derive.js";
+import { USER_TOKEN_VER, validateUserToken, type ValidatedUserToken } from "../src/token.js";
+import { markLedgerRowRevoked } from "../src/credential-ledger.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { activateLifecycle, openLifecycleRegistry } from "../src/lifecycle-registry.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { stageAgentMint, finalizeAgentMint, createSourceGateOpen, observeSourceGate, freezeSourceGate } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { evidenceKey, openIssuedLifecycle, sourceIndexKey, type IssuedRef, type SourceRef } from "../../../packages/core/smoke/prototypes/issued-authority-lifecycle.js";
+import { evidenceKey, openIssuedLifecycle, sourceIndexKey, sourcePrefix, type IssuedRef, type SourceRef } from "../../../packages/core/smoke/prototypes/issued-authority-lifecycle.js";
 import { requestedSubjectPermission } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 
 let passed = 0;
@@ -41,6 +47,8 @@ try {
   await createEndpointStreams(await jetstreamManager(nc), kvm, space);
   const reg = await openLifecycleRegistry(nc, space, makeLedgerScannerOverConnection(nc, space));
   const authKv = await kvm.open(epAuthBucket(space));
+  const recordsKv = await kvm.open(recordsBucket(space));
+  const reader = await openConnectReader(nc, space);
   const kv = await kvm.create(`cotal_issued_${space}`, { storage: "file", allow_direct: false });
   const lifecycle = await openIssuedLifecycle(kv, space);
   const permissions = { publish: requestedSubjectPermission(["proof.public"]), subscribe: requestedSubjectPermission([]) };
@@ -62,7 +70,7 @@ try {
     const uid = activated.mapping.lifecycleUid;
     const handle = { issuerKeyId: "proof", id: actor };
     await createSourceGateOpen(reg, handle);
-    const mintArgs = { lifecycleUid: uid, credentialId: "sharedroot", holderPrincipal: `local.${actor}`, sourceChain: [`handle.proof.${actor}`], exp: Math.floor(Date.now() / 1000) + 600 };
+    const mintArgs = { lifecycleUid: uid, credentialId: "sharedroot", holderPrincipal: `local.${actor}`, sourceChain: [`handle.proof.${actor}`], exp: Date.now() + 600_000 };
     return {
       async next(store = lifecycle) {
         const mint = await stageAgentMint(reg, mintArgs);
@@ -275,6 +283,108 @@ try {
     await kv.update(key, JSON.stringify(entry.value), entry.revision);
     await assert.rejects(lifecycle.retireSource(source), /coordinate mismatch/);
     assert.equal(await state(a.ref), "prepared");
+  });
+
+  await check("agent fixture expiry is live under the credential reader millisecond clock", async () => {
+    const f = await fixture();
+    const a = await f.next();
+    const token: ValidatedUserToken = {
+      owner: a.ref.owner, space, scope: [], ver: USER_TOKEN_VER, exp: Math.floor(Date.now() / 1000) + 300,
+      act: { owner: a.ref.owner, actor: a.ref.actor, lifecycleUid: a.ref.uid, credentialId: a.mint.credentialId },
+    };
+    // A direct reader fixture, without signature or callout admission claims.
+    await authorizeConnectCredential(reader, token, Date.now);
+  });
+
+  const keys = await generateKeyPair("EdDSA");
+  const owner = deriveOwnerToken("prototype-secret".repeat(3), "root-proof-owner");
+  const issuer = "https://issuer.example.test";
+  async function rootFixture() {
+    const actor = `root${++fixtureNumber}`;
+    const activated = await activateLifecycle(reg, { owner, actor, managerInstance: "issuer-proof" });
+    const uid = activated.mapping.lifecycleUid;
+    const args = { owner, actor, lifecycleUid: uid, managerInstance: "issuer-proof" };
+    const credentialId = await ensureRootCredential(reg, args);
+    assert.equal(await ensureRootCredential(reg, args), credentialId);
+    const ledgerKey = credRowKey(uid, credentialId);
+    const ledger = (await read(authKv, ledgerKey)).value;
+    const seconds = Math.floor(Date.now() / 1000);
+    const bearer = await new SignJWT({
+      scope: [], ver: USER_TOKEN_VER,
+      act: { owner, actor, lifecycleUid: uid, credentialId },
+    }).setProtectedHeader({ alg: "EdDSA" }).setSubject(owner).setAudience(space)
+      .setIssuer(issuer).setIssuedAt(seconds).setNotBefore(seconds).setExpirationTime(seconds + 300).sign(keys.privateKey);
+    const token = await validateUserToken(bearer, { key: keys.publicKey, issuer, audience: space });
+    let clock = Date.now();
+    const now = () => clock;
+    await authorizeConnectCredential(reader, token, now);
+    const mint = await stageAgentMint(reg, {
+      lifecycleUid: uid, credentialId, holderPrincipal: `${owner}.${actor}`, sourceChain: ["root"], exp: ledger.exp,
+    });
+    const ref = { space, owner, actor, uid, generation: randomBytes(16).toString("hex") };
+    const credentialSource = { space, bucket: epAuthBucket(space), key: ledgerKey };
+    const headSource = { space, bucket: recordsBucket(space), key: lifecycleHeadKey(owner, actor) };
+    const gateSources = mint.pins.map((pin) => ({ space, bucket: epAuthBucket(space), key: pin.key }));
+    const sources = [...gateSources, credentialSource, headSource];
+    const prepared = await lifecycle.stage(ref, permissions, sources, "synthetic-root-result");
+    await lifecycle.release(prepared, async () => {
+      await authorizeConnectCredential(reader, token, now);
+      await finalizeAgentMint(reg, mint);
+    });
+    return {
+      ref, credentialSource, headSource, ledger, token,
+      setNow(value: number) { clock = value; },
+      async sourceIsLive(source: SourceRef) {
+        if (!sources.some((expected) => sourcePrefix(expected) === sourcePrefix(source)))
+          throw new Error("unrecognized credential source coordinate");
+        // Resolution only. This does not serialize a new issuance against an individual
+        // credential revoke between this read and the existing lifecycle-gate finalizer.
+        await authorizeConnectCredential(reader, token, now);
+        if (gateSources.some((expected) => sourcePrefix(expected) === sourcePrefix(source))) return live(source);
+        return true;
+      },
+    };
+  }
+
+  await check("signed root provenance resolves through the real credential and head reader", async () => {
+    const a = await rootFixture();
+    assert.deepEqual(await lifecycle.resolve(a.ref, a.sourceIsLive), permissions);
+    for (const source of [a.credentialSource, a.headSource]) {
+      assert.deepEqual((await read(kv, sourceIndexKey(source, a.ref))).value, { source, ref: a.ref });
+    }
+  });
+
+  await check("individual root revocation denies active evidence before its index walk", async () => {
+    const a = await rootFixture();
+    await markLedgerRowRevoked(authKv, a.credentialSource.key);
+    assert.equal(await state(a.ref), "active");
+    await assert.rejects(lifecycle.resolve(a.ref, a.sourceIsLive), /revoked/);
+    assert.equal(await lifecycle.retireSource(a.credentialSource), 1);
+    assert.equal(await state(a.ref), "revoked");
+  });
+
+  await check("a mismatched root head denies evidence even while its credential remains active", async () => {
+    const a = await rootFixture();
+    const head = await read(recordsKv, a.headSource.key);
+    // Operator-injected inconsistent state, not a supported root-rotation operation.
+    head.value.currentCredentialId = "foreignroot";
+    await recordsKv.update(a.headSource.key, JSON.stringify(head.value), head.revision);
+    assert.equal((await read(authKv, a.credentialSource.key)).value.state, "active");
+    await assert.rejects(lifecycle.resolve(a.ref, a.sourceIsLive), /superseded root/);
+    assert.equal(await lifecycle.retireSource(a.headSource), 1);
+    assert.equal(await state(a.ref), "revoked");
+  });
+
+  await check("an expired credential row denies otherwise active issued evidence", async () => {
+    const a = await rootFixture();
+    a.setNow(a.ledger.exp + 1);
+    await assert.rejects(lifecycle.resolve(a.ref, a.sourceIsLive), /expired/);
+    assert.equal(await state(a.ref), "active");
+  });
+
+  await check("the credential-source adapter refuses unrelated source coordinates", async () => {
+    const a = await rootFixture();
+    await assert.rejects(a.sourceIsLive({ ...a.credentialSource, key: "cred.foreign.row" }), /unrecognized/);
   });
 
   console.log(`issued authority lifecycle prototype: ${passed} passed`);

@@ -51,3 +51,16 @@ Static issuance, callout success delivery, reconnect, complete credential-source
 revocation and hosted run admission remain outside this prototype. A fresh
 generation is required for every stage here; existing-generation redemption is
 unsupported. Prototype records and key choices do not change the wire contract.
+
+The root-source cells use real `ensureRootCredential` issuance and signature-validate
+synthetic bearers before calling `authorizeConnectCredential`. Their immutable
+source references include the credential row and lifecycle head. Revoking the row,
+changing the head to disagree with the root, or expiring the row denies resolution
+even before the permission-generation index is retired. The head mismatch is
+operator-injected inconsistent state, not a root-rotation implementation.
+
+These cells call the credential reader directly. They do not pass a new generation
+through auth-callout CONNECT, and they do not close the race between an individual
+credential revoke and a new generation's final release. The earlier agent fixture
+now uses millisecond ledger expiry, checked by the real reader; bearer expiry
+remains in seconds. No production expiry or credential behavior changed.
