@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.48.0
+
+### Patch Changes
+
+- 26af599: Use the explicitly selected space when refreshing delivery credentials on a multi-space root.
+- Updated dependencies [b6c843f]
+  - @cotal-ai/core@0.48.0
+  - @cotal-ai/workspace@0.48.0
+
 ## 0.47.1
 
 ### Patch Changes
