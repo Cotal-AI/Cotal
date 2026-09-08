@@ -429,7 +429,7 @@ const LINK_DEADLINE_MS = 5_000;
  *  socket that will never answer, and an unref'd one lets node empty its loop and abort the whole
  *  command on a pending await instead of finishing the wait and printing why. It is cleared as soon
  *  as either side settles, so a healthy link is never held open for the remainder of the deadline. */
-const withDeadline = async (work: Promise<boolean>, ms: number): Promise<boolean> => {
+export const withDeadline = async (work: Promise<boolean>, ms: number): Promise<boolean> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });
   try { return await Promise.race([work, deadline]); } finally { clearTimeout(timer); }

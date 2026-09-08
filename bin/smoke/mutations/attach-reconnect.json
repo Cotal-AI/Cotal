@@ -80,16 +80,12 @@
     "and reddens on it. A survivor in one set is not evidence of an ungraded line until the suites",
     "that reach the line have been asked.",
     "",
-    "MUTATION 10 SURVIVES HERE AND IS KEPT, because a premise can be environmental and a change can",
-    "move the environment. It was aimed at the one cell where nothing else keeps the process alive,",
-    "and the stdin-ownership change puts a resumed stream there by design. Measured on both trees:",
-    "KILLED at origin/main, SURVIVED here, and reddening again the moment the owning line alone is",
-    "removed. Two repair windows were built and measured and both were rejected rather than shipped,",
-    "which is the part worth keeping: the first cell baselined at exactly its predicted count and",
-    "still could not see the defect, so a repair cell's premise includes proving its window REACHES",
-    "the graded wait, and that is measured rather than read. The mutation stays registered on the",
-    "assertion it can no longer redden, so a run reports a survivor rather than a smaller set, and",
-    "#634 carries the instrument shapes that would observe the ref rather than its consequence."
+    "MUTATION 10 IS GRADED BY A CHILD WHOSE ONLY LIVE WORK IS THE DEADLINE. Cell I still proves the",
+    "real attach path reaches the same helper around a half-open link, but its resumed PTY stdin now",
+    "keeps the process alive independently and masks ref() versus unref(). Cell K removes that",
+    "environmental premise: no broker, PTY or stdin reader exists, so unref'ing the deadline ends the",
+    "child on an unsettled top-level await before it can report the bound. Keeping the real-path and",
+    "liveness cells separate makes each claim observable without weakening the half-open-link guard."
   ],
   "mutations": [
     {
@@ -187,9 +183,9 @@
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "  const deadline = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });",
       "replace": "  const deadline = new Promise<boolean>((r) => { const t = setTimeout(() => r(false), ms); t.unref?.(); timer = t; });",
-      "expectRed": "...exiting clean, rather than aborting on a wait that could not be bounded",
-      "cell": "...exiting clean, rather than aborting on a wait that could not be bounded",
-      "note": "A wait bounded by an unref'd timer is not bounded. With something else holding the event loop open, which is true of every severed-link cell, the deadline fires and the bound looks real. On a HELD link the socket is idle, so an unref'd timer lets node empty its loop and abort the command on a pending await: exit 13, no message, the session dropped silently. Aimed at cell I, which WAS the only state where nothing else keeps the process alive. SURVIVES AS OF THE STDIN-OWNERSHIP CHANGE, and this note records that rather than the set quietly shrinking. Measured on both trees with the same find, replace, command and registered assertion: KILLED at origin/main 6512ac9b, 71 marks of a 73 baseline; SURVIVED here on a full 73, with another mutation in this same file killed in that run as the positive control, so the suite provably reaches the file. The mask is one line: `if (reconnect) ownStdin();` is the first statement of the session hand-back, so the stream is RESUMED across the very flush this cell bounds, and a resumed stream is a ref'd handle. Isolated as one variable: with the deadline unref'd AND that single line deleted, the cell reddens again at exit code 13 with the unsettled-top-level-await warning. Two repair windows were built and measured and both rejected rather than shipped. A one-shot attach, where `--no-reconnect` never calls ownStdin: its cell baselined green at the predicted count and then PASSED under the mutation, and it skips the abandoned release, though the hand-back flush does run in its window, so its failure is not fully explained and stays an open observation. A piped attach, where the population gate installs no reader while reconnect stays true: the probe exited 0 in BOTH arms while reaching the right window, its transcript carrying the held-session line, because the pipe's own stdio handle holds the loop. So every population this harness can build now has something holding the loop across that wait. Kept registered rather than removed or re-aimed on a guess, so a run reports a survivor instead of a smaller set; #634 carries the two instrument shapes that would observe the ref rather than its consequence.",
+      "expectRed": "the deadline probe stays alive until the bound fires",
+      "cell": "the deadline probe stays alive until the bound fires",
+      "note": "A wait bounded by an unref'd timer is not bounded. Cell I proves the real attach path reaches this helper around a half-open link, but its resumed PTY stdin keeps the event loop alive and masks the timer's ref state. Cell K runs the helper in a child with no broker, PTY or stdin reader and awaits work that never settles. With the deadline ref'd, the child stays alive for the bound, prints `deadline-result=false`, and exits 0. With this mutation, Node abandons the unsettled top-level await and exits 13 before printing. The cell therefore grades timer liveness directly while cell I retains the real-path and held-session assertions.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {

@@ -44,6 +44,8 @@
  *      hand back, rather than aborting the command on a wait that never returns.
  *   J. a detach pressed in the wait BETWEEN attempts, on a link that came back, hands the session
  *      back and gives the shell straight back rather than at the end of the rung.
+ *   K. the deadline itself keeps an otherwise idle child alive until the bound fires, without the
+ *      PTY and resumed stdin that now mask timer liveness in cell I.
  *   F. the four classifications the loop turns on, as functions.
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
@@ -58,7 +60,7 @@
  * answer `permission-denied`, and nothing here can drive it to its 64-session ceiling.
  */
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect as netConnect, type AddressInfo, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -80,6 +82,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const BIN = join(repoRoot, "bin", "cotal.ts");
 const SEAT_STUB = join(here, "attach-reconnect-seat.mjs");
+const DEADLINE_PROBE = join(here, "attach-deadline-probe.ts");
 const DETACH_BYTE = "\x1d"; // Ctrl-] , the default detach key
 
 let pass = 0, fail = 0;
@@ -622,6 +625,25 @@ try {
       check("...and the manager is back to the count it started with, with no slot left behind",
         freed === baseJ, { baseJ, freed });
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  console.log("\nK. a link deadline keeps an otherwise idle process alive until the bound fires");
+  {
+    // Cell I proves the real attach path reaches this deadline around a half-open link. Its PTY now
+    // keeps the process alive independently, so it cannot discriminate ref() from unref(). This
+    // child has no broker, PTY or stdin reader: the deadline is its sole liveness owner.
+    const r = spawnSync(TSX, [DEADLINE_PROBE], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const probeOk = r.status === 0 && /✓ the deadline probe stays alive until the bound fires/.test(out);
+    if (!probeOk) console.log(out.trimEnd());
+    check("the full attach suite accepts the completed deadline probe", probeOk,
+      { status: r.status, signal: r.signal, error: r.error?.message, out: out.slice(-500) });
   }
 
   // ---------------------------------------------------------------------------------------------
