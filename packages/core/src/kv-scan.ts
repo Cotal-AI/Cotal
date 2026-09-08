@@ -108,7 +108,7 @@ export class IncompleteKvScan extends Error {
  * Throws {@link IncompleteKvScan} if the pass is cut short. Returns `[]` for a bucket that is
  * genuinely empty (proven at bind time, not inferred from silence).
  */
-export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
+async function latestKvEntriesPass(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
   // OWN THE PASS. This deliberately does NOT call `kv.history()`. That helper hides the consumer's
   // bind-time `num_pending`, and without it an empty result is ambiguous: a genuinely empty bucket
   // and a pass that died before its first message look identical. For a FILTERED scan that ambiguity
@@ -173,9 +173,18 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
-  const out: KvEntry[] = [];
-  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
-  return out;
+  return [...latest.values()];
+}
+
+/** Every latest entry, INCLUDING DEL/PURGE markers, with the same completeness proof as
+ * {@link liveKvEntries}. Authority families whose deletion is corruption use this rather than a
+ * live-only projection, because dropping a tombstone would turn erased authority into absence. */
+export async function latestKvEntries(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
+  return await latestKvEntriesPass(kv, filter);
+}
+
+export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
+  return (await latestKvEntriesPass(kv, filter)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
 }
 
 /**

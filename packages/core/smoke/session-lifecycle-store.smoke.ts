@@ -121,6 +121,8 @@ const scanBroken = async () => { throw new Error("store unavailable"); };
 c("unreadable binding store fails closed as possibly live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", scanBroken));
 const unknown = await lookupNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{ ...bindingEntry, value: new TextEncoder().encode("not json") }] as never);
 c("an unparseable binding row is an explicit unknown lookup", unknown.status === "unknown" && unknown.bindings.length === 0);
+const deleted = await lookupNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{ ...bindingEntry, operation: "DEL" }] as never);
+c("a deleted authority binding is corruption and fails closed, never proven absence", deleted.status === "unknown" && deleted.reason.includes("DEL"));
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

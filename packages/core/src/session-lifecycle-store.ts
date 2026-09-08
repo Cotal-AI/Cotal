@@ -10,7 +10,7 @@ import type { KvEntry } from "@nats-io/kv";
 import { canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { createRecordEntry, updateRecordEntry } from "./endpoint-records.js";
-import { liveKvEntries } from "./kv-scan.js";
+import { latestKvEntries } from "./kv-scan.js";
 import {
   parseBinding,
   parseSessionOperation,
@@ -171,7 +171,7 @@ export function sameSessionOperationInput(a: SessionOperationRecord, b: SessionO
 export async function lookupNativeLifecycleBindingsForManager(
   kv: KV,
   managerPrincipal: string,
-  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = liveKvEntries,
+  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = latestKvEntries,
 ): Promise<NativeLifecycleBindingLookup> {
   try {
     const entries = await scan(kv, "sessionbinding.*");
