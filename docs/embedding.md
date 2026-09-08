@@ -194,7 +194,7 @@ pre-spawn, and the forever wait. A host composes that lifecycle itself around `M
 ```ts
 import { Manager } from "@cotal-ai/manager";
 const mgr = new Manager({ space, servers: brokerUrl, workspaceRoot });
-await mgr.start();          // then wire SIGINT/SIGTERM -> mgr.stop() (leaves seats; pass { withAgents: true } to reap)
+await mgr.start();          // then wire SIGINT/SIGTERM -> mgr.stop() (Linux pty leaves seats; pass { withAgents: true } to reap; in-process node-pty cannot spare)
 ```
 
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a

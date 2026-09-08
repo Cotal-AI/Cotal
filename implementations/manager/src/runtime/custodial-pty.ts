@@ -29,13 +29,23 @@ export class CustodialPtyRuntime implements Runtime {
       spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: Boolean(spec.confirm) },
       cwd,
     });
-    return adoptSeatSync(rec) as unknown as AgentHandle;
+    return this.proxy(adoptSeatSync(rec));
   }
 
   adopt(reference: RuntimeReference): AgentHandle {
     if (process.platform !== "linux") throw unsupportedTransport();
     if (reference.kind !== "pty") throw new Error(`cannot adopt runtime kind "${reference.kind}" with pty`);
-    return adoptSeatSync(loadSeat(this.root, reference.id)) as unknown as AgentHandle;
+    return this.proxy(adoptSeatSync(loadSeat(this.root, reference.id)));
+  }
+
+  /** SeatHandle.close() is erased by the AgentHandle cast. Expose it as release() so a spare
+   *  stop can drop the unix socket without optional-chaining a missing method. */
+  private proxy(seat: ReturnType<typeof adoptSeatSync>): AgentHandle {
+    return Object.assign(seat as unknown as AgentHandle, {
+      release: () => {
+        seat.close();
+      },
+    });
   }
 }
 

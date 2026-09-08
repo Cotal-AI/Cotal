@@ -460,7 +460,9 @@ export interface ManagerPreserveOptions {
 
 /** Options for {@link Manager.stop}. Preservation still always stops retained children. */
 export interface ManagerStopOptions {
-  /** Reap every managed agent (hard-stop + deprovision). Default false leaves them running. */
+  /** Reap every managed agent (hard-stop + deprovision). Default false leaves them running on
+   *  runtimes that can drop a retaining handle without killing the child (Linux custodial pty,
+   *  tmux/cmux/orca/herdr). In-process node-pty cannot, and a plain stop of those seats throws. */
   withAgents?: boolean;
 }
 
@@ -1873,14 +1875,25 @@ export class Manager {
   }
 
   /** Drop every managed seat from the table without stopping or deprovisioning it (#964). A later
-   *  `ps` is empty; the OS processes and their footprints stay. Handles are retained on
-   *  {@link detached} so a still-running manager process does not GC a PTY and kill the child.
-   *  When this process itself exits, a PTY master close may still SIGHUP those children. */
+   *  `ps` is empty; the OS processes and their footprints stay. A pty handle must implement
+   *  `release()`: Linux custodial pty closes the unix socket and leaves the child; in-process
+   *  node-pty (`LegacyPtyRuntime`) throws because dropping the master would kill the child.
+   *  tmux/cmux/orca/herdr retain no fd, so they spare without a release. Handles stay on
+   *  {@link detached} so a still-running manager does not GC them. When this process itself
+   *  exits, a leftover PTY master close may still SIGHUP those children. */
   private detachManagedAgents(): void {
     const managed = [...this.agents.values()];
     for (const a of managed) {
       a.suppressCleanup = true;
-      (a.handle as Partial<{ close(): void }>).close?.();
+      if (a.handle.kind === "pty") {
+        const release = (a.handle as { release?: () => void }).release;
+        if (typeof release !== "function") {
+          throw new Error(
+            `runtime "${a.handle.kind}" cannot spare agent "${a.name}": handle has no release()`,
+          );
+        }
+        release.call(a.handle);
+      }
       this.agents.delete(a.name);
       this.detached.push(a);
     }

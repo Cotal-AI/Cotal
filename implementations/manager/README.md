@@ -45,8 +45,11 @@ the first child launches. Static and open entries reuse and validate the exact r
 User-auth entries are validated internally through `resolveAuthProvider().validateRetainedAgent()`;
 the manager never calls `grantAgent` or provisions a replacement identity. Ordinary
 `Manager.stop()` leaves managed agents running. Pass `{ withAgents: true }` to reap them.
-A PTY child may still die when the manager process exits. A later manager on the same root
-may still take leftover seats. Preservation still always stops retained children.
+Linux custodial pty releases the unix socket on a plain stop and leaves the child. In-process
+node-pty (`LegacyPtyRuntime`, used off Linux) cannot drop the master without killing the child,
+so a plain stop of those seats throws rather than spare. A leftover PTY master may still kill
+a child when the manager process exits. A later manager on the same root may still take leftover
+seats. Preservation still always stops retained children.
 
 After restore, start the manager with `supervise --resume-attempt <id>`, wait for normal manager
 readiness, then send the admin control request:

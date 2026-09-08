@@ -19,6 +19,7 @@ import {
 import { agentCredsDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
+import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 
 let failures = 0;
 function check(label: string, condition: boolean, extra?: unknown): void {
@@ -1023,6 +1024,75 @@ let openInventory: ManagerResumeAgent;
   await manager.stop();
   check("normal stop leaves managed agents running", handle.stops === 0, handle.stops);
   check("normal stop does not deprovision managed agents", deprovisions === 0, deprovisions);
+}
+
+{
+  let releases = 0;
+  let stops = 0;
+  const handle: AgentHandle = {
+    name: "pty-spare",
+    kind: "pty",
+    status: () => "running",
+    stop: () => { stops++; },
+    interrupt: () => {},
+    attach: () => ({
+      cols: 80,
+      rows: 24,
+      backlog: () => Buffer.alloc(0),
+      onData: () => () => {},
+      onExit: () => () => {},
+      write: () => {},
+      resize: () => {},
+    }),
+    release: () => { releases++; },
+  } as AgentHandle;
+  const manager = managerWith((name) => fakeHandle(name));
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("pty-spare", managed("pty-spare", "pty_spare_id", handle, "persona"));
+  await manager.stop();
+  check("plain stop of a pty seat calls release() and does not stop the child", releases === 1 && stops === 0, { releases, stops });
+}
+
+{
+  // Linux can still construct LegacyPtyRuntime (its own M1 residual). Injecting it measures
+  // the spare refusal; it does not exercise the macOS or Windows node-pty backend.
+  const rt = new LegacyPtyRuntime();
+  const handle = rt.spawn(
+    "legacy-spare",
+    { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } },
+    process.cwd(),
+  );
+  try {
+    const manager = managerWith((name) => fakeHandle(name));
+    (manager as unknown as { agents: Map<string, unknown> }).agents.set(
+      "legacy-spare",
+      managed("legacy-spare", "legacy_spare_id", handle, "persona"),
+    );
+    let threw = "";
+    try {
+      await manager.stop();
+    } catch (e) {
+      threw = (e as Error).message;
+    }
+    const childAlive = (() => {
+      try {
+        if (handle.pid === undefined) return false;
+        process.kill(handle.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    check(
+      "legacy pty spare throws rather than no-op or kill",
+      /cannot spare agent "legacy-spare"/.test(threw) && /in-process node-pty cannot release/.test(threw),
+      threw,
+    );
+    check("legacy pty spare left the child running", handle.status() === "running" && childAlive, { status: handle.status(), pid: handle.pid, childAlive });
+  } finally {
+    handle.stop({ graceful: false });
+    await handle.waitForExit?.();
+  }
 }
 
 {

@@ -103,7 +103,7 @@ export class LegacyPtyRuntime implements Runtime {
       for (const fn of exitSubs) fn();
     });
 
-    return {
+    const handle: AgentHandle = {
       name,
       kind: "pty",
       pid: proc.pid,
@@ -207,6 +207,16 @@ export class LegacyPtyRuntime implements Runtime {
         },
       }),
     };
+    return Object.assign(handle, {
+      // node-pty owns the master fd in this process. There is no API that drops that
+      // fd without closing the session, and closing it kills the child. Spare-stop
+      // therefore refuses rather than no-op or kill.
+      release: () => {
+        throw new Error(
+          `runtime "pty" cannot spare agent "${name}": in-process node-pty cannot release the master without killing the child`,
+        );
+      },
+    });
   }
 
   adopt(_reference: RuntimeReference): AgentHandle {

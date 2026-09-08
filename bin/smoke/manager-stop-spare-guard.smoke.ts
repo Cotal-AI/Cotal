@@ -221,5 +221,25 @@ for (const named of SPARE_COVERAGE) {
   check(`spare-coverage suite is present: ${named}`, files.some((f) => relative(ROOT, f) === named), named);
 }
 
+const managerSrc = readFileSync(join(ROOT, "implementations/manager/src/manager.ts"), "utf8");
+const detach = managerSrc.match(/private detachManagedAgents\(\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+check("detachManagedAgents is present in manager.ts", detach.includes("this.detached.push(a)"));
+check("detachManagedAgents does not optional-chain close", !/close\?\./.test(detach), detach);
+check(
+  "detachManagedAgents calls release() on pty without optional chaining",
+  /handle\.kind === "pty"/.test(detach) && /release\.call\(a\.handle\)/.test(detach) && !/release\?\./.test(detach),
+  detach,
+);
+const custodialSrc = readFileSync(join(ROOT, "implementations/manager/src/runtime/custodial-pty.ts"), "utf8");
+check(
+  "CustodialPtyRuntime exposes release() that closes the seat socket",
+  /release:\s*\(\)\s*=>\s*\{\s*seat\.close\(\);/.test(custodialSrc),
+);
+const legacySrc = readFileSync(join(ROOT, "implementations/manager/src/runtime/pty.ts"), "utf8");
+check(
+  "LegacyPtyRuntime release() throws rather than no-op or kill",
+  /release:\s*\(\)\s*=>\s*\{[\s\S]*?cannot spare agent[\s\S]*?in-process node-pty cannot release/.test(legacySrc),
+);
+
 console.log(`\nMANAGER-STOP-SPARE-GUARD ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
 if (fail) process.exitCode = 1;

@@ -17,6 +17,15 @@
       "expectRed": "normal stop leaves managed agents running",
       "cell": "normal stop leaves managed agents running",
       "note": "Issue #964 restored on the active path. The stop({ withAgents: true }) counterpart pair stays green; only the spare cells redden."
+    },
+    {
+      "name": "the hang restored: pty spare optional-chains close and never calls release",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (a.handle.kind === \"pty\") {\n        const release = (a.handle as { release?: () => void }).release;\n        if (typeof release !== \"function\") {\n          throw new Error(\n            `runtime \"${a.handle.kind}\" cannot spare agent \"${a.name}\": handle has no release()`,\n          );\n        }\n        release.call(a.handle);\n      }",
+      "replace": "      (a.handle as Partial<{ close(): void }>).close?.();",
+      "expectRed": "plain stop of a pty seat calls release() and does not stop the child",
+      "cell": "plain stop of a pty seat calls release() and does not stop the child",
+      "note": "Restores the silent no-op. Fake spare cells stay green (they have no close). The pty spy cell reddens because release is never invoked. The live LegacyPtyRuntime cell also reddens because spare no longer throws."
     }
   ]
 }
