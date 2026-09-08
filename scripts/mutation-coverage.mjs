@@ -230,9 +230,7 @@ const parseSummary = (cfg, output) => {
   if (typeof cfg.progressPattern === "string" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {
     const lines = output.trimEnd().split(/\r?\n/);
     const terminal = lines.at(-1) ?? "";
-    const completed = typeof cfg.completionMarker === "string"
-      ? terminal.includes(cfg.completionMarker)
-      : /(?:^|\s)(?:PASSED|OK)(?:\s|$)/.test(terminal) && !(new RegExp(cfg.progressPattern).test(terminal));
+    const completed = typeof cfg.completionMarker === "string" && terminal.includes(cfg.completionMarker);
     const executed = progressCount(output, cfg.progressPattern);
     if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };
   }
