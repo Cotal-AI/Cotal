@@ -217,7 +217,8 @@ try {
   });
   await check("an auto-reconnecting callout client fails closed instead of renewing in place", async () => {
     // The connection name is fixed at connect time, so a reconnect re-proposes the same
-    // generation. Reuse refusal is what stops a live transport from quietly changing ceiling.
+    // generation. The lifecycle's fresh-generation-only rule is what stops a live transport
+    // from quietly changing ceiling.
     const renewing = random();
     const client = await open(renewing, issuedCalloutName(renewing, random()), bearer, true);
     assert.deepEqual(await discoverIssuedAuthority(client.nc, space), refFor(renewing));

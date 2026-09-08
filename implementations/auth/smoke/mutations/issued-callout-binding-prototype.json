@@ -35,14 +35,14 @@
       "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
       "find": "  const allow = info.data?.permissions?.publish?.allow;",
       "replace": "  const allow = [`cotal.${space}.ep.v1.one.p.c.local.calloutproof.${\"u\".repeat(26)}.${\"a\".repeat(32)}.*`];",
-      "expectRed": "a callout client discovers the generation the issuer bound, not the one it proposed",
-      "cell": "a callout client discovers the generation the issuer bound, not the one it proposed"
+      "expectRed": "an auto-reconnecting callout client fails closed instead of renewing in place",
+      "cell": "an auto-reconnecting callout client fails closed instead of renewing in place"
     },
     {
       "name": "issuance staging allows a generation to be re-prepared",
       "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
-      "find": "      await kv.create(key, bytes(evidence));\n      const revision = await kv.create(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));",
-      "replace": "      await kv.put(key, bytes(evidence));\n      const revision = await kv.put(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));",
+      "find": "      if (await kv.get(key)) throw new Error(\"issued generation already exists\");\n      const digest = rawDigest(canonicalJson(evidence));\n      await kv.create(key, bytes(evidence));\n      const revision = await kv.create(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));\n      for (const source of evidence.sources) {\n        await kv.create(sourceIndexKey(source, evidence.ref), bytes({ source, ref: evidence.ref }));\n      }",
+      "replace": "      const digest = rawDigest(canonicalJson(evidence));\n      await kv.put(key, bytes(evidence));\n      const revision = await kv.put(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));\n      for (const source of evidence.sources) {\n        await kv.put(sourceIndexKey(source, evidence.ref), bytes({ source, ref: evidence.ref }));\n      }",
       "expectRed": "an auto-reconnecting callout client fails closed instead of renewing in place",
       "cell": "an auto-reconnecting callout client fails closed instead of renewing in place"
     }
