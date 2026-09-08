@@ -35,6 +35,7 @@ import type { EffectHandler } from "../effects.js";
 import type { JournalEntry, JournalStore } from "./../journal.js";
 import type { RunPins } from "../pins.js";
 import { serviceBridge } from "./bridge.js";
+import type { InspectionSnapshot } from "./inspection.js";
 
 /** Where the reason's byte length lives in the shared stop buffer; the bytes follow it. */
 const STOP_HEADER = 4;
@@ -62,10 +63,12 @@ export interface WorkerRunRequest {
   /**
    * `"bridged"` keeps the handler in the host: the thread forwards the effect seam over a
    * MessagePort instead of constructing a handler, and the caller supplies the live handler and
-   * store via {@link WorkerRunOptions.bridge}. Exactly one of the two must be chosen — a request
-   * naming both routes, or neither, is a caller that has not decided where its effects run.
+   * store via {@link WorkerRunOptions.bridge}. A module handler is constructed in the worker.
+   * "inspection" builds a read-only journal there and receives no live handler or store.
    */
-  readonly handler: WorkerHandlerSpec | "bridged";
+  readonly handler: WorkerHandlerSpec | "bridged" | "inspection";
+  /** Inspection stops before consuming this key; only valid on the inspection route. */
+  readonly cutAt?: string;
   readonly pins?: RunPins;
   /** A resume: the recorded entries, rebuilt into the run's journal inside the thread. */
   readonly entries?: readonly JournalEntry[];
@@ -81,6 +84,7 @@ export interface WorkerRunRequest {
 }
 
 export interface WorkerRunOk {
+  readonly inspection?: InspectionSnapshot;
   readonly ok: true;
   readonly value: unknown;
   readonly entries: readonly JournalEntry[];
@@ -90,6 +94,7 @@ export interface WorkerRunOk {
 }
 
 export interface WorkerRunFailed {
+  readonly inspection?: InspectionSnapshot;
   readonly ok: false;
   /** The language code where there is one (`L4013`, `L5011`), so a caller can branch as it always has. */
   readonly code?: string;
@@ -190,6 +195,10 @@ export interface WorkerRunOptions {
  * point, and a thread that outlives its run is a realm holding a journal nobody is reading.
  */
 export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions): WorkerRun {
+  if (request.cutAt !== undefined && request.handler !== "inspection")
+    throw new Error("cutAt is only supported by the inspection route");
+  if (request.handler === "inspection" && request.pins === undefined)
+    throw new Error("inspection requires the recorded run pins");
   // ONE ROUTE, DECIDED, before a thread exists to be wrong in. A bridged request with no seam has
   // nowhere to run its effects; a module-named handler beside a live seam is two answers to where
   // the effects live, and picking one silently would be this module deciding the caller's
