@@ -99,3 +99,32 @@ connection. It does not attach to shipped `mintCreds`, registration, endpoint
 serving or auth callout. Same-credential reconnect does not prove callout remint
 under changed policy. The full profile census and production integration remain
 open. Generated credential files stay in the test's private temporary directory.
+
+## Auth-callout response gating
+
+The auth-side `issued-callout-gate.ts` runs the unchanged callout handler against a
+per-request capturing transport. Native libraries reopen and verify its prepared
+sealed response. Success reaches the broker only after the separate awaited
+issuer operation succeeds. Failure is rendered as a signed denial by the same
+handler. No onMint callback participates in this gate.
+
+The smoke uses actual callout connections and a data-account witness. It holds
+success behind a pending issuer operation, checks two generations of the same
+signed bearer under changed policy, and proves native substitution denials.
+Issuer failure and generation reuse refuse. Missing, tampered and revoked bearer
+credentials retain their existing rejection paths.
+
+```sh
+pnpm exec tsx implementations/auth/smoke/issued-callout-binding.smoke.ts
+pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-callout-binding-prototype.json
+pnpm exec tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node implementations/auth/smoke/issued-callout-binding.smoke.ts
+```
+
+The candidate connection name is `ia1_<generation>_<inboxNonce>`, with two separate
+128-bit random fields. This proof explicitly selects an implementing test issuer;
+connection success alone is insufficient discovery of production support. Reuse
+of a generation is rejected and automatic reconnect is disabled. A fresh binding
+uses a fresh generation. The transport wrapper is proof machinery, with extra
+per-request handler setup; production still needs a direct prepared-response and
+mandatory release interface, authenticated discovery, renewal and complete revoker
+integration. No shipped handler, option or normative encoding changed here.

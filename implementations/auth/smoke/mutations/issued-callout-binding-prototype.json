@@ -1,0 +1,34 @@
+{
+  "suite": "implementations/auth/smoke/issued-callout-binding.smoke.ts",
+  "guard": "The test-only callout transport awaits issued release before forwarding a prepared native success, forwards signed denial on issuer failure and rejects unsupported proposed connection metadata. It reuses the unchanged callout handler and does not use onMint as authority. Production discovery and transparent reconnect are outside this proof.",
+  "command": "pnpm exec tsx implementations/auth/smoke/issued-callout-binding.smoke.ts",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-callout-binding-prototype.json",
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "issuer release is not awaited",
+      "file": "implementations/auth/smoke/prototypes/issued-callout-gate.ts",
+      "find": "await release(prepared.success);",
+      "replace": "void release(prepared.success);",
+      "expectRed": "prepared callout success stays private until the awaited issuer gate completes",
+      "cell": "prepared callout success stays private until the awaited issuer gate completes"
+    },
+    {
+      "name": "issuer rejection forwards the prepared success",
+      "file": "implementations/auth/smoke/prototypes/issued-callout-gate.ts",
+      "find": "msg.respond(denied.bytes);",
+      "replace": "msg.respond(prepared.bytes);",
+      "expectRed": "callout generation reuse refuses instead of silently reminting",
+      "cell": "callout generation reuse refuses instead of silently reminting"
+    },
+    {
+      "name": "future callout metadata is accepted",
+      "file": "implementations/auth/smoke/prototypes/issued-callout-gate.ts",
+      "find": "/^ia1_([a-f0-9]{32})_([a-f0-9]{32})$/",
+      "replace": "/^ia[12]_([a-f0-9]{32})_([a-f0-9]{32})$/",
+      "expectRed": "legacy and future connection metadata receive no issued fallback",
+      "cell": "legacy and future connection metadata receive no issued fallback"
+    }
+  ]
+}
