@@ -4,6 +4,7 @@
   ],
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
+  "executes": ["bin/cotal.ts"],
   "completionMarker": "O: the manager is back on the session count it started with",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
   "why": [
