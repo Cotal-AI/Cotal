@@ -7,7 +7,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -172,7 +172,7 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   // written to disk). The daemon process reads the file and never holds the signer (a container mounts it
   // read-only). A reuse (daemon already up) mints a throwaway probe cred — the running daemon keeps its
   // own creds file.
-  const auth = (await getSoleSpaceAuth(credsStore(), authDir(findCotalRoot())))!;
+  const auth = (await getSpaceAuth(credsStore(), space))!;
   const id = newIdentity();
   const creds = await mintCreds(auth, id, "delivery");
   const server = o.server ?? DEFAULT_SERVER;
