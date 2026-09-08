@@ -223,6 +223,23 @@ try {
   );
   pass++;
   console.log("  ✓ identical hook and management secrets fail BLOCKED instead of faking a split");
+  for (const badBinding of [
+    { bindingId: "", controllerEpoch: 1 },
+    { bindingId: "binding", controllerEpoch: 0 },
+    { bindingId: "binding", controllerEpoch: Number.NaN },
+  ]) {
+    assert.throws(
+      () => startControlServer(
+        stubAgent,
+        { ...controlEndpoint("credential-split", `bad-fence-${pass}`), management: { token: "management-token", binding: badBinding } },
+        async () => ({}),
+        { onShutdown: () => {}, authorizeManagement: () => true },
+      ),
+      /control plane BLOCKED: management credential carries an invalid Binding.bindingId or controllerEpoch/,
+    );
+    pass++;
+    console.log("  ✓ invalid management Binding fence fails BLOCKED before listen");
+  }
 } finally {
   server.close();
 }

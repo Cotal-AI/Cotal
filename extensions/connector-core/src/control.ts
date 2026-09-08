@@ -116,8 +116,9 @@ const AUTH_DEADLINE_MS = 5_000;
  *  so the compare is fixed-length (and length-independent) regardless of the presented value — a
  *  non-string or wrong-length token can never throw `timingSafeEqual` or leak length via timing. */
 function tokenMatches(presented: unknown, digest: Buffer): boolean {
-  if (typeof presented !== "string") return false;
-  return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
+  const isString = typeof presented === "string";
+  const presentedDigest = createHash("sha256").update(isString ? presented : "").digest();
+  return timingSafeEqual(presentedDigest, digest) && isString;
 }
 
 function who(i: InboxItem): string {
@@ -241,6 +242,14 @@ export function startControlServer(
   const managementDigest = management
     ? createHash("sha256").update(management.token).digest()
     : undefined;
+  if (management && (
+    !management.token || !management.binding.bindingId.trim()
+    || !Number.isSafeInteger(management.binding.controllerEpoch)
+    || management.binding.controllerEpoch <= 0
+  ))
+    throw new Error(
+      "control plane BLOCKED: management credential carries an invalid Binding.bindingId or controllerEpoch",
+    );
   if (managementDigest && timingSafeEqual(hookDigest, managementDigest))
     throw new Error(
       "control plane BLOCKED: hook and management credentials resolve to the same secret; " +
