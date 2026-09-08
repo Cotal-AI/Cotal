@@ -3,6 +3,7 @@
   "guard": "skipped live-PTY spare-stops are a frozen #1343 inventory: a new dropped path reds, a stale frozen path reds, and SPARE_COVERAGE is not a hiding place",
   "command": "pnpm smoke:manager-stop-spare-guard",
   "completionMarker": "MANAGER-STOP-SPARE-GUARD",
+  "grades": "tool",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-stop-spare-guard.mutations.json",
   "why": [
     "Issue #1343: printing 29 skipped rows still exits green when a NEW skipped live-PTY file",
