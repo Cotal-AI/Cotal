@@ -105,8 +105,10 @@ throws("recovery-read-only blocks management writes", () => assertSessionManagem
 
 const writable = { ...state2, managementMode: "writable" as const };
 const recorded = await queryOperation(kv, resource, "op-1");
-c("a retired binding retry returns its recorded receipt instead of acting", assertCurrentSessionFence(writable, "binding-old", 7, recorded)?.state === "terminal-success");
+const retiredOwn = { ...writable, retiredBindingIds: [...writable.retiredBindingIds, "binding-1"] };
+c("a retired binding retry returns its recorded receipt instead of acting", assertCurrentSessionFence(retiredOwn, "binding-1", 7, recorded)?.state === "terminal-success");
 throws("a retired binding without a receipt gets a stale rejection", () => assertCurrentSessionFence(writable, "binding-old", 7), "conflict");
+throws("a retired binding cannot be answered by another binding's receipt", () => assertCurrentSessionFence(writable, "binding-old", 7, recorded), "conflict");
 throws("an old epoch cannot act on a new binding", () => assertCurrentSessionFence(writable, "binding-new", 6), "conflict");
 c("current binding and epoch pass the fence", assertCurrentSessionFence(writable, "binding-new", 7) === undefined);
 
