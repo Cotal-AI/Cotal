@@ -1,5 +1,18 @@
 # cotal-ai
 
+## 0.47.1
+
+### Patch Changes
+
+- @cotal-ai/manager@0.47.1
+- @cotal-ai/core@0.47.1
+- @cotal-ai/workspace@0.47.1
+- @cotal-ai/runtime@0.47.1
+- @cotal-ai/cli@0.47.1
+- @cotal-ai/delivery@0.47.1
+- @cotal-ai/connector-core@0.47.1
+- @cotal-ai/auth@0.47.1
+
 ## 0.47.0
 
 ### Minor Changes
