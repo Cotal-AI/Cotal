@@ -2,6 +2,7 @@
   "suite": "bin/smoke/attach-auth-root.smoke.ts",
   "guard": "attach redeems a session grant with the seed the MESH resolved, never one walked up from the cwd, and a cwd anchor holding another chain for the same space is reported rather than obeyed",
   "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-auth-root",
+  "executes": ["bin/cotal.ts"],
   "completionMarker": "attach auth-root:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-auth-root.json",
   "why": [
