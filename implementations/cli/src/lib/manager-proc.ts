@@ -55,8 +55,14 @@ export function assertNativeLifecycleShutdownStatus(
 ): void {
   if (!native || native.status !== "known" || !Number.isSafeInteger(native.liveBindings) || native.liveBindings! < 0)
     throw new Error(`${operation} refused before signalling: native lifecycle state is ${native?.status ?? "unreported"}${native?.reason ? ` (${native.reason})` : ""}. Unknown is not safe-to-stop.`);
+  const ids = native.liveBindingIds;
+  if (!Array.isArray(ids)
+      || ids.some((id) => typeof id !== "string" || id.trim().length === 0)
+      || new Set(ids).size !== ids.length
+      || native.liveBindings !== ids.length)
+    throw new Error(`${operation} refused before signalling: native lifecycle state is inconsistent (reported ${native.liveBindings} live binding${native.liveBindings === 1 ? "" : "s"} but supplied ${ids?.length ?? 0} distinct valid binding IDs). Inconsistent is not safe-to-stop.`);
   if (native.liveBindings! > 0)
-    throw new Error(`${operation} refused before signalling: manager in space "${space}" holds ${native.liveBindings} live native lifecycle binding${native.liveBindings === 1 ? "" : "s"}${native.liveBindingIds?.length ? ` (${native.liveBindingIds.join(", ")})` : ""}. Legacy down is not a hot update. Release or explicitly stop each binding through its authorized operation. The only planned running-update entrypoint is \`cotal manager replace --apply <plan-digest>\`.`);
+    throw new Error(`${operation} refused before signalling: manager in space "${space}" holds ${native.liveBindings} live native lifecycle binding${native.liveBindings === 1 ? "" : "s"} (${ids.join(", ")}). Legacy down is not a hot update. Release or explicitly stop each binding through its authorized operation. The only planned running-update entrypoint is \`cotal manager replace --apply <plan-digest>\`.`);
 }
 
 /** The exact logfile the detached-manager writer opens. Exported so operator guidance names the

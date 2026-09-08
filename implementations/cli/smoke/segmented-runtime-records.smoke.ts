@@ -86,6 +86,15 @@ try {
   check("authorized live binding refusal names the exact binding and release remedy",
     /binding-live-17/.test(liveBinding) && /Release or explicitly stop/.test(liveBinding), liveBinding);
   check("missing authority and live binding have different operator messages", missingAuthority !== liveBinding);
+  let inconsistentInventory = "";
+  try {
+    assertNativeLifecycleShutdownStatus(
+      { status: "known", liveBindings: 1, liveBindingIds: [] },
+      "cotal down manager", ALPHA,
+    );
+  } catch (e) { inconsistentInventory = (e as Error).message; }
+  check("a live count without exact binding IDs is inconsistent, not an unnamed live refusal",
+    /inconsistent/.test(inconsistentInventory) && !/Release or explicitly stop each binding/.test(inconsistentInventory), inconsistentInventory);
 
   console.log("1) two managers, one root: each space reads its own process");
   const a = daemon(), b = daemon();

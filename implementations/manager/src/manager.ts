@@ -311,7 +311,7 @@ export interface ManagerOptions {
   /** Internal/test override for the manager-command drain deadline. A maintenance exit must not
    * wait forever and then call an unaccounted request "drained". */
   commandDrainTimeoutMs?: number;
-  /** Narrow read-only native lifecycle lookup supplied by the sessionbinding reader composition.
+  /** Narrow read-only native lifecycle lookup supplied by an authorized trusted provider.
    * Absent is an explicit missing-authority result, never a raw KV scan under a serving credential. */
   nativeLifecycleLookup?: (managerPrincipal: string) => Promise<NativeLifecycleBindingLookup>;
   /** Canonical §13.8/§13.9 session transfer/retirement barrier. It may report success only after
