@@ -160,9 +160,9 @@ try {
   m = s.mark();
   await s.command("ps");
   const surfacedManagerError = await s.waitFor(/manager is in preserving mode; new lifecycle\/control work is fenced/, 30_000, m);
-  const managerErrorNotice = clean(s.out.slice(m)).match(/(agents:|ps:|manager is in)[^│\n]*/g)?.join(" | ") ?? clean(s.out.slice(m)).slice(-300);
+  const managerErrorNotice = clean(s.out.slice(m));
   check(":ps surfaces a reachable manager's real error instead of saying it gave no answer",
-    surfacedManagerError && !managerErrorNotice.includes("gave no answer"), managerErrorNotice);
+    surfacedManagerError && !managerErrorNotice.includes("gave no answer"), managerErrorNotice.slice(-500));
   await m2.abortPreservation("console-ps-error-repro");
 
   // The presence qualifier on a REAL managed seat. console-status-row proves formatManagedRow

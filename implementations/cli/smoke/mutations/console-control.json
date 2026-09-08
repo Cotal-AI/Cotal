@@ -58,8 +58,8 @@
     {
       "name": "C6 a reachable manager error is mislabeled as silence",
       "file": "implementations/cli/src/console/control.ts",
-      "find": "      silent: s.instances.filter((i) => !i.reachable).map((i) => i.instanceId),",
-      "replace": "      silent: s.instances.filter((i) => !i.reachable || i.error).map((i) => i.instanceId),",
+      "find": "      silent: s.instances.filter((i) => !i.reachable).map((i) => i.instanceId),\n      failed: s.instances.filter((i) => i.reachable && i.error).map((i) => ({ instanceId: i.instanceId, error: i.error! })),",
+      "replace": "      silent: s.instances.filter((i) => !(i.reachable && !i.error)).map((i) => i.instanceId),\n      failed: [],",
       "expectRed": ":ps surfaces a reachable manager's real error instead of saying it gave no answer",
       "cell": ":ps surfaces a reachable manager's real error instead of saying it gave no answer",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
