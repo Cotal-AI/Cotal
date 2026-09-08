@@ -255,6 +255,35 @@ try {
     await assert.rejects(lifecycle.resolve(a.ref, async () => { throw new Error("synthetic source outage"); }), /source outage/);
   });
 
+  await check("an unreadable attempt row refuses instead of resolving", async () => {
+    // Absence of a revocation is carried by the attempt row's state, so a failed READ of that row
+    // is not the same as "no revocation". The resolver must refuse rather than treat it as active.
+    let outage = false;
+    const flaky = new Proxy(kv, {
+      get(target, property, receiver) {
+        if (property !== "get") return Reflect.get(target, property, receiver);
+        return async (key: string) => {
+          if (outage && key.startsWith("attempt.")) throw new Error("synthetic attempt-store outage");
+          return target.get(key);
+        };
+      },
+    }) as KV;
+    const guarded = await openIssuedLifecycle(flaky, space);
+    const f = await fixture();
+    const a = await f.next(guarded);
+    await guarded.release(a.prepared, a.finalize);
+    assert.deepEqual(await guarded.resolve(a.ref, async () => true), permissions);
+    outage = true;
+    await assert.rejects(guarded.resolve(a.ref, async () => true), /attempt-store outage/);
+    // The outage must also refuse when it lands after source authorization, not only before it.
+    outage = false;
+    let seen = 0;
+    await assert.rejects(guarded.resolve(a.ref, async () => { seen++; outage = true; return true; }), /attempt-store outage/);
+    assert.equal(seen, a.sources.length);
+    outage = false;
+    assert.equal(await state(a.ref), "active");
+  });
+
   await check("foreign source coordinates and empty source sets refuse staging", async () => {
     const f = await fixture();
     const a = await f.next();

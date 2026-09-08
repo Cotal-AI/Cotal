@@ -109,6 +109,14 @@
       "replace": "await kv.update(key, value, (await kv.get(key))!.revision);",
       "expectRed": "individual revocation between validation and finalization prevents release",
       "cell": "individual revocation between validation and finalization prevents release"
+    },
+    {
+      "name": "an unreadable attempt row is read as active",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "  async function readAttempt(ref: IssuedRef, digest: string) {\n    const entry = await read(`attempt.${own(ref)}`);",
+      "replace": "  async function readAttempt(ref: IssuedRef, digest: string) {\n    const entry = await read(`attempt.${own(ref)}`).catch(() => ({ value: { version: 1, state: \"active\", digest }, revision: 1 }));",
+      "expectRed": "an unreadable attempt row refuses instead of resolving",
+      "cell": "an unreadable attempt row refuses instead of resolving"
     }
   ]
 }
