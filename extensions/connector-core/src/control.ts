@@ -225,10 +225,10 @@ function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: 
 }
 
 /** Start the authenticated control server. One newline-delimited JSON {@link ControlFrame} → one
- *  reply per connection. The first thing every connection does is validate its `token` against the
- *  endpoint's (constant-time) — a mismatch is dropped before `handle` (or `onShutdown`) ever runs,
- *  so an unauthenticated local process that finds/guesses the path still can't drive presence,
- *  inject peer messages, or shut the agent down. */
+ *  reply per connection. Hook frames validate the hook credential; frames carrying `op` validate the
+ *  distinct management credential, its Binding fence, and live revocation state. Every token compare
+ *  has the same SHA-256 + timingSafeEqual shape, and every mismatch is dropped before `handle`,
+ *  `onShutdown`, or `onSession` can run. */
 export function startControlServer(
   agent: MeshAgent,
   endpoint: ControlEndpoint,
