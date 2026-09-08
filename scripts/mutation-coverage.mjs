@@ -102,11 +102,12 @@ const entryPackages = (entry) => {
 const pathReference = (suite, entry) => {
   const rel = relative(dirname(suite), entry).replaceAll("\\", "/");
   const forms = [entry, rel, rel.startsWith(".") ? rel : `./${rel}`];
-  const pieces = rel.split("/").map(quoted).join("\\s*,\\s*");
-  return new RegExp([...forms.map(quoted), pieces].join("|"));
+  const relativePieces = rel.split("/").map(quoted).join("\\s*,\\s*");
+  const repoPieces = entry.split("/").map(quoted).join("\\s*,\\s*");
+  return new RegExp([...forms.map(quoted), relativePieces, repoPieces].join("|"));
 };
 
-/** The declaration is evidence only when the suite passes that entrypoint to a Node/tsx subprocess. */
+/** The declaration is evidence only when the suite passes that entrypoint to a Node/tsx/pty subprocess. */
 const spawnsEntrypoint = (suite, entry, source) => {
   const reference = pathReference(suite, entry);
   const aliases = [];
@@ -114,7 +115,7 @@ const spawnsEntrypoint = (suite, entry, source) => {
     if (reference.test(match[2])) aliases.push(match[1]);
   }
   const token = aliases.length ? `(?:${aliases.join("|")}|${reference.source})` : reference.source;
-  return new RegExp(`spawn(?:Sync|Proc)?\\s*\\([^;]*?\\[[^\\]]*?${token}`, "s").test(source);
+  return new RegExp(`(?:spawn(?:Sync|Proc)?|pty\\.spawn)\\s*\\([^;]*?\\[[^\\]]*?${token}`, "s").test(source);
 };
 
 const packageName = (file) => {
@@ -177,7 +178,7 @@ const parseSummary = (cfg, output) => {
   if (typeof cfg.progressPattern === "string" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {
     const completed = typeof cfg.completionMarker === "string"
       ? output.includes(cfg.completionMarker)
-      : /(?:^|\n)[^\n]*(?:PASSED|\bOK\b)[^\n]*(?:\n|$)/.test(output);
+      : false;
     const executed = progressCount(output, cfg.progressPattern);
     if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };
   }

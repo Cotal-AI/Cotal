@@ -49,6 +49,10 @@ try {
   write("bin/smoke/spawn-entry.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/pty-entry.smoke.ts",
+    'const repoRoot = resolve(import.meta.dirname, "../..");\n' +
+    'const ENTRY = join(repoRoot, "bin", "entry.ts");\n' +
+    'pty.spawn(process.execPath, [ENTRY], { cwd: process.cwd() });\n');
   write("bin/smoke/spawn-other.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "other-entry.ts");\n' +
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
@@ -86,6 +90,10 @@ try {
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");
   check("a spawned repo entrypoint plus target-package build is gradable", result.status === 0 && /graded=1 refused-with-reason=0 unparsed=0/.test(result.stdout), report(result));
+
+  config("pty-executed", { suite: ["bin/smoke/pty-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("pty-executed");
+  check("a pty-spawned repo entrypoint is also gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
 
   config("direct", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("direct");
