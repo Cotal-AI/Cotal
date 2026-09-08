@@ -194,6 +194,7 @@ smoke:mesh-target-rebind
 smoke:join-target
 smoke:join-dial-entry
 smoke:down-target
+smoke:down-partial-reap
 smoke:ledger
 smoke:down-lease-tombstone
 smoke:spawn-from-anywhere

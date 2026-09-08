@@ -336,7 +336,7 @@ try {
   check("shutdown control reached its first accepted exact terminal", await until(() => shutdownFirstEntered, 20_000));
   check("shutdown control reached service registration after the startup fence", await until(() => shutdownRegistrationEntered, 20_000));
   let shutdownSettled = false;
-  const shutdownStopping = shutdownManager.stop().then(() => { shutdownSettled = true; });
+  const shutdownStopping = shutdownManager.stop({ withAgents: true }).then(() => { shutdownSettled = true; });
   await wait(150);
   check("stop waits for an accepted startup reconciliation terminal", shutdownSettled === false);
   releaseShutdownFirst();
@@ -350,8 +350,8 @@ try {
   shutdownManager = undefined;
 } finally {
   console.error = realError;
-  await shutdownManager?.stop().catch(() => {});
-  await manager?.stop().catch(() => {});
+  await shutdownManager?.stop({ withAgents: true }).catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await callerNc?.drain().catch(() => callerNc?.close());
   await observer?.drain().catch(() => observer?.close());
   broker.kill("SIGTERM");
