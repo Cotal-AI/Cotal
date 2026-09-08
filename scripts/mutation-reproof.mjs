@@ -202,6 +202,15 @@ let selected = fixtures.map((fixture) => ({
 })).filter(({ selectedBy }) => Object.values(selectedBy).some(Boolean));
 if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));
 
+// Selection evidence precedes dangling validation. A deleted or renamed declared source is one of
+// the reasons a fixture is selected, so reporting the source error before the selected set would
+// hide the selector result the failure is meant to make observable.
+console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fixtures.length}`
+  + (a.all
+    ? " for a full sweep"
+    : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
+if (selected.length > 0) console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
+
 // UNMEASURED, exit 1: a selected fixture's guarded file does not exist at head — a dangling fixture.
 // Its guarded source was deleted or renamed away, so its anchor cannot resolve and its proof is
 // unrunnable. This is the failure the gate exists to refuse, so it is loud, not a skip.
@@ -223,17 +232,12 @@ if (dangling.length) {
 
 // A zero after filtering means either no diff match or no assignment to this shard.
 // Keep the diff, corpus and selected counts visible in both cases.
-console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fixtures.length}`
-  + (a.all
-    ? " for a full sweep"
-    : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
 if (selected.length === 0) {
   console.log(shard
     ? `No selected mutation fixtures are assigned to shard ${a.shard}.`
     : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
   process.exit(0);
 }
-console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
 
 // A fixture's proof has more than two outcomes, and collapsing any of them is itself a silent
 // failure. mutation-proof grades each mutation and encodes the run in its exit code:

@@ -358,7 +358,7 @@ try {
       (r) => {
         mkdirSync(join(r, "sources"), { recursive: true });
         writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
-        writeFileSync(join(r, "sources", "a-primary.smoke.mjs"), "import { a } from '../a.mjs';\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n");
+        writeFileSync(join(r, "sources", "a-primary.smoke.mjs"), "import { a } from '../a.mjs';\nif (a() !== 1) { console.error('✗ FAIL: a is one'); process.exit(1); }\nconsole.log('✓ a is one');\n");
         writeFileSync(join(r, "sources", "a-secondary.smoke.ts"), "base\n");
         writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
           suite: ["sources/a-primary.smoke.mjs", "sources/a-secondary.smoke.ts"],
@@ -514,8 +514,8 @@ try {
     );
   }
 
-  // 7. Deleting the configured suite selects its fixture through the deleted suite path. The proof's
-  //    missing-command baseline exits 4, which is still attributable to this diff and must fail.
+  // 7. Deleting the configured suite selects its fixture through the deleted suite path, then fails
+  //    loud as a dangling declared source before proof execution.
   {
     const { root, base, head } = build((r) => {
       git(r, ["rm", "--quiet", "suites/a.suite.mjs"]);
@@ -526,16 +526,13 @@ try {
       "a deleted configured suite FAILS and names exactly that fixture",
       status === 1
         && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(attributablePreRedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(offenderPaths(out), ["smoke/mutations/a.mutations.json"])
-        && out.includes("smoke/mutations/a.mutations.json -> command: node suites/a.suite.mjs")
-        && out.includes("base GREEN (exit 0) -> head RED (exit 1)"),
+        && eq(danglingPaths(out), ["smoke/mutations/a.mutations.json"])
+        && out.includes("missing: suites/a.suite.mjs"),
       `status=${status} selected=${JSON.stringify(selectedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
     );
   }
 
-  // 8. Renaming the configured suite away selects through the old path. Its missing-command baseline
-  //    is attributed to this diff just like deletion, while the untouched sibling stays unselected.
+  // 8. Renaming the configured suite away selects through the old path, then fails loud as dangling.
   {
     const { root, base, head } = build((r) => {
       git(r, ["mv", "suites/a.suite.mjs", "suites/renamed.suite.mjs"]);
@@ -546,10 +543,8 @@ try {
       "a renamed-away configured suite FAILS and names exactly that fixture",
       status === 1
         && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(attributablePreRedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(offenderPaths(out), ["smoke/mutations/a.mutations.json"])
-        && out.includes("smoke/mutations/a.mutations.json -> command: node suites/a.suite.mjs")
-        && out.includes("base GREEN (exit 0) -> head RED (exit 1)"),
+        && eq(danglingPaths(out), ["smoke/mutations/a.mutations.json"])
+        && out.includes("missing: suites/a.suite.mjs"),
       `status=${status} selected=${JSON.stringify(selectedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
     );
   }
@@ -827,8 +822,8 @@ try {
         ? "export function origin() { throw new Error('connect ECONNREFUSED 127.0.0.1:4222'); }\norigin();\n"
         : "export function origin() { throw new Error('same stack message'); }\norigin();\n");
       writeFileSync(join(r, "suites", "stack.suite.mjs"), caught
-        ? "try { await import('./origin.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
-        : "import './origin.mjs';\n");
+        ? "try { await import('../origin.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
+        : "import '../origin.mjs';\n");
       writeFileSync(join(r, "smoke", "mutations", "stack.mutations.json"), JSON.stringify({ suite: ["suites/stack.suite.mjs"], command: "node suites/stack.suite.mjs", mutations: [{ name: "stack", file: "stack.mjs", find: "export const stack = 1;", replace: "export const stack = 2;", expectRed: "same stack message" }] }, null, 2));
     },
     (r) => {
@@ -837,8 +832,8 @@ try {
       if (variant === "file") {
         writeFileSync(join(r, "other.mjs"), "export function origin() { throw new Error('same stack message'); }\norigin();\n");
         writeFileSync(join(r, "suites", "stack.suite.mjs"), caught
-          ? "try { await import('./other.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
-          : "import './other.mjs';\n");
+          ? "try { await import('../other.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
+          : "import '../other.mjs';\n");
       }
       if (variant === "function") writeFileSync(join(r, "origin.mjs"), "export function differentOrigin() { throw new Error('same stack message'); }\ndifferentOrigin();\n");
       if (variant === "loader") writeFileSync(join(r, "stack.mjs"), "// clone-local loader paths may differ\nexport const stack = 1;\n");
@@ -1003,7 +998,7 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "dep.mjs"), "export const suffix = 'base';\n");
-        writeFileSync(join(r, "suites", "caller.mjs"), "import { suffix } from '../dep.mjs';\nawait import(`./.pnpm/pkg@${suffix}/pkg/throw.mjs`);\n");
+        writeFileSync(join(r, "suites", "caller.mjs"), "import { suffix } from '../dep.mjs';\nawait import(`../.pnpm/pkg@${suffix}/pkg/throw.mjs`);\n");
         for (const suffix of ["base", "peer"]) {
           mkdirSync(join(r, ".pnpm", `pkg@${suffix}`, "pkg"), { recursive: true });
           writeFileSync(join(r, ".pnpm", `pkg@${suffix}`, "pkg", "throw.mjs"), "throw new Error('dependency-origin red');\n");
