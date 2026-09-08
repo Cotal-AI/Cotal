@@ -368,7 +368,7 @@ export interface ManagerCommandDrainResult {
   status: "drained" | "recovery-required";
   accepted: number;
   settled: number;
-  unaccounted: ReadonlyArray<{ requestId: string; command: string; acceptedAt: number }>;
+  unaccounted: ReadonlyArray<{ caller: string; requestId: string; command: string; acceptedAt: number }>;
 }
 
 
@@ -1050,7 +1050,7 @@ export class Manager {
   /** Every manager command that crossed the shared admission fence but has not yet reached a
    * conclusive success/refusal. Request id is the wire id, not a generated counter: a drain can name
    * the exact accepted request whose outcome needs recovery. */
-  private readonly acceptedCommands = new Map<string, { command: string; acceptedAt: number }>();
+  private readonly acceptedCommands = new Map<string, { caller: string; requestId: string; command: string; acceptedAt: number }>();
   private acceptedCommandCount = 0;
   private settledCommandCount = 0;
   private preservationTask?: Promise<ManagerPreserveResult>;
@@ -2450,20 +2450,21 @@ export class Manager {
       return { refusal: membership, fence: "membership" };
     }
     if (!accepted) return { release };
-    if (this.acceptedCommands.has(accepted.requestId)) {
+    const acceptedKey = JSON.stringify([caller, accepted.requestId]);
+    if (this.acceptedCommands.has(acceptedKey)) {
       release();
       return {
         refusal: `manager request ${accepted.requestId} is already accepted and has not reached a conclusive disposition`,
         fence: "maintenance",
       };
     }
-    this.acceptedCommands.set(accepted.requestId, { command: accepted.command, acceptedAt: Date.now() });
+    this.acceptedCommands.set(acceptedKey, { caller, requestId: accepted.requestId, command: accepted.command, acceptedAt: Date.now() });
     this.acceptedCommandCount++;
     let settled = false;
     return { release: () => {
       if (settled) return;
       settled = true;
-      this.acceptedCommands.delete(accepted.requestId);
+      this.acceptedCommands.delete(acceptedKey);
       this.settledCommandCount++;
       release();
     } };
@@ -2488,7 +2489,7 @@ export class Manager {
     } finally {
       if (timer) clearTimeout(timer);
     }
-    const unaccounted = [...this.acceptedCommands.entries()].map(([requestId, value]) => ({ requestId, ...value }));
+    const unaccounted = [...this.acceptedCommands.values()].map((value) => ({ ...value }));
     return {
       status: timedOut || unaccounted.length > 0 ? "recovery-required" : "drained",
       accepted: this.acceptedCommandCount,
