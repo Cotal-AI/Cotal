@@ -142,8 +142,8 @@ try {
   const requests = operator.subscribe(`cotal.${space}.ep.v1.one.>`, { queue: "proof-bound" });
   void (async () => { for await (const msg of requests) seen.add(new TextDecoder().decode(msg.data)); })();
   await operator.flush();
-  async function open(generation: string, name = issuedCalloutName(generation, random()), token: string | null = bearer) {
-    const nc = await connect({ servers: server, authenticator: token ? [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(token)] : credsAuthenticator(enc(callout.sentinelCreds)), name, inboxPrefix: `_INBOX_${name}`, reconnect: false, maxReconnectAttempts: 0, timeout: 4000 });
+  async function open(generation: string, name = issuedCalloutName(generation, random()), token: string | null = bearer, reconnect = false) {
+    const nc = await connect({ servers: server, authenticator: token ? [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(token)] : credsAuthenticator(enc(callout.sentinelCreds)), name, inboxPrefix: `_INBOX_${name}`, reconnect, maxReconnectAttempts: reconnect ? 3 : 0, reconnectTimeWait: 25, reconnectJitter: 0, timeout: 4000 });
     connections.push(nc);
     return { nc, ref: Object.freeze(refFor(generation)) };
   }
@@ -215,6 +215,21 @@ try {
     assert.equal(await kv.get(evidenceKey(refFor(missing))), null);
     assert.equal(await kv.get(evidenceKey(refFor(forged))), null);
   });
+  await check("an auto-reconnecting callout client fails closed instead of renewing in place", async () => {
+    // The connection name is fixed at connect time, so a reconnect re-proposes the same
+    // generation. Reuse refusal is what stops a live transport from quietly changing ceiling.
+    const renewing = random();
+    const client = await open(renewing, issuedCalloutName(renewing, random()), bearer, true);
+    assert.deepEqual(await discoverIssuedAuthority(client.nc, space), refFor(renewing));
+    const closed = client.nc.closed();
+    await client.nc.reconnect().catch(() => {});
+    await until(() => client.nc.isClosed(), "callout reconnect outcome");
+    assert.match(String((await closed)?.message ?? ""), /[Aa]uthorization/);
+    const state = JSON.parse(new TextDecoder().decode((await kv.get(`attempt.${evidenceKey(refFor(renewing))}`))!.value));
+    assert.equal(state.state, "active");
+    assert.equal(issued.size, new Set([...issued.keys()]).size);
+  });
+
   await check("a callout client discovers the generation the issuer bound, not the one it proposed", async () => {
     // The connection name is a client proposal. Acceptance alone cannot tell the client which
     // generation the issuer actually bound, so it reads that back from the server.

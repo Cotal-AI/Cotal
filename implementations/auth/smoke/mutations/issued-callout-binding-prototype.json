@@ -37,6 +37,14 @@
       "replace": "  const allow = [`cotal.${space}.ep.v1.one.p.c.local.calloutproof.${\"u\".repeat(26)}.${\"a\".repeat(32)}.*`];",
       "expectRed": "a callout client discovers the generation the issuer bound, not the one it proposed",
       "cell": "a callout client discovers the generation the issuer bound, not the one it proposed"
+    },
+    {
+      "name": "issuance staging allows a generation to be re-prepared",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "      await kv.create(key, bytes(evidence));\n      const revision = await kv.create(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));",
+      "replace": "      await kv.put(key, bytes(evidence));\n      const revision = await kv.put(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));",
+      "expectRed": "an auto-reconnecting callout client fails closed instead of renewing in place",
+      "cell": "an auto-reconnecting callout client fails closed instead of renewing in place"
     }
   ]
 }
