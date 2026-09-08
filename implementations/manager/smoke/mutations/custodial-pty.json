@@ -1,10 +1,10 @@
 {
   "suite": "implementations/manager/smoke/custodial-pty.smoke.ts",
-  "guard": "the production pty runtime adopts a live proxy and a runtime without adopt still refuses by name",
+  "guard": "the production pty runtime adopts a live proxy that exposes release, and a runtime without adopt still refuses by name",
   "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && pnpm smoke:custodial-pty",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/custodial-pty.json",
   "why": [
-    "The refusal cell is the earliest expectRed and is reached through production requireRuntimeAdopt. The production adopt cell is a later, separate observation of a live proxy from CustodialPtyRuntime.adopt."
+    "The refusal cell is the earliest expectRed and is reached through production requireRuntimeAdopt. The production adopt cell is a later observation of a live successor from CustodialPtyRuntime.adopt. A separate cell then requires that successor to expose release, which is the property proxy() adds."
   ],
   "mutations": [
     {
@@ -42,6 +42,15 @@
       "expectRed": "status output accepts custodied",
       "cell": "status output accepts custodied",
       "note": "The compiled status output is the required enum pin. Dropping custodied must redden that cell."
+    },
+    {
+      "name": "M5 return the unproxied seat from production adopt",
+      "file": "implementations/manager/src/runtime/custodial-pty.ts",
+      "find": "return this.proxy(adoptSeatSync(loadSeat(this.root, reference.id)));",
+      "replace": "return adoptSeatSync(loadSeat(this.root, reference.id)) as unknown as AgentHandle;",
+      "expectRed": "production adopt exposes release",
+      "cell": "production adopt exposes release",
+      "note": "The mutation keeps the live seat and drops only proxy(). pid and attach still match, so the live-proxy cell stays green; the release cell is what must red."
     }
   ]
 }

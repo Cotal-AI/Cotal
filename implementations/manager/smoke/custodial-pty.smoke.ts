@@ -92,6 +92,10 @@ if (process.platform !== "linux") {
   check("spawned handle exposes a durable reference", h.reference !== undefined && h.reference.kind === "pty", h.reference);
   const adopted = requireRuntimeAdopt(rt, h.reference!);
   check("production adopt returns a live proxy", typeof adopted.attach === "function" && adopted.pid === h.pid);
+  check(
+    "production adopt exposes release",
+    typeof (adopted as { release?: unknown }).release === "function",
+  );
   h.stop({ graceful: false });
   await h.waitForExit?.();
   drop(adopted);
