@@ -56,6 +56,62 @@
       "replace": "  `MUTATION COVERAGE SUMMARY head=unknown enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
       "expectRed": "the audit summary names the exact checkout tree",
       "cell": "the audit summary names the exact checkout tree"
+    },
+    {
+      "name": "a non-terminal OK line is accepted as completion",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    const lines = output.trimEnd().split(/\\r?\\n/);\n    const terminal = lines.at(-1) ?? \"\";",
+      "replace": "    const lines = output.split(/\\r?\\n/);\n    const terminal = lines.find((line) => /(?:PASSED|OK)/.test(line)) ?? \"\";",
+      "expectRed": "early-ok is not a terminal completion witness",
+      "cell": "early-ok is not a terminal completion witness"
+    },
+    {
+      "name": "an invalid progress regex escapes per-config validation",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    try { new RegExp(cfg.progressPattern, \"gm\"); } catch (error) { throw new Error(`\"progressPattern\" is invalid: ${error.message}`); }",
+      "replace": "    void cfg.progressPattern;",
+      "expectRed": "an invalid progress regex is refused without hiding the next config",
+      "cell": "an invalid progress regex is refused without hiding the next config"
+    },
+    {
+      "name": "commented imports count as entrypoint dependencies",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    for (const specifier of relativeImports(actual, source)) {",
+      "replace": "    for (const specifier of [...relativeImports(actual, source), ...(source.match(/@cotal-ai\\/[a-z-]+/g) ?? [])]) {",
+      "expectRed": "comment-import cannot fabricate executes evidence",
+      "cell": "comment-import cannot fabricate executes evidence"
+    },
+    {
+      "name": "non-Node executables count as source entrypoint launches",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;",
+      "replace": "        && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;",
+           "expectRed": "wrong-executable cannot fabricate executes evidence",
+      "cell": "wrong-executable cannot fabricate executes evidence"
+    },
+    {
+      "name": "printed build text counts as a package build",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (tokens[0] !== \"pnpm\") continue;",
+      "replace": "    if (!tokens.includes(\"pnpm\")) continue;",
+      "expectRed": "printed-build cannot fabricate executes evidence",
+      "cell": "printed-build cannot fabricate executes evidence"
+    },
+    {
+      "name": "a genuine variable argument array is refused",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isIdentifier(node)) node = variables.get(node.text);",
+      "replace": "    if (ts.isIdentifier(node)) return false;",
+      "expectRed": "a genuine subprocess argument array is accepted",
+      "cell": "a genuine subprocess argument array is accepted"
+    },
+    {
+      "name": "the pnpm --filter=value form is refused",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    const value = tokens[filter].startsWith(\"--filter=\") ? tokens[filter].slice(9) : tokens[filter + 1];",
+      "replace": "    const value = tokens[filter + 1];",
+      "expectRed": "the pnpm --filter=value build form is accepted",
+      "cell": "the pnpm --filter=value build form is accepted"
     }
   ]
 }
