@@ -82,14 +82,22 @@ export async function queryOperation(kv: KV, resourceKey: ResourceKey, operation
   };
 }
 
+async function assertStoredSessionManagementWritable(kv: KV, resourceKey: ResourceKey): Promise<void> {
+  const current = await readSessionTrustedState(kv, resourceKey);
+  if (current !== undefined) assertSessionManagementWritable(current);
+}
+
 /**
  * Create the prepared operation fence. Retrying the exact same input returns the recorded row;
  * reusing its operationId with different input refuses and never overwrites the first transition.
+ * A store already in management-recovery-read-only cannot create a new row; an identical retry
+ * may still return the recorded fence.
  */
 export async function prepareSessionOperation(
   kv: KV,
   value: Omit<SessionOperationRecord, "inputDigest" | "state" | "result" | "proofOrigin">,
 ): Promise<{ readonly created: boolean; readonly record: SessionOperationRecord }> {
+  await assertStoredSessionManagementWritable(kv, value.resourceKey);
   const input = sessionOperationInput(value);
   const key = sessionOperationKey(value.resourceKey, value.operationId);
   const record = parseSessionOperation(encoded({ ...value, inputDigest: sessionOperationInputDigest(input), state: "prepared" }), key, value.resourceKey);
@@ -120,6 +128,7 @@ export async function updateSessionOperation(
   if (existing.record.inputDigest !== parsed.inputDigest || !sameSessionOperationInput(existing.record, parsed))
     throw new EpEnvelopeError("conflict", `operationId ${parsed.operationId} is already bound to different transition input and cannot be rewritten during a phase update`);
   assertSessionOperationStateMonotonic(existing.record.state, parsed.state);
+  await assertStoredSessionManagementWritable(kv, parsed.resourceKey);
   return await updateRecordEntry(kv, sessionOperationKey(parsed.resourceKey, parsed.operationId), parsed, expectedRevision);
 }
 
@@ -136,6 +145,13 @@ export async function readSessionTrustedState(kv: KV, resourceKey: ResourceKey):
  * Persist the monotonic trusted state. A lower floor is a restored/rolled-back view and forces the
  * record into management-recovery-read-only rather than resetting native authority. Retired ids are
  * unioned forever in this implementation, including across release and re-adoption.
+ *
+ * Detectable rollback is a live native observation above the stored floor, or an unknown native
+ * floor. Both force recovery-read-only and raise the stored floor to the observed value. A store
+ * whose only remaining row is an older floor that the current native observation AGREES with is
+ * not distinguishable from a store that was always at that floor: there is no durable watermark
+ * older than the row itself. This function does not invent one, so that residual stays writable.
+ * Fail closed on the cases that can actually be seen.
  */
 export async function advanceSessionTrustedState(
   kv: KV,

@@ -102,6 +102,13 @@ c("a store restored below the live receiver floor starts management recovery-rea
 const unknownFloor = await advanceSessionTrustedState(kv, { ...resource, stableSessionId: "unknown-floor" }, { epochFloor: 0, observedNativeEpochFloor: "unknown" });
 c("unknown native epoch floor starts management recovery-read-only", unknownFloor.epochFloor === 0 && unknownFloor.managementMode === "management-recovery-read-only");
 throws("recovery-read-only blocks management writes", () => assertSessionManagementWritable(rolled), "failed-precondition");
+await rejects("recovery-read-only refuses a new prepare", () => prepareSessionOperation(kv, { ...base, operationId: "op-readonly-prepare", action: "adopt" }), "failed-precondition");
+await rejects("recovery-read-only refuses an operation update", () => updateSessionOperation(kv, {
+  ...terminal,
+  state: "terminal-success",
+}, (kv as unknown as MemKv).rows.get([... (kv as unknown as MemKv).rows.keys()].find((k) => k.includes("op-1"))!)!.revision), "failed-precondition");
+const residual = await advanceSessionTrustedState(kv, { ...resource, stableSessionId: "restored-agreeing" }, { epochFloor: 3, observedNativeEpochFloor: 3 });
+c("an agreeing older floor is not distinguishable from a store that was always there and stays writable", residual.epochFloor === 3 && residual.managementMode === "writable");
 
 const writable = { ...state2, managementMode: "writable" as const };
 const recorded = await queryOperation(kv, resource, "op-1");
@@ -138,6 +145,7 @@ c("a deleted authority binding is corruption and fails closed, never proven abse
 const releasedBinding = { ...nativeBinding, state: "released" as const, operationId: "release-final" };
 const releasedEntry = { ...bindingEntry, value: new TextEncoder().encode(JSON.stringify(releasedBinding)) };
 c("a released label without its terminal release receipt still blocks shutdown", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [releasedEntry] as never));
+c("default binding lookup without an injected scanner fails closed as possibly live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager"));
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);
