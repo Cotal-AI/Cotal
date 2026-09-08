@@ -542,6 +542,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/seat':
+        specifier: workspace:*
+        version: link:../../packages/seat
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
@@ -697,6 +700,18 @@ importers:
       ses:
         specifier: ^2.3.0
         version: 2.3.0
+
+  packages/seat:
+    dependencies:
+      '@lydell/node-pty':
+        specifier: 1.2.0-beta.12
+        version: 1.2.0-beta.12
+      '@xterm/addon-serialize':
+        specifier: ^0.13.0
+        version: 0.13.0(@xterm/xterm@5.5.0)
+      '@xterm/headless':
+        specifier: ^5.5.0
+        version: 5.5.0
 
   packages/smoke-kit: {}
 

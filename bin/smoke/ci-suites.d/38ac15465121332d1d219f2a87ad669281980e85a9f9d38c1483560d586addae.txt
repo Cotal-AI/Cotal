@@ -1,0 +1,2 @@
+# Seat custody: killing one custodian must not take a second seat with it.
+smoke:seat-isolation

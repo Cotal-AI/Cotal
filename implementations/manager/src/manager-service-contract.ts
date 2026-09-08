@@ -64,7 +64,7 @@ const STATUS_OUTPUT_SCHEMA = {
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
     /** Whether this manager can hand running runtime handles to a successor. */
-    custody: { enum: ["legacy"] },
+    custody: { enum: ["legacy", "custodied"] },
     /** How many agents this manager currently supervises. */
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
@@ -134,7 +134,7 @@ const STATUS_OUTPUT_SCHEMA = {
 export interface ManagerStatus {
   instanceId: string;
   runtime: string;
-  custody: "legacy";
+  custody: "legacy" | "custodied";
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
@@ -765,8 +765,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  SPEC 14.3): the manager hosts a run's driver and serves its operator surface. NEW SERVED
  *  COMMANDS are what a revision is for, and five of them cannot fold into 11.
  *
- *  13 = manager `status` adds static reconciliation state. Its output digest changed, so cached
- *  revision-12 descriptions cannot name the new required output contract. */
+ *  13 = manager `status` custody generation admits `custodied` (Linux pty seat ownership)
+ *  alongside `legacy`. A changed output contract is a changed described surface even though
+ *  the command name is unchanged.
+ *
+ *  14 = manager `status` adds static reconciliation state. Its output digest changed again, so
+ *  cached revision-13 descriptions cannot name the new required output contract. This is a
+ *  second, independent output change landing on the same command as 13, so it cannot fold into
+ *  it: a caller holding a revision-13 descriptor would be told the surface it already knows. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -784,7 +790,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 13,
+    revision: 14,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

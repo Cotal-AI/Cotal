@@ -1,5 +1,9 @@
 # @cotal-ai/connector-codex
 
+## 0.47.1
+
+## 0.47.0
+
 ## 0.46.0
 
 ### Minor Changes

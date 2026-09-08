@@ -1,0 +1,39 @@
+{
+  "suite": "packages/seat/smoke/protocol.smoke.ts",
+  "guard": "FrameReader refuses a client-claimed length above MAX_FRAME_SIZE at the header, drains complete frames before bounding residual, and still round-trips a max-size frame coalesced with a small one",
+  "command": "pnpm smoke:seat-protocol",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/protocol-frame-bounds.json",
+  "why": [
+    "An unauthenticated local peer can send a 4-byte header claiming hundreds of megabytes. The per-frame cap refuses that at the header, before any body. Bounding accumulation BEFORE drain also refuses a legitimate max-size frame coalesced with the next frame on the same read. The coalesced cell is the control for that second defect; both cells import src through tsx and the live custodian loads dist, so afterRestore rebuilds."
+  ],
+  "mutations": [
+    {
+      "name": "M1 drop the per-frame size rejection",
+      "file": "packages/seat/src/protocol.ts",
+      "find": "      if (size > MAX_FRAME_SIZE) {\n        this.buf = Buffer.alloc(0);\n        throw new Error(`frame length ${size} exceeds ${MAX_FRAME_SIZE} bytes`);\n      }",
+      "replace": "      if (false && size > MAX_FRAME_SIZE) {\n        this.buf = Buffer.alloc(0);\n        throw new Error(`frame length ${size} exceeds ${MAX_FRAME_SIZE} bytes`);\n      }",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "a claimed 500MB frame is refused before the body arrives",
+      "cell": "a claimed 500MB frame is refused before the body arrives"
+    },
+    {
+      "name": "M2 reintroduce the pre-drain accumulation bound",
+      "file": "packages/seat/src/protocol.ts",
+      "find": "  push(chunk: Buffer): unknown[] {\n    this.buf = Buffer.concat([this.buf, chunk]);",
+      "replace": "  push(chunk: Buffer): unknown[] {\n    if (chunk.length > MAX_BUFFER_SIZE || this.buf.length + chunk.length > MAX_BUFFER_SIZE) {\n      this.buf = Buffer.alloc(0);\n      throw new Error(`frame buffer exceeds ${MAX_BUFFER_SIZE} bytes`);\n    }\n    this.buf = Buffer.concat([this.buf, chunk]);",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "a max-size frame plus a small frame in one chunk both decode",
+      "cell": "a max-size frame plus a small frame in one chunk both decode"
+    },
+    {
+      "name": "M3 put launch payload on argv",
+      "file": "packages/seat/src/launcher.ts",
+      "find": "  const child = spawn(process.execPath, [custodianEntry()], {",
+      "replace": "  const child = spawn(process.execPath, [custodianEntry(), payload], {",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "launch payload is not on the custodian cmdline",
+      "cell": "launch payload is not on the custodian cmdline",
+      "note": "argv is world-readable via /proc/pid/cmdline. stdin still carries the JSON so the seat starts; the cell reads real procfs."
+    }
+  ]
+}

@@ -8,8 +8,8 @@
     {
       "name": "registered user entries no longer take the remote-host authority refusal branch",
       "file": "implementations/manager/src/commands.ts",
-      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
-      "replace": "    if (false) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
+      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
+      "replace": "    if (false) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
       "expectRed": "registered participant without login/authority refuses before manager start, never false down/up advice",
       "cell": "registered participant without login/authority refuses before manager start, never false down/up advice",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
@@ -17,8 +17,8 @@
     {
       "name": "an explicit server mismatch is accepted instead of refusing a split target",
       "file": "implementations/manager/src/commands.ts",
-      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
-      "replace": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (false)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
+      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
+      "replace": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (false)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
       "expectRed": "explicit --server mismatch is named before remote-host refusal or dial",
       "cell": "explicit --server mismatch is named before remote-host refusal or dial",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"

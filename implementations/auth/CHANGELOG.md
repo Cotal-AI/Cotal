@@ -1,5 +1,20 @@
 # @cotal-ai/auth
 
+## 0.47.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.47.1
+- @cotal-ai/workspace@0.47.1
+
+## 0.47.0
+
+### Patch Changes
+
+- 0855cb7: Grade each ambient `process.env` spread on its own, and strip `COTAL_` from the user-spawn auth-service child.
+  - @cotal-ai/core@0.47.0
+  - @cotal-ai/workspace@0.47.0
+
 ## 0.46.0
 
 ### Patch Changes

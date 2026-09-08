@@ -1,0 +1,58 @@
+{
+  "suite": "packages/seat/smoke/platform.smoke.ts",
+  "guard": "publishable @cotal-ai/seat trees carry native linux-x64 and linux-arm64 SO_PEERCRED helpers, load by process.arch, and refuse an unsupported arch",
+  "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:seat-platform",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/packaging.json",
+  "why": [
+    "The ARM load job consumes the same packed tarball. A host pnpm build is one arch and must not pack. These windows are the four cells owed for that split."
+  ],
+  "mutations": [
+    {
+      "name": "M1 skip arm64 completeness in the pack gate",
+      "file": "packages/seat/scripts/assert-shipped-natives.mjs",
+      "find": "  { arch: \"arm64\", elfMachine: 183 },",
+      "replace": "",
+      "expectRed": "one-arch tree is refused before pack",
+      "cell": "one-arch tree is refused before pack",
+      "note": "Dropping linux-arm64 from the shipped list lets a host-only tree pack."
+    },
+    {
+      "name": "M2 ignore process.arch when choosing the helper",
+      "file": "packages/seat/src/peercred.ts",
+      "find": "  return join(here, \"..\", \"build\", \"Release\", `linux-${arch}`, \"peercred.node\");",
+      "replace": "  return join(here, \"..\", \"build\", \"Release\", \"linux-none\", \"peercred.node\");",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "loader selects the host arch helper",
+      "cell": "loader selects the host arch helper",
+      "note": "A fixed path cannot load the host helper on both linux-x64 and linux-arm64."
+    },
+    {
+      "name": "M3 skip arm64 copy in assemble",
+      "file": "scripts/seat-assemble-natives.mjs",
+      "find": "  [\"x64\", x64],\n  [\"arm64\", arm64],",
+      "replace": "  [\"x64\", x64],",
+      "expectRed": "assemble copies both native builder artifacts",
+      "cell": "assemble copies both native builder artifacts",
+      "note": "PR pack, Changesets, and snapshot share this copy step. Skipping arm64 ships one arch."
+    },
+    {
+      "name": "M4 soften unsupported-arch copy",
+      "file": "packages/seat/src/peercred.ts",
+      "find": "    `@cotal-ai/seat: SO_PEERCRED native helper unsupported on ${platform}-${arch} (supported: linux-x64, linux-arm64)`,",
+      "replace": "    `unsupported platform`,",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "unsupported linux arch is loud",
+      "cell": "unsupported linux arch is loud",
+      "note": "The owed loud-fail names linux-x64 and linux-arm64 rather than a generic skip."
+    },
+    {
+      "name": "M5 drop the prepack gate",
+      "file": "packages/seat/package.json",
+      "find": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs\",\n",
+      "replace": "",
+      "expectRed": "host-only pnpm pack is refused by prepack",
+      "cell": "host-only pnpm pack is refused by prepack",
+      "note": "prepublishOnly does not run on pnpm pack. Removing prepack lets a host-only tree pack."
+    }
+  ]
+}

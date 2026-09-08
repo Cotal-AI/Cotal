@@ -77,9 +77,12 @@ Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
 `ci:publish` in the root `package.json` is:
 
 ```bash
-pnpm publish -r --provenance --access=public --no-git-checks
+pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
 ```
 
+- `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
+  when a partial retry publishes only the packages still missing.
+- `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.
 - `-r`: recursively publish all workspace packages.
 - `--provenance`: emit SLSA provenance attestations (a no-op without OIDC, automatic with it).
 - `--access=public`: required for scoped packages on first publish.

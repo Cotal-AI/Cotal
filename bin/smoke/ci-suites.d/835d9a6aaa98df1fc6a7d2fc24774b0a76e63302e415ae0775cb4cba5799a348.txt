@@ -1,0 +1,3 @@
+# Remote supervision picks its transport from the recorded broker URL, and carries the record's TLS
+# requirement into the dial. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:supervise-remote-dial

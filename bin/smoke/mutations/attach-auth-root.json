@@ -122,7 +122,7 @@
     {
       "name": "CONTROL the attach seed-output assertion is live in its suite file",
       "file": "bin/smoke/attach-auth-root.smoke.ts",
-      "find": "    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\\n)(?:\u2713 added @cotal-ai\\/|\u2192 wrote operator-global seed store payload)/.test(o)),",
+      "find": "    ![fromFossil, fromBare, fromCorrupt].some((o) =>\n      /(?:^|\\n)(?:\u2713 added @cotal-ai\\/|\u2192 wrote operator-global seed store payload|\u2717 refusing to reconcile the operator-global seed store)/.test(o),\n    ),",
       "replace": "    false,",
       "expectRed": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
       "cell": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
