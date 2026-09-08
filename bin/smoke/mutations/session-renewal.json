@@ -1,0 +1,53 @@
+{
+  "suite": "packages/core/smoke/session-renewal.smoke.ts",
+  "guard": "owner-authorized auth-service renewal preserves actor/lifecycle/nkey, confines every mint to current authority within its ceiling, and keeps legacy static families as named mesh-release blockers",
+  "command": "pnpm smoke:session-renewal",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/session-renewal.json",
+  "why": [
+    "Each mutation removes one load-bearing authorization or release-honesty check and must die on the named assertion rather than on setup.",
+    "The suite performs two accelerated renewals without a broker or live service, keeping the item-4 real manager service exit explicitly outside this fixture.",
+    "The session-agent matrix row remains frozen and the mint consumes the private module-load TTL snapshot, so exported policy mutation cannot change issued lifetime."
+  ],
+  "mutations": [
+    {
+      "name": "session renewal admits supervise",
+      "file": "packages/core/src/session-renewal.ts",
+      "find": "  if (capabilities.includes(\"supervise\"))\n    refuse(\"permission-denied\", \"session renewal authority must never include supervise; renewal is not management authority\");",
+      "replace": "  if (false && capabilities.includes(\"supervise\"))\n    refuse(\"permission-denied\", \"session renewal authority must never include supervise; renewal is not management authority\");",
+      "expectRed": "supervise is never admitted as renewal authority",
+      "cell": "supervise is never admitted as renewal authority"
+    },
+    {
+      "name": "holder proof verification is bypassed",
+      "file": "packages/core/src/session-renewal.ts",
+      "find": "  if (!verified) refuse(\"permission-denied\", \"session renewal holder proof does not verify for the lifecycle's existing nkey\");",
+      "replace": "  if (false && !verified) refuse(\"permission-denied\", \"session renewal holder proof does not verify for the lifecycle's existing nkey\");",
+      "expectRed": "holder proof is bound to the lifecycle's existing nkey",
+      "cell": "holder proof is bound to the lifecycle's existing nkey"
+    },
+    {
+      "name": "fresh ACL can exceed capability ceiling",
+      "file": "packages/core/src/session-renewal.ts",
+      "find": "  withinCeiling(currentAuthority.allowSubscribe, capability.ceiling.allowSubscribe, \"read ACL\");",
+      "replace": "  // MUTANT: skip the fresh read ACL ceiling check",
+      "expectRed": "fresh current ACL cannot exceed the owner-authorized ceiling",
+      "cell": "fresh current ACL cannot exceed the owner-authorized ceiling"
+    },
+    {
+      "name": "request replay mints twice",
+      "file": "packages/core/src/session-renewal.ts",
+      "find": "  if (!await args.consumeRequestId(capability.capabilityId, request.requestId))\n    refuse(\"permission-denied\", `session renewal request ${request.requestId} was already consumed; replay never mints twice`);",
+      "replace": "  if (false && !await args.consumeRequestId(capability.capabilityId, request.requestId))\n    refuse(\"permission-denied\", `session renewal request ${request.requestId} was already consumed; replay never mints twice`);",
+      "expectRed": "a replayed renewal request cannot mint a second generation",
+      "cell": "a replayed renewal request cannot mint a second generation"
+    },
+    {
+      "name": "legacy agent family is mislabeled release-ready",
+      "file": "packages/core/src/session-renewal.ts",
+      "find": "  if (family === INDEPENDENT_SESSION_CREDENTIAL_FAMILY)\n    return { status: \"independently-renewable\", family, renewalOwner: INDEPENDENT_SESSION_RENEWAL_OWNER };",
+      "replace": "  if (family === INDEPENDENT_SESSION_CREDENTIAL_FAMILY || family === \"agent\")\n    return { status: \"independently-renewable\", family, renewalOwner: INDEPENDENT_SESSION_RENEWAL_OWNER };",
+      "expectRed": "legacy static and mixed session identity families remain named release blockers",
+      "cell": "legacy static and mixed session identity families remain named release blockers"
+    }
+  ]
+}

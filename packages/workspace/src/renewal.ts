@@ -1,13 +1,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  createSessionRenewalRequest,
   credsClaims,
   credsFingerprint,
   identityFromCreds,
+  materializeRenewedSessionCreds,
   mintCreds,
   writeSecretFile,
   type Profile,
   type SecretStore,
+  type SessionRenewalMaterial,
+  type SessionRenewalRequest,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { getSpaceAuth } from "./auth-paths.js";
@@ -59,6 +63,114 @@ export interface RemintResult {
    *  merely re-read some file. Present only on `ok`. NEVER persisted: the caller strips it before
    *  writing the renewal record (a stable secret-derived token must not land on disk). */
   fingerprint?: string;
+}
+
+/** Connector-owned independent renewal composition. It deliberately has no manager dependency:
+ * the connector retains its own nkey proof, calls the auth service over its own renewal transport,
+ * and replaces the mesh connection only after the renewed credential is accepted. */
+export interface IndependentSessionRenewalOptions<TConnection> {
+  /** Current complete creds bundle. Its seed stays local and signs every renewal request. */
+  initialCreds: string;
+  capabilityId: string;
+  space: string;
+  resourceKey: SessionRenewalRequest["resourceKey"];
+  owner: string;
+  actor: string;
+  lifecycleUid: string;
+  /** Closed auth-service renewal exchange. No generic mint/profile input crosses it. */
+  renew: (request: SessionRenewalRequest) => Promise<SessionRenewalMaterial>;
+  /** Dedicated mesh connection for the new credential generation. */
+  connect: (creds: string) => Promise<TConnection>;
+  /** Called only after the new connection is accepted. The caller atomically swaps it into use. */
+  adopt: (connection: TConnection, creds: string) => Promise<void> | void;
+  /** Dispose a candidate whose connect/adopt failed. */
+  closeCandidate?: (connection: TConnection) => Promise<void> | void;
+  /** Testable scheduling and id seams. */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  requestId?: () => string;
+  /** Stop only this renewal loop. It never stops the mesh connection or requests mesh leave. */
+  signal?: AbortSignal;
+}
+
+export interface IndependentSessionRenewalController {
+  readonly done: Promise<void>;
+  currentCreds(): string;
+}
+
+/**
+ * Keep an independently renewable released session credential alive.
+ *
+ * There is intentionally no retry fallback to the prior generation after a renewal point. A
+ * request, signature, auth-service refusal, connect failure, or adoption failure rejects `done`
+ * loudly while leaving the caller's already-adopted connection untouched. The caller decides how
+ * to surface/recover; this loop never claims success or silently leaves the mesh.
+ */
+export function startIndependentSessionRenewal<TConnection>(
+  opts: IndependentSessionRenewalOptions<TConnection>,
+): IndependentSessionRenewalController {
+  let current = opts.initialCreds;
+  const identity = identityFromCreds(current);
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const abort = () => { clearTimeout(timer); reject(new Error("independent session renewal stopped")); };
+    if (opts.signal?.aborted) abort();
+    else opts.signal?.addEventListener("abort", abort, { once: true });
+  }));
+  let requestCounter = 0;
+  const nextRequestId = opts.requestId ?? (() => {
+    requestCounter++;
+    return `renew${now().toString(36)}${requestCounter.toString(36).padStart(16, "0")}`;
+  });
+
+  const done = (async () => {
+    for (;;) {
+      if (opts.signal?.aborted) return;
+      const delay = credsRenewalDelayMsAt(current, now());
+      if (delay > 0) await sleep(delay);
+      if (opts.signal?.aborted) return;
+      const request = createSessionRenewalRequest(identity, {
+        capabilityId: opts.capabilityId,
+        space: opts.space,
+        resourceKey: opts.resourceKey,
+        owner: opts.owner,
+        actor: opts.actor,
+        lifecycleUid: opts.lifecycleUid,
+        requestId: nextRequestId(),
+        requestedAt: now(),
+      });
+      const material = await opts.renew(request);
+      const next = materializeRenewedSessionCreds(material, identity);
+      // A malicious/buggy service returning the same or older generation must not create a hot loop
+      // or be reported as renewal. exp strictly advances and the JWT generation must change.
+      const before = credsClaims(current);
+      const after = credsClaims(next);
+      if (typeof before.exp !== "number" || typeof after.exp !== "number" || after.exp <= before.exp)
+        throw new Error("independent session renewal did not advance credential expiry");
+      if (credsFingerprint(next) === credsFingerprint(current))
+        throw new Error("independent session renewal returned the current credential generation");
+      let candidate: TConnection | undefined;
+      try {
+        candidate = await opts.connect(next);
+        await opts.adopt(candidate, next);
+      } catch (e) {
+        if (candidate !== undefined) await opts.closeCandidate?.(candidate);
+        throw e;
+      }
+      current = next;
+    }
+  })();
+  return { done, currentCreds: () => current };
+}
+
+/** Same 75% convention as core, but clock-injected so accelerated fixture tests are instant. */
+function credsRenewalDelayMsAt(creds: string, nowMs: number): number {
+  const claims = credsClaims(creds);
+  if (typeof claims.exp !== "number")
+    throw new Error("independent session renewal requires bounded credentials");
+  const iatMs = (typeof claims.iat === "number" ? claims.iat : nowMs / 1000) * 1000;
+  return iatMs + 0.75 * (claims.exp * 1000 - iatMs) - nowMs;
 }
 
 /** Re-sign the daemon creds files for their EXISTING nkeys (a renewal must never swap a daemon's

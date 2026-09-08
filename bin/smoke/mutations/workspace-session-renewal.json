@@ -1,0 +1,31 @@
+{
+  "suite": "packages/workspace/smoke/session-renewal.smoke.ts",
+  "guard": "the connector performs repeated independent renewals over its own auth-service exchange and candidate mesh connection, adopting only proven newer credentials and failing loud without degrading to the old generation",
+  "command": "pnpm smoke:workspace-session-renewal",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/workspace-session-renewal.json",
+  "why": [
+    "The accelerated clock crosses two renewal points instantly and proves the connector, not a manager, owns the loop.",
+    "Candidate adoption is ordered before current credential replacement; a failed candidate is closed and the last adopted generation remains current.",
+    "There is no retry/static fallback or automatic mesh leave path."
+  ],
+  "mutations": [
+    {
+      "name": "connector replaces current creds before candidate adoption",
+      "file": "packages/workspace/src/renewal.ts",
+      "find": "      current = next;",
+      "replace": "      current = next; // MUTANT anchor\n      throw new Error(\"mutant replaced current before next renewal\");",
+      "expectRed": "two accelerated renewals connect and adopt before replacing current credentials",
+      "cell": "two accelerated renewals connect and adopt before replacing current credentials",
+      "afterRestore": "pnpm --filter @cotal-ai/core build > /dev/null"
+    },
+    {
+      "name": "failed candidate is not closed",
+      "file": "packages/workspace/src/renewal.ts",
+      "find": "        if (candidate !== undefined) await opts.closeCandidate?.(candidate);",
+      "replace": "        if (false && candidate !== undefined) await opts.closeCandidate?.(candidate);",
+      "expectRed": "candidate connect/adopt failure is loud, closes candidate, and preserves current creds",
+      "cell": "candidate connect/adopt failure is loud, closes candidate, and preserves current creds",
+      "afterRestore": "pnpm --filter @cotal-ai/core build > /dev/null"
+    }
+  ]
+}

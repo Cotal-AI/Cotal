@@ -172,7 +172,7 @@ export type CredentialLifetimeClass =
   | "one-shot"
   | "static-operator-managed"
   | "mixed";
-export type CredentialKind = Profile | "membership-observer" | "connection-evictor";
+export type CredentialKind = Profile | "session-agent" | "membership-observer" | "connection-evictor";
 
 export interface CredentialLifetimePolicy {
   class: CredentialLifetimeClass;
@@ -202,6 +202,7 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
   agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  "session-agent": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "released native session mesh identity; renewed only by the typed owner-authorized session-renewal protocol for the SAME actor/lifecycle/nkey at the current ACL ceiling, never by cotal mint or a raw profile string" },
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
@@ -916,6 +917,47 @@ export async function mintPublicUserJwt(
       exp: validDates.exp,
     });
   }
+  return { jwt, exp: validDates.exp };
+}
+
+/**
+ * Issue the bounded agent JWT used only by the typed independent session-renewal protocol.
+ *
+ * `session-agent` is a credential KIND, deliberately not a {@link Profile}: it therefore cannot be
+ * requested through `cotal mint`, a profile/view string, or the generic {@link mintCreds} path. The
+ * auth service supplies the existing public nkey while the connector retains the matching seed.
+ * Permissions are rebuilt through the ordinary agent arm so renewal cannot grow a second grant
+ * implementation. Lifetime comes from the same private module-load snapshot as every other mint,
+ * preserving the frozen-matrix integrity boundary.
+ */
+export async function mintRenewableSessionAgentJwt(
+  auth: Pick<SpaceAuth, "space" | "account">,
+  publicId: string,
+  opts: MintOpts,
+): Promise<{ jwt: string; exp: number }> {
+  if (!/^U[A-Z2-7]{55}$/.test(publicId))
+    throw new Error("mintRenewableSessionAgentJwt: publicId must be a user nkey");
+  if (!opts.principal || !opts.lifecycleUid)
+    throw new Error("mintRenewableSessionAgentJwt: principal and lifecycleUid are required");
+  if (opts.capabilities?.includes("supervise"))
+    throw new Error("mintRenewableSessionAgentJwt: supervise is forbidden; session renewal is not management authority");
+  const pr: MintPrincipal = {
+    owner: opts.principal.owner,
+    actor: opts.principal.actor,
+    connId: publicId,
+    lifecycleUid: opts.lifecycleUid,
+  };
+  const perms = permissionsFor("agent", auth.space, pr, opts);
+  const validDates = userValidDates("session-agent", opts);
+  if (validDates.exp === undefined)
+    throw new Error("mintRenewableSessionAgentJwt: session-agent must be bounded");
+  const jwt = await encodeUser(
+    "session-agent",
+    fromPublic(publicId),
+    fromPublic(auth.account.pub),
+    { ...perms, tags: principalTags(pr.owner, pr.actor) },
+    { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), ...validDates },
+  );
   return { jwt, exp: validDates.exp };
 }
 
