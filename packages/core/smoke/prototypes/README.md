@@ -163,6 +163,21 @@ discovery mints grant `_INBOX.>`, wider than the production per-connection inbox
 because inbox scoping is not what these cells measure. Renewal across a reconnect is not covered
 on the callout path, where automatic reconnect stays disabled.
 
+## Dual-rail migration refusal
+
+`issued-request-admission.ts` is the candidate rule an endpoint applies while it serves both
+the legacy and the versioned rail. A legacy arrival classifies as `legacy` with the named
+reason `unbound-caller-authority`, so caller-scoped admission refuses it by name instead of
+running it under trusted-host authority. A versioned arrival classifies to its exact reference.
+A malformed generation on the versioned rail throws; it is never demoted to a legacy arrival,
+which would turn a broken binding into a silent compatibility path. Subjects from another space
+throw.
+
+The static smoke publishes both a real legacy subject and a real bound subject and waits for
+each to arrive on a live subscription before classifying, so the shapes are the ones the broker
+actually delivers. This is classification only: no endpoint handler, admission record or run
+policy is attached, and the versioned mode token is the only thing separating the two rails.
+
 ## Current profile census
 
 The census constructs every `Profile` and covers the generic callout views. Its
