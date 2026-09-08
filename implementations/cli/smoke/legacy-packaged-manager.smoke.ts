@@ -56,11 +56,10 @@ const fixtureBin = join(base, "bin");
 mkdirSync(fixtureBin);
 for (const name of ["node", "npm", "nats-server", "sh", "tar", "gzip", "which"])
   symlinkSync(locate(name), join(fixtureBin, name));
-symlinkSync(locate("pnpm"), join(fixtureBin, "pnpm"));
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
-const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:/usr/bin:/bin`, NO_COLOR: "1" };
+const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:${dirname(pnpm)}:/usr/bin:/bin`, NO_COLOR: "1" };
 const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
