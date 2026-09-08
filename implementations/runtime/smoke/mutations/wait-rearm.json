@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-checkpoint.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-checkpoint.smoke.ts"
+  ],
   "guard": "a pending `wait` is an outstanding pause, so a takeover re-arms both of its deadlines",
   "command": "pnpm smoke:runtime-mesh-checkpoint",
   "completionMarker": "mesh-checkpoint.smoke:",

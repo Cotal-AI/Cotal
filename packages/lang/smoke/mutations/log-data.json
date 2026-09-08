@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/engine.smoke.ts"
+  ],
   "guard": "A log line is data on the ENGINE: its log sink refuses a value carrying a function anywhere inside it (L4016 naming the value and the path), whether or not the host listens, and lets undefined, non-finite numbers and plain data cross to the trace as they are. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/log-data.json",

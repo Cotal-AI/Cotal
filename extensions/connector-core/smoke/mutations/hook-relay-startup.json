@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/hook-relay-startup.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/hook-relay-startup.smoke.ts"
+  ],
   "guard": "only SessionStart retries transient pre-connect listener errors inside the existing deadline, with capped backoff; later hooks and permanent faults fail open immediately, and a connected frame is never retried",
   "command": "pnpm smoke:hook-relay-startup",
   "completionMarker": "hook-relay-startup smoke:",

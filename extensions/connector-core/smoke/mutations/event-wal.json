@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/event-wal.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/event-wal.smoke.ts"
+  ],
   "guard": "a log has no publish expectation until the principal's shared record is bound to it, and a handle that is no longer entitled to write its own log cannot move that shared record, and an abandonment that cannot reach the shared record refuses rather than clearing half of it",
   "command": "pnpm smoke:event-wal",
   "completionMarker": "event-wal smoke:",

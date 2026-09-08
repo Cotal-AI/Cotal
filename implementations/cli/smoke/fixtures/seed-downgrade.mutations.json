@@ -1,5 +1,8 @@
 {
-  "suite": "implementations/cli/smoke/seed.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/seed.smoke.ts",
+    "implementations/cli/smoke/install.smoke.ts"
+  ],
   "guard": "an older cotal refuses a newer seed store without writing, names only a proven sufficient executable, and keeps the generic fallback otherwise",
   "command": "pnpm smoke:seed",
   "completionMarker": "seed smoke:",

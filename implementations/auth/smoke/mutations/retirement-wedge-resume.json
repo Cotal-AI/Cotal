@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/retirement-wedge.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/retirement-wedge.smoke.ts"
+  ],
   "guard": "the boot crash-resume derives a retirement's owed-ness from the gate AND the alias head: a crash between the barrier's gate terminal and its head terminal leaves the gate retired by the op and the head retiring, and the next auth boot must resume that intent (finishing only the head tail) instead of skipping it forever, while a completed cell (head retired at this uid, or a successor's head) stays skipped",
   "command": "pnpm smoke:retirement-wedge:auth",
   "completionMarker": "RETIREMENT-WEDGE SMOKE",

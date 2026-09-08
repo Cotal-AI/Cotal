@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/agui-emitter.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/agui-emitter.smoke.ts"
+  ],
   "guard": "a recovered pending frame promotes its frozen bracket state into both the WAL and the live emitter before the next source read",
   "command": "pnpm smoke:agui-emitter",
   "completionMarker": "agui-emitter smoke:",

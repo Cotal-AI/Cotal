@@ -44,5 +44,8 @@
       "replace": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);\n    if (limit <= 0) return [];",
       "expectRed": "1.5 a fractional limit 0.5 REFUSES: a count of messages is a whole number"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/history-limit.smoke.ts"
   ]
 }

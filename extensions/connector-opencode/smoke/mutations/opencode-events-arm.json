@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/events-arm.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/events-arm.smoke.ts"
+  ],
   "guard": "the launch arms the event plane, a grant never does, an armed launch with no workspace root refuses instead of putting the write-ahead log somewhere no later start looks, and the connector DECLARES the event plane so an armed launch is not refused at the door",
   "command": "pnpm smoke:opencode-events-arm",
   "completionMarker": "opencode-events-arm smoke:",

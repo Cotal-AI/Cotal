@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "the user-mesh remedy states the omitted-scope default in full, `spawn,role:default`, rather than the narrower `spawn`",
   "command": "pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
   "completionMarker": "USER-SPAWN",

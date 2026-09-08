@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts"
+  ],
   "guard": "a manager never ends its own process over its liveness lease: on unknown it keeps serving and retrying, on gone it re-acquires, on taken it warns and keeps serving, and the operator gets one line per state change while the ordinary shutdown path stays destructive",
   "command": "pnpm smoke:lease-loss-keeps-serving",
   "completionMarker": "checks passed",

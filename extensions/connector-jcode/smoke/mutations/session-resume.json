@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/session-resume.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/session-resume.smoke.ts"
+  ],
   "guard": "a restarting seat resumes its own prior session - same working dir, not archived, non-empty transcript, richest transcript wins - and otherwise starts fresh rather than adopting a session it cannot prove is its own",
   "command": "pnpm smoke:jcode-session-resume",
   "completionMarker": "session resume:",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/docs.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/docs.smoke.ts"
+  ],
   "guard": "a subject wildcard with no literal form in the corpus still reaches the sections that name its base subject",
   "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:docs",
   "completionMarker": "✓ 4 — an unknown page fails loud and lists what is available",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/resolve-rtt-probe.smoke.ts"
+  ],
   "guard": "injected-wait occupancy, not wall-clock vs count×RTT, is the concurrency invariant",
   "command": "pnpm smoke:resolve-rtt",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/resolve-rtt-overlap.json",

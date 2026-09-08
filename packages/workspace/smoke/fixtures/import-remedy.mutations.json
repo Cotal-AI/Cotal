@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/import-remedy.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/import-remedy.smoke.ts"
+  ],
   "guard": "a missing-export import failure names WHICH install is behind, and only prescribes `cotal ext add` when the extension is the older side",
   "command": "pnpm smoke:import-remedy",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/fixtures/import-remedy.mutations.json",

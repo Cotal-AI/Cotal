@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/grammar.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/grammar.smoke.ts"
+  ],
   "guard": "The dead zone is refused when the program is read (L2004), a named function expression binds its own name, bigint literals are refused (L1030), and a literal worktree shared across branches of one concurrent scope is refused while one branch keeps its own tree (L3022). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-grammar",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/static-bindings.json",

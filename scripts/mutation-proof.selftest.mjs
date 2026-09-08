@@ -69,6 +69,8 @@ writeFileSync(
     "",
   ].join("\n"),
 );
+mkdirSync(join(root, "smoke"), { recursive: true });
+writeFileSync(join(root, "smoke", "suite.mjs"), readFileSync(join(root, "suite.mjs"), "utf8"));
 execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm fixture", { cwd: root });
 
 const runTool = (args) =>
@@ -80,6 +82,15 @@ const runTool = (args) =>
     // configuration already carrying the desired value.
     env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
   });
+
+const writeConfig = (name, suite, extra = {}) => {
+  writeFileSync(join(root, name), JSON.stringify({ suite: ["smoke/suite.mjs"],
+    ...(suite === undefined ? {} : { suite }),
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ name: "metadata control", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
+    ...extra,
+  }));
+};
 
 // 1. A mutation the suite DOES catch, named. The everyday case.
 let r = runTool([
@@ -97,6 +108,7 @@ check("...and a multi-line target matches (the compiled shape of a guard)", !r.s
 // the kill proves the suite reaches `src/impl.js` at runtime, so a survivor there is a real
 // coverage gap rather than a mutant that changed nothing. See 2b for the unpaired case.
 writeFileSync(join(root, "survivor-with-control.json"), JSON.stringify({
+  suite: ["smoke/suite.mjs"],
   command: `${process.execPath} suite.mjs`,
   mutations: [
     { name: "control: the guard itself", file: "src/impl.js", find: "if (n > 10)\n    return false;",
@@ -106,6 +118,36 @@ writeFileSync(join(root, "survivor-with-control.json"), JSON.stringify({
   ],
 }));
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm survivor-control", { cwd: root });
+
+writeConfig("metadata-missing.json", undefined);
+writeConfig("metadata-empty.json", []);
+writeConfig("metadata-string.json", "suite.mjs");
+writeConfig("metadata-element.json", [42]);
+writeConfig("metadata-nonpath.json", ["suite.mjs"]);
+writeConfig("metadata-missing-source.json", ["smoke/missing.mjs"]);
+writeConfig("metadata-valid.json", ["smoke/suite.mjs", "src/impl.js"]);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm metadata", { cwd: root });
+for (const [name, diagnosis] of [
+  ["metadata-missing.json", "MISSING SUITE METADATA"],
+  ["metadata-empty.json", "EMPTY SUITE METADATA"],
+  ["metadata-string.json", "MALFORMED SUITE METADATA"],
+  ["metadata-element.json", "MALFORMED SUITE METADATA"],
+  ["metadata-nonpath.json", "NON-PATH SUITE SOURCE"],
+  ["metadata-missing-source.json", "SUITE SOURCE MISSING"],
+]) {
+  r = runTool(["--config", name]);
+  check(`config mode rejects ${name}`, r.status !== 0 && r.stdout.includes(diagnosis), r.stdout.slice(-400));
+}
+r = runTool(["--config", "metadata-valid.json"]);
+check("config mode accepts a valid multi-source array", r.status === 0 && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("ad-hoc CLI mode remains usable without repository suite metadata", r.status === 0 && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
 r = runTool(["--config", "survivor-with-control.json"]);
 check("a SURVIVED mutation is reported and exits non-zero", r.status !== 0 && verdictIs(r.stdout, "SURVIVED"), r.stdout.slice(-300));
 check("...and it cites the positive control that licenses the verdict",
@@ -245,6 +287,7 @@ writeFileSync(
 writeFileSync(
   join(root, "unknown-key.json"),
   JSON.stringify({
+    suite: ["smoke/suite.mjs"],
     command: `${process.execPath} suite.mjs`,
     mutations: [{ label: "typo: the key is `name`", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
   }),
@@ -253,6 +296,7 @@ writeFileSync(
 writeFileSync(
   join(root, "sibling-keys.json"),
   JSON.stringify({
+    suite: ["smoke/suite.mjs"],
     command: `${process.execPath} suite.mjs`,
     mutations: [{ name: "carries the keys the coverage pass reads", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "the guard refuses an oversized value", cell: "the guard refuses an oversized value", note: "prose for the next reader" }],
   }),
@@ -261,6 +305,7 @@ writeFileSync(
 writeFileSync(
   join(root, "unknown-top-key.json"),
   JSON.stringify({
+    suite: ["smoke/suite.mjs"],
     command: `${process.execPath} suite.mjs`,
     complitionMarker: "a real typo of a real key",
     mutations: [{ name: "fine", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "the guard refuses an oversized value" }],
@@ -269,6 +314,7 @@ writeFileSync(
 writeFileSync(
   join(root, "no-expect.json"),
   JSON.stringify({
+    suite: ["smoke/suite.mjs"],
     command: `${process.execPath} suite.mjs`,
     mutations: [{ name: "unnamed red", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)" }],
   }),
@@ -337,11 +383,11 @@ const crashAfterRed = {
 };
 writeFileSync(
   join(root, "completion-optin.json"),
-  JSON.stringify({ command: `${process.execPath} marked.mjs`, completionMarker: "SELFTEST SUITE DONE", mutations: [crashAfterRed] }),
+  JSON.stringify({ suite: ["smoke/suite.mjs"], command: `${process.execPath} marked.mjs`, completionMarker: "SELFTEST SUITE DONE", mutations: [crashAfterRed] }),
 );
 writeFileSync(
   join(root, "completion-control.json"),
-  JSON.stringify({ command: `${process.execPath} marked.mjs`, mutations: [crashAfterRed] }),
+  JSON.stringify({ suite: ["smoke/suite.mjs"], command: `${process.execPath} marked.mjs`, mutations: [crashAfterRed] }),
 );
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm completion", { cwd: root });
 r = runTool(["--config", "completion-optin.json"]);
@@ -468,7 +514,7 @@ execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm indiffer
 // Paired with a control this suite DOES catch, in the same file: breaking `return true` reddens
 // `the guard admits a small value`. The kill proves `indifferent.mjs` reaches src/impl.js at
 // runtime, so the exact-baseline survivor beside it is a real coverage gap and not an inert mutant.
-writeFileSync(join(root, "indifferent.json"), JSON.stringify({
+writeFileSync(join(root, "indifferent.json"), JSON.stringify({ suite: ["smoke/suite.mjs"],
   command: `${process.execPath} indifferent.mjs`,
   mutations: [
     { name: "control: break what this suite DOES read", file: "src/impl.js",
@@ -501,7 +547,7 @@ execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm silent",
 // Paired with a control, for the same reason as 7e-septies: without a kill in this file the run
 // cannot tell an inert mutant from an untested one, and the ambiguity being reported here is a
 // DIFFERENT one (silent-on-pass vs wrong-suite). Both notes must survive together.
-writeFileSync(join(root, "silent.json"), JSON.stringify({
+writeFileSync(join(root, "silent.json"), JSON.stringify({ suite: ["smoke/suite.mjs"],
   command: `${process.execPath} silent.mjs`,
   mutations: [
     { name: "control: break what this suite DOES read", file: "src/impl.js",
@@ -535,6 +581,7 @@ writeFileSync(join(root, "built.txt"), readFileSync(join(root, "src/impl.js"), "
 writeFileSync(
   join(root, "after.json"),
   JSON.stringify({
+    suite: ["smoke/suite.mjs"],
     command: `${process.execPath} compile.mjs && ${process.execPath} suite.mjs`,
     mutations: [{
       name: "leaves a build artefact behind",
@@ -652,7 +699,7 @@ writeFileSync(
 );
 // Two mutations with the SAME name, each turning `admit` into a different constant. Both are
 // WRONG-RED (the named assertion never prints), so both echo; the question is WHICH run each echoes.
-writeFileSync(join(root, "dup-labels.json"), JSON.stringify({
+writeFileSync(join(root, "dup-labels.json"), JSON.stringify({ suite: ["smoke/suite.mjs"],
   command: `${process.execPath} echo-suite.mjs`,
   mutations: [
     { name: "same name", file: "src/impl.js", find: "  return true;", replace: "  return 'A';", expectRed: "never printed" },

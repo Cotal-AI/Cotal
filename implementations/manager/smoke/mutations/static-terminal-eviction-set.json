@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/static-lifecycle.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/static-lifecycle.smoke.ts"
+  ],
   "guard": "The static terminal's verified-eviction barrier (SPEC 13.1) targets the credential ledger's holder principals. A lifecycle whose ledger names a holder stays `terminalizing` with its alias held until that holder is verify-evicted; a lifecycle that never released a credential retires on an empty set without asking the liveness oracle about a principal that was never issued.",
   "command": "pnpm smoke:static-lifecycle",
   "completionMarker": "STATIC-LIFECYCLE SMOKE",

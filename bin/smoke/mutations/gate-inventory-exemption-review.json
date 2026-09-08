@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/gate-inventory.smoke.ts",
+  "suite": [
+    "bin/smoke/gate-inventory.smoke.ts"
+  ],
   "guard": "every UNGATED exemption has a current machine-checked recheck date and the inventory reports the exact number examined",
   "command": "pnpm smoke:gate-inventory",
   "completionMarker": "GATE INVENTORY",

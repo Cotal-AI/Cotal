@@ -22,5 +22,8 @@
       "replace": "    subjectPath: join(threadDir, \"subject.json\"),",
       "expectRed": "the subject record is a sibling of the THREAD dir, i.e. per-principal not per-thread"
     }
+  ],
+  "suite": [
+    "extensions/connector-core/smoke/agui-wal-path.smoke.ts"
   ]
 }

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "len counts exactly the kinds that have a length of their own, an array or a string, and refuses every other kind with L4016 before the host is reached, so no host property (a function wrapper's arity, a record's missing length) is ever read as a program value.",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/len-domain.json",

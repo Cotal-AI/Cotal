@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/boot-wake-race.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/boot-wake-race.smoke.ts"
+  ],
   "guard": "a wake dropped in the connector's boot window (message already pending before the claude/channel handshake activates) is re-fired by activation itself, so the session is never permanently deaf",
   "command": "pnpm --filter @cotal-ai/connector-claude-code... build && pnpm smoke:claude-boot-wake",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/boot-wake-race.json",

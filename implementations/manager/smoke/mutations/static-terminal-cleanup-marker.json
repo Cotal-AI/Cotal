@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/static-lifecycle.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/static-lifecycle.smoke.ts"
+  ],
   "guard": "The static terminal records a durable cleanup-complete marker on the `terminalizing` slot BEFORE its final CAS to `retired` (#1274). A resumed terminal reads the marker and skips a completed cleanup instead of re-running it; a terminal that ran cleanup settles a row that carries the marker.",
   "command": "pnpm smoke:static-lifecycle",
   "completionMarker": "STATIC-LIFECYCLE SMOKE",

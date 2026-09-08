@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "No value the interpreter builds may be a thenable: every write of a record member (a literal key or a computed one, in a literal, a spread, a rest pattern, or a member assignment) refuses a callable `then` with L4021, so the host's promise machinery can never adopt a program value in place of the value itself.",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/callable-then.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts"
+  ],
   "guard": "a directed DM arriving during a live Jcode turn is accepted by the recipient session through its soft-interrupt queue, and the exact Cotal delivery is committed only at the clean containing-turn boundary",
   "command": "pnpm smoke:jcode-mid-turn-delivery",
   "progressPattern": "✓",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/events-grant-acl.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/events-grant-acl.smoke.ts"
+  ],
   "guard": "a spawn or a resume may arm the event plane of the agent it names and no other, over both ACL fields and at every seam, and the wildcard form is deliberately left to ordinary ACL authority, and the remedy the refusal prints is the one that actually narrows",
   "command": "pnpm smoke:events-grant",
   "completionMarker": "EVENTS-GRANT/ACL SMOKE",

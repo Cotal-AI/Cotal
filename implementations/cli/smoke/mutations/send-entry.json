@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/send.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/send.smoke.ts"
+  ],
   "guard": "the send end-to-end smoke runs the repository's real bin/cotal.ts entry against its explicitly owned broker",
   "command": "pnpm smoke:send",
   "completionMarker": "send smoke:",

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/conformance.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/conformance.smoke.ts"
+  ],
   "guard": "The shipped conformance corpus is a real artifact: the accessor serves exactly what is on disk, and every recorded verdict is one the validator still gives. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-conformance",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/conformance-corpus.json",

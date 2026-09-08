@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/delivery-lease.smoke.ts",
+  "suite": [
+    "packages/core/smoke/delivery-lease.smoke.ts"
+  ],
   "guard": "a wait for the delivery daemon we launched is not answered by some OTHER daemon's ready lease (#837)",
   "command": "pnpm smoke:delivery-lease:auth",
   "completionMarker": "DELIVERY-LEASE SMOKE",

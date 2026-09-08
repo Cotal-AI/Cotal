@@ -44,5 +44,8 @@
       "expectRed": "the wrongly-gone instance's reply is reported LATE (the post-T rail stayed open)"
     }
   ],
-  "_note": "This suite imports `../src/index.js` RELATIVELY, so it loads SOURCE and not `dist`. The dist/src rule that made the pin re-cut report three false SURVIVORs does not apply here, and the config deliberately does NOT rebuild core: adding a build step would be cargo-culting a fix for a problem this suite does not have. Verified by mutation 2, which is inert unless the mutated source is the module under test."
+  "_note": "This suite imports `../src/index.js` RELATIVELY, so it loads SOURCE and not `dist`. The dist/src rule that made the pin re-cut report three false SURVIVORs does not apply here, and the config deliberately does NOT rebuild core: adding a build step would be cargo-culting a fix for a problem this suite does not have. Verified by mutation 2, which is inert unless the mutated source is the module under test.",
+  "suite": [
+    "packages/core/smoke/scatter-liveness.smoke.ts"
+  ]
 }

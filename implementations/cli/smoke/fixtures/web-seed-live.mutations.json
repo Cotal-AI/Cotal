@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/web-seed-live.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/web-seed-live.smoke.ts"
+  ],
   "guard": "The live web seed-drop proof writes chat history through a self-scoped operator credential, not a provisioner credential whose least-privilege grant has no chat publish row.",
   "command": "pnpm --filter @cotal-ai/core... build && pnpm smoke:web-seed:live",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/web-seed-live.mutations.json",

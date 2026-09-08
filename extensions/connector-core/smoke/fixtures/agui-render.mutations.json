@@ -64,5 +64,8 @@
       "replace": "  registry.register(aguiFramePartRenderer);",
       "expectRed": "a second registration does not throw (the ext-add crash, executed)"
     }
+  ],
+  "suite": [
+    "extensions/connector-core/smoke/agui-render.smoke.ts"
   ]
 }

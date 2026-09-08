@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/seed-migration-provenance.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/seed-migration-provenance.smoke.ts"
+  ],
   "guard": "a newer cotal announces a shared seed-store migration, persists its writer and timestamp, and an older cotal reports that provenance when it refuses the store",
   "command": "pnpm smoke:seed-migration-provenance",
   "completionMarker": "seed-migration-provenance smoke:",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/agui-run-error.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/agui-run-error.smoke.ts"
+  ],
   "guard": "a turn OpenCode killed is published as a run error carrying its reason, and a turn a person stopped is not",
   "command": "pnpm smoke:opencode-run-error",
   "completionMarker": "opencode-run-error smoke:",

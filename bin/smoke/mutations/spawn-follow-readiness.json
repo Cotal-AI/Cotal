@@ -1,5 +1,8 @@
 {
-  "suite": "bin/smoke/goal-follow.smoke.ts + implementations/manager/smoke/manager-service-invoke.smoke.ts",
+  "suite": [
+    "bin/smoke/goal-follow.smoke.ts",
+    "implementations/manager/smoke/manager-service-invoke.smoke.ts"
+  ],
   "guard": "spawn acceptances expose the connector-selected readiness budget and a synchronous caller follows through it instead of timing out on a shorter generic wait",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
   "completionMarker": "E. the accepted readiness budget, not a shorter generic caller wait, bounds the follow",

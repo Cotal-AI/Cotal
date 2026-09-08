@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/disarm-delete-timeout.smoke.ts",
+  "suite": [
+    "packages/core/smoke/disarm-delete-timeout.smoke.ts"
+  ],
   "guard": "a CONSUMER.DELETE timeout during membership-watch disarm is best-effort cleanup, not a process kill",
   "command": "pnpm smoke:disarm-delete-timeout",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/disarm-delete-timeout.json",

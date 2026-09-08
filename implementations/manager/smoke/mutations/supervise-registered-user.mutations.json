@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/supervise-registered-user.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/supervise-registered-user.smoke.ts"
+  ],
   "guard": "a registered remote user mesh derives its recorded broker but refuses supervision with the host-authority workaround, and a mismatched explicit broker never overrides the registry",
   "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:supervise-registered-user",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/supervise-registered-user.mutations.json",

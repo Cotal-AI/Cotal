@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/journal.smoke.ts"
+  ],
   "guard": "A run recorded under language version 1 replays on whatever walker is current: the checked-in recording (a program that logs a builtin, a namespace and a record carrying a function) completes with the same entries and log lines, so a rule that reaches the v1 replay path reds here first. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-journal",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/v1-replay.json",

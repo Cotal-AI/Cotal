@@ -1,8 +1,10 @@
 {
-  "suite": "extensions/connector-jcode/smoke/private-state.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/private-state.smoke.ts"
+  ],
   "guard": "Jcode credential mirrors exactly reconcile all four source families, remove absent credentials, preserve unrelated state, and keep path safety intact",
   "command": "pnpm smoke:jcode-private-state",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 19,
   "mutations": [
     {

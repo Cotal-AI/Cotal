@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/ci-suites-freeze.smoke.ts",
+  "suite": [
+    "bin/smoke/ci-suites-freeze.smoke.ts"
+  ],
   "guard": "a new suite line on ci-suites.txt is named as an offender; comment edits and deletions are not",
   "command": "pnpm smoke:ci-suites-freeze",
   "completionMarker": "CI SUITES FREEZE SMOKE",

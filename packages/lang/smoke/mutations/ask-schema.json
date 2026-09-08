@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/sim.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/sim.smoke.ts"
+  ],
   "guard": "The reference simulator enforces the ask schema shorthand: a non-conforming reply consumes an attempt and exhausted attempts are L4006, and a schema the handler cannot read is refused (L4022), never silently skipped. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-sim",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/ask-schema.json",

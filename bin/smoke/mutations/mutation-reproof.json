@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/mutation-reproof.smoke.ts",
+  "suite": [
+    "bin/smoke/mutation-reproof.smoke.ts"
+  ],
   "guard": "changed fixture config, suite, or guarded source re-proves its fixture; a deleted or renamed-away source is a loud dangling failure naming the exact fixture; both sides of a rename enter the changed set",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",
@@ -24,10 +26,18 @@
     {
       "name": "a changed configured suite is ignored by changed-set selection",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    config: changed.has(fixture.path),\n    suite: typeof fixture.suite === \"string\" && changed.has(fixture.suite),\n    mutation: fixture.mutations.some((mutation) =>",
+      "find": "    config: changed.has(fixture.path),\n    suite: fixture.suites.some((suite) => changed.has(suite)),\n    mutation: fixture.mutations.some((mutation) =>",
       "replace": "    config: changed.has(fixture.path),\n    suite: false,\n    mutation: fixture.mutations.some((mutation) =>",
-      "expectRed": "a suite-only change selects exactly the fixture that names that suite",
-      "cell": "a suite-only change selects exactly the fixture that names that suite"
+      "expectRed": "changing only the second member of a multi-source array selects exactly that fixture",
+      "cell": "changing only the second member of a multi-source array selects exactly that fixture"
+    },
+    {
+      "name": "reproof stops applying canonical metadata validation to the corpus",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "      suites = parseSuiteSources(root, path, config.suite, { checkExists: false });",
+      "replace": "      suites = Array.isArray(config.suite) ? config.suite : [];",
+      "expectRed": "legacy string suite metadata makes the corpus unmeasured instead of dropping the fixture",
+      "cell": "legacy string suite metadata makes the corpus unmeasured instead of dropping the fixture"
     },
     {
       "name": "a dangling fixture is no longer refused, so a deleted source stops being a loud failure",

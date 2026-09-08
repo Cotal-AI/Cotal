@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/inbox-window.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/inbox-window.smoke.ts"
+  ],
   "guard": "cotal_inbox clears only the messages it actually returned, and one response stays inside a receivable window with first-party mail ahead of replayed history",
   "command": "pnpm smoke:inbox-window",
   "completionMarker": "INBOX WINDOW SMOKE",

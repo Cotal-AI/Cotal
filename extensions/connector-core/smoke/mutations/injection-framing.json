@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/injection-framing.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/injection-framing.smoke.ts"
+  ],
   "guard": "the block that carries peer messages into a turn names the order of operations - do the work with your own tools, verify it, then reply - and warns against reporting an action that was not performed, while still naming the reply verbs and preserving the historical marker",
   "command": "pnpm smoke:injection-framing",
   "completionMarker": "injection framing:",

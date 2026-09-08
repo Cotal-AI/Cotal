@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/startup-diagnostics.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/startup-diagnostics.smoke.ts"
+  ],
   "guard": "the per-seat Jcode connector log is owner-only and refuses a pre-planted logs symlink rather than writing outside the managed home",
   "command": "pnpm smoke:jcode-startup-diagnostics",
   "progressPattern": "✓",

@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/mutation-fixtures.smoke.ts",
+  "suite": [
+    "bin/smoke/mutation-fixtures.smoke.ts"
+  ],
   "guard": "every mutation anchor is present, unique, and free of prose",
   "command": "pnpm smoke:mutation-fixtures",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/fixtures/mutation-fixtures.mutations.json",
@@ -29,6 +31,54 @@
     "and always present; mutation B kills on a tree the cell builds itself."
   ],
   "mutations": [
+    {
+      "name": "missing suite metadata stops being diagnosed",
+      "file": "scripts/mutation-suite-metadata.mjs",
+      "find": "  if (value === undefined) fail(\"MISSING SUITE METADATA\", configPath, 'required top-level \"suite\" array');",
+      "replace": "  if (value === undefined) return [];",
+      "expectRed": "missing suite metadata is diagnosed",
+      "cell": "missing suite metadata is diagnosed"
+    },
+    {
+      "name": "empty suite arrays stop being diagnosed",
+      "file": "scripts/mutation-suite-metadata.mjs",
+      "find": "  if (value.length === 0) fail(\"EMPTY SUITE METADATA\", configPath, '\"suite\" must name at least one source');",
+      "replace": "  if (false && value.length === 0) fail(\"EMPTY SUITE METADATA\", configPath, '\"suite\" must name at least one source');",
+      "expectRed": "an empty suite array is diagnosed",
+      "cell": "an empty suite array is diagnosed"
+    },
+    {
+      "name": "legacy string suite metadata is accepted again",
+      "file": "scripts/mutation-suite-metadata.mjs",
+      "find": "  if (!Array.isArray(value)) {\n    fail(\"MALFORMED SUITE METADATA\", configPath, '\"suite\" must be an array, not a legacy string or other value');\n  }",
+      "replace": "  if (typeof value === \"string\") value = [value];\n  if (!Array.isArray(value)) {\n    fail(\"MALFORMED SUITE METADATA\", configPath, '\"suite\" must be an array, not a legacy string or other value');\n  }",
+      "expectRed": "the legacy suite string is diagnosed as malformed",
+      "cell": "the legacy suite string is diagnosed as malformed"
+    },
+    {
+      "name": "the parser stops checking every member of a multi-source array",
+      "file": "scripts/mutation-suite-metadata.mjs",
+      "find": "  return value.map((source, index) => {",
+      "replace": "  return value.slice(0, 1).map((source, index) => {",
+      "expectRed": "a valid multi-source suite array passes and every member is checked",
+      "cell": "a valid multi-source suite array passes and every member is checked"
+    },
+    {
+      "name": "missing suite source files stop being diagnosed",
+      "file": "scripts/mutation-suite-metadata.mjs",
+      "find": "    } catch {\n      fail(\"SUITE SOURCE MISSING\", configPath, `${at} does not resolve to an existing regular file: ${source}`);\n    }",
+      "replace": "    } catch {\n      return source;\n    }",
+      "expectRed": "a normalized but missing suite source is diagnosed",
+      "cell": "a normalized but missing suite source is diagnosed"
+    },
+    {
+      "name": "mutation-proof config mode stops validating suite metadata",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "  try {\n    parseSuiteSources(cwd, a.config, cfg.suite);\n  } catch (error) {\n    usage(error.message);\n  }",
+      "replace": "  // suite metadata validation disabled",
+      "expectRed": "mutation-proof config mode rejects missing suite metadata",
+      "cell": "mutation-proof config mode rejects missing suite metadata"
+    },
     {
       "name": "an anchor goes dead - the source moved and the find no longer matches",
       "file": "scripts/mutations/restore-mtime.json",

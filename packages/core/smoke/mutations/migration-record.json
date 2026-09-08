@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/run-migration.smoke.ts",
+  "suite": [
+    "packages/core/smoke/run-migration.smoke.ts"
+  ],
   "guard": "The migration record: an id derived from the report, a report filed once, an application that is a separate create-only act, and a history ordered by when it happened.",
   "command": "pnpm smoke:run-migration",
   "completionMarker": "run-migration.smoke:",

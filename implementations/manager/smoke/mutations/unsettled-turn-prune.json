@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/manager-reconcile-startup.smoke.ts"
+  ],
   "guard": "A leftover unsettled turn acceptance whose pending latch is gone is aged off leftoverSince, never the original deadline, so a failed deadline commit cannot pin the sweep forever and a long-outage leftover is not pruned on the first tick.",
   "command": "pnpm smoke:manager-reconcile-startup",
   "completionMarker": "MANAGER RECONCILE STARTUP SMOKE",

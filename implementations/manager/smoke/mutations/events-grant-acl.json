@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/events-grant-acl.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/events-grant-acl.smoke.ts"
+  ],
   "guard": "the AG-UI event grant names the principal the manager allocated, is minted only when the launch armed the plane, and is carried forward, arming included, by the record a restart reads",
   "command": "pnpm smoke:events-grant",
   "completionMarker": "EVENTS-GRANT/ACL SMOKE",

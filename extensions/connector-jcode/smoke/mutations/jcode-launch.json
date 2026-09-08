@@ -48,5 +48,9 @@
       "command": "pnpm smoke:jcode-host",
       "expectRed": "bridge entry rides the per-seat daemon pool instead of spawning per session"
     }
+  ],
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-args.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
   ]
 }

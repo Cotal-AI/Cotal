@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/shard-never-ran.smoke.ts",
+  "suite": [
+    "bin/smoke/shard-never-ran.smoke.ts"
+  ],
   "guard": "shard.mjs's break path emits the never-ran census through the shipped runner",
   "command": "pnpm smoke:shard-never-ran",
   "completionMarker": "SUITE COMPLETE",

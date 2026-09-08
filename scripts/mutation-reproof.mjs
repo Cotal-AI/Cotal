@@ -28,6 +28,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:pa
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROOF = resolve(dirname(SCRIPT), "mutation-proof.mjs");
@@ -96,7 +97,14 @@ function loadCorpus(root, paths) {
       errors.push(`${path}: no top-level "mutations" array`);
       continue;
     }
-    fixtures.push({ path, suite: config.suite, command: config.command, mutations: config.mutations });
+    let suites;
+    try {
+      suites = parseSuiteSources(root, path, config.suite, { checkExists: false });
+    } catch (err) {
+      errors.push(err.message);
+      continue;
+    }
+    fixtures.push({ path, suites, command: config.command, mutations: config.mutations });
   }
   return { fixtures, errors };
 }
@@ -187,7 +195,7 @@ let selected = fixtures.map((fixture) => ({
   selectedBy: {
     all: Boolean(a.all),
     config: changed.has(fixture.path),
-    suite: typeof fixture.suite === "string" && changed.has(fixture.suite),
+    suite: fixture.suites.some((suite) => changed.has(suite)),
     mutation: fixture.mutations.some((mutation) =>
       typeof mutation?.file === "string" && changed.has(mutation.file)),
   },
@@ -198,10 +206,13 @@ if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2
 // Its guarded source was deleted or renamed away, so its anchor cannot resolve and its proof is
 // unrunnable. This is the failure the gate exists to refuse, so it is loud, not a skip.
 const dangling = [];
-for (const { path, mutations } of selected) {
-  const missing = [...new Set(mutations
-    .map((mutation) => mutation?.file)
-    .filter((file) => typeof file === "string" && !existsSync(resolve(root, file))))];
+for (const { path, suites, mutations } of selected) {
+  const missing = [...new Set([
+    ...suites.filter((suite) => !existsSync(resolve(root, suite))),
+    ...mutations
+      .map((mutation) => mutation?.file)
+      .filter((file) => typeof file === "string" && !existsSync(resolve(root, file))),
+  ])];
   if (missing.length) dangling.push({ path, missing });
 }
 if (dangling.length) {

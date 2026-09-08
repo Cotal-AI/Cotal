@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/presence-progress.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/presence-progress.smoke.ts"
+  ],
   "guard": "a frozen working seat is distinguishable from a progressing one; heartbeat freshness is not progress",
   "command": "pnpm smoke:presence-progress",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/presence-progress.json",

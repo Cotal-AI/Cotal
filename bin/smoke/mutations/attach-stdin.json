@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/attach-stdin.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/attach-stdin.smoke.ts"
+  ],
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
   "completionMarker": "O: the manager is back on the session count it started with",

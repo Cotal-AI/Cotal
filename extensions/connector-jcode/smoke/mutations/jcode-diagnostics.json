@@ -1,5 +1,9 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+    "bin/smoke/readiness-window-live.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-args.smoke.ts"
+  ],
   "guard": "a provider invalid_request during Jcode's mandatory readiness turn exposes only the safely classified provider code and rejected model/effort value; slow Jcode bootstrap receives its declared bounded manager readiness window rather than an early generic uncertainty verdict",
   "command": "pnpm smoke:jcode-host && pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/cli build && pnpm smoke:readiness:live",
   "progressPattern": "✓",

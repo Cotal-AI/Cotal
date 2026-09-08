@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/command-kernel.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts"
+  ],
   "guard": "a legacy manager report stops update before the extension mutation pass or a replay subprocess",
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/legacy-manager-update.json",

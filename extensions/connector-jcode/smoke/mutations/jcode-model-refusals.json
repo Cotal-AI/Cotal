@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+  ],
   "guard": "all three connector-owned Jcode model startup refusals retain distinct allow-listed public codes and their scrubbed fatal line is persisted in the managed seat's connector log",
   "command": "pnpm smoke:jcode-host",
   "progressPattern": "✓",

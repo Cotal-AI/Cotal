@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/journal.smoke.ts"
+  ],
   "guard": "A recorded binding is a value and answers to the value rule: refused at BOTH write wrappers, and refused on LOAD by name (L5024). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-journal",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/bind-canonical.json",

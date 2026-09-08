@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/broker-disclosure.smoke.ts",
+  "suite": [
+    "bin/smoke/broker-disclosure.smoke.ts"
+  ],
   "guard": "every file that defaults COTAL_SERVERS with `||=` also prints what it resolved, and records whether it was inherited before the assignment destroys that evidence",
   "command": "pnpm smoke:broker-disclosure",
   "completionMarker": "file(s) default COTAL_SERVERS",

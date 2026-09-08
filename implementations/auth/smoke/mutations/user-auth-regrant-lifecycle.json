@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-auth-launch.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-auth-launch.smoke.ts"
+  ],
   "guard": "Interactive actor re-grants and revokes retire the current lifecycle through the auth authority plane before rotating or deleting the row, and the legacy static control is a real lifecycle-bound credential.",
   "command": "pnpm build && pnpm smoke:user-auth-launch:live",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/user-auth-regrant-lifecycle.json",

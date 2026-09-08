@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/wake-path.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/wake-path.smoke.ts"
+  ],
   "guard": "the lifecycle hook relay fails OPEN on a configuration fault without failing SILENT, and does not warn about a session that legitimately has no control plane",
   "command": "pnpm build > /dev/null && pnpm smoke:claude-wake",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/relay-warn.json",

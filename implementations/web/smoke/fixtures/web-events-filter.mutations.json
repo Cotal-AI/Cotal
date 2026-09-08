@@ -22,5 +22,8 @@
       "replace": "      const channels = await ep.listChannels();",
       "expectRed": "5.1 SOURCE-SHAPE: chatOnly has exactly two call sites"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/web-events-filter.smoke.ts"
   ]
 }

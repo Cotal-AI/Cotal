@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/scopes.smoke.ts"
+  ],
   "guard": "A cancelled race arm whose in-flight effect lands is re-judged against the frontier: past it the pure tail is cut, before it the arm keeps running and can still win. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-scopes",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-redecide.json",
