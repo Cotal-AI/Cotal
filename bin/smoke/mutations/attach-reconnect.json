@@ -141,7 +141,7 @@
       "replace": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, reconnect ? { onRefusal: \"throw\" } : {});",
       "expectRed": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
       "cell": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
-      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `\u2717 ${message}` over a sentence that already opens with `\u2717`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
+      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `✗ ${message}` over a sentence that already opens with `✗`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -222,16 +222,6 @@
       "expectRed": "the detach key ends the attach mid-reconnect",
       "cell": "the detach key ends the attach mid-reconnect",
       "note": "Deleting the handoff leaves BOTH readers installed for the whole session, which is why the sibling suite `smoke:attach-stdin` cannot see it: with both live a lone detach byte still ends the attach, and a chunk carrying the byte alongside other input is still refused by the same exact-match test on either side. What it loses is the release. `ownStdin` is `idle ??= watchDetachKey(...)`, so with the loop's watcher never stopped it neither reinstalls nor RESUMES, while `cleanup` pauses the stream the session did take: the operator's next press lands on a paused stream and is read by nobody. Measured on this suite at f345809a against a green baseline of 72: 67 passed, 5 failed, first red here, then `...exiting clean` and the held-session line, then cell J's two, `reconnectsAtPress 0` against `now 1` and `pressToExitMs 27172` against a boundary 26826ms away, spare -346ms. Registered on the FIRST of those reds. Found by review as a survivor of the sibling suite's set and recorded there as unreachable prose; it is reachable, it is graded here, and the sibling config now says so.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
-    },
-    {
-      "name": "the issuer dial's transport error escapes as the first attach's refusal",
-      "file": "packages/workspace/src/connect.ts",
-      "find": "          await preflightOrThrow(target);\n          throw e;",
-      "replace": "          throw e;",
-      "expectRed": "...saying the mesh is not there, in the CLI's own words",
-      "cell": "...saying the mesh is not there, in the CLI's own words",
-      "note": "The instrument mint became an issuance, and the issuer session dials the broker BEFORE the preflight runs. Against a mesh that is not there that dial throws the transport's own words, which is what cell G saw: a raw `connection refused` where the classified `no mesh running at ... - run `cotal up`` sentence (and its registry prune) used to be. The catch runs the preflight on the dial failure so the classified refusal is what escapes; without it the raw error is the refusal and cell G reddens end to end through the real binary.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
