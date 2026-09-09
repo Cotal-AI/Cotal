@@ -6,6 +6,11 @@
  * intersects a FRESH ledger grant on every issued dimension, and signs a
  * bounded `session-agent` JWT for the enrolled public nkey. The connector
  * retains the matching seed. No manager is in the path.
+ *
+ * `ctx.cap` is the daemon's loopback operator exchange capability. It is not
+ * proof of possession and must never be distributed to session connectors. A
+ * connector remint client needs a narrow owner-authorized
+ * actor/lifecycle/resource-bound capability plus key possession.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
@@ -19,7 +24,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
-import { findActorUnified } from "./ledger.js";
+import { assertWithinSpawnerGrant, findActorUnified } from "./ledger.js";
 
 export const SESSION_RENEWAL_PATH = "/session-renewal";
 
@@ -49,6 +54,11 @@ export function liveSessionRenewalGrant(
     throw new EpEnvelopeError("failed-precondition", `session actor "${parsed.owner}/${parsed.actor}" has no lifecycleUid on its ledger row`);
   if (row.lifecycleUid !== parsed.lifecycleUid)
     throw new EpEnvelopeError("permission-denied", `session actor "${parsed.owner}/${parsed.actor}" is current at lifecycle ${row.lifecycleUid}, not ${parsed.lifecycleUid}`);
+  try {
+    assertWithinSpawnerGrant(dir, row, "exchange");
+  } catch (e) {
+    throw new EpEnvelopeError("permission-denied", e instanceof Error ? e.message : String(e));
+  }
   return {
     owner: row.owner,
     actor: row.actor,

@@ -303,7 +303,7 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
  *  managed-row boundaries: authorship ({@link grantManagedActor}) and every agent bearer exchange
  *  ({@link ledgerAuthorizeAgentExchange}) — so narrowing or revoking a spawner bites its agents at
  *  their next refresh (≤ {@link AGENT_BEARER_TTL_SEC}s), instead of leaving them orphaned. */
-function assertWithinSpawnerGrant(
+export function assertWithinSpawnerGrant(
   dir: string,
   row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role">,
   boundary: "spawn" | "exchange",

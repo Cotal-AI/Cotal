@@ -96,6 +96,7 @@ export {
   findActorUnified,
   grantActor,
   grantManagedActor,
+  assertWithinSpawnerGrant,
   ledgerAclResolver,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,

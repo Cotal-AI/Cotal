@@ -4,7 +4,7 @@
  * The red at 1a01ef1bc used aclForAlias as the only non-manager ceiling read, which
  * narrowed subscribe and reissued revoked publish/scope. This suite now drives the
  * production entry points: putSessionEnrollment / getSessionEnrollment (parse on
- * every CAS) and issuedSessionRenewalAuthority (intersect every issued dimension).
+ * every CAS), issuedSessionRenewalAuthority, and issueSessionRenewal.
  *
  * PRODUCTION CALLER: packages/core/src/session-enrollment-renewal.ts
  * putSessionEnrollment / getSessionEnrollment / issuedSessionRenewalAuthority /
@@ -13,8 +13,11 @@
  */
 import {
   EpEnvelopeError,
+  createSpaceAuth,
   getSessionEnrollment,
+  issueSessionRenewal,
   issuedSessionRenewalAuthority,
+  newIdentity,
   putSessionEnrollment,
   type MeshEnrolledSessionEnrollment,
   type NativeOnlySessionEnrollment,
@@ -54,13 +57,14 @@ const resource: ResourceKey = {
   resourceGeneration: "creation:2026-09-08T20:00:00Z",
 };
 const lifecycleUid = "0123456789abcdefghijklmnop";
+const identity = newIdentity();
 const common = {
   resourceKey: resource,
   ownerPrincipal: "u_alice.owner",
   provenance: {
     authorizedBy: "u_alice.owner",
     nativeEvidence: { provider: "com.cotal.opencode", nativeOwner: "uid:1000" },
-    authenticatedAt: 1_788_900_000_000,
+    authenticatedAt: Date.now() - 60_000,
   },
   incarnationProof: {
     nativeHostIncarnation: "native-host-start:41",
@@ -68,13 +72,13 @@ const common = {
     evidence: { origin: "provider-inspection", immutableCreationId: "c-17" },
   },
   rights: ["adopt", "control", "release", "transfer"] as const,
-  expiry: 1_788_903_600_000,
+  expiry: Date.now() + 3_600_000,
 };
 const meshEnrolled: MeshEnrolledSessionEnrollment = {
   ...common,
   kind: "mesh-enrolled",
   sessionActor: "u_alice.native_session",
-  enrolledPublicId: `U${"A".repeat(55)}`,
+  enrolledPublicId: identity.id,
   meshLifecycle: { id: "u_alice.native_session", lifecycleUid },
   ceiling: {
     owner: "u_alice",
@@ -118,6 +122,17 @@ c("revoked scope does not survive a renewal",
   reminted.scope.join(",") === "session:control"
   && !reminted.scope.includes("spawn"),
   reminted.scope);
+const narrowerCeiling = issuedSessionRenewalAuthority({
+  enrollment: {
+    ...meshEnrolled,
+    ceiling: { ...meshEnrolled.ceiling, allowSubscribe: ["review.pua"], allowPublish: ["general"] },
+  },
+  grant: { ...grant, allowSubscribe: ["review.>"], allowPublish: ["general"] },
+});
+c("a narrower ceiling survives a broader live grant",
+  narrowerCeiling.allowSubscribe.join(",") === "review.pua"
+  && !narrowerCeiling.allowSubscribe.includes("review.>"),
+  narrowerCeiling.allowSubscribe);
 
 console.log("B. identity, native-only, and supervise refusals");
 await rejects("native-only enrollment cannot renew a session credential",
@@ -126,6 +141,17 @@ await rejects("grant bound to a different actor is refused",
   () => issuedSessionRenewalAuthority({ enrollment, grant: { ...grant, actor: "other" } }), "permission-denied");
 await rejects("supervise is refused on session renewal",
   () => issuedSessionRenewalAuthority({ enrollment, grant: { ...grant, scope: ["session:control", "supervise"] } }), "permission-denied");
+
+console.log("C. production issuer mints and refuses expired enrollment");
+const auth = await createSpaceAuth("demo");
+const minted = await issueSessionRenewal({ kv, resourceKey: resource, grant, auth });
+c("PRODUCTION CALLER issueSessionRenewal returns a session-agent JWT",
+  minted.jwt.split(".").length === 3 && minted.authority.allowPublish.join(",") === "general");
+const expiredKv = new MemKv() as unknown as KV;
+await putSessionEnrollment(expiredKv, { ...meshEnrolled, expiry: Date.now() - 1 });
+await rejects("expired enrollment cannot renew a session credential",
+  () => issueSessionRenewal({ kv: expiredKv, resourceKey: resource, grant, auth, now: Date.now() }),
+  "failed-precondition");
 
 console.log(`${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

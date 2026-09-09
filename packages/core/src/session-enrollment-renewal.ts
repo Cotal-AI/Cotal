@@ -30,7 +30,19 @@ function refuse(code: "bad-request" | "permission-denied" | "failed-precondition
 }
 
 function intersectChannels(ceiling: readonly string[], live: readonly string[]): string[] {
-  return live.filter((entry) => patternInAllow([...ceiling], entry));
+  // Keep live entries covered by the ceiling, and ceiling entries covered by the live
+  // grant. Filtering only live ⊆ ceiling drops a still-valid narrower ceiling when the
+  // live grant is a broader pattern (review.> live vs review.pua ceiling).
+  const fromLive = live.filter((entry) => patternInAllow([...ceiling], entry));
+  const fromCeiling = ceiling.filter((entry) => patternInAllow([...live], entry));
+  return [...new Set([...fromLive, ...fromCeiling])];
+}
+
+function refuseIfExpired(enrollment: SessionEnrollment, now: number): void {
+  if (enrollment.expiry <= now)
+    refuse("failed-precondition", "session enrollment has expired and cannot renew a session credential");
+  if (enrollment.provenance.authenticatedAt > now)
+    refuse("failed-precondition", "session enrollment provenance is not yet authentic and cannot renew a session credential");
 }
 
 function intersectScope(ceiling: readonly string[], live: readonly string[]): string[] {
@@ -98,6 +110,8 @@ export interface IssueSessionRenewalArgs {
   resourceKey: ResourceKey;
   grant: SessionRenewalGrant;
   auth: Pick<SpaceAuth, "space" | "account">;
+  /** Instant used for enrollment/provenance expiry. Production omits it and uses Date.now(). */
+  now?: number;
 }
 
 /**
@@ -112,6 +126,7 @@ export async function issueSessionRenewal(args: IssueSessionRenewalArgs): Promis
   authority: AuthorityCeiling;
 }> {
   const enrollment = await getSessionEnrollment(args.kv, args.resourceKey);
+  refuseIfExpired(enrollment, args.now ?? Date.now());
   if (enrollment.kind !== "mesh-enrolled")
     refuse("failed-precondition", "native-only enrollment has no mesh identity and cannot renew a session credential");
   if (args.grant.owner !== enrollment.ceiling.owner

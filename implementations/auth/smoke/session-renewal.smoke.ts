@@ -24,7 +24,7 @@ import {
   type ResourceKey,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
-import { grantActor } from "../src/ledger.js";
+import { grantActor, grantManagedActor, newActorToken, revokeActor } from "../src/ledger.js";
 import { handleSessionRenewal, SESSION_RENEWAL_PATH } from "../src/session-renewal.js";
 
 let ok = 0, fail = 0;
@@ -89,7 +89,7 @@ const common = {
   provenance: {
     authorizedBy: `${owner}.owner`,
     nativeEvidence: { provider: "com.cotal.opencode", nativeOwner: "uid:1000" },
-    authenticatedAt: 1_788_900_000_000,
+    authenticatedAt: Date.now() - 60_000,
   },
   incarnationProof: {
     nativeHostIncarnation: "native-host-start:41",
@@ -97,7 +97,7 @@ const common = {
     evidence: { origin: "provider-inspection", immutableCreationId: "c-17" },
   },
   rights: ["adopt", "control", "release", "transfer"] as const,
-  expiry: 1_788_903_600_000,
+  expiry: Date.now() + 3_600_000,
 };
 const meshEnrolled: MeshEnrolledSessionEnrollment = {
   ...common,
@@ -214,6 +214,107 @@ try {
     nativeRes.status === 409 && typeof nativeJson.error === "string" && nativeJson.error.includes("native-only"),
     nativeJson);
   nativeHttp.close();
+
+  console.log("D. expired enrollment and parent-chain refuse over HTTP");
+  const expiredKv = new MemKv() as unknown as KV;
+  await putSessionEnrollment(expiredKv, { ...meshEnrolled, expiry: Date.now() - 1 });
+  const expiredHttp = createServer((req, res) => {
+    void handleSessionRenewal(req, res, { ...ctx, records: expiredKv }, send, readJsonBody);
+  });
+  await new Promise<void>((resolve, reject) => {
+    expiredHttp.once("error", reject);
+    expiredHttp.listen(0, "127.0.0.1", () => resolve());
+  });
+  const expiredAddr = expiredHttp.address();
+  const expiredPort = typeof expiredAddr === "object" && expiredAddr ? expiredAddr.port : 0;
+  const expiredRes = await fetch(`http://127.0.0.1:${expiredPort}${SESSION_RENEWAL_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
+    body: JSON.stringify({ resourceKey: resource }),
+  });
+  const expiredJson = await expiredRes.json() as { error?: string };
+  c("expired enrollment cannot renew over HTTP",
+    expiredRes.status === 409 && typeof expiredJson.error === "string" && expiredJson.error.includes("expired"),
+    expiredJson);
+  expiredHttp.close();
+
+  const parentDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-parent-"));
+  grantActor(parentDir, {
+    owner,
+    actor: "cli",
+    lifecycleUid: "0123456789abcdefghijklmnoq",
+    scope: ["spawn", "session:control"],
+    allowSubscribe: ["general"],
+    allowPublish: ["general"],
+  });
+  grantManagedActor(parentDir, {
+    owner,
+    actor,
+    lifecycleUid,
+    scope: ["session:control"],
+    allowSubscribe: ["general"],
+    allowPublish: ["general"],
+    parent: `${owner}.cli`,
+    tokenHash: newActorToken().tokenHash,
+  });
+  revokeActor(parentDir, owner, "cli");
+  const parentHttp = createServer((req, res) => {
+    void handleSessionRenewal(req, res, { ...ctx, dir: parentDir }, send, readJsonBody);
+  });
+  await new Promise<void>((resolve, reject) => {
+    parentHttp.once("error", reject);
+    parentHttp.listen(0, "127.0.0.1", () => resolve());
+  });
+  const parentAddr = parentHttp.address();
+  const parentPort = typeof parentAddr === "object" && parentAddr ? parentAddr.port : 0;
+  const parentRes = await fetch(`http://127.0.0.1:${parentPort}${SESSION_RENEWAL_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
+    body: JSON.stringify({ resourceKey: resource }),
+  });
+  const parentJson = await parentRes.json() as { error?: string };
+  c("revoked parent chain cannot renew over HTTP",
+    parentRes.status === 403 && typeof parentJson.error === "string" && parentJson.error.includes("no longer granted"),
+    parentJson);
+  parentHttp.close();
+  rmSync(parentDir, { recursive: true, force: true });
+
+  const narrowKv = new MemKv() as unknown as KV;
+  await putSessionEnrollment(narrowKv, {
+    ...meshEnrolled,
+    ceiling: { ...meshEnrolled.ceiling, allowSubscribe: ["review.pua"], allowPublish: ["general"] },
+  });
+  const narrowDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-narrow-"));
+  grantActor(narrowDir, {
+    owner,
+    actor,
+    lifecycleUid,
+    scope: ["session:control"],
+    allowSubscribe: ["review.>"],
+    allowPublish: ["general"],
+  });
+  const narrowHttp = createServer((req, res) => {
+    void handleSessionRenewal(req, res, { ...ctx, dir: narrowDir, records: narrowKv }, send, readJsonBody);
+  });
+  await new Promise<void>((resolve, reject) => {
+    narrowHttp.once("error", reject);
+    narrowHttp.listen(0, "127.0.0.1", () => resolve());
+  });
+  const narrowAddr = narrowHttp.address();
+  const narrowPort = typeof narrowAddr === "object" && narrowAddr ? narrowAddr.port : 0;
+  const narrowRes = await fetch(`http://127.0.0.1:${narrowPort}${SESSION_RENEWAL_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
+    body: JSON.stringify({ resourceKey: resource }),
+  });
+  const narrowJson = await narrowRes.json() as { authority?: { allowSubscribe?: string[] } };
+  c("HTTP remint keeps a narrower ceiling under a broader live grant",
+    narrowRes.status === 200
+    && narrowJson.authority?.allowSubscribe?.join(",") === "review.pua"
+    && !narrowJson.authority?.allowSubscribe?.includes("review.>"),
+    narrowJson.authority);
+  narrowHttp.close();
+  rmSync(narrowDir, { recursive: true, force: true });
 } finally {
   http.close();
   rmSync(dir, { recursive: true, force: true });
