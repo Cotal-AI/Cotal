@@ -156,8 +156,10 @@ subscribe permissions. The client then reads the generation out of its granted r
 The answer comes from the broker, never from the credential the client presented or the name
 it proposed.
 
-Measured limits. The stock agent profile holds no `$SYS` publish grant, so discovery refuses
-there; production issuance would have to add `$SYS.REQ.USER.INFO` to each issued ceiling. A
+Measured limits. No current profile holds a grant that would let it request its own server view
+(a census cell, with a positive control), and a connection without that grant cannot discover its
+generation (a static cell), so production issuance would have to add `$SYS.REQ.USER.INFO` to each
+issued ceiling. A
 connection whose publish permissions are unrestricted names no generation and refuses. Grant
 rows carrying two generations, a wildcard generation, or a malformed field all refuse rather
 than picking one. Foreign-space rows are ignored.
@@ -178,8 +180,8 @@ mutation for it is attached to that cell.
 Discovery establishes what the broker enforces for this connection. It does not establish that
 a durable issuance record exists; that remains the issuer-side lifecycle evidence. The static
 discovery mints grant `_INBOX.>`, wider than the production per-connection inbox confinement,
-because inbox scoping is not what these cells measure. Renewal across a reconnect is not covered
-on the callout path, where automatic reconnect stays disabled.
+because inbox scoping is not what these cells measure. What stays uncovered is the client side
+of a transition: nothing here shows an application observing the closure and rebinding.
 
 ## Dual-rail migration refusal
 
