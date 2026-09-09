@@ -13,7 +13,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -139,6 +139,29 @@ try {
     // Each class fails the forgery on its own ground, so none is absent by accident.
     assert.deepEqual(Object.keys(classified).sort(), ["api-envelope", "creates-push-delivery", "no-delivery", "stored-captured-subject", "stored-marked"]);
     observations.peerDeliveryClasses = Object.fromEntries(Object.entries(classified).map(([k, v]) => [k, [...new Set(v)].length]));
+  });
+
+  await check("every cell and mutation the claim ledger cites still exists", async () => {
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    const ledger = readFileSync(join(root, "packages/core/smoke/prototypes/CLAIMS.md"), "utf8");
+    const { cells, mutations } = ledgerCitations(ledger);
+    assert.ok(cells.length >= 20 && mutations.length >= 20, `the extractor found ${cells.length} cells and ${mutations.length} mutations; it is not reading the ledger`);
+    const suites = ["packages/core/smoke/issued-subject-permissions.smoke.ts",
+      "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+      "implementations/auth/smoke/issued-static-binding.smoke.ts",
+      "implementations/auth/smoke/issued-callout-binding.smoke.ts",
+      "implementations/auth/smoke/issued-profile-census.smoke.ts",
+      "implementations/auth/smoke/issued-ingress-origin.smoke.ts"];
+    const known = new Set(suites.flatMap((file) => suiteCellNames(readFileSync(join(root, file), "utf8"))));
+    assert.deepEqual(cells.filter((name) => !known.has(name)), []);
+    const configs = ["packages/core/smoke/mutations/issued-subject-permissions-prototype.json",
+      "implementations/auth/smoke/mutations/issued-authority-lifecycle-prototype.json",
+      "implementations/auth/smoke/mutations/issued-static-binding-prototype.json",
+      "implementations/auth/smoke/mutations/issued-callout-binding-prototype.json",
+      "implementations/auth/smoke/mutations/issued-profile-census-prototype.json"];
+    const named = new Set(configs.flatMap((file) => (JSON.parse(readFileSync(join(root, file), "utf8")) as { mutations: { name: string }[] }).mutations.map((m) => m.name)));
+    assert.deepEqual(mutations.filter((name) => !named.has(name)), []);
+    observations.ledgerCitations = { cells: cells.length, mutations: mutations.length };
   });
 
   await check("no shipped source imports the prototypes", async () => {

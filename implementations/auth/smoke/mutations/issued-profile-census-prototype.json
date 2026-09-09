@@ -4,7 +4,8 @@
     "implementations/auth/smoke/prototypes/issued-profile-census.ts",
     "packages/core/smoke/prototypes/issued-accepted-row.ts",
     "packages/core/src/endpoint-subjects.ts",
-    "packages/core/src/provision.ts"
+    "packages/core/src/provision.ts",
+    "packages/core/smoke/prototypes/CLAIMS.md"
   ],
   "guard": "Every Profile and generic callout view is represented in a direction-specific census. Native controls detect broad publication in the real operator builder. These are baseline migration observations; representative variants are not all option combinations and endpoint-serve uses raw grant rows.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
@@ -139,6 +140,22 @@
       "replace": "  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],\n  [/^\\$JS\\.API\\.STREAM\\./, \"api-envelope\"],",
       "expectRed": "every broker grant a peer can hold has a decided delivery class",
       "cell": "every broker grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "a ledger citation names a cell that no longer exists",
+      "file": "packages/core/smoke/prototypes/CLAIMS.md",
+      "find": "cell \"denies override listed or unrestricted native allows\"",
+      "replace": "cell \"denies override listed native allows\"",
+      "expectRed": "every cell and mutation the claim ledger cites still exists",
+      "cell": "every cell and mutation the claim ledger cites still exists"
+    },
+    {
+      "name": "the citation extractor reads surrounding prose as a citation",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "/\\b(cells?|mutations?)\\b((?:\\s*(?:and\\s+)?\"[^\"]+\"\\s*[,;]?)+)/g",
+      "replace": "/\\b(cells?|mutations?)\\b((?:(?!\\b(?:cells?|mutations?)\\b)[^|])*)/g",
+      "expectRed": "every cell and mutation the claim ledger cites still exists",
+      "cell": "every cell and mutation the claim ledger cites still exists"
     }
   ]
 }

@@ -33,13 +33,13 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | 73 | Callout success stays private until the awaited issuer gate completes | M | cell of that name; mutation "issuer release is not awaited". Had the same single-sample shape as 72 and now watches a window too |
 | 74 | No other cell in these suites samples once against a concurrent writer | A | audited after finding 72: the remaining absence assertions all sit after an awaited rejection, so nothing is in flight when they run. An audit by the person who wrote the cells |
 | 9 | Activation uses the revision the prepare observed, not a re-read | M | cell "activation before the source walk is irreversibly revoked"; mutation "activation takes a fresh revision after abort" |
-| 10 | An abort that wins the activation CAS prevents release | M | cells "source freeze before finalization releases nothing", "a winning source fence followed by prepared retirement loses activation" |
+| 10 | An abort that wins the activation CAS prevents release | M | cells "source freeze before finalization releases nothing and aborts the attempt", "a winning source fence followed by prepared retirement loses activation" |
 | 11 | Each source index ends in the generation, so a reused credential id cannot merge issuances | M | cell "two issuances of one root credential retain distinct generation indexes" |
 | 12 | Resolution rechecks revocation after awaiting source authorization | M | cell of that name; mutations "resolution ignores source revocation", "resolution skips its final state check" |
 | 13 | A failed attempt read is refused, never read as absence of a revocation | M | cell "an unreadable attempt row refuses instead of resolving"; mutation "an unreadable attempt row is read as active" |
 | 14 | Revocation is separate from immutable evidence, so absence reads as `active` | A | design statement about the record split. Cells exercise the split; none asserts that this is the right representation |
 | 15 | The second attempt read is the linearization point | A | naming of what cell 12 measures. The cell shows the recheck happens; calling it the linearization point is the contract's assertion |
-| 16 | The index walk needs only the issued bucket, not operator reach | M-nomut | cell "the index walk runs on a least-privilege revoker credential"; positive control is the same credential being refused a read of the auth bucket |
+| 16 | The index walk needs only the issued bucket, not operator reach | M-nomut | cell "the index walk runs on a least-privilege revoker credential, not an operator one"; positive control is the same credential being refused a read of the auth bucket |
 | 17 | A revoker is trusted infrastructure, so its write-plus-raw-read pairing is acceptable | A | policy statement |
 | 18 | This is not the production sealed-scanner discipline | A | read of `implementations/auth/src/ledger-scanner.ts` |
 | 19 | A revocation that wins before the fence prevents release | M | cell "individual revocation between validation and finalization prevents release"; mutations "credential source touch is omitted", "credential source touch refreshes a revoked revision" |
@@ -52,7 +52,7 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 
 | # | Claim | | Backing |
 |---|---|---|---|
-| 24 | A reference is returned only after native broker authentication | M | `connectIssuedStatic` connects before returning; cells "missing/duplicate/future/malformed issued metadata cannot establish a static binding" |
+| 24 | A reference is returned only after native broker authentication | M | `connectIssuedStatic` connects before returning; cells "missing issued metadata cannot establish a static binding", "duplicate issued metadata cannot establish a static binding", "future issued metadata cannot establish a static binding", "malformed issued metadata cannot establish a static binding" |
 | 25 | Metadata extraction and the authenticator share a private copy of the credential bytes | M | cell "native reconnect retains snapshotted credentials after caller-buffer mutation"; mutation "credential snapshot aliases a Buffer" |
 | 26 | Replacing the credentials file takes effect only on a new explicit binding | M | cell "rewriting the credential file does not change a live connection binding" |
 | 27 | A native reconnect keeps the original snapshot and generation | M | same reconnect cell |
@@ -102,7 +102,7 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 |---|---|---|---|
 | 52 | Every `Profile` name and every generic callout view is represented | M | cell "profile and view producers cover their declared sets"; mutations "one declared profile is omitted", "one generic callout view is omitted" |
 | 53 | No current profile reaches the issued namespace | M | 42 per-variant cells plus 168 native decisions; mutation "production operator publication is widened" |
-| 54 | No option combination can reach it, because no shipped builder emits `ep.v1` | M | cell "no shipped source emits an issued-rail subject"; mutations "the shipped-source scan skips a whole tier", "a shipped builder emits an issued-rail subject" |
+| 54 | No option combination can reach it, because no shipped builder emits `ep.v1` | M | cell "no shipped source emits an issued-rail subject, under any option combination"; mutations "the shipped-source scan skips a whole tier", "a shipped builder emits an issued-rail subject" |
 | 55 | Sixteen write-plus-raw-read overlaps exist and all are trusted infrastructure or operator profiles | M | cell "the write-plus-raw-read detector finds the known trusted overlaps"; mutation "the raw-read overlap detector stops matching writes" |
 | 56 | No peer-held profile holds that pairing | M | cell "no peer-held profile can both write and raw-read one stream"; mutation "a profile with a known overlap is treated as peer-held" |
 | 57 | `agent` and `observer` hold raw reads on streams they cannot write, so their zero is a measurement | M | the detector reports their raw-read streams; the zero is the writability filter |
@@ -123,6 +123,7 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | 66 | Therefore no granted path delivers attacker-chosen, request-shaped bytes under the rail without a marker | A | a conclusion over 62 to 65 and over 70. Still the load-bearing assertion |
 | 79 | `CONSUMER.CREATE` is its own class, because it creates a push consumer as well as answering an envelope | M | census cell "every broker grant a peer can hold has a decided delivery class"; the push path's own ground is the measured interest-gating in claim 62 |
 | 80 | A stream create or update, which can carry `republish`, refuses rather than folding into an envelope class | M | same cell; mutation "a stream-configuring verb folds into an envelope class". No peer-held profile holds one today |
+| 81 | Every cell and mutation this page cites resolves to a name that exists | M | census cell "every cell and mutation the claim ledger cites still exists"; mutations "a ledger citation names a cell that no longer exists", "the citation extractor reads surrounding prose as a citation". Four citations were stale when the check was added: three truncated, one collapsing a four-cell family into one unsearchable name |
 | 70 | Every `$JS.` or `$SYS.` grant a peer-held profile holds falls into one of five delivery classes, and an unknown verb refuses | M | census cell "every broker grant a peer can hold has a decided delivery class"; mutations "an unclassified JetStream grant is waved through", "a raw stored read is classified as an API envelope" |
 | 76 | The client can read its accepted generation from an issuer-written row scoped to its own key, and another client's row is refused | M | static cell "a client can read its accepted generation from its own row instead of the server view"; mutations "the accepted read grant covers every client's row", "an accepted-row token can be redeemed twice" |
 | 78 | A ceiling carrying the contract's own discovery grant introduces no write-plus-raw-read overlap | M | census cell "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap", with an in-cell control that the opposite pairing is still caught; mutation "the candidate issued stores are not modelled" |

@@ -285,3 +285,33 @@ export function deliveryPaths(permissions: Record<string, unknown>): { row: stri
     .filter((row) => row.startsWith("$JS.") || row.startsWith("$SYS."))
     .map((row) => ({ row, cls: deliveryClassOf(row) }));
 }
+
+/**
+ * The claim ledger cites cells and mutations by name. A citation that no longer resolves is worse
+ * than no ledger, so the names are extracted and checked rather than trusted. Only explicitly
+ * quoted names are extracted; the "cell of that name" idiom refers to the claim text and is out of
+ * scope, which is why the caller also asserts a floor on how many citations were found.
+ */
+export function ledgerCitations(markdown: string): { cells: string[]; mutations: string[] } {
+  const cells = new Set<string>(), mutations = new Set<string>();
+  // Only the contiguous run of quoted names directly after the keyword is a citation. A quoted
+  // phrase later in the same cell is prose, and reading it as a citation makes the check fail on
+  // rows that cite nothing wrong.
+  for (const match of markdown.matchAll(/\b(cells?|mutations?)\b((?:\s*(?:and\s+)?"[^"]+"\s*[,;]?)+)/g)) {
+    const target = match[1].startsWith("cell") ? cells : mutations;
+    for (const quoted of match[2].matchAll(/"([^"]+)"/g)) target.add(quoted[1]);
+  }
+  return { cells: [...cells].sort(), mutations: [...mutations].sort() };
+}
+
+/** Every `check("…")` name in a suite source, awaited or not. */
+export function suiteCellNames(source: string): string[] {
+  const names = [...source.matchAll(/\bcheck\(\s*"([^"]+)"/g)].map((m) => m[1]);
+  // A cell built from a template literal has no single literal name. Expand the one shape used
+  // here, `${label} …`, against the labels the loop iterates, so the ledger can cite each real
+  // cell rather than a collapsed family name a reader cannot search for.
+  for (const built of source.matchAll(/\bcheck\(\s*`\$\{label\}([^`]+)`/g)) {
+    for (const label of source.matchAll(/^\s*\["([a-z-]+)",/gm)) names.push(`${label[1]}${built[1]}`);
+  }
+  return names;
+}
