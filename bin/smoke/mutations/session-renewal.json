@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/session-renewal.smoke.ts",
+  "suite": [
+    "packages/core/smoke/session-renewal.smoke.ts"
+  ],
   "guard": "owner-authorized auth-service renewal preserves actor/lifecycle/nkey, confines every mint to current authority within its ceiling, and keeps legacy static families as named mesh-release blockers",
   "command": "pnpm smoke:session-renewal",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/session-renewal.json",

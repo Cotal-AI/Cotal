@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/session-lifecycle-records.smoke.ts",
+  "suite": [
+    "packages/core/smoke/session-lifecycle-records.smoke.ts"
+  ],
   "guard": "cooperative dispatcher retirement can settle a release as terminal-success only with a completed collector and an empty unproven set",
   "command": "./node_modules/.bin/tsx packages/core/smoke/session-lifecycle-records.smoke.ts",
   "completionMarker": "passed, ",

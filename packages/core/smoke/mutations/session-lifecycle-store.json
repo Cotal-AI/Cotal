@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/session-lifecycle-store.smoke.ts",
+  "suite": [
+    "packages/core/smoke/session-lifecycle-store.smoke.ts"
+  ],
   "guard": "session operation receipts stay monotonic, retired retries bind to that binding and operation, recovery-read-only refuses writes, and the default binding lookup is reached without an injected scanner",
   "command": "./node_modules/.bin/tsx packages/core/smoke/session-lifecycle-store.smoke.ts",
   "completionMarker": "passed, ",

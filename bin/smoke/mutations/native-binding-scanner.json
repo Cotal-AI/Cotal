@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/native-binding-scanner.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/native-binding-scanner.smoke.ts"
+  ],
   "guard": "the auth-owned sealed records scanner exposes one closed manager-scoped native-binding query, keeps released-unproven rows, proves known-empty distinctly, rejects malformed state, and never hands a records credential, filter, connection, or consumer to runtime callers",
   "command": "pnpm smoke:native-binding-scanner:auth",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/native-binding-scanner.json",

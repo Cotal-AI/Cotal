@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/native-lifecycle-lookup.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/native-lifecycle-lookup.smoke.ts"
+  ],
   "guard": "the production native-lifecycle lookup keeps released-unproven rows live, completes only matching native-effect or fully-validated cooperative receipts, and never widens the sealed scanner CREATE",
   "command": "pnpm smoke:native-lifecycle-lookup:auth",
   "completionMarker": "passed, ",

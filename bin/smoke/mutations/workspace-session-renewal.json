@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/session-renewal.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/session-renewal.smoke.ts"
+  ],
   "guard": "the connector performs repeated independent renewals over its own auth-service exchange and candidate mesh connection, adopting only proven newer credentials and failing loud without degrading to the old generation",
   "command": "pnpm smoke:workspace-session-renewal",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/workspace-session-renewal.json",
