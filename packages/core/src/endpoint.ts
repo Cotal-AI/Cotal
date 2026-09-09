@@ -3021,15 +3021,17 @@ export class CotalEndpoint extends EventEmitter {
           delivered++;
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
-              try { out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() }); } catch { /* skip undecodable */ }
+              const msg = historyMessageFromDelivery(m);
+              if (msg) out.push({ seq: m.seq, subject: m.subject, msg });
             }
             complete = true;
             break;
           }
-          try {
-            out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() });
+          const msg = historyMessageFromDelivery(m);
+          if (msg) {
+            out.push({ seq: m.seq, subject: m.subject, msg });
             if (out.length > limit) out.shift();
-          } catch { /* skip undecodable */ }
+          }
           if (delivered >= pending) { complete = true; break; }
         }
       } finally {
@@ -5055,16 +5057,44 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   }
 }
 
-/** Routing fields in the envelope are advisory. Surface a channel label only from the authenticated
- * chat subject, so connector attention cannot be bypassed with a mismatched payload `channel`. */
+/** Routing fields and `from.id` in the envelope are advisory. The broker forge-locks sender (and
+ *  for DMs, recipient) into the subject; surface those tokens, never the payload claims. Live tails
+ *  still drop a mismatch before calling this. History cannot drop the subject: `dmHistory` returns
+ *  payloads, so identity has to be rewritten here or every consumer renders a spoof (#388). */
 function authenticatedMessage(msg: CotalMessage, parsed: ParsedSubject): CotalMessage {
-  return parsed.kind === "chat" ? authenticatedChannelMessage(msg, parsed.rest) : msg;
+  const from = msg.from.id === parsed.sender ? msg.from : { ...msg.from, id: parsed.sender };
+  const withFrom = from === msg.from ? msg : { ...msg, from };
+  if (parsed.kind === "chat") return authenticatedChannelMessage(withFrom, parsed.rest);
+  if (parsed.kind === "inst") return authenticatedDmMessage(withFrom, parsed.rest);
+  return withFrom;
 }
 
 function authenticatedChannelMessage(msg: CotalMessage, channel: string): CotalMessage {
   if (msg.channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
   const { to: _to, toService: _toService, ...base } = msg;
   return { ...base, channel } as CotalMessage;
+}
+
+function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
+  if (msg.to === to && msg.channel === undefined && msg.toService === undefined) return msg;
+  const { channel: _channel, toService: _toService, ...base } = msg;
+  return { ...base, to } as CotalMessage;
+}
+
+/** History drain keeps `m.json()` and used to throw the subject away. Fail closed on an unparseable
+ *  subject / missing from / unusable id, then rewrite identity from the subject. Do not echo-drop
+ *  `from.id === this.card.id`: god-view history must include the viewer's own sends. */
+function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): CotalMessage | undefined {
+  let msg: CotalMessage;
+  try {
+    msg = m.json<CotalMessage>();
+  } catch {
+    return undefined;
+  }
+  if (!isUsableMessageId(msg.id) || !msg.from) return undefined;
+  const parsed = parseSubject(m.subject);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
+  return authenticatedMessage(msg, parsed);
 }
 
 function isPlane3DeliveryFrame(value: unknown): value is Plane3DeliveryFrame {

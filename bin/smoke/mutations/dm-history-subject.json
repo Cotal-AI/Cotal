@@ -1,0 +1,33 @@
+{
+  "suite": [
+    "packages/core/smoke/dm-history-subject.smoke.ts"
+  ],
+  "guard": "dmHistory surfaces forge-locked subject sender and recipient, never payload from/to",
+  "command": "pnpm smoke:dm-history-subject",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/dm-history-subject.json",
+  "why": [
+    "History drain used to keep m.json() and drop m.subject. Payload from/to are advisory.",
+    "M1 returns the raw payload from drainWindow. Attribution and thread injection both return.",
+    "M2 keeps from.id rewrite but skips recipient rewrite. Thread injection survives."
+  ],
+  "mutations": [
+    {
+      "name": "history drain returns the payload and discards the subject",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (!isUsableMessageId(msg.id) || !msg.from) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  return authenticatedMessage(msg, parsed);",
+      "replace": "  return msg;",
+      "expectRed": "dmHistory sender is the subject sender, not payload from.id",
+      "cell": "dmHistory sender is the subject sender, not payload from.id",
+      "completionMarker": "dm-history-subject smoke:"
+    },
+    {
+      "name": "authenticatedMessage rewrites chat only, leaving DM recipient as payload to",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (parsed.kind === \"inst\") return authenticatedDmMessage(withFrom, parsed.rest);",
+      "replace": "  if (parsed.kind === \"inst\") return withFrom;",
+      "expectRed": "dmHistory recipient is the subject recipient, not payload to",
+      "cell": "dmHistory recipient is the subject recipient, not payload to",
+      "completionMarker": "dm-history-subject smoke:"
+    }
+  ]
+}
