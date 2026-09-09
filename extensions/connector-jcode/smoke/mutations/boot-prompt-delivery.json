@@ -8,7 +8,7 @@
   "progressPattern": "^  \u2713 ",
   "minTicks": 2,
   "proveWith": "pnpm mutation-proof --config extensions/connector-jcode/smoke/mutations/boot-prompt-delivery.json",
-  "why": "The busy-startup cell first-reds on zero delivery and also counts marker occurrences so a double send fails. Recovery mutations run the production provider-disconnect fixture: a close before dispatch must still deliver once without an inbox wake, while a close after the fake records the request must stay at one attempt without claiming model execution. The hasDriveWork calls inside the error-retry timer and drive finally are structurally non-discriminable for pendingKickoff: the kickoff is cleared before the only run() that can increment consecutiveFailures and before every entry to that finally, and it is never re-armed. Mutating those sites could only grade unrelated inbox work or impossible state, so the reachable idle and bridge-recovery triggers are the ones mutated here. The second guard case holds a real soft-interrupt reply until the host logs that startup is awaiting it, then changes native status before acknowledging. The post-dispatch case emits an error before closing, so run rejects rather than returning normally from an empty event stream. The dnd case observes an automatic-inbox health receipt, releases the native busy turn, and expects deferred delivery without another wake.",
+  "why": "The busy-startup cell first-reds on zero delivery and also counts marker occurrences so a double send fails. Recovery mutations run the production provider-disconnect fixture: a close before dispatch must still deliver once without an inbox wake, while a close after the fake records the request must stay at one attempt without claiming model execution. The hasDriveWork calls inside the error-retry timer and drive finally are structurally non-discriminable for pendingKickoff: the kickoff is cleared before the only run() that can increment consecutiveFailures and before every entry to that finally, and it is never re-armed. Mutating those sites could only grade unrelated inbox work or impossible state, so the reachable idle and bridge-recovery triggers are the ones mutated here. The second guard case holds a real soft-interrupt reply until the host logs that startup is awaiting it, then changes native status before acknowledging. The post-dispatch case emits an error before closing, so run rejects rather than returning normally from an empty event stream. The dnd case observes an automatic-inbox health receipt, releases the native busy turn, and expects deferred delivery without another wake. Provider-disconnect mutations select the startup-only group; its default smoke still runs both groups. The original steady-recovery assertions remain graded by provider-disconnect.json with --steady-only.",
   "mutations": [
     {
       "name": "startup no longer owns the kickoff after the first busy pre-send guard",
@@ -33,7 +33,7 @@
       "replace": "    if (stopping || reconnecting || turnActive || !client || !sessionId) {\n      pendingKickoff = undefined;\n      driving = false;",
       "expectRed": "a startup kickoff survives native state changing while steering settles",
       "cell": "a startup kickoff survives native state changing while steering settles",
-      "command": "pnpm smoke:jcode-provider-disconnect"
+      "command": "pnpm smoke:jcode-provider-disconnect --startup-only"
     },
     {
       "name": "idle completion ignores the owned startup kickoff when no inbox wake exists",
@@ -50,7 +50,7 @@
       "replace": "      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();",
       "expectRed": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
       "cell": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
-      "command": "pnpm smoke:jcode-provider-disconnect"
+      "command": "pnpm smoke:jcode-provider-disconnect --startup-only"
     },
     {
       "name": "the kickoff is consumed only after completion and duplicates across recovery",
@@ -59,7 +59,7 @@
       "replace": "      await turnClient.run(sessionId, parts.join(\"\\n\\n\"), { autoApprove: true });\n      pendingKickoff = undefined;",
       "expectRed": "a kickoff request closed after dispatch is attempted at most once across recovery",
       "cell": "a kickoff request closed after dispatch is attempted at most once across recovery",
-      "command": "pnpm smoke:jcode-provider-disconnect"
+      "command": "pnpm smoke:jcode-provider-disconnect --startup-only"
     },
     {
       "name": "kickoff discards the wake for ordinary deferred dnd traffic",
