@@ -1,0 +1,122 @@
+{
+  "suite": [
+    "packages/core/smoke/native-lifecycle-executor.smoke.ts"
+  ],
+  "guard": "unsupported native lifecycle operations refuse before inspect/adopt, and executeNativeLifecycle is the public registry entry",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/native-lifecycle-executor.smoke.ts",
+  "completionMarker": "passed, ",
+  "progressPattern": "\u2713",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/native-lifecycle-executor.json",
+  "why": [
+    "Capability refusal must happen before inspect or prepare.",
+    "At least one cell drives executeNativeLifecycle with a real registry provider and nothing injected.",
+    "Recorded receipts must match prepared resourceKey/bindingId/operationId before persist.",
+    "openView and preflight return typed provider results; discover authorizes each observation."
+  ],
+  "mutations": [
+    {
+      "name": "skip capability require before mutating dispatch",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    dispatched = requireNativeLifecycleOperation(connection, request.operation);\n",
+      "replace": "    dispatched = ((connection[request.operation] ?? (async () => { throw new Error(\"missing\"); })) as typeof dispatched);\n",
+      "expectRed": "unsupported adopt is refused before inspect",
+      "cell": "unsupported adopt is refused before inspect"
+    },
+    {
+      "name": "allow observed-mode mutation",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (MUTATING.has(request.operation) && connection.capabilities.mode === \"observed\")\n    return { state: \"unsupported\", operation: request.operation };\n",
+      "replace": "",
+      "expectRed": "observed-mode adopt is refused before inspect",
+      "cell": "observed-mode adopt is refused before inspect"
+    },
+    {
+      "name": "return recorded native receipt without persisting it",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);\n    await updateSessionOperation(kv, stored, revision);\n    const durable = await queryOperation(kv, prepared.record.resourceKey, prepared.record.operationId);\n    if (durable.state === \"absent\")\n      throw new EpEnvelopeError(\"internal\", `session operation ${prepared.record.operationId} vanished after receipt persist`);\n",
+      "replace": "    const durable = { state: stored.state, record: stored } as Awaited<ReturnType<typeof queryOperation>>;\n",
+      "expectRed": "adopt native-effect receipt is durable in the trusted store",
+      "cell": "adopt native-effect receipt is durable in the trusted store"
+    },
+    {
+      "name": "skip prepared receipt identity check",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    if (!samePreparedIdentity(prepared.record, native.operation))\n      return persistIndeterminate(kv, prepared.record, \"provider recorded receipt does not match prepared resourceKey/bindingId/operationId\");\n",
+      "replace": "",
+      "expectRed": "mismatched recorded receipt stays indeterminate",
+      "cell": "mismatched recorded receipt stays indeterminate"
+    },
+    {
+      "name": "discard NativeLifecycleView",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const view = await (method as NonNullable<NativeLifecycleConnection[\"openView\"]>)(resourceKey, request.signal);\n    return { state: \"view\", view };\n",
+      "replace": "    await (method as NonNullable<NativeLifecycleConnection[\"openView\"]>)(resourceKey, request.signal);\n    return { state: \"absent\" };\n",
+      "expectRed": "openView returns the NativeLifecycleView through the public entry",
+      "cell": "openView returns the NativeLifecycleView through the public entry"
+    },
+    {
+      "name": "hardcode preflight inspect and drop result",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const target = request.targetOperation;\n    if (target === undefined)\n      throw new EpEnvelopeError(\"internal\", \"native lifecycle preflight requires request.targetOperation\");\n    const preflight = await (method as NonNullable<NativeLifecycleConnection[\"preflight\"]>)(target, resourceKey, request.signal);\n    return { state: \"preflight\", preflight };\n",
+      "replace": "    await (method as NonNullable<NativeLifecycleConnection[\"preflight\"]>)(\"inspect\", resourceKey, request.signal);\n    return { state: \"absent\" };\n",
+      "expectRed": "preflight uses targetOperation and preserves the typed refusal",
+      "cell": "preflight uses targetOperation and preserves the typed refusal"
+    },
+    {
+      "name": "return every discover observation",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const authorized: NativeLifecycleObservation[] = [];\n    for (const observation of observations) {\n      try {\n        authorizeSessionManage(\n          request.grant,\n          {\n            authenticatedActor: request.authenticatedActor,\n            managerPrincipal: request.managerPrincipal,\n            resourceOwnerPrincipal: request.resourceOwnerPrincipal,\n            resourceKey: parseResourceKey(observation.resourceKey, \"native discover observation.resourceKey\"),\n            action: \"discover\",\n            now: request.now,\n          },\n          request.authenticatedGrantIssuer,\n          request.delegation,\n          request.authenticatedDelegationIssuer,\n        );\n        authorized.push(observation);\n      } catch (e) {\n        if (e instanceof EpEnvelopeError && (e.code === \"permission-denied\" || e.code === \"expired\" || e.code === \"internal\")) continue;\n        throw e;\n      }\n    }\n    return { state: \"observations\", observations: authorized };\n",
+      "replace": "    return { state: \"observations\", observations };\n",
+      "expectRed": "discover dropped observations outside the grant selector",
+      "cell": "discover dropped observations outside the grant selector"
+    },
+    {
+      "name": "leave adopt binding at adopt-prepared",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    if (durable.state === \"terminal-success\") {\n      const current = await readBinding(kv, prepared.record.resourceKey);\n      if (current === undefined)\n        throw new EpEnvelopeError(\"internal\", `session binding vanished after ${request.operation} receipt persist`);\n      if (mayAdvanceBinding(current.binding, durable, request.operation)) {\n        const nextState = request.operation === \"release\" ? \"released\" : request.operation === \"adopt\" ? \"managed\" : current.binding.state;\n        if (nextState !== current.binding.state || current.binding.operationId !== prepared.record.operationId) {\n          await persistBinding(kv, {\n            ...current.binding,\n            state: nextState,\n            operationId: prepared.record.operationId,\n          }, current.revision);\n        }\n      }\n    }\n",
+      "replace": "",
+      "expectRed": "adopt wrote a managed sessionbinding row",
+      "cell": "adopt wrote a managed sessionbinding row"
+    },
+    {
+      "name": "skip expectedBindingRevision CAS",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (existing !== undefined && existing.revision !== request.expectedBindingRevision)\n    throw new EpEnvelopeError(\"conflict\", `native lifecycle ${request.operation} expected binding revision ${request.expectedBindingRevision} but store is at ${existing.revision}`);\n",
+      "replace": "",
+      "expectRed": "stale expectedBindingRevision is refused as conflict",
+      "cell": "stale expectedBindingRevision is refused as conflict"
+    },
+    {
+      "name": "always dispatch adopt",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const mutate = method as NonNullable<NativeLifecycleConnection[\"adopt\" | \"release\" | \"transfer\" | \"recover\"]>;\n    native = await mutate(nextBinding, prepared.record, request.signal);\n",
+      "replace": "    native = await connection.adopt!(nextBinding, prepared.record, request.signal);\n",
+      "expectRed": "transfer dispatches the transfer method through the public entry",
+      "cell": "transfer dispatches the transfer method through the public entry"
+    },
+    {
+      "name": "persist terminal-success without native-effect or cooperative-retirement proof",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    if (native.operation.state === \"terminal-success\") {\n      const proves = native.operation.proofOrigin?.proves;\n      if (proves !== \"native-effect\" && proves !== \"cooperative-retirement\")\n        return persistIndeterminate(kv, prepared.record, \"provider returned terminal-success without native-effect or cooperative-retirement proof\");\n    }\n",
+      "replace": "",
+      "expectRed": "journal-receipt terminal-success release stays indeterminate",
+      "cell": "journal-receipt terminal-success release stays indeterminate"
+    },
+    {
+      "name": "skip native-effect record.action match",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    return (operation === \"adopt\" || operation === \"release\") && durable.record.action === operation;\n",
+      "replace": "    return operation === \"adopt\" || operation === \"release\";\n",
+      "expectRed": "native-effect cannot advance when record.action mismatches operation",
+      "cell": "native-effect cannot advance when record.action mismatches operation"
+    },
+    {
+      "name": "treat cooperative-retirement as sufficient without preserved lifetime",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (operation !== \"release\") return false;\n  return !releasedBindingStillLive({ ...current, operationId: durable.record.operationId }, durable);\n",
+      "replace": "  if (operation !== \"release\") return false;\n  return true;\n",
+      "expectRed": "cooperative-retirement without preserved lifetime did not mark the binding released",
+      "cell": "cooperative-retirement without preserved lifetime did not mark the binding released"
+    }
+  ]
+}
