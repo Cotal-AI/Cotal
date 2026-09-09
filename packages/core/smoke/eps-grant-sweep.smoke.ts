@@ -125,8 +125,8 @@ const PRODUCERS: Record<Profile, () => string[]> = {
 // ── exhaustiveness: the table's key set IS the profile set, proven at runtime ──────────────────
 console.log("A. exhaustiveness: every mint profile is swept, none skipped");
 {
-  // The two CredentialKind members that are NOT Profiles ($SYS creds minted outside permissionsFor).
-  const NON_PROFILE_KINDS = ["membership-observer", "connection-evictor"];
+  // CredentialKind members that are NOT Profiles (session-agent is auth-service renewal only; $SYS creds mint outside permissionsFor).
+  const NON_PROFILE_KINDS = ["session-agent", "membership-observer", "connection-evictor"];
   const declared = Object.keys(CREDENTIAL_LIFETIMES).filter((k) => !NON_PROFILE_KINDS.includes(k)).sort();
   const swept = Object.keys(PRODUCERS).sort();
   const missing = declared.filter((k) => !swept.includes(k));

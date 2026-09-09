@@ -1,0 +1,223 @@
+/**
+ * Loopback session-renewal HTTP path: the production caller of
+ * parseSessionEnrollment / issueSessionRenewal.
+ *
+ * A subscribe-only replica remint reissued revoked publish/scope. This suite
+ * drives handleSessionRenewal: stored enrollment + live ledger grant, then a
+ * signed session-agent JWT. Broker-free.
+ *
+ * PRODUCTION CALLER: implementations/auth/src/session-renewal.ts
+ * handleSessionRenewal → renewSessionFromEnrollmentStore → getSessionEnrollment
+ * (parseSessionEnrollment) + issueSessionRenewal.
+ */
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  chatSubject,
+  createSpaceAuth,
+  newIdentity,
+  putSessionEnrollment,
+  type MeshEnrolledSessionEnrollment,
+  type NativeOnlySessionEnrollment,
+  type ResourceKey,
+} from "@cotal-ai/core";
+import type { KV } from "@nats-io/kv";
+import { grantActor } from "../src/ledger.js";
+import { handleSessionRenewal, SESSION_RENEWAL_PATH } from "../src/session-renewal.js";
+
+let ok = 0, fail = 0;
+const c = (name: string, value: boolean, extra?: unknown) => {
+  if (value) { ok++; console.log(`  ✓ ${name}`); }
+  else { fail++; console.log("  ✗ FAIL:", name, extra ?? ""); }
+};
+
+type Row = { value: Uint8Array; revision: number; operation: "PUT" };
+class MemKv {
+  rows = new Map<string, Row>();
+  seq = 0;
+  async get(key: string) { return this.rows.get(key) as never; }
+  async put(key: string, value: Uint8Array, opts?: { previousSeq?: number }) {
+    const row = this.rows.get(key);
+    if ((opts?.previousSeq ?? -1) !== 0 || row) throw Object.assign(new Error("cas"), { code: 10071 });
+    const revision = ++this.seq;
+    this.rows.set(key, { value, revision, operation: "PUT" });
+    return revision;
+  }
+}
+
+function send(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+      catch { reject(new Error("request body is not valid JSON")); }
+    });
+    req.on("error", reject);
+  });
+}
+
+function decodeJwt(jwt: string): { name?: string; nats?: { pub?: { allow?: string[] } } } {
+  const payload = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+  return JSON.parse(Buffer.from(payload, "base64").toString()) as { name?: string; nats?: { pub?: { allow?: string[] } } };
+}
+
+const dir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-"));
+const cap = "cap-session-renewal-smoke";
+const space = "demo";
+const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const actor = "native_session";
+const lifecycleUid = "0123456789abcdefghijklmnop";
+const identity = newIdentity();
+const resource: ResourceKey = {
+  hostIdentity: "host-key-sha256:abc",
+  provider: "com.cotal.opencode",
+  nativeOwnerNamespace: "uid:1000",
+  stableSessionId: "native-session-17",
+  resourceGeneration: "creation:2026-09-08T20:00:00Z",
+};
+const common = {
+  resourceKey: resource,
+  ownerPrincipal: `${owner}.owner`,
+  provenance: {
+    authorizedBy: `${owner}.owner`,
+    nativeEvidence: { provider: "com.cotal.opencode", nativeOwner: "uid:1000" },
+    authenticatedAt: 1_788_900_000_000,
+  },
+  incarnationProof: {
+    nativeHostIncarnation: "native-host-start:41",
+    sessionIncarnation: "session-process-start:92",
+    evidence: { origin: "provider-inspection", immutableCreationId: "c-17" },
+  },
+  rights: ["adopt", "control", "release", "transfer"] as const,
+  expiry: 1_788_903_600_000,
+};
+const meshEnrolled: MeshEnrolledSessionEnrollment = {
+  ...common,
+  kind: "mesh-enrolled",
+  sessionActor: `${owner}.${actor}`,
+  enrolledPublicId: identity.id,
+  meshLifecycle: { id: `${owner}.${actor}`, lifecycleUid },
+  ceiling: {
+    owner,
+    actor,
+    lifecycleUid,
+    scope: ["session:control", "spawn"],
+    allowSubscribe: ["general", "review.>"],
+    allowPublish: ["general", "ops"],
+  },
+};
+const nativeOnly: NativeOnlySessionEnrollment = { ...common, kind: "native-only" };
+
+const kv = new MemKv() as unknown as KV;
+await putSessionEnrollment(kv, meshEnrolled);
+grantActor(dir, {
+  owner,
+  actor,
+  lifecycleUid,
+  scope: ["session:control"],
+  allowSubscribe: ["general"],
+  allowPublish: ["general"],
+});
+
+const auth = await createSpaceAuth(space);
+const ctx = {
+  cap,
+  dir,
+  space,
+  records: kv,
+  account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+};
+const http = createServer((req, res) => {
+  void handleSessionRenewal(req, res, ctx, send, readJsonBody);
+});
+await new Promise<void>((resolve, reject) => {
+  http.once("error", reject);
+  http.listen(0, "127.0.0.1", () => resolve());
+});
+const addr = http.address();
+const port = typeof addr === "object" && addr ? addr.port : 0;
+const url = `http://127.0.0.1:${port}${SESSION_RENEWAL_PATH}`;
+
+const post = async (body: unknown, headers: Record<string, string> = {}) => {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cap}`, ...headers },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, json: await res.json() as Record<string, unknown> };
+};
+
+try {
+  console.log("A. loopback route gates");
+  {
+    const get = await fetch(url);
+    c("GET is refused", get.status === 405);
+    const browser = await fetch(url, { method: "POST", headers: { origin: "https://evil.test", "content-type": "application/json", authorization: `Bearer ${cap}` }, body: "{}" });
+    c("browser Origin is refused", browser.status === 403);
+    const noCap = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    c("missing capability is refused", noCap.status === 401);
+    const extra = await post({ resourceKey: resource, profile: "agent" });
+    c("unknown body fields are refused", extra.status === 400);
+  }
+
+  console.log("B. production remint intersects every issued dimension");
+  const okRes = await post({ resourceKey: resource });
+  const jwt = typeof okRes.json.jwt === "string" ? okRes.json.jwt : "";
+  const claims = jwt ? decodeJwt(jwt) : {};
+  const pub = claims.nats?.pub?.allow ?? [];
+  const opsPub = chatSubject(space, owner, actor, "ops");
+  const generalPub = chatSubject(space, owner, actor, "general");
+  const authority = okRes.json.authority as { scope?: string[]; allowPublish?: string[]; allowSubscribe?: string[] } | undefined;
+  c("PRODUCTION CALLER handleSessionRenewal returns a session-agent JWT",
+    okRes.status === 200 && claims.name === "session-agent", { status: okRes.status, name: claims.name });
+  c("revoked allowPublish does not survive the HTTP remint",
+    pub.includes(generalPub) && !pub.includes(opsPub), { pub });
+  c("revoked spawn does not survive the HTTP remint",
+    authority?.scope?.join(",") === "session:control" && !authority.scope.includes("spawn"),
+    authority?.scope);
+  c("intersected authority drops spawn and ops",
+    authority?.scope?.join(",") === "session:control"
+    && authority.allowPublish?.join(",") === "general"
+    && authority.allowSubscribe?.join(",") === "general"
+    && !authority.scope?.includes("spawn")
+    && !authority.allowPublish?.includes("ops"),
+    authority);
+
+  console.log("C. native-only and missing grant refuse");
+  const nativeKv = new MemKv() as unknown as KV;
+  await putSessionEnrollment(nativeKv, nativeOnly);
+  const nativeHttp = createServer((req, res) => {
+    void handleSessionRenewal(req, res, { ...ctx, records: nativeKv }, send, readJsonBody);
+  });
+  await new Promise<void>((resolve, reject) => {
+    nativeHttp.once("error", reject);
+    nativeHttp.listen(0, "127.0.0.1", () => resolve());
+  });
+  const nativeAddr = nativeHttp.address();
+  const nativePort = typeof nativeAddr === "object" && nativeAddr ? nativeAddr.port : 0;
+  const nativeUrl = `http://127.0.0.1:${nativePort}${SESSION_RENEWAL_PATH}`;
+  const nativeRes = await fetch(nativeUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
+    body: JSON.stringify({ resourceKey: resource }),
+  });
+  const nativeJson = await nativeRes.json() as { error?: string };
+  c("native-only enrollment cannot renew over HTTP",
+    nativeRes.status === 409 && typeof nativeJson.error === "string" && nativeJson.error.includes("native-only"),
+    nativeJson);
+  nativeHttp.close();
+} finally {
+  http.close();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log(`${ok} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
