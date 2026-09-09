@@ -8,7 +8,7 @@ import {
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
   membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket,
-  type Profile, type MintOpts, type MintPrincipal,
+  type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE } from "../../src/token.js";
@@ -378,4 +378,38 @@ export function singleSampledHoldAssertions(source: string): string[] {
   for (const match of source.matchAll(/assert\.\w+\(\s*(?:!)?settled\b[^\n]*/g))
     if (!spans.some(([from, to]) => match.index! > from && match.index! < to)) loose.push(match[0].trim());
   return loose;
+}
+
+/**
+ * Peer-held credentials built across a spread of option combinations, not just the representative
+ * variants the fixtures carry. Invariant 1 is stated over what a peer can hold, and options change
+ * what `permissionsFor` emits, so checking it against 42 sampled variants leaves the invariant
+ * asserted over a space the measurement never visited.
+ *
+ * Every combination here is legal; the caller asserts that none was skipped, because a silently
+ * refused combination contributes nothing while still counting.
+ */
+export function peerOptionSweep(space: string, pr: MintPrincipal): { label: string; permissions: Record<string, unknown> }[] {
+  const uid = "u".repeat(26), instance = "i".repeat(26), session = "s".repeat(26);
+  const out: { label: string; permissions: Record<string, unknown> }[] = [];
+  const subs = [undefined, [], [">"], ["team"], ["team.>", "ops"]];
+  const pubs = [undefined, [], [">"], ["team"], ["a", "b.>"]];
+  const caps = [undefined, [], ["spawn"], ["spawn", "run"]];
+  const roles = [undefined, "worker", "reviewer"];
+  const epcaps: (EpCapability[] | undefined)[] = [undefined,
+    [{ endpoint: "manager", command: "ps" }],
+    [{ endpoint: "manager", command: "run-start", journal: true }],
+    [{ endpoint: "manager", command: "ps", routes: ["one", "all"] }]];
+  for (const allowSubscribe of subs) for (const allowPublish of pubs) for (const capabilities of caps)
+    for (const role of roles) for (const endpointCapabilities of epcaps)
+      out.push({
+        label: `agent sub=${JSON.stringify(allowSubscribe)} pub=${JSON.stringify(allowPublish)} cap=${JSON.stringify(capabilities)} role=${role} ep=${endpointCapabilities?.length ?? 0}`,
+        permissions: permissionsFor("agent", space, pr, { allowSubscribe, allowPublish, capabilities, role, endpointCapabilities, lifecycleUid: uid }),
+      });
+  for (const allowSubscribe of subs) for (const allowPublish of pubs)
+    out.push({ label: `observer sub=${JSON.stringify(allowSubscribe)} pub=${JSON.stringify(allowPublish)}`,
+      permissions: permissionsFor("observer", space, pr, { allowSubscribe, allowPublish }) });
+  out.push({ label: "session-caller", permissions: permissionsFor("session-caller", space, pr, { sessionCaller: { endpoint: "manager", sessionId: session, epoch: 1 } }) });
+  out.push({ label: "run-driver", permissions: permissionsFor("run-driver", space, pr, { runDriver: { endpoint: "manager", runId: "sweep-run", takeoverId: "take0001", instanceId: instance, epoch: 1 } }) });
+  return out;
 }

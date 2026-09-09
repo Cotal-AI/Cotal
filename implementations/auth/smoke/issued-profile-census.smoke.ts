@@ -13,7 +13,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, peerOptionSweep, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -308,6 +308,22 @@ try {
     // delivery being interest-gated, which is measured separately.
     assert.deepEqual([...held.get("CONSUMER.CREATE")!].sort(), ["agent", "observer", "run-driver"]);
     observations.pushConsumerHolders = [...held.get("CONSUMER.CREATE")!].sort();
+  });
+
+  await check("no peer option combination pairs a write with a raw stream read", async () => {
+    // The fixtures carry representative variants only, so invariant 1 was measured over a space
+    // far smaller than the one it is stated over. Options change what permissionsFor emits.
+    const swept = peerOptionSweep(space, { owner: "local", actor: "sweep", connId: "sweep0123456789abcdef", lifecycleUid: "u".repeat(26) });
+    assert.ok(swept.length >= 1000, `only ${swept.length} option combinations built; the sweep has lost a dimension`);
+    const offenders = swept.filter((row) => writeAndRawReadStreams(row.permissions, space).length)
+      .map((row) => `${row.label}: ${writeAndRawReadStreams(row.permissions, space).join(",")}`);
+    assert.deepEqual(offenders, []);
+    // Positive control: a peer shape that really does pair the two must be caught, or the empty
+    // result above is a property of the detector rather than of the credentials.
+    const base = swept[0].permissions;
+    const poisoned = { ...base, pub: { allow: [...((base.pub as { allow: string[] }).allow), `$KV.cotal_channels_${space}.>`, `$JS.API.DIRECT.GET.KV_cotal_channels_${space}.>`] } };
+    assert.deepEqual(writeAndRawReadStreams(poisoned, space), [`KV_cotal_channels_${space}`]);
+    observations.peerOptionCombinations = swept.length;
   });
 
   const report = {

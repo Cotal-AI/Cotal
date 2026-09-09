@@ -206,6 +206,22 @@
       "replace": "",
       "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
       "cell": "no shipped source emits an issued-rail subject, under any option combination"
+    },
+    {
+      "name": "the option sweep loses a dimension",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  const caps = [undefined, [], [\"spawn\"], [\"spawn\", \"run\"]];",
+      "replace": "  const caps = [undefined];",
+      "expectRed": "no peer option combination pairs a write with a raw stream read",
+      "cell": "no peer option combination pairs a write with a raw stream read"
+    },
+    {
+      "name": "the sweep's raw-read detector stops seeing DIRECT.GET",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "export function writeAndRawReadStreams(permissions: Record<string, unknown>, space: string): string[] {",
+      "replace": "export function writeAndRawReadStreams(permissions: Record<string, unknown>, space: string): string[] {\n  if (space === \"issuedcensus\") return [];",
+      "expectRed": "the write-plus-raw-read detector finds the known trusted overlaps",
+      "cell": "the write-plus-raw-read detector finds the known trusted overlaps"
     }
   ]
 }
