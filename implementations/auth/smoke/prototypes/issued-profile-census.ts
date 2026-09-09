@@ -145,6 +145,10 @@ export function streamSubjects(space: string): Record<string, string> {
     [`KV_${aclBucket(space)}`]: kv(aclBucket(space)),
     [`KV_${epAuthBucket(space)}`]: kv(epAuthBucket(space)),
     [`KV_${recordsBucket(space)}`]: kv(recordsBucket(space)),
+    // Candidate stores the issued contract would add. No shipped profile touches them; they are
+    // listed so a ceiling carrying the contract's own grants can be checked for the overlap.
+    [`KV_cotal_issued_${space}`]: kv(`cotal_issued_${space}`),
+    [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),
     [`KV_${sessionsBucket(space)}`]: kv(sessionsBucket(space)),
   };
 }

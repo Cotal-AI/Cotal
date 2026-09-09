@@ -12,6 +12,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
+import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
 import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
@@ -182,6 +183,18 @@ try {
       const streams = writeAndRawReadStreams(fixture.permissions, space);
       assert.deepEqual(streams, [], `${fixture.profile}/${fixture.variant} pairs write and raw read on ${streams.join(", ")}`);
     }
+  });
+
+  await check("a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap", async () => {
+    // The recommended discovery mechanism gives a client a DIRECT.GET on the accepted-row bucket,
+    // which is a raw stream read. It is only safe because the client cannot write that bucket, so
+    // check that rather than assume it, and check the opposite pairing is still caught.
+    const base = fixtures.find((f) => f.profile === "agent" && f.variant === "default")!.permissions;
+    const token = "b".repeat(32);
+    const withRead = { ...base, pub: { ...(base.pub as object), allow: [...((base.pub as { allow: string[] }).allow), acceptedReadGrant(space, token)] } };
+    assert.deepEqual(writeAndRawReadStreams(withRead, space), []);
+    const alsoWritable = { ...withRead, pub: { ...(withRead.pub as object), allow: [...withRead.pub.allow, `$KV.cotal_accepted_${space}.>`] } };
+    assert.deepEqual(writeAndRawReadStreams(alsoWritable, space), [`KV_cotal_accepted_${space}`]);
   });
 
   await check("every profile is classified peer-held or trusted", async () => {

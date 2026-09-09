@@ -2,6 +2,7 @@
   "suite": [
     "implementations/auth/smoke/issued-profile-census.smoke.ts",
     "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+    "packages/core/smoke/prototypes/issued-accepted-row.ts",
     "packages/core/src/endpoint-subjects.ts",
     "packages/core/src/provision.ts"
   ],
@@ -122,6 +123,14 @@
       "replace": "  \"control-caller-admin\", \"backup\", \"restore\", \"endpoint-evictor\",",
       "expectRed": "every profile is classified peer-held or trusted",
       "cell": "every profile is classified peer-held or trusted"
+    },
+    {
+      "name": "the candidate issued stores are not modelled",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "    [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),",
+      "replace": "",
+      "expectRed": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap",
+      "cell": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap"
     }
   ]
 }
