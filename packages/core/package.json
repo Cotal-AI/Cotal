@@ -40,7 +40,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts",
+    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && tsx smoke/session-enrollment.smoke.ts && tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck smoke/session-enrollment.types.ts",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build"
