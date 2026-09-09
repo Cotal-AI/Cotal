@@ -225,6 +225,11 @@ all, so no option combination can reach that namespace. The scan carries a posit
 requiring it to have reached the endpoint subject builders, and two named mutations: skipping
 a source tier, and making a real builder emit the issued rail.
 
+Every profile is classified peer-held or trusted, and the two lists must union to exactly the
+declared set. Peer-heldness is a deployment property, so no cell here can settle which side a
+profile belongs on; what the closed union buys is that a new profile lands in neither list and
+fails, instead of drifting into the trusted half by default.
+
 The overlap check counts `$JS.API.DIRECT.GET` and `$JS.API.STREAM.MSG.GET` and no other
 read. A pull `CONSUMER.MSG.NEXT` also delivers to a caller-chosen reply subject, but the
 frame keeps its original captured subject, so it cannot place bytes on the rail; the

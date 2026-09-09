@@ -103,7 +103,8 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | 55 | Sixteen write-plus-raw-read overlaps exist and all are trusted infrastructure or operator profiles | M | cell "the write-plus-raw-read detector finds the known trusted overlaps"; mutation "the raw-read overlap detector stops matching writes" |
 | 56 | No peer-held profile holds that pairing | M | cell "no peer-held profile can both write and raw-read one stream"; mutation "a profile with a known overlap is treated as peer-held" |
 | 57 | `agent` and `observer` hold raw reads on streams they cannot write, so their zero is a measurement | M | the detector reports their raw-read streams; the zero is the writability filter |
-| 58 | The four profiles named peer-held are the right four | A | a judgement about which profiles reach an untrusted holder |
+| 58 | The four profiles named peer-held are the right four | A | a judgement about which profiles reach an untrusted holder. Peer-heldness is a deployment property, so no cell in this repo can settle it |
+| 71 | Every profile is classified peer-held or trusted, and a new one fails until classified | M | census cell "every profile is classified peer-held or trusted"; mutation "a new profile drifts into the trusted half" |
 | 59 | A fenced serve mint adds no raw stream read | M | the composed census variant; and a read of `consumeBindRows`, which emits only `CONSUMER.INFO`, `CONSUMER.MSG.NEXT`, `$JS.ACK` |
 | 60 | The fence that releases serve rows is covered by `endpoint-serve-auth.smoke.ts` | M-nomut | that suite was run in this lane: 108 passed, 0 failed |
 | 61 | `CONSUMER.MSG.NEXT` is correctly out of the overlap check's scope | M | the ingress-origin matrix measured that its frame keeps the captured subject |
@@ -133,8 +134,11 @@ fails the forgery on the ground stated for it. Claim 67 has the same shape: it n
 condition from reasoning, and claim 56 then guards that condition, so a wrong 67 means the guard
 protects the wrong thing.
 
-Claim 58 decides which profiles count as peer-held, which is what makes 56 meaningful. It is a
-judgement with no cell behind it.
+Claim 58 decides which profiles count as peer-held, which is what makes 56 meaningful. It is
+still a judgement with no cell behind it, and it cannot have one: whether a credential reaches an
+untrusted holder depends on how a space is deployed, not on this repo. Claim 71 only stops the
+partition from drifting silently. If you think one of the twenty-eight trusted profiles can reach
+a peer, say which, because that is the shape of a real finding here.
 
 Claim 7 was an **A** when this ledger was first written, with the note that it would be cheap
 to falsify and that I had not tried. I then tried: zero shipped files import the prototypes, and
