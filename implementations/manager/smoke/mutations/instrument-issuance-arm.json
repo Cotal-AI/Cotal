@@ -19,10 +19,11 @@
       "name": "the deployer is minted as an issuance again",
       "file": "packages/workspace/src/connect.ts",
       "find": "      if (role === \"deployer\") {",
-      "replace": "      if (false) {",
+      "replace": "      if (role === \"deployer\" && opts.instanceId === \"never\") {",
       "expectRed": "deployer mints through the shipped connect path",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build",
-      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:instrument-instance-pin"
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:instrument-instance-pin",
+      "note": "A bare `if (false)` narrows `role` and the branch no longer typechecks, so the suite never runs. The comparison against a pin no command passes keeps the types and sends the deployer down the issuance arm."
     }
   ]
 }
