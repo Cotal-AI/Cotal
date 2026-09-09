@@ -3,6 +3,7 @@ import type { KV } from "@nats-io/kv";
 import {
   EpEnvelopeError,
   executeNativeLifecycle,
+  mayAdvanceBinding,
   parseBinding,
   queryOperation,
   registry,
@@ -319,6 +320,49 @@ const queried = await executeNativeLifecycle(kvTransfer, {
 });
 c("queryOperation returns the provider result for a recorded row", queried.state === "indeterminate" && queried.reason === "native acknowledgement lost", queried);
 c("queryOperation reached the provider once", effects.join(",") === "queryOperation", effects);
+
+console.log("D. forward guard: cooperative-retirement without preserved lifetime cannot write released");
+const managedBinding: Binding = {
+  bindingId: "binding-coop",
+  resourceKey: resource,
+  incarnationProof: proof,
+  controllerEpoch: 1,
+  managerPrincipal: MANAGER,
+  mode: "cooperative-exclusive",
+  rights: ["discover", "adopt", "control", "release", "transfer"],
+  state: "managed",
+  operationId: "op-coop",
+  desiredRevision: 0,
+};
+const coopRecord: SessionOperationRecord = {
+  operationId: "op-coop",
+  resourceKey: resource,
+  incarnationProof: proof,
+  bindingId: "binding-coop",
+  expectedBindingRevision: 1,
+  expectedControllerEpoch: 1,
+  authenticatedActor: MANAGER,
+  action: "release",
+  intendedResult: { bindingState: "released" },
+  inputDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  state: "terminal-success",
+  result: { bindingState: "released" },
+  proofOrigin: { kind: "journal-receipt", journalRevision: 1, proves: "journal-transition-only" },
+};
+c("cooperative-retirement without nativeLifetimePreserved cannot advance to released",
+  mayAdvanceBinding(managedBinding, {
+    state: "terminal-success",
+    record: coopRecord,
+    result: { bindingState: "released" },
+    proofOrigin: { kind: "journal-receipt", journalRevision: 1, proves: "cooperative-retirement" as "journal-transition-only" },
+  }, "release") === false);
+c("native-effect adopt still may advance to managed",
+  mayAdvanceBinding({ ...managedBinding, state: "adopt-prepared", operationId: "op-adopt" }, {
+    state: "terminal-success",
+    record: { ...coopRecord, operationId: "op-adopt", bindingId: "binding-coop", action: "adopt" },
+    result: { bound: true },
+    proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { bound: true }, proves: "native-effect" },
+  }, "adopt") === true);
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

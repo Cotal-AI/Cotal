@@ -91,6 +91,14 @@
       "replace": "    native = await connection.adopt!(nextBinding, prepared.record, request.signal);\n",
       "expectRed": "transfer dispatches the transfer method through the public entry",
       "cell": "transfer dispatches the transfer method through the public entry"
+    },
+    {
+      "name": "treat cooperative-retirement as sufficient without preserved lifetime",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if ((durable.proofOrigin?.proves as string | undefined) !== \"cooperative-retirement\") return false;\n  return nativeLifetimePreserved(durable.result);\n",
+      "replace": "  if ((durable.proofOrigin?.proves as string | undefined) !== \"cooperative-retirement\") return false;\n  return true;\n",
+      "expectRed": "cooperative-retirement without nativeLifetimePreserved cannot advance to released",
+      "cell": "cooperative-retirement without nativeLifetimePreserved cannot advance to released"
     }
   ]
 }
