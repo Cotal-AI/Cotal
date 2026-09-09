@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/legacy-pty-custody.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/legacy-pty-custody.smoke.ts"
+  ],
   "guard": "an isolated legacy manager owns a PTY that ends when the manager dies and exposes no durable runtime reference",
   "command": "pnpm --filter @cotal-ai/manager... build && pnpm smoke:legacy-pty-custody",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/legacy-pty-custody.json",

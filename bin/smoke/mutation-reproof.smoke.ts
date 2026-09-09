@@ -16,7 +16,7 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +41,11 @@ const eq = (a: string[], b: string[]): boolean => JSON.stringify([...a].sort()) 
 /** Parse the "selected fixture paths:" block the scan prints before it runs any proof. */
 const selectedPaths = (out: string): string[] => {
   const m = out.match(/selected fixture paths:\n((?:  .+\n?)+)/);
+  return m ? m[1].split("\n").map((l) => l.trim()).filter(Boolean) : [];
+};
+/** Parse configs excluded only because the diff canonicalized legacy suite metadata. */
+const metadataOnlyPaths = (out: string): string[] => {
+  const m = out.match(/metadata-only config-path exclusions \(\d+\):\n((?:  .+\n?)+)/);
   return m ? m[1].split("\n").map((l) => l.trim()).filter(Boolean) : [];
 };
 /** Parse the dangling-fixture set the scan names when it refuses an unrunnable proof. */
@@ -111,6 +116,7 @@ function makeRepo(mutate: (root: string) => void, names = ["a", "b"]): { root: s
   git(root, ["config", "user.email", "smoke@example.test"]);
   git(root, ["config", "user.name", "Smoke"]);
   mkdirSync(join(root, "smoke", "mutations"), { recursive: true });
+  mkdirSync(join(root, "suites"), { recursive: true });
   for (const name of names) {
     writeFileSync(join(root, `${name}.mjs`), [
       `export function capped_${name}(input) {`,
@@ -119,15 +125,15 @@ function makeRepo(mutate: (root: string) => void, names = ["a", "b"]): { root: s
       "}",
       "",
     ].join("\n"));
-    writeFileSync(join(root, `${name}.suite.mjs`), [
-      `import { capped_${name} } from './${name}.mjs';`,
+    writeFileSync(join(root, "suites", `${name}.suite.mjs`), [
+      `import { capped_${name} } from '../${name}.mjs';`,
       `if (capped_${name}(100) !== 32) { console.error('✗ FAIL: the ${name} cap holds'); process.exit(1); }`,
       `console.log('✓ the ${name} cap holds');`,
       "",
     ].join("\n"));
     writeFileSync(join(root, "smoke", "mutations", `${name}.mutations.json`), JSON.stringify({
-      suite: `${name}.suite.mjs`,
-      command: `node ${name}.suite.mjs`,
+      suite: [`suites/${name}.suite.mjs`],
+      command: `node suites/${name}.suite.mjs`,
       mutations: [{
         name: `the ${name} cap is removed`,
         file: `${name}.mjs`,
@@ -167,6 +173,7 @@ function makeSingle(
   git(root, ["config", "user.email", "smoke@example.test"]);
   git(root, ["config", "user.name", "Smoke"]);
   mkdirSync(join(root, "smoke", "mutations"), { recursive: true });
+  mkdirSync(join(root, "suites"), { recursive: true });
   seed(root);
   git(root, ["add", "."]);
   git(root, ["commit", "--quiet", "-m", "base"]);
@@ -265,9 +272,9 @@ try {
           "",
         ].join("\n"));
         writeFileSync(join(r, "env.mjs"), "export const cap = (input) => Math.min(input, 32);\n");
-        writeFileSync(join(r, "env.suite.mjs"), [
+        writeFileSync(join(r, "suites", "env.suite.mjs"), [
           "import { writeFileSync } from 'node:fs';",
-          "import { cap } from './env.mjs';",
+          "import { cap } from '../env.mjs';",
           "writeFileSync('probe.env', process.env.COTAL_REPROOF_SENTINEL ?? 'CLEAN');",
           "if (process.env.COTAL_REPROOF_SENTINEL !== undefined) { console.error('session value reached fixture child'); process.exit(1); }",
           "if (cap(100) !== 32) { console.error('FAIL: fixture cap holds'); process.exit(1); }",
@@ -275,7 +282,8 @@ try {
           "",
         ].join("\n"));
         writeFileSync(join(r, "smoke/mutations/env.mutations.json"), JSON.stringify({
-          command: "node env.suite.mjs",
+          suite: ["suites/env.suite.mjs"],
+          command: "node suites/env.suite.mjs",
           mutations: [{ name: "remove fixture cap", file: "env.mjs", find: "Math.min(input, 32)",
             replace: "input", expectRed: "fixture cap holds" }],
         }, null, 2));
@@ -348,6 +356,161 @@ try {
     );
   }
 
+  // Every member of a multi-source declaration participates in selection. The first source is the
+  // suite command and remains unchanged; only the second metadata member moves.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        mkdirSync(join(r, "sources"), { recursive: true });
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "sources", "a-primary.smoke.mjs"), "import { a } from '../a.mjs';\nif (a() !== 1) { console.error('✗ FAIL: a is one'); process.exit(1); }\nconsole.log('✓ a is one');\n");
+        writeFileSync(join(r, "sources", "a-secondary.smoke.ts"), "base\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
+          suite: ["sources/a-primary.smoke.mjs", "sources/a-secondary.smoke.ts"],
+          command: "node sources/a-primary.smoke.mjs",
+          mutations: [{ name: "a changes", file: "a.mjs", find: "export const a = () => 1;", replace: "export const a = () => 2;", expectRed: "a is one" }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "sources", "a-secondary.smoke.ts"), "changed\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "changing only the second member of a multi-source array selects exactly that fixture",
+      status === 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"]),
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))}\n${out}`,
+    );
+  }
+
+  // Metadata faults are corpus faults. They are refused before selection and remain visible rather
+  // than shrinking the corpus or dropping an otherwise selected fixture.
+  for (const [label, suite, diagnosis] of [
+    ["missing", undefined, "MISSING SUITE METADATA"],
+    ["empty", [], "EMPTY SUITE METADATA"],
+    ["legacy string", "suites/a.suite.mjs", "MALFORMED SUITE METADATA"],
+    ["non-string member", [42], "MALFORMED SUITE METADATA"],
+    ["non-normalized path member", ["./a.mjs"], "NON-PATH SUITE SOURCE"],
+  ] as const) {
+    const { root, base, head } = build((r) => {
+      const path = join(r, "smoke", "mutations", "a.mutations.json");
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      if (suite === undefined) delete config.suite;
+      else config.suite = suite;
+      writeFileSync(path, JSON.stringify(config, null, 2));
+      git(r, ["add", path]);
+      git(r, ["commit", "--quiet", "-m", `plant ${label} metadata`]);
+    });
+    const { status, out } = scan(root, base, head);
+    check(
+      `${label} suite metadata makes the corpus unmeasured instead of dropping the fixture`,
+      status === 1
+        && out.includes("mutation reproof: UNMEASURED — 1 malformed fixture(s)")
+        && out.includes(diagnosis)
+        && out.includes("smoke/mutations/a.mutations.json")
+        && selectedPaths(out).length === 0,
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // Base-only legacy metadata is read from the exact base blob for diff classification. Head corpus
+  // validation remains strict. Only a legacy non-array -> canonical array migration with every other
+  // top-level field unchanged is excluded from config-path selection.
+  for (const [label, baseSuite, headSuite] of [
+    ["string to equivalent array", "suites/a.suite.mjs", ["suites/a.suite.mjs"]],
+    ["missing to array", undefined, ["suites/a.suite.mjs"]],
+    ["string to different array", "suites/legacy.suite.mjs", ["suites/a.suite.mjs"]],
+  ] as const) {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { writeFileSync } from 'node:fs';\nimport { a } from '../a.mjs';\nwriteFileSync('executed', 'yes');\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n");
+        const config: Record<string, unknown> = { command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a is one" }] };
+        if (baseSuite !== undefined) config.suite = baseSuite;
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify(config, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = headSuite;
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(`${label} is excluded as metadata-only instead of selecting by config path`,
+      status === 0 && selectedPaths(out).length === 0
+        && eq(metadataOnlyPaths(out), ["smoke/mutations/a.mutations.json"])
+        && !existsSync(join(root, "executed"))
+        && out.includes("the only intersections were metadata-only config-path exclusions"),
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))} excluded=${JSON.stringify(metadataOnlyPaths(out))} executed=${existsSync(join(root, "executed"))}\n${out}`);
+  }
+  for (const [label, change] of [
+    ["declared suite source", (r: string) => writeFileSync(join(r, "suites", "a.suite.mjs"), "// changed suite\nconsole.log('✓ a is one');\n")],
+    ["mutation target", (r: string) => writeFileSync(join(r, "a.mjs"), "// changed target\nexport const a = () => 1;\n")],
+  ] as const) {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "console.log('✓ a is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: "legacy prose", command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a is one" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = ["suites/a.suite.mjs"];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        change(r);
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(`a metadata-only config-path exclusion does not suppress ${label} selection`,
+      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && eq(metadataOnlyPaths(out), ["smoke/mutations/a.mutations.json"]),
+      `status=${status}\n${out}`);
+  }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        for (const name of ["a", "other"]) writeFileSync(join(r, "suites", `${name}.suite.mjs`), "import { writeFileSync } from 'node:fs';\nwriteFileSync('executed', 'yes');\nconsole.log('✓ suite green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = ["suites/other.suite.mjs"];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check("canonical array to different array remains a selecting config change",
+      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
+      `status=${status}\n${out}`);
+  }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { writeFileSync } from 'node:fs';\nwriteFileSync('executed', 'yes');\nconsole.log('✓ suite green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: "suites/a.suite.mjs", command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.suite = ["suites/a.suite.mjs"];
+        config.guard = "changed proof field";
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check("a non-suite config change remains selecting during legacy suite canonicalization",
+      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
+      `status=${status}\n${out}`);
+  }
+
   // 2. Deleted guarded source: a.mjs is removed. The blocked head excluded `D` from the diff and
   //    exited 0. The gate must now see the deletion, treat a's fixture as dangling, and FAIL naming
   //    exactly it — without selecting b's fixture.
@@ -404,14 +567,14 @@ try {
   //    name merely looks like a suite must not select either fixture.
   {
     const { root, base, head } = build((r) => {
-      writeFileSync(join(r, "a.suite.mjs"), [
+      writeFileSync(join(r, "suites", "a.suite.mjs"), [
         "// suite-only change; a.mjs and the fixture config are untouched",
-        "import { capped_a } from './a.mjs';",
+        "import { capped_a } from '../a.mjs';",
         "if (capped_a(100) !== 32) { console.error('✗ FAIL: the a cap holds'); process.exit(1); }",
         "console.log('✓ the a cap holds');",
         "",
       ].join("\n"));
-      git(r, ["add", "a.suite.mjs"]);
+      git(r, ["add", "suites/a.suite.mjs"]);
       git(r, ["commit", "--quiet", "-m", "change only a's suite"]);
     });
     const { status, out } = scan(root, base, head);
@@ -425,8 +588,8 @@ try {
   }
   {
     const { root, base, head } = build((r) => {
-      writeFileSync(join(r, "unrelated.suite.mjs"), "// not named by any fixture\n");
-      git(r, ["add", "unrelated.suite.mjs"]);
+      writeFileSync(join(r, "suites", "unrelated.suite.mjs"), "// not named by any fixture\n");
+      git(r, ["add", "suites/unrelated.suite.mjs"]);
       git(r, ["commit", "--quiet", "-m", "change an unrelated suite"]);
     });
     const { status, out } = scan(root, base, head);
@@ -441,12 +604,12 @@ try {
   //    at base and red at head, so the transition — not the selected path — attributes the failure.
   {
     const { root, base, head } = build((r) => {
-      writeFileSync(join(r, "a.suite.mjs"), [
+      writeFileSync(join(r, "suites", "a.suite.mjs"), [
         "console.error('✗ FAIL: the a cap holds');",
         "process.exit(1);",
         "",
       ].join("\n"));
-      git(r, ["add", "a.suite.mjs"]);
+      git(r, ["add", "suites/a.suite.mjs"]);
       git(r, ["commit", "--quiet", "-m", "a's suite goes red"]);
     });
     const { status, out } = scan(root, base, head);
@@ -460,11 +623,11 @@ try {
     );
   }
 
-  // 7. Deleting the configured suite selects its fixture through the deleted suite path. The proof's
-  //    missing-command baseline exits 4, which is still attributable to this diff and must fail.
+  // 7. Deleting the configured suite selects its fixture through the deleted suite path, then fails
+  //    loud as a dangling declared source before proof execution.
   {
     const { root, base, head } = build((r) => {
-      git(r, ["rm", "--quiet", "a.suite.mjs"]);
+      git(r, ["rm", "--quiet", "suites/a.suite.mjs"]);
       git(r, ["commit", "--quiet", "-m", "delete a's configured suite"]);
     });
     const { status, out } = scan(root, base, head);
@@ -472,19 +635,16 @@ try {
       "a deleted configured suite FAILS and names exactly that fixture",
       status === 1
         && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(attributablePreRedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(offenderPaths(out), ["smoke/mutations/a.mutations.json"])
-        && out.includes("smoke/mutations/a.mutations.json -> command: node a.suite.mjs")
-        && out.includes("base GREEN (exit 0) -> head RED (exit 1)"),
+        && eq(danglingPaths(out), ["smoke/mutations/a.mutations.json"])
+        && out.includes("missing: suites/a.suite.mjs"),
       `status=${status} selected=${JSON.stringify(selectedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
     );
   }
 
-  // 8. Renaming the configured suite away selects through the old path. Its missing-command baseline
-  //    is attributed to this diff just like deletion, while the untouched sibling stays unselected.
+  // 8. Renaming the configured suite away selects through the old path, then fails loud as dangling.
   {
     const { root, base, head } = build((r) => {
-      git(r, ["mv", "a.suite.mjs", "renamed.suite.mjs"]);
+      git(r, ["mv", "suites/a.suite.mjs", "suites/renamed.suite.mjs"]);
       git(r, ["commit", "--quiet", "-m", "rename a's configured suite away"]);
     });
     const { status, out } = scan(root, base, head);
@@ -492,10 +652,8 @@ try {
       "a renamed-away configured suite FAILS and names exactly that fixture",
       status === 1
         && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(attributablePreRedPaths(out), ["smoke/mutations/a.mutations.json"])
-        && eq(offenderPaths(out), ["smoke/mutations/a.mutations.json"])
-        && out.includes("smoke/mutations/a.mutations.json -> command: node a.suite.mjs")
-        && out.includes("base GREEN (exit 0) -> head RED (exit 1)"),
+        && eq(danglingPaths(out), ["smoke/mutations/a.mutations.json"])
+        && out.includes("missing: suites/a.suite.mjs"),
       `status=${status} selected=${JSON.stringify(selectedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
     );
   }
@@ -506,10 +664,10 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "p.mjs"), "export const p = () => 1;\n");
-        writeFileSync(join(r, "p.suite.mjs"), "console.error('pre-existing red');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "p.suite.mjs"), "console.error('pre-existing red');\nprocess.exit(1);\n");
         writeFileSync(join(r, "smoke", "mutations", "p.mutations.json"), JSON.stringify({
-          suite: "p.suite.mjs",
-          command: "node p.suite.mjs",
+          suite: ["suites/p.suite.mjs"],
+          command: "node suites/p.suite.mjs",
           mutations: [{
             name: "p returns two",
             file: "p.mjs",
@@ -540,22 +698,22 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
-        writeFileSync(join(r, "a.suite.mjs"), "import { a } from './a.mjs';\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { a } from '../a.mjs';\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n");
         writeFileSync(join(r, "b.mjs"), "export const b = () => 1;\n");
-        writeFileSync(join(r, "b.suite.mjs"), "console.error('pre-existing B red');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "b.suite.mjs"), "console.error('pre-existing B red');\nprocess.exit(1);\n");
         writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
-          suite: "a.suite.mjs",
-          command: "node a.suite.mjs",
+          suite: ["suites/a.suite.mjs"],
+          command: "node suites/a.suite.mjs",
           mutations: [{
             name: "a returns two", file: "a.mjs", find: "export const a = () => 1;",
             replace: "export const a = () => 2;", expectRed: "a is one",
           }, {
             name: "b returns two", file: "b.mjs", find: "export const b = () => 1;",
-            replace: "export const b = () => 2;", command: "node b.suite.mjs", expectRed: "B red",
+            replace: "export const b = () => 2;", command: "node suites/b.suite.mjs", expectRed: "B red",
           }],
         }, null, 2));
       },
-      (r) => writeFileSync(join(r, "a.suite.mjs"), "// comment-only edit; A remains green\nimport { a } from './a.mjs';\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n"),
+      (r) => writeFileSync(join(r, "suites", "a.suite.mjs"), "// comment-only edit; A remains green\nimport { a } from '../a.mjs';\nif (a() !== 1) process.exit(1);\nconsole.log('✓ a is one');\n"),
     );
     const { status, out } = scan(root, base, head);
     check(
@@ -563,14 +721,14 @@ try {
       status === 0
         && eq(preRedPaths(out), ["smoke/mutations/a.mutations.json"])
         && attributablePreRedPaths(out).length === 0
-        && !out.includes("suite: a.suite.mjs"),
+        && !out.includes("suite: suites/a.suite.mjs"),
       `status=${status} preRed=${JSON.stringify(preRedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))}\n${out}`,
     );
     check(
       "the inherited transition names the command that actually refused, never the healthy declared suite",
-      out.includes("command: node b.suite.mjs")
+      out.includes("command: node suites/b.suite.mjs")
         && out.includes("base RED (exit 1) -> head RED (exit 1)")
-        && !out.includes("command: node a.suite.mjs; transition:"),
+        && !out.includes("command: node suites/a.suite.mjs; transition:"),
       out,
     );
   }
@@ -586,7 +744,7 @@ try {
         mkdirSync(join(r, "packages", "fake-tsx"), { recursive: true });
         writeFileSync(join(r, "package.json"), JSON.stringify({
           private: true,
-          scripts: { build: "pnpm --filter built-lib build", red: "tsx built.suite.mjs" },
+          scripts: { build: "pnpm --filter built-lib build", red: "tsx suites/built.suite.mjs" },
           dependencies: { "built-lib": "workspace:*" },
           devDependencies: { "fake-tsx": "workspace:*" },
         }, null, 2));
@@ -602,9 +760,9 @@ try {
         writeFileSync(join(r, "packages", "fake-tsx", "tsx.mjs"), "#!/usr/bin/env node\nawait import(new URL('../../' + process.argv[2], import.meta.url));\n");
         execFileSync("chmod", ["+x", join(r, "packages", "fake-tsx", "tsx.mjs")]);
         writeFileSync(join(r, "built.mjs"), "export const guarded = 1;\n");
-        writeFileSync(join(r, "built.suite.mjs"), "import 'built-lib';\nconsole.error('dist-backed inherited red');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "built.suite.mjs"), "import 'built-lib';\nconsole.error('dist-backed inherited red');\nprocess.exit(1);\n");
         writeFileSync(join(r, "smoke", "mutations", "built.mutations.json"), JSON.stringify({
-          suite: "built.suite.mjs", command: "pnpm red", mutations: [{
+          suite: ["suites/built.suite.mjs"], command: "pnpm red", mutations: [{
             name: "guarded changes", file: "built.mjs", find: "export const guarded = 1;",
             replace: "export const guarded = 2;", expectRed: "dist-backed inherited red",
           }],
@@ -638,23 +796,23 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "inherited.mjs"), "export const inherited = 1;\n");
-        writeFileSync(join(r, "inherited.suite.mjs"), "console.error('inherited command red');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "inherited.suite.mjs"), "console.error('inherited command red');\nprocess.exit(1);\n");
         writeFileSync(join(r, "caused.mjs"), "export const caused = 1;\n");
-        writeFileSync(join(r, "caused.suite.mjs"), "console.log('caused command green');\n");
+        writeFileSync(join(r, "suites", "caused.suite.mjs"), "console.log('caused command green');\n");
         const inheritedMutation = {
           name: "inherited changes", file: "inherited.mjs", find: "export const inherited = 1;",
-          replace: "export const inherited = 2;", command: "node inherited.suite.mjs", expectRed: "inherited command red",
+          replace: "export const inherited = 2;", command: "node suites/inherited.suite.mjs", expectRed: "inherited command red",
         };
         const causedMutation = {
           name: "caused changes", file: "caused.mjs", find: "export const caused = 1;",
-          replace: "export const caused = 2;", command: "node caused.suite.mjs", expectRed: "caused command red",
+          replace: "export const caused = 2;", command: "node suites/caused.suite.mjs", expectRed: "caused command red",
         };
         writeFileSync(join(r, "smoke", "mutations", "order.mutations.json"), JSON.stringify({
-          suite: "caused.suite.mjs", command: "node inherited.suite.mjs",
+          suite: ["suites/caused.suite.mjs"], command: "node suites/inherited.suite.mjs",
           mutations: reverse ? [causedMutation, inheritedMutation] : [inheritedMutation, causedMutation],
         }, null, 2));
       },
-      (r) => writeFileSync(join(r, "caused.suite.mjs"), "console.error('caused command red');\nprocess.exit(1);\n"),
+      (r) => writeFileSync(join(r, "suites", "caused.suite.mjs"), "console.error('caused command red');\nprocess.exit(1);\n"),
     );
     const { status, out } = scan(root, base, head);
     check(
@@ -664,8 +822,8 @@ try {
       status === 1
         && eq(attributablePreRedPaths(out), ["smoke/mutations/order.mutations.json"])
         && eq(preRedPaths(out), ["smoke/mutations/order.mutations.json"])
-        && out.includes("command: node caused.suite.mjs; transition: base GREEN (exit 0) -> head RED (exit 1)")
-        && out.includes("command: node inherited.suite.mjs; transition: base RED (exit 1) -> head RED (exit 1)"),
+        && out.includes("command: node suites/caused.suite.mjs; transition: base GREEN (exit 0) -> head RED (exit 1)")
+        && out.includes("command: node suites/inherited.suite.mjs; transition: base RED (exit 1) -> head RED (exit 1)"),
       `reverse=${reverse} status=${status}\n${out}`,
     );
   }
@@ -677,7 +835,7 @@ try {
       (r) => {
         writeFileSync(join(r, ".gitignore"), "node_modules/\n");
         writeFileSync(join(r, "sentinel.mjs"), "export const sentinel = 1;\n");
-        writeFileSync(join(r, "sentinel.suite.mjs"), [
+        writeFileSync(join(r, "suites", "sentinel.suite.mjs"), [
           "import { spawnSync } from 'node:child_process';",
           "const leaked = spawnSync('cotal-head-sentinel', { shell: true, encoding: 'utf8' });",
           "if (leaked.status === 0) { console.error('HEAD_SENTINEL_REACHED'); process.exit(1); }",
@@ -687,7 +845,7 @@ try {
           "",
         ].join("\n"));
         writeFileSync(join(r, "smoke", "mutations", "sentinel.mutations.json"), JSON.stringify({
-          suite: "sentinel.suite.mjs", command: "node sentinel.suite.mjs", mutations: [{
+          suite: ["suites/sentinel.suite.mjs"], command: "node suites/sentinel.suite.mjs", mutations: [{
             name: "sentinel changes", file: "sentinel.mjs", find: "export const sentinel = 1;",
             replace: "export const sentinel = 2;", expectRed: "snapshot environment red",
           }],
@@ -721,8 +879,8 @@ try {
         writeFileSync(join(r, "package.json"), JSON.stringify({ private: true, scripts: { build: "node -e \"\"" }, dependencies: { absent: "1.0.0" } }, null, 2));
         writeFileSync(join(r, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\nsettings: { autoInstallPeers: true, excludeLinksFromLockfile: false }\nimporters:\n  .:\n    dependencies:\n      absent:\n        specifier: 1.0.0\n        version: 1.0.0\npackages: {}\nsnapshots: {}\n");
         writeFileSync(join(r, "broken.mjs"), "export const broken = 1;\n");
-        writeFileSync(join(r, "broken.suite.mjs"), "console.error('broken install red'); process.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "broken.mutations.json"), JSON.stringify({ suite: "broken.suite.mjs", command: "node broken.suite.mjs", mutations: [{ name: "broken", file: "broken.mjs", find: "export const broken = 1;", replace: "export const broken = 2;", expectRed: "broken install red" }] }, null, 2));
+        writeFileSync(join(r, "suites", "broken.suite.mjs"), "console.error('broken install red'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "broken.mutations.json"), JSON.stringify({ suite: ["suites/broken.suite.mjs"], command: "node suites/broken.suite.mjs", mutations: [{ name: "broken", file: "broken.mjs", find: "export const broken = 1;", replace: "export const broken = 2;", expectRed: "broken install red" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "broken.mjs"), "// select\nexport const broken = 1;\n"),
     );
@@ -737,8 +895,8 @@ try {
       (r) => {
         writeFileSync(join(r, ".gitignore"), "poison/\n");
         writeFileSync(join(r, "poison.mjs"), "export const poison = 1;\n");
-        writeFileSync(join(r, "poison.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('poison/root-only')) { console.error('root poison red'); process.exit(1); }\nconsole.log('clean snapshot green');\n");
-        writeFileSync(join(r, "smoke", "mutations", "poison.mutations.json"), JSON.stringify({ suite: "poison.suite.mjs", command: "node poison.suite.mjs", mutations: [{ name: "poison", file: "poison.mjs", find: "export const poison = 1;", replace: "export const poison = 2;", expectRed: "root poison red" }] }, null, 2));
+        writeFileSync(join(r, "suites", "poison.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('poison/root-only')) { console.error('root poison red'); process.exit(1); }\nconsole.log('clean snapshot green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "poison.mutations.json"), JSON.stringify({ suite: ["suites/poison.suite.mjs"], command: "node suites/poison.suite.mjs", mutations: [{ name: "poison", file: "poison.mjs", find: "export const poison = 1;", replace: "export const poison = 2;", expectRed: "root poison red" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "poison.mjs"), "// select\nexport const poison = 1;\n"),
     );
@@ -755,8 +913,8 @@ try {
         writeFileSync(join(r, ".gitignore"), "state-marker\n");
         writeFileSync(join(r, "state.mjs"), "export const state = 1;\n");
         writeFileSync(join(r, "write-marker.mjs"), "import { writeFileSync } from 'node:fs'; writeFileSync('state-marker','yes'); console.log('marker written');\n");
-        writeFileSync(join(r, "read-marker.mjs"), "import { existsSync } from 'node:fs'; console.error(existsSync('state-marker') ? 'B saw marker' : 'B saw NO marker'); process.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "state.mutations.json"), JSON.stringify({ suite: "read-marker.mjs", command: "node write-marker.mjs", mutations: [{ name: "write", file: "state.mjs", find: "export const state = 1;", replace: "export const state = 2;", expectRed: "state" }, { name: "read", file: "state.mjs", find: "export const state = 1;", replace: "export const state = 3;", command: "node read-marker.mjs", allowMultiple: false, expectRed: "B saw marker" }] }, null, 2));
+        writeFileSync(join(r, "suites", "read-marker.mjs"), "import { existsSync } from 'node:fs'; console.error(existsSync('state-marker') ? 'B saw marker' : 'B saw NO marker'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "state.mutations.json"), JSON.stringify({ suite: ["suites/read-marker.mjs"], command: "node write-marker.mjs", mutations: [{ name: "write", file: "state.mjs", find: "export const state = 1;", replace: "export const state = 2;", expectRed: "state" }, { name: "read", file: "state.mjs", find: "export const state = 1;", replace: "export const state = 3;", command: "node suites/read-marker.mjs", allowMultiple: false, expectRed: "B saw marker" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "state.mjs"), "// select\nexport const state = 1;\n"),
     );
@@ -772,19 +930,19 @@ try {
       writeFileSync(join(r, "origin.mjs"), variant === "semantic-number"
         ? "export function origin() { throw new Error('connect ECONNREFUSED 127.0.0.1:4222'); }\norigin();\n"
         : "export function origin() { throw new Error('same stack message'); }\norigin();\n");
-      writeFileSync(join(r, "stack.suite.mjs"), caught
-        ? "try { await import('./origin.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
-        : "import './origin.mjs';\n");
-      writeFileSync(join(r, "smoke", "mutations", "stack.mutations.json"), JSON.stringify({ suite: "stack.suite.mjs", command: "node stack.suite.mjs", mutations: [{ name: "stack", file: "stack.mjs", find: "export const stack = 1;", replace: "export const stack = 2;", expectRed: "same stack message" }] }, null, 2));
+      writeFileSync(join(r, "suites", "stack.suite.mjs"), caught
+        ? "try { await import('../origin.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
+        : "import '../origin.mjs';\n");
+      writeFileSync(join(r, "smoke", "mutations", "stack.mutations.json"), JSON.stringify({ suite: ["suites/stack.suite.mjs"], command: "node suites/stack.suite.mjs", mutations: [{ name: "stack", file: "stack.mjs", find: "export const stack = 1;", replace: "export const stack = 2;", expectRed: "same stack message" }] }, null, 2));
     },
     (r) => {
       writeFileSync(join(r, "stack.mjs"), "// select\nexport const stack = 1;\n");
       if (variant === "line") writeFileSync(join(r, "origin.mjs"), "\n\nexport function origin() { throw new Error('same stack message'); }\norigin();\n");
       if (variant === "file") {
         writeFileSync(join(r, "other.mjs"), "export function origin() { throw new Error('same stack message'); }\norigin();\n");
-        writeFileSync(join(r, "stack.suite.mjs"), caught
-          ? "try { await import('./other.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
-          : "import './other.mjs';\n");
+        writeFileSync(join(r, "suites", "stack.suite.mjs"), caught
+          ? "try { await import('../other.mjs'); } catch (error) { console.error(error.stack); process.exit(1); }\n"
+          : "import '../other.mjs';\n");
       }
       if (variant === "function") writeFileSync(join(r, "origin.mjs"), "export function differentOrigin() { throw new Error('same stack message'); }\ndifferentOrigin();\n");
       if (variant === "loader") writeFileSync(join(r, "stack.mjs"), "// clone-local loader paths may differ\nexport const stack = 1;\n");
@@ -831,19 +989,19 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "stack.mjs"), "export const stack = 1;\n");
-        writeFileSync(join(r, "caught.suite.mjs"), [
+        writeFileSync(join(r, "suites", "caught.suite.mjs"), [
           "console.error('not ok 1 - nats connect');",
           `console.error('connect ${errorClass === "ETIMEDOUT" ? "ECONNREFUSED" : errorClass} 127.0.0.1:4222');`,
           "console.error('    at connect (' + process.cwd() + '/packages/core/src/nats.ts:88:11)');",
           "console.error('FAILED 1 of 1'); process.exit(1);",
           "",
         ].join("\n"));
-        writeFileSync(join(r, "smoke", "mutations", "caught.mutations.json"), JSON.stringify({ suite: "caught.suite.mjs", command: "node caught.suite.mjs", mutations: [{ name: "caught", file: "stack.mjs", find: "export const stack = 1;", replace: "export const stack = 2;", expectRed: "nats connect" }] }, null, 2));
+        writeFileSync(join(r, "smoke", "mutations", "caught.mutations.json"), JSON.stringify({ suite: ["suites/caught.suite.mjs"], command: "node suites/caught.suite.mjs", mutations: [{ name: "caught", file: "stack.mjs", find: "export const stack = 1;", replace: "export const stack = 2;", expectRed: "nats connect" }] }, null, 2));
       },
       (r) => {
         writeFileSync(join(r, "stack.mjs"), "// select\nexport const stack = 1;\n");
         const message = errorClass === "ETIMEDOUT" ? "connect ETIMEDOUT 127.0.0.1:4333" : "connect ECONNREFUSED 127.0.0.1:4333";
-        writeFileSync(join(r, "caught.suite.mjs"), [
+        writeFileSync(join(r, "suites", "caught.suite.mjs"), [
           "console.error('not ok 1 - nats connect');",
           `console.error('${message}');`,
           "console.error('    at connect (' + process.cwd() + '/packages/core/src/nats.ts:88:11)');",
@@ -868,15 +1026,15 @@ try {
     (r) => {
       writeFileSync(join(r, "external.mjs"), "export const external = 1;\n");
       const origin = kind === "frame" ? "    at work (/usr/lib/tool/foo.js:2:3)" : "/usr/lib/tool/foo.js:2";
-      writeFileSync(join(r, "external.suite.mjs"), `console.error('not ok 1 - external');\nconsole.error(${JSON.stringify(origin)});\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
-      writeFileSync(join(r, "smoke", "mutations", "external.mutations.json"), JSON.stringify({ suite: "external.suite.mjs", command: "node external.suite.mjs", mutations: [{ name: "external", file: "external.mjs", find: "export const external = 1;", replace: "export const external = 2;", expectRed: "external" }] }, null, 2));
+      writeFileSync(join(r, "suites", "external.suite.mjs"), `console.error('not ok 1 - external');\nconsole.error(${JSON.stringify(origin)});\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
+      writeFileSync(join(r, "smoke", "mutations", "external.mutations.json"), JSON.stringify({ suite: ["suites/external.suite.mjs"], command: "node suites/external.suite.mjs", mutations: [{ name: "external", file: "external.mjs", find: "export const external = 1;", replace: "export const external = 2;", expectRed: "external" }] }, null, 2));
     },
     (r) => {
       writeFileSync(join(r, "external.mjs"), "// select\nexport const external = 1;\n");
       const origin = kind === "frame"
         ? `    at work (/usr/lib/tool/${variant === "file" ? "bar.js:2:3" : "foo.js:10:30"})`
         : `/usr/lib/tool/${variant === "file" ? "bar.js:2" : "foo.js:10"}`;
-      writeFileSync(join(r, "external.suite.mjs"), `console.error('not ok 1 - external');\nconsole.error(${JSON.stringify(origin)});\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
+      writeFileSync(join(r, "suites", "external.suite.mjs"), `console.error('not ok 1 - external');\nconsole.error(${JSON.stringify(origin)});\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
     },
   );
   for (const kind of ["frame", "header"] as const) {
@@ -905,13 +1063,13 @@ try {
     const result = makeSingle(
       (r) => {
         writeFileSync(join(r, "scratch.mjs"), "export const scratch = 1;\n");
-        writeFileSync(join(r, "scratch.suite.mjs"), `console.error('not ok 1 - scratch');\nconsole.error('    at work (${tempRoot}/base-random/helper.mjs:2:3)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
-        writeFileSync(join(r, "smoke", "mutations", "scratch.mutations.json"), JSON.stringify({ suite: "scratch.suite.mjs", command: "node scratch.suite.mjs", mutations: [{ name: "scratch", file: "scratch.mjs", find: "export const scratch = 1;", replace: "export const scratch = 2;", expectRed: "scratch" }] }, null, 2));
+        writeFileSync(join(r, "suites", "scratch.suite.mjs"), `console.error('not ok 1 - scratch');\nconsole.error('    at work (${tempRoot}/base-random/helper.mjs:2:3)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
+        writeFileSync(join(r, "smoke", "mutations", "scratch.mutations.json"), JSON.stringify({ suite: ["suites/scratch.suite.mjs"], command: "node suites/scratch.suite.mjs", mutations: [{ name: "scratch", file: "scratch.mjs", find: "export const scratch = 1;", replace: "export const scratch = 2;", expectRed: "scratch" }] }, null, 2));
       },
       (r) => {
         writeFileSync(join(r, "scratch.mjs"), "// select\nexport const scratch = 1;\n");
         const file = variant === "file" ? "other.mjs" : "helper.mjs";
-        writeFileSync(join(r, "scratch.suite.mjs"), `console.error('not ok 1 - scratch');\nconsole.error('    at work (${headTempRoot}/head-random/${file}:10:30)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
+        writeFileSync(join(r, "suites", "scratch.suite.mjs"), `console.error('not ok 1 - scratch');\nconsole.error('    at work (${headTempRoot}/head-random/${file}:10:30)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
       },
     );
     return { ...result, env: symlinked ? { ...childEnv(), TMPDIR: tempRoot } : undefined };
@@ -929,12 +1087,12 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "contamination.mjs"), "export const contamination = 1;\n");
-        writeFileSync(join(r, "contamination.suite.mjs"), `console.error('not ok 1 - contamination');\nconsole.error('    at work (${externalRoot}/origin.mjs:2:3)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
-        writeFileSync(join(r, "smoke", "mutations", "contamination.mutations.json"), JSON.stringify({ suite: "contamination.suite.mjs", command: "node contamination.suite.mjs", mutations: [{ name: "contamination", file: "contamination.mjs", find: "export const contamination = 1;", replace: "export const contamination = 2;", expectRed: "contamination" }] }, null, 2));
+        writeFileSync(join(r, "suites", "contamination.suite.mjs"), `console.error('not ok 1 - contamination');\nconsole.error('    at work (${externalRoot}/origin.mjs:2:3)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n`);
+        writeFileSync(join(r, "smoke", "mutations", "contamination.mutations.json"), JSON.stringify({ suite: ["suites/contamination.suite.mjs"], command: "node suites/contamination.suite.mjs", mutations: [{ name: "contamination", file: "contamination.mjs", find: "export const contamination = 1;", replace: "export const contamination = 2;", expectRed: "contamination" }] }, null, 2));
       },
       (r) => {
         writeFileSync(join(r, "contamination.mjs"), "// select\nexport const contamination = 1;\n");
-        writeFileSync(join(r, "contamination.suite.mjs"), "console.error('not ok 1 - contamination');\nconsole.error('    at work (' + process.cwd() + '/origin.mjs:2:3)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n");
+        writeFileSync(join(r, "suites", "contamination.suite.mjs"), "console.error('not ok 1 - contamination');\nconsole.error('    at work (' + process.cwd() + '/origin.mjs:2:3)');\nconsole.error('FAILED 1 of 1'); process.exit(1);\n");
       },
     );
     const { status, out } = scan(root, base, head);
@@ -949,12 +1107,12 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "dep.mjs"), "export const suffix = 'base';\n");
-        writeFileSync(join(r, "caller.mjs"), "import { suffix } from './dep.mjs';\nawait import(`./.pnpm/pkg@${suffix}/pkg/throw.mjs`);\n");
+        writeFileSync(join(r, "suites", "caller.mjs"), "import { suffix } from '../dep.mjs';\nawait import(`../.pnpm/pkg@${suffix}/pkg/throw.mjs`);\n");
         for (const suffix of ["base", "peer"]) {
           mkdirSync(join(r, ".pnpm", `pkg@${suffix}`, "pkg"), { recursive: true });
           writeFileSync(join(r, ".pnpm", `pkg@${suffix}`, "pkg", "throw.mjs"), "throw new Error('dependency-origin red');\n");
         }
-        writeFileSync(join(r, "smoke", "mutations", "dep.mutations.json"), JSON.stringify({ suite: "caller.mjs", command: "node caller.mjs", mutations: [{ name: "dep", file: "dep.mjs", find: "export const suffix = 'peer';", replace: "export const suffix = 'mutant';", expectRed: "dependency-origin red" }] }, null, 2));
+        writeFileSync(join(r, "smoke", "mutations", "dep.mutations.json"), JSON.stringify({ suite: ["suites/caller.mjs"], command: "node suites/caller.mjs", mutations: [{ name: "dep", file: "dep.mjs", find: "export const suffix = 'peer';", replace: "export const suffix = 'mutant';", expectRed: "dependency-origin red" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "dep.mjs"), "export const suffix = 'peer';\n"),
     );
@@ -969,9 +1127,9 @@ try {
       (r) => writeFileSync(join(r, "placeholder"), "base\n"),
       (r) => {
         writeFileSync(join(r, "new.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "new.suite.mjs"), "console.error('new suite red');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "new.suite.mjs"), "console.error('new suite red');\nprocess.exit(1);\n");
         writeFileSync(join(r, "smoke", "mutations", "new.mutations.json"), JSON.stringify({
-          suite: "new.suite.mjs", command: "node new.suite.mjs", mutations: [{
+          suite: ["suites/new.suite.mjs"], command: "node suites/new.suite.mjs", mutations: [{
             name: "new value changes", file: "new.mjs", find: "export const value = 1;",
             replace: "export const value = 2;", expectRed: "new suite red",
           }],
@@ -984,7 +1142,7 @@ try {
       status === 1
         && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/new.mutations.json"])
         && !out.includes("MUTATION REPROOF OK")
-        && out.includes("command: node new.suite.mjs"),
+        && out.includes("command: node suites/new.suite.mjs"),
       `status=${status} unmeasured=${JSON.stringify(unmeasuredPreRedPaths(out))}\n${out}`,
     );
   }
@@ -995,9 +1153,9 @@ try {
     const { root } = makeSingle(
       (r) => {
         writeFileSync(join(r, "all.mjs"), "export const all = 1;\n");
-        writeFileSync(join(r, "all.suite.mjs"), "console.error('all sweep red');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "all.suite.mjs"), "console.error('all sweep red');\nprocess.exit(1);\n");
         writeFileSync(join(r, "smoke", "mutations", "all.mutations.json"), JSON.stringify({
-          suite: "all.suite.mjs", command: "node all.suite.mjs", mutations: [{
+          suite: ["suites/all.suite.mjs"], command: "node suites/all.suite.mjs", mutations: [{
             name: "all changes", file: "all.mjs", find: "export const all = 1;",
             replace: "export const all = 2;", expectRed: "all sweep red",
           }],
@@ -1019,8 +1177,8 @@ try {
     const { root } = makeSingle(
       (r) => {
         writeFileSync(join(r, "ambient.mjs"), "export const ambient = 1;\n");
-        writeFileSync(join(r, "ambient.suite.mjs"), "const leaked = Object.keys(process.env).filter((key) => key.startsWith('COTAL_'));\nif (leaked.length) { console.error('COTAL ambient leaked: ' + leaked.join(',')); process.exit(2); }\nconsole.error('ambient clean red'); process.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "ambient.mutations.json"), JSON.stringify({ suite: "ambient.suite.mjs", command: "node ambient.suite.mjs", mutations: [{ name: "ambient", file: "ambient.mjs", find: "export const ambient = 1;", replace: "export const ambient = 2;", expectRed: "ambient clean red" }] }, null, 2));
+        writeFileSync(join(r, "suites", "ambient.suite.mjs"), "const leaked = Object.keys(process.env).filter((key) => key.startsWith('COTAL_'));\nif (leaked.length) { console.error('COTAL ambient leaked: ' + leaked.join(',')); process.exit(2); }\nconsole.error('ambient clean red'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "ambient.mutations.json"), JSON.stringify({ suite: ["suites/ambient.suite.mjs"], command: "node suites/ambient.suite.mjs", mutations: [{ name: "ambient", file: "ambient.mjs", find: "export const ambient = 1;", replace: "export const ambient = 2;", expectRed: "ambient clean red" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "head-note"), "head\n"),
     );
@@ -1042,8 +1200,8 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "proof-env.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "proof-env.suite.mjs"), "import { value } from './proof-env.mjs';\nif (process.env.COTAL_MUTATION_REPROOF_SENTINEL) { console.error('mutation-proof child leaked COTAL ambient'); process.exit(1); }\nif (value === 2) { console.error('proof env mutation killed'); process.exit(1); }\n");
-        writeFileSync(join(r, "smoke", "mutations", "proof-env.mutations.json"), JSON.stringify({ suite: "proof-env.suite.mjs", command: "node proof-env.suite.mjs", mutations: [{ name: "proof env", file: "proof-env.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "proof env mutation killed" }] }, null, 2));
+        writeFileSync(join(r, "suites", "proof-env.suite.mjs"), "import { value } from '../proof-env.mjs';\nif (process.env.COTAL_MUTATION_REPROOF_SENTINEL) { console.error('mutation-proof child leaked COTAL ambient'); process.exit(1); }\nif (value === 2) { console.error('proof env mutation killed'); process.exit(1); }\n");
+        writeFileSync(join(r, "smoke", "mutations", "proof-env.mutations.json"), JSON.stringify({ suite: ["suites/proof-env.suite.mjs"], command: "node suites/proof-env.suite.mjs", mutations: [{ name: "proof env", file: "proof-env.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "proof env mutation killed" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "proof-env.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1065,17 +1223,17 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "fatal.mjs"), "export const fatal = () => 1;\n");
-        writeFileSync(join(r, "fatal.suite.mjs"), "import { fatal } from './fatal.mjs';\nif (fatal() !== 1) process.exit(1);\nconsole.log('✓ fatal is one');\n");
+        writeFileSync(join(r, "suites", "fatal.suite.mjs"), "import { fatal } from '../fatal.mjs';\nif (fatal() !== 1) process.exit(1);\nconsole.log('✓ fatal is one');\n");
         writeFileSync(join(r, "red.mjs"), "export const red = () => 1;\n");
-        writeFileSync(join(r, "red.suite.mjs"), "import { red } from './red.mjs';\nif (red() !== 1) process.exit(1);\nconsole.log('✓ red is one');\n");
+        writeFileSync(join(r, "suites", "red.suite.mjs"), "import { red } from '../red.mjs';\nif (red() !== 1) process.exit(1);\nconsole.log('✓ red is one');\n");
         writeFileSync(join(r, "smoke", "mutations", "fatal.mutations.json"), JSON.stringify({
-          suite: "fatal.suite.mjs", command: "node fatal.suite.mjs", mutations: [{
+          suite: ["suites/fatal.suite.mjs"], command: "node suites/fatal.suite.mjs", mutations: [{
             name: "equivalent fatal mutant", file: "fatal.mjs", find: "export const fatal = () => 1;",
             replace: "export const fatal = () => 1 + 0;", expectRed: "fatal is one",
           }],
         }, null, 2));
         writeFileSync(join(r, "smoke", "mutations", "red.mutations.json"), JSON.stringify({
-          suite: "red.suite.mjs", command: "node red.suite.mjs", mutations: [{
+          suite: ["suites/red.suite.mjs"], command: "node suites/red.suite.mjs", mutations: [{
             name: "red returns two", file: "red.mjs", find: "export const red = () => 1;",
             replace: "export const red = () => 2;", expectRed: "red is one",
           }],
@@ -1083,7 +1241,7 @@ try {
       },
       (r) => {
         writeFileSync(join(r, "fatal.mjs"), "// select fatal fixture\nexport const fatal = () => 1;\n");
-        writeFileSync(join(r, "red.suite.mjs"), "console.error('red suite now fails');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "suites", "red.suite.mjs"), "console.error('red suite now fails');\nprocess.exit(1);\n");
       },
     );
     const { status, out } = scan(root, base, head);
@@ -1093,7 +1251,7 @@ try {
         && /^MUTATION REPROOF FAILED /m.test(out)
         && eq(attributablePreRedPaths(out), ["smoke/mutations/red.mutations.json"])
         && out.includes("smoke/mutations/fatal.mutations.json")
-        && out.includes("smoke/mutations/red.mutations.json -> command: node red.suite.mjs"),
+        && out.includes("smoke/mutations/red.mutations.json -> command: node suites/red.suite.mjs"),
       `status=${status} attributable=${JSON.stringify(attributablePreRedPaths(out))}\n${out}`,
     );
   }
@@ -1127,15 +1285,16 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "c.mjs"), "export const c = () => 1;\n");
-        writeFileSync(join(r, "c.suite.mjs"), [
-          "import { c } from './c.mjs';",
+        writeFileSync(join(r, "suites", "c.suite.mjs"), [
+          "import { c } from '../c.mjs';",
           "const v = c();",
           "if (v === 1) console.log('✓ c is one');",
           "else console.log('c changed but the suite still exits zero');",
           "",
         ].join("\n"));
         writeFileSync(join(r, "smoke", "mutations", "c.mutations.json"), JSON.stringify({
-          command: "node c.suite.mjs",
+          suite: ["suites/c.suite.mjs"],
+          command: "node suites/c.suite.mjs",
           mutations: [{
             name: "c returns two, so the named assertion never prints and the suite still exits 0",
             file: "c.mjs",
@@ -1171,14 +1330,15 @@ try {
           "}",
           "",
         ].join("\n"));
-        writeFileSync(join(r, "d.suite.mjs"), [
-          "import { capped_d } from './d.mjs';",
+        writeFileSync(join(r, "suites", "d.suite.mjs"), [
+          "import { capped_d } from '../d.mjs';",
           "if (capped_d(100) !== 32) { console.error('✗ FAIL: the d cap holds'); process.exit(1); }",
           "console.log('✓ the d cap holds');",
           "",
         ].join("\n"));
         writeFileSync(join(r, "smoke", "mutations", "d.mutations.json"), JSON.stringify({
-          command: "node d.suite.mjs",
+          suite: ["suites/d.suite.mjs"],
+          command: "node suites/d.suite.mjs",
           mutations: [{
             name: "the d cap is removed",
             file: "d.mjs",
@@ -1213,8 +1373,8 @@ try {
       (r) => {
         writeFileSync(join(r, ".gitignore"), "root-only-marker\n");
         writeFileSync(join(r, "xyy.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "xyy.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-only-marker')) console.error('root contamination failure X');\nelse console.error('clean snapshot failure Y');\nprocess.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "xyy.mutations.json"), JSON.stringify({ suite: "xyy.suite.mjs", command: "node xyy.suite.mjs", mutations: [{ name: "xyy", file: "xyy.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "clean snapshot failure Y" }] }, null, 2));
+        writeFileSync(join(r, "suites", "xyy.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-only-marker')) console.error('root contamination failure X');\nelse console.error('clean snapshot failure Y');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "xyy.mutations.json"), JSON.stringify({ suite: ["suites/xyy.suite.mjs"], command: "node suites/xyy.suite.mjs", mutations: [{ name: "xyy", file: "xyy.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "clean snapshot failure Y" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "xyy.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1237,8 +1397,8 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "env-match.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "env-match.suite.mjs"), "console.error(process.env.COTAL_MUTATION_REPROOF_SENTINEL ? 'snapshot inherited COTAL sentinel' : 'normalized env red'); process.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "env-match.mutations.json"), JSON.stringify({ suite: "env-match.suite.mjs", command: "node env-match.suite.mjs", mutations: [{ name: "env match", file: "env-match.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "normalized env red" }] }, null, 2));
+        writeFileSync(join(r, "suites", "env-match.suite.mjs"), "console.error(process.env.COTAL_MUTATION_REPROOF_SENTINEL ? 'snapshot inherited COTAL sentinel' : 'normalized env red'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "env-match.mutations.json"), JSON.stringify({ suite: ["suites/env-match.suite.mjs"], command: "node suites/env-match.suite.mjs", mutations: [{ name: "env match", file: "env-match.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "normalized env red" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "env-match.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1258,7 +1418,8 @@ try {
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "unavailable.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "smoke", "mutations", "unavailable.mutations.json"), JSON.stringify({ command: "definitely-not-a-real-binary-1344 unavailable.suite.mjs", mutations: [{ name: "unavailable", file: "unavailable.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "unavailable" }] }, null, 2));
+        writeFileSync(join(r, "suites", "unavailable.suite.mjs"), "process.exit(0);\n");
+        writeFileSync(join(r, "smoke", "mutations", "unavailable.mutations.json"), JSON.stringify({ suite: ["suites/unavailable.suite.mjs"], command: "definitely-not-a-real-binary-1344 suites/unavailable.suite.mjs", mutations: [{ name: "unavailable", file: "unavailable.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "unavailable" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "unavailable.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1284,10 +1445,10 @@ try {
         // A committed lockfile makes frozen preparation satisfiable. The local dependency is
         // deliberate: without a dependency, pnpm has no missing-node_modules environment to warn
         // about and this cell would exercise the filter without guarding it.
-        writeFileSync(join(r, "package.json"), JSON.stringify({ private: true, scripts: { build: "node -e \"\"", red: "node stale.suite.mjs" }, dependencies: { "probe-dep": "file:vendor/probe" } }, null, 2));
+        writeFileSync(join(r, "package.json"), JSON.stringify({ private: true, scripts: { build: "node -e \"\"", red: "node suites/stale.suite.mjs" }, dependencies: { "probe-dep": "file:vendor/probe" } }, null, 2));
         writeFileSync(join(r, "stale.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "stale.suite.mjs"), "console.error('not ok 1 - semantic [WARN] flag remains suite evidence'); process.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "stale.mutations.json"), JSON.stringify({ suite: "stale.suite.mjs", command: "pnpm red", mutations: [{ name: "stale", file: "stale.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "semantic [WARN] flag remains suite evidence" }] }, null, 2));
+        writeFileSync(join(r, "suites", "stale.suite.mjs"), "console.error('not ok 1 - semantic [WARN] flag remains suite evidence'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "stale.mutations.json"), JSON.stringify({ suite: ["suites/stale.suite.mjs"], command: "pnpm red", mutations: [{ name: "stale", file: "stale.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "semantic [WARN] flag remains suite evidence" }] }, null, 2));
         execFileSync("pnpm", ["install", "--lockfile-only"], { cwd: r, stdio: "ignore", env: networkSetupEnv() });
       },
       (r) => writeFileSync(join(r, "stale.mjs"), "// select\nexport const value = 1;\n"),
@@ -1310,8 +1471,8 @@ try {
       (r) => {
         writeFileSync(join(r, ".gitignore"), "root-warn-marker\n");
         writeFileSync(join(r, "warn-differ.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "warn-differ.suite.mjs"), "import { existsSync } from 'node:fs';\nconsole.error(existsSync('root-warn-marker') ? '[WARN] semantic root X' : '[WARN] semantic snapshot Y');\nconsole.error('not ok 1 - same assertion');\nconsole.error('FAILED 1 of 1');\nprocess.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "warn-differ.mutations.json"), JSON.stringify({ suite: "warn-differ.suite.mjs", command: "node warn-differ.suite.mjs", mutations: [{ name: "warn differ", file: "warn-differ.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "same assertion" }] }, null, 2));
+        writeFileSync(join(r, "suites", "warn-differ.suite.mjs"), "import { existsSync } from 'node:fs';\nconsole.error(existsSync('root-warn-marker') ? '[WARN] semantic root X' : '[WARN] semantic snapshot Y');\nconsole.error('not ok 1 - same assertion');\nconsole.error('FAILED 1 of 1');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "warn-differ.mutations.json"), JSON.stringify({ suite: ["suites/warn-differ.suite.mjs"], command: "node suites/warn-differ.suite.mjs", mutations: [{ name: "warn differ", file: "warn-differ.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "same assertion" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "warn-differ.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1337,8 +1498,8 @@ try {
         // The root-only line is infrastructure to unmeasurableFailure and pnpm chrome to the stable
         // signature. Removing the root classification therefore makes the otherwise identical
         // measurable suite failure clear as inherited, isolating this seam from signature mismatch.
-        writeFileSync(join(r, "root-infra.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-infra-marker')) console.error('pnpm Missing script root-only-infrastructure');\nconsole.error('measurable clean suite failure');\nprocess.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "root-infra.mutations.json"), JSON.stringify({ suite: "root-infra.suite.mjs", command: "node root-infra.suite.mjs", mutations: [{ name: "root infra", file: "root-infra.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "measurable clean suite failure" }] }, null, 2));
+        writeFileSync(join(r, "suites", "root-infra.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-infra-marker')) console.error('pnpm Missing script root-only-infrastructure');\nconsole.error('measurable clean suite failure');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "root-infra.mutations.json"), JSON.stringify({ suite: ["suites/root-infra.suite.mjs"], command: "node suites/root-infra.suite.mjs", mutations: [{ name: "root infra", file: "root-infra.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "measurable clean suite failure" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "root-infra.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1363,9 +1524,9 @@ try {
       (r) => {
         writeFileSync(join(r, ".gitignore"), "root-cwd-marker\n");
         writeFileSync(join(r, "cwd-isolation.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "inherited-red.suite.mjs"), "console.error('inherited first command red'); process.exit(1);\n");
-        writeFileSync(join(r, "root-cwd.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-cwd-marker')) { console.error('root cwd leaked into head confirmation'); process.exit(1); }\nconsole.log('clean snapshot cwd');\n");
-        writeFileSync(join(r, "smoke", "mutations", "cwd-isolation.mutations.json"), JSON.stringify({ suite: "inherited-red.suite.mjs", command: "node inherited-red.suite.mjs", mutations: [{ name: "first", file: "cwd-isolation.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "inherited first command red" }, { name: "later", file: "cwd-isolation.mjs", find: "export const value = 1;", replace: "export const value = 3;", command: "node root-cwd.suite.mjs", expectRed: "root cwd leaked into head confirmation" }] }, null, 2));
+        writeFileSync(join(r, "suites", "inherited-red.suite.mjs"), "console.error('inherited first command red'); process.exit(1);\n");
+        writeFileSync(join(r, "suites", "root-cwd.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('root-cwd-marker')) { console.error('root cwd leaked into head confirmation'); process.exit(1); }\nconsole.log('clean snapshot cwd');\n");
+        writeFileSync(join(r, "smoke", "mutations", "cwd-isolation.mutations.json"), JSON.stringify({ suite: ["suites/inherited-red.suite.mjs"], command: "node suites/inherited-red.suite.mjs", mutations: [{ name: "first", file: "cwd-isolation.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "inherited first command red" }, { name: "later", file: "cwd-isolation.mjs", find: "export const value = 1;", replace: "export const value = 3;", command: "node suites/root-cwd.suite.mjs", expectRed: "root cwd leaked into head confirmation" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "cwd-isolation.mjs"), "// select\nexport const value = 1;\n"),
     );
@@ -1390,8 +1551,8 @@ try {
       (r) => {
         writeFileSync(join(r, ".gitignore"), "root-depth-zero-marker\n");
         writeFileSync(join(r, "depth-zero.mjs"), "export const value = 1;\n");
-        writeFileSync(join(r, "depth-zero.suite.mjs"), `import { existsSync } from 'node:fs';\nconsole.error('Error: depth-zero origin');\nconsole.error('    at go (' + (existsSync('root-depth-zero-marker') ? ${JSON.stringify(alpha)} : ${JSON.stringify(omega)}) + ':2:3)');\nconsole.error('not ok 1 - same depth-zero assertion');\nprocess.exit(1);\n`);
-        writeFileSync(join(r, "smoke", "mutations", "depth-zero.mutations.json"), JSON.stringify({ suite: "depth-zero.suite.mjs", command: "node depth-zero.suite.mjs", mutations: [{ name: "depth zero", file: "depth-zero.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "same depth-zero assertion" }] }, null, 2));
+        writeFileSync(join(r, "suites", "depth-zero.suite.mjs"), `import { existsSync } from 'node:fs';\nconsole.error('Error: depth-zero origin');\nconsole.error('    at go (' + (existsSync('root-depth-zero-marker') ? ${JSON.stringify(alpha)} : ${JSON.stringify(omega)}) + ':2:3)');\nconsole.error('not ok 1 - same depth-zero assertion');\nprocess.exit(1);\n`);
+        writeFileSync(join(r, "smoke", "mutations", "depth-zero.mutations.json"), JSON.stringify({ suite: ["suites/depth-zero.suite.mjs"], command: "node suites/depth-zero.suite.mjs", mutations: [{ name: "depth zero", file: "depth-zero.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "same depth-zero assertion" }] }, null, 2));
       },
       (r) => writeFileSync(join(r, "depth-zero.mjs"), "// select\nexport const value = 1;\n"),
     );

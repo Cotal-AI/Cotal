@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-codex/smoke/codex-host.smoke.ts",
+  "suite": [
+    "extensions/connector-codex/smoke/codex-host.smoke.ts"
+  ],
   "guard": "the two codex-host cells that count the launch tail's `tui` log line wait for the event that bounds the count before counting, so a scheduling accident cannot read the count before the tail's TUI child has journalled its line (#1280)",
   "command": "pnpm smoke:codex-host",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/codex-host-tui-ordering.json",

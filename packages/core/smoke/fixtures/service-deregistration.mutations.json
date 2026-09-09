@@ -44,5 +44,8 @@
       "expectRed": "the instance is deregistered again (setting up the tombstone)"
     }
   ],
-  "_note": "This suite imports `../src/index.js` RELATIVELY, so it loads SOURCE rather than `dist` and no build step belongs in these commands. Mutation 6 is the odd one out and says so: the delete ORDER cannot be reddened where the suite builds both half-states by hand, so it is expressed as a duplicate spec delete ahead of the status delete, which makes the later revision-pinned spec delete lose its CAS and report `superseded` instead of `removed`."
+  "_note": "This suite imports `../src/index.js` RELATIVELY, so it loads SOURCE rather than `dist` and no build step belongs in these commands. Mutation 6 is the odd one out and says so: the delete ORDER cannot be reddened where the suite builds both half-states by hand, so it is expressed as a duplicate spec delete ahead of the status delete, which makes the later revision-pinned spec delete lose its CAS and report `superseded` instead of `removed`.",
+  "suite": [
+    "packages/core/smoke/service-deregistration.smoke.ts"
+  ]
 }

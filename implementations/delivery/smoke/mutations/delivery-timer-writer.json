@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/delivery/smoke/delivery-timer-writer.smoke.ts",
+  "suite": [
+    "implementations/delivery/smoke/delivery-timer-writer.smoke.ts"
+  ],
   "guard": "the delivery daemon hosts the space's checkpoint timer writer on its scoped cred: a parked .schedule is armed and broker-fired with no manual pump, a poison request is terminated not redelivered, and the grant rows that authorize the pump are load-bearing",
   "command": "pnpm smoke:delivery-timer-writer",
   "completionMarker": "DELIVERY-TIMER-WRITER SMOKE",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/spawn-args.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/spawn-args.smoke.ts"
+  ],
   "guard": "the peer-facing cotal_spawn tool exposes a kickoff prompt and carries it through MeshAgent.spawn into the manager's spawn command",
   "command": "pnpm smoke:spawn-args",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-kickoff-prompt.json",

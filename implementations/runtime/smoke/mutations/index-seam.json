@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/run-driver.smoke.ts"
+  ],
   "guard": "The cross-package index seam: the cells this suite EXECUTED, checked against the list the language package's matrix cites. Source text cannot answer this - `c` is silent on success, so a commented-out or dead cell keeps its sentence in the file while the claim stops being made.",
   "command": "pnpm smoke:runtime-run-driver",
   "completionMarker": "run-driver.smoke:",

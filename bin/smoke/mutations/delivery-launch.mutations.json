@@ -1,5 +1,8 @@
 {
-  "suite": "bin/smoke/up-tls-routes-live.smoke.ts (M1), bin/smoke/up-stack-live.smoke.ts (M2, M3)",
+  "suite": [
+    "bin/smoke/up-stack-live.smoke.ts",
+    "bin/smoke/up-tls-routes-live.smoke.ts"
+  ],
   "guard": "the delivery daemon is launched with the transport its mesh requires (#836), and a launch that never took the lease is reported as the failure it is rather than as a healthy control plane (#837)",
   "command": "pnpm build > /dev/null && pnpm smoke:up-stack:live",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/delivery-launch.mutations.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/agui-authorship.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/agui-authorship.smoke.ts"
+  ],
   "guard": "a peer-authored record opens a run and republishes no body, while a self-authored one still emits its content in full",
   "command": "pnpm smoke:agui-authorship",
   "completionMarker": "agui-authorship smoke:",

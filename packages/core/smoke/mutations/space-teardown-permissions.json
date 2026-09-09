@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/manager-split-auth.smoke.ts",
+  "suite": [
+    "packages/core/smoke/manager-split-auth.smoke.ts"
+  ],
   "guard": "the ephemeral teardown credential can delete endpoint-plane streams while every standing profile remains denied",
   "command": "pnpm smoke:manager-split",
   "completionMarker": "MANAGER-SPLIT SMOKE",

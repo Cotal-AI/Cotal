@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/boot-prompt.smoke.ts"
+  ],
   "guard": "an operator COTAL_OPENCODE_BIN pin wins over the manager's boot-resolved fallback",
   "command": "pnpm smoke:opencode-boot-prompt",
   "progressPattern": "✓",

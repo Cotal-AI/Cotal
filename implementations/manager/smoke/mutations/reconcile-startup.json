@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/manager-reconcile-startup.smoke.ts"
+  ],
   "guard": "A manager starts startup static lifecycle reconciliation, then overlaps the remaining sweep with control-service registration; every alias in the collected reconcile plan is refused for spawn until its own terminal attempt returns.",
   "command": "pnpm smoke:manager-reconcile-startup",
   "completionMarker": "MANAGER RECONCILE STARTUP SMOKE",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/orientation.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/orientation.smoke.ts"
+  ],
   "guard": "rotating ordered-consumer failures are deduplicated by fault family while orientation retains the concrete latest cause",
   "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:orientation",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/endpoint-error-dedupe.json",

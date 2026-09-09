@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/endpoint-permission-results.smoke.ts",
+  "suite": [
+    "packages/core/smoke/endpoint-permission-results.smoke.ts"
+  ],
   "guard": "a denied JetStream metadata read rejects the public endpoint call while a structured missing stream remains a legitimate empty result",
   "command": "pnpm smoke:endpoint-permission-results:auth",
   "completionMarker": "ENDPOINT PERMISSION RESULTS",

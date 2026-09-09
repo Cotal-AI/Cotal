@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/inbox-overflow-directed.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/inbox-overflow-directed.smoke.ts"
+  ],
   "guard": "the inbox overflow valve sacrifices channel traffic before anything addressed to this agent, reads directedness from the subject-derived kind rather than the forgeable payload, and never acks a directed message it evicts so the broker can redeliver it",
   "command": "pnpm smoke:inbox-overflow-directed",
   "completionMarker": "inbox overflow directed:",

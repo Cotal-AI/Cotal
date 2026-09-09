@@ -1,5 +1,8 @@
 {
-  "suite": "bin/smoke/goal-follow.smoke.ts + implementations/auth/smoke/user-spawn.smoke.ts (cell B1f)",
+  "suite": [
+    "bin/smoke/goal-follow.smoke.ts",
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "a caller can hear its own goal's terminal, and when it genuinely cannot it is told so distinctly instead of being handed a timeout",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
   "completionMarker": "A. a REFUSED progress subscription is reported as a refusal, not as a timeout",

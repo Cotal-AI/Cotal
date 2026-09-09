@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "the shipped generic describe/invoke CLI connects a registered user-auth mesh with the normal bearer plus sentinel pair and its caller triple, without requiring static credentials or weakening the selected mesh TLS policy",
   "command": "COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm --filter cotal-ai... build && COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm smoke:user-spawn:live",
   "completionMarker": "USER-ENDPOINT CLI SMOKE",

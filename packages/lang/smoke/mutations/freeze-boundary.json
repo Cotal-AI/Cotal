@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/interpret.smoke.ts"
+  ],
   "guard": "Freeze on share holds AT the share for inputs, and a journal seeded from serialized entries freezes its replayed results. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/freeze-boundary.json",

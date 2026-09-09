@@ -44,5 +44,8 @@
       "expectRed": "and one outside the set reads NOT-PROBED without the hook ever running"
     }
   ],
-  "_note": "The suite imports `../src/lib/control.js` RELATIVELY, so it loads the CLI SOURCE and no build step belongs here. The mutated file does import `@cotal-ai/core` from dist, but no mutation here touches core. Mutation 1 deletes the gate rather than inverting it so that the pinned path is untouched: the point is what leaves the connection for an UNPINNED id, and section 3's counter cell stays green to show the instrument still works."
+  "_note": "The suite imports `../src/lib/control.js` RELATIVELY, so it loads the CLI SOURCE and no build step belongs here. The mutated file does import `@cotal-ai/core` from dist, but no mutation here touches core. Mutation 1 deletes the gate rather than inverting it so that the pinned path is untouched: the point is what leaves the connection for an UNPINNED id, and section 3's counter cell stays green to show the instrument still works.",
+  "suite": [
+    "implementations/cli/smoke/scatter-pinned-probe.smoke.ts"
+  ]
 }

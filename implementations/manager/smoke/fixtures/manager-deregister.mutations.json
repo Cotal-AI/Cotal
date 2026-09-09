@@ -58,5 +58,8 @@
       "expectRed": "an unrecognised probe verdict REFUSES: only a broker-affirmed gone is acted on"
     }
   ],
-  "_note": "This suite imports the manager from `../src/*.js` RELATIVELY, so the mutated files ARE the modules under test and no build step belongs in the command. `@cotal-ai/core` still resolves to dist here, which is why no mutation in this fixture touches core: the core-side deletes are proved by packages/core/smoke/fixtures/service-deregistration.mutations.json, whose suite loads core from source."
+  "_note": "This suite imports the manager from `../src/*.js` RELATIVELY, so the mutated files ARE the modules under test and no build step belongs in the command. `@cotal-ai/core` still resolves to dist here, which is why no mutation in this fixture touches core: the core-side deletes are proved by packages/core/smoke/fixtures/service-deregistration.mutations.json, whose suite loads core from source.",
+  "suite": [
+    "implementations/manager/smoke/manager-deregister.smoke.ts"
+  ]
 }

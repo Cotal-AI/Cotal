@@ -1,5 +1,7 @@
 {
-  "suite": "packages/seat/smoke/lifecycle.smoke.ts",
+  "suite": [
+    "packages/seat/smoke/lifecycle.smoke.ts"
+  ],
   "guard": "failAll still settles a pending wait-exit when the child has already exited, instead of rejecting it as seat client is closed",
   "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:seat-lifecycle",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/wait-exit-close.json",

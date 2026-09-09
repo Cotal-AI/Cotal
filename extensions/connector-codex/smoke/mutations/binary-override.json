@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-codex/smoke/codex-args.smoke.ts",
+  "suite": [
+    "extensions/connector-codex/smoke/codex-args.smoke.ts"
+  ],
   "guard": "an operator COTAL_CODEX_BIN pin wins over the manager's boot-resolved fallback",
   "command": "pnpm smoke:codex-args",
   "progressPattern": "✓",

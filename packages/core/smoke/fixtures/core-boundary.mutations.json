@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/core-boundary.smoke.ts",
+  "suite": [
+    "packages/core/smoke/core-boundary.smoke.ts"
+  ],
   "guard": "no shipped file may import the private, unpublished test-only kit — every src tree in the workspace plus the two entry points of the published cotal-ai package",
   "command": "pnpm smoke:core-boundary",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/fixtures/core-boundary.mutations.json",

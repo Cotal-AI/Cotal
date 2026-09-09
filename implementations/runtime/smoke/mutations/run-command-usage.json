@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/run-command-usage.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/run-command-usage.smoke.ts"
+  ],
   "guard": "`cotal run` refuses an unroutable verb before any plane opens, printing the usage line, and that usage line names every verb the gate routes",
   "command": "pnpm smoke:runtime-run-command-usage",
   "completionMarker": "run-command-usage:",

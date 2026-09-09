@@ -1,5 +1,9 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+    "implementations/runtime/smoke/mesh-wait.smoke.ts",
+    "implementations/runtime/smoke/mesh-checkpoint.smoke.ts"
+  ],
   "guard": "the handler takes the broker's own `.fire` and lets the checkpoint plane judge it, so a pause nobody answers actually expires",
   "command": "pnpm smoke:runtime-mesh-sleep",
   "completionMarker": "mesh-sleep.smoke:",

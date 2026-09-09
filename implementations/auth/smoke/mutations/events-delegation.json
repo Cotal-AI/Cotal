@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "the event plane's WILDCARD form rides the same delegation envelope every other pattern rides: a peer that holds spawn cannot hand its child a read or write grant on a pattern it does not itself hold, and the `events.` prefix buys no exemption from the containment walk",
   "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
   "completionMarker": "USER-SPAWN SMOKE",

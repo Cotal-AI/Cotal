@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/semantics.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/semantics.smoke.ts"
+  ],
   "guard": "The pure fragment is JavaScript: compound assignment applies its operator, update expressions return the right value, `for (let ...)` gives each iteration its own binding. (This suite is FAIL-FAST: `ok()` throws, so each mutation names the marker printed just UPSTREAM of the cell it breaks; the control cell is first and prints on every run.)",
   "command": "pnpm smoke:lang-semantics",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/pure-fragment.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/interpret.smoke.ts"
+  ],
   "guard": "A workflow's `catch` never sees a run divergence: L5001 unwinds the run, and no effect is performed past it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/uncatchable-divergence.json",

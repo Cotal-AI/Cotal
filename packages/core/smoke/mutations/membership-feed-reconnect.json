@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
+  "suite": [
+    "packages/core/smoke/delivery-reconnect.smoke.ts"
+  ],
   "guard": "membership reads and caller-owned watches recover across manual and terminal reconnects, races, and shutdown, with broker consumers deleted on replacement and stop",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
   "completionMarker": "DELIVERY-RECONNECT SMOKE",

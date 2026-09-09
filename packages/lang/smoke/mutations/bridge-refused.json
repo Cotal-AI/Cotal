@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/engine.smoke.ts"
+  ],
   "guard": "A capability refusal crosses the effect bridge as its class: flattened to a plain host error, the worker's interpreter settles the entry `failed` under the refusal's own code and the run is broken forever instead of held.",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/bridge-refused.json",

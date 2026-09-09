@@ -15,5 +15,8 @@
       "replace": "    seen.set(`${principalKey(principal.owner, principal.actor).key}:${seen.size}`, principal);",
       "expectRed": "dup:same-principal-twice-is-one-agent"
     }
+  ],
+  "suite": [
+    "extensions/connector-core/smoke/event-channel-resolve.smoke.ts"
   ]
 }

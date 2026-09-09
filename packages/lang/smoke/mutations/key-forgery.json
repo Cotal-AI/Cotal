@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/keys.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/keys.smoke.ts"
+  ],
   "guard": "the refusals that stop a name or branch key forging step-key structure (g3)",
   "command": "pnpm smoke:lang-keys",
   "completionMarker": "ok first turn",

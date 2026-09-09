@@ -29,5 +29,8 @@
       "replace": "    if (opts.events !== undefined || true) {",
       "expectRed": "an unarmed launch does NOT set COTAL_EVENTS"
     }
+  ],
+  "suite": [
+    "extensions/connector-codex/smoke/events-arm.smoke.ts"
   ]
 }

@@ -36,5 +36,8 @@
       "replace": "      if (false as boolean)",
       "expectRed": "a refusal whose servedBy the caller cannot derive is refused as internal"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/unfenced-responder.smoke.ts"
   ]
 }

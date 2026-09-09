@@ -27,7 +27,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROOF = resolve(dirname(SCRIPT), "mutation-proof.mjs");
@@ -96,7 +98,14 @@ function loadCorpus(root, paths) {
       errors.push(`${path}: no top-level "mutations" array`);
       continue;
     }
-    fixtures.push({ path, suite: config.suite, command: config.command, mutations: config.mutations });
+    let suites;
+    try {
+      suites = parseSuiteSources(root, path, config.suite, { checkExists: false });
+    } catch (err) {
+      errors.push(err.message);
+      continue;
+    }
+    fixtures.push({ path, config, suites, command: config.command, mutations: config.mutations });
   }
   return { fixtures, errors };
 }
@@ -129,6 +138,26 @@ function changedSet(root, base, head) {
     }
   }
   return { changed, diffSize: raw.length };
+}
+
+/**
+ * The suite metadata migration changed legacy fixture configs even when their proof definition did
+ * not change. Classify that one-time base diff without weakening head validation: load the exact
+ * base blob, require legacy non-array -> canonical array, and compare every other top-level field.
+ * Additions, unreadable base blobs, canonical array changes, and any proof-field change remain
+ * selecting config changes.
+ */
+function isMetadataOnlySuiteCanonicalization(root, base, fixture) {
+  let baseConfig;
+  try {
+    baseConfig = JSON.parse(git(root, ["show", `${base}:${fixture.path}`]));
+  } catch {
+    return false;
+  }
+  if (Array.isArray(baseConfig?.suite) || !Array.isArray(fixture.config.suite)) return false;
+  const { suite: _baseSuite, ...baseRest } = baseConfig;
+  const { suite: _headSuite, ...headRest } = fixture.config;
+  return isDeepStrictEqual(baseRest, headRest);
 }
 
 function shardOf(path, count) {
@@ -182,26 +211,45 @@ if (errors.length) {
 
 const { changed, diffSize } = a.all ? { changed: new Set(), diffSize: 0 } : changedSet(root, a.base, head);
 
+const metadataOnlyExclusions = new Set(a.all ? [] : fixtures
+  .filter((fixture) => changed.has(fixture.path)
+    && isMetadataOnlySuiteCanonicalization(root, a.base, fixture))
+  .map((fixture) => fixture.path));
+
 let selected = fixtures.map((fixture) => ({
   ...fixture,
   selectedBy: {
     all: Boolean(a.all),
-    config: changed.has(fixture.path),
-    suite: typeof fixture.suite === "string" && changed.has(fixture.suite),
+    config: changed.has(fixture.path) && !metadataOnlyExclusions.has(fixture.path),
+    suite: fixture.suites.some((suite) => changed.has(suite)),
     mutation: fixture.mutations.some((mutation) =>
       typeof mutation?.file === "string" && changed.has(mutation.file)),
   },
 })).filter(({ selectedBy }) => Object.values(selectedBy).some(Boolean));
 if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));
 
+// Selection evidence precedes dangling validation. A deleted or renamed declared source is one of
+// the reasons a fixture is selected, so reporting the source error before the selected set would
+// hide the selector result the failure is meant to make observable.
+console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fixtures.length}`
+  + (a.all
+    ? " for a full sweep"
+    : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
+if (metadataOnlyExclusions.size > 0)
+  console.log(`metadata-only config-path exclusions (${metadataOnlyExclusions.size}):\n${[...metadataOnlyExclusions].map((path) => `  ${path}`).join("\n")}`);
+if (selected.length > 0) console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
+
 // UNMEASURED, exit 1: a selected fixture's guarded file does not exist at head — a dangling fixture.
 // Its guarded source was deleted or renamed away, so its anchor cannot resolve and its proof is
 // unrunnable. This is the failure the gate exists to refuse, so it is loud, not a skip.
 const dangling = [];
-for (const { path, mutations } of selected) {
-  const missing = [...new Set(mutations
-    .map((mutation) => mutation?.file)
-    .filter((file) => typeof file === "string" && !existsSync(resolve(root, file))))];
+for (const { path, suites, mutations } of selected) {
+  const missing = [...new Set([
+    ...suites.filter((suite) => !existsSync(resolve(root, suite))),
+    ...mutations
+      .map((mutation) => mutation?.file)
+      .filter((file) => typeof file === "string" && !existsSync(resolve(root, file))),
+  ])];
   if (missing.length) dangling.push({ path, missing });
 }
 if (dangling.length) {
@@ -212,17 +260,14 @@ if (dangling.length) {
 
 // A zero after filtering means either no diff match or no assignment to this shard.
 // Keep the diff, corpus and selected counts visible in both cases.
-console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fixtures.length}`
-  + (a.all
-    ? " for a full sweep"
-    : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
 if (selected.length === 0) {
   console.log(shard
     ? `No selected mutation fixtures are assigned to shard ${a.shard}.`
-    : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
+    : metadataOnlyExclusions.size > 0
+      ? "No mutation fixtures to re-prove: the only intersections were metadata-only config-path exclusions."
+      : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
   process.exit(0);
 }
-console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
 
 // A fixture's proof has more than two outcomes, and collapsing any of them is itself a silent
 // failure. mutation-proof grades each mutation and encodes the run in its exit code:

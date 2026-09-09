@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "No implicit conversion (L4018), no holes (L4019), and a method is not a value (L4020). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/value-discipline.json",

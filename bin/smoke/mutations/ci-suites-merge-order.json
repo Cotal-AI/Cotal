@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/ci-suites.smoke.ts",
+  "suite": [
+    "bin/smoke/ci-suites.smoke.ts"
+  ],
   "guard": "simultaneous ci-suites tail appends conflict instead of silently taking union order and moving pre-existing suites between shards",
   "command": "pnpm smoke:ci-suites",
   "completionMarker": "SUITE COMPLETE",

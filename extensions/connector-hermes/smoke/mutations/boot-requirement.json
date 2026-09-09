@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-hermes/smoke/boot-requirement.smoke.ts",
+  "suite": [
+    "extensions/connector-hermes/smoke/boot-requirement.smoke.ts"
+  ],
   "guard": "the real installed-extension manager boot classifies Hermes from the external uv harness, not the project-provided command",
   "command": "pnpm smoke:hermes-boot-requirement",
   "progressPattern": "✓",

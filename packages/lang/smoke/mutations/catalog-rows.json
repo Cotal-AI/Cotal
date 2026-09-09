@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "Appendix A of the language reference and CATALOG are two renderings of ONE table: the same codes, each exactly once, each carrying the title the code actually raises. A reader repairing a program searches the document for the title the tool printed, so a document that lists a code the code does not raise, or a title the code no longer says, sends that reader nowhere. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/catalog-rows.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/smoke-kit/smoke/sandbox-guard.smoke.ts",
+  "suite": [
+    "packages/smoke-kit/smoke/sandbox-guard.smoke.ts"
+  ],
   "guard": "smoke teardown reaches only the recorded sandbox root, target-addressed down uses the same parsed space the CLI honors, and the guard runs before any environment-dependent live suite",
   "command": "pnpm smoke:sandbox-guard",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/sandbox-guard.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/mesh-attach-plane.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/mesh-attach-plane.smoke.ts"
+  ],
   "guard": "the serving bridge does not let its unsequenced close control overtake a distinct end frame while an earlier output frame is still inside the caller's async consumer",
   "command": "pnpm smoke:mesh-attach-plane",
   "completionMarker": "mesh-attach-plane 6b:",

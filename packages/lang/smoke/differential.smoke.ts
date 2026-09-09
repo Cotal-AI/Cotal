@@ -69,6 +69,7 @@ import { parse } from "acorn";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseSuiteSources } from "../../../scripts/mutation-suite-metadata.mjs";
 
 let pass = 0;
 const failures: string[] = [];
@@ -1632,10 +1633,15 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
  */
 {
   const cfg = JSON.parse(readFileSync(new URL("./mutations/transform-differential.json", import.meta.url), "utf8")) as {
-    suite: string;
+    suite: unknown;
     mutations: { name: string; expectRed: string }[];
   };
-  ok("the config audited here is the one that names this suite", cfg.suite.endsWith("differential.smoke.ts"), cfg.suite);
+  const suites = parseSuiteSources(
+    fileURLToPath(new URL("../../../", import.meta.url)),
+    "packages/lang/smoke/mutations/transform-differential.json",
+    cfg.suite,
+  );
+  ok("the config audited here is the one that names this suite", suites.includes("packages/lang/smoke/differential.smoke.ts"), suites);
   // THIS CELL COUNTS ITSELF, and it has to: a config may aim a mutant at the audit, and the audit's
   // own name is not in `CELLS` yet when it runs, since `ok` records after it decides. Left out, an aim at
   // this cell reads as a stale sentence and the audit reds over its own existence.

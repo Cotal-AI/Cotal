@@ -50,6 +50,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
+import { parseSuiteSources } from "../../scripts/mutation-suite-metadata.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build"]);
@@ -135,6 +137,93 @@ function cell(name: string, ok: boolean): void {
   if (!ok) selfChecks.push(name);
 }
 
+function suiteDiagnosis(value: unknown, sources: Record<string, string> = {}): string | undefined {
+  const root = mkdtempSync(join(tmpdir(), "mutation-suite-metadata-probe-"));
+  try {
+    for (const [path, content] of Object.entries(sources)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), content);
+    }
+    parseSuiteSources(root, "probe/mutations/config.json", value);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+cell("missing suite metadata is diagnosed", suiteDiagnosis(undefined)?.includes("MISSING SUITE METADATA") === true);
+cell("an empty suite array is diagnosed", suiteDiagnosis([])?.includes("EMPTY SUITE METADATA") === true);
+cell("the legacy suite string is diagnosed as malformed", suiteDiagnosis("probe/a.smoke.ts")?.includes("MALFORMED SUITE METADATA") === true);
+cell("a non-string suite member is diagnosed as malformed", suiteDiagnosis([42])?.includes("MALFORMED SUITE METADATA") === true);
+cell("a non-normalized suite path is diagnosed", suiteDiagnosis(["./probe.smoke.ts"])?.includes("NON-PATH SUITE SOURCE") === true);
+cell("a normalized but missing suite source is diagnosed", suiteDiagnosis(["probe/missing.smoke.ts"])?.includes("SUITE SOURCE MISSING") === true);
+cell(
+  "a valid multi-source suite array passes and every member is checked",
+  suiteDiagnosis(["probe/a.smoke.ts", "probe/b.smoke.ts"], {
+    "probe/a.smoke.ts": "a\n",
+    "probe/b.smoke.ts": "b\n",
+  }) === undefined
+    && suiteDiagnosis(["probe/a.smoke.ts", "probe/missing.smoke.ts"], { "probe/a.smoke.ts": "a\n" })?.includes("suite[1]") === true,
+);
+
+function proofMetadata(value: unknown, configMode = true): { status: number | null; output: string } {
+  const root = mkdtempSync(join(tmpdir(), "mutation-proof-metadata-probe-"));
+  try {
+    mkdirSync(join(root, "smoke"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "impl.mjs"), "export const value = 1;\n");
+    writeFileSync(join(root, "smoke", "suite.mjs"), [
+      "import { value } from '../src/impl.mjs';",
+      "if (value !== 1) { console.error('FAIL metadata proof control'); process.exit(1); }",
+      "console.log('✓ metadata proof control');",
+      "",
+    ].join("\n"));
+    writeFileSync(join(root, "suite.mjs"), [
+      "import { value } from './src/impl.mjs';",
+      "if (value !== 1) { console.error('FAIL metadata proof control'); process.exit(1); }",
+      "console.log('✓ metadata proof control');",
+      "",
+    ].join("\n"));
+    execFileSync("git", ["init", "--quiet"], { cwd: root });
+    const mutation = {
+      name: "metadata proof control", file: "src/impl.mjs", find: "export const value = 1;",
+      replace: "export const value = 2;", expectRed: "metadata proof control",
+    };
+    const config = { suite: value, command: `${process.execPath} smoke/suite.mjs`, mutations: [mutation] };
+    writeFileSync(join(root, "config.json"), JSON.stringify(config));
+    execFileSync("git", ["add", "."], { cwd: root });
+    execFileSync("git", ["-c", "user.email=smoke@example.test", "-c", "user.name=Smoke", "commit", "--quiet", "-m", "fixture"], { cwd: root });
+    const args = configMode
+      ? [join(ROOT, "scripts", "mutation-proof.mjs"), "--config", "config.json"]
+      : [join(ROOT, "scripts", "mutation-proof.mjs"), "--command", config.command, "--file", mutation.file,
+          "--find", mutation.find, "--replace", mutation.replace, "--expect-red", mutation.expectRed];
+    const run = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8" });
+    return { status: run.status, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+for (const [name, value, diagnosis] of [
+  ["missing", undefined, "MISSING SUITE METADATA"],
+  ["empty", [], "EMPTY SUITE METADATA"],
+  ["legacy string", "smoke/suite.mjs", "MALFORMED SUITE METADATA"],
+  ["non-string member", [42], "MALFORMED SUITE METADATA"],
+  ["non-normalized path member", ["./smoke/suite.mjs"], "NON-PATH SUITE SOURCE"],
+  ["missing source", ["smoke/missing.mjs"], "SUITE SOURCE MISSING"],
+] as const) {
+  const result = proofMetadata(value);
+  cell(`mutation-proof config mode rejects ${name} suite metadata`, result.status !== 0 && result.output.includes(diagnosis));
+}
+const validProof = proofMetadata(["smoke/suite.mjs", "src/impl.mjs"]);
+cell("mutation-proof config mode accepts valid multi-source metadata", validProof.status === 0 && validProof.output.includes("KILLED"));
+const validRootProof = proofMetadata(["suite.mjs"]);
+cell("mutation-proof config mode accepts valid root-level source metadata", validRootProof.status === 0 && validRootProof.output.includes("KILLED"));
+const adHocProof = proofMetadata(undefined, false);
+cell("mutation-proof ad-hoc CLI mode remains usable without suite metadata", adHocProof.status === 0 && adHocProof.output.includes("KILLED"));
+
 cell("the real .gitmodules yields at least one submodule path to skip", SUBMODULES.size > 0);
 
 const probe = mkdtempSync(join(tmpdir(), "mutation-fixtures-probe-"));
@@ -180,12 +269,25 @@ if (populated.length) {
   console.log("    observe. It is UNOBSERVED, not passed, and on CI it is always this branch.");
 }
 
-const fixtures: { path: string; mutations: Mutation[] }[] = [];
+const fixtures: { path: string; suite: string[]; mutations: Mutation[] }[] = [];
+const metadataProblems: string[] = [];
 for (const path of jsonFiles(ROOT)) {
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-  const cfg = parsed as { mutations?: unknown };
-  if (Array.isArray(cfg.mutations)) fixtures.push({ path, mutations: cfg.mutations as Mutation[] });
+  const cfg = parsed as { suite?: unknown; mutations?: unknown };
+  if (!Array.isArray(cfg.mutations)) continue;
+  const rel = relative(ROOT, path);
+  try {
+    fixtures.push({ path, suite: parseSuiteSources(ROOT, rel, cfg.suite), mutations: cfg.mutations as Mutation[] });
+  } catch (error) {
+    metadataProblems.push(error instanceof Error ? error.message : `${rel}: ${String(error)}`);
+  }
+}
+
+if (metadataProblems.length) {
+  console.log(`✗ FAIL: ${metadataProblems.length} mutation fixture(s) have invalid suite metadata:`);
+  for (const problem of metadataProblems) console.log(`  ✗ ${problem}`);
+  process.exit(1);
 }
 
 // An empty discovery is an ERROR, not a fast pass. A walker that finds nothing and exits 0 reports

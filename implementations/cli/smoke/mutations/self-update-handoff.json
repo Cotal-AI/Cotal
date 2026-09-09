@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/command-kernel.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts"
+  ],
   "guard": "self-update reports the selected manager before the global install and hands the selected target to the replacement child",
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/self-update-handoff.json",

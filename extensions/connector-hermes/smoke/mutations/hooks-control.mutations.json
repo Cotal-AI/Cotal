@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-hermes/smoke/hooks-control.smoke.ts",
+  "suite": [
+    "extensions/connector-hermes/smoke/hooks-control.smoke.ts"
+  ],
   "guard": "the hermes Python lifecycle hooks can resolve the control token a managed launch gives them, and say so out loud when they cannot",
   "command": "pnpm smoke:hermes-hooks-control",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/hooks-control.mutations.json",

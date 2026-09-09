@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/readiness-window-live.smoke.ts",
+  "suite": [
+    "bin/smoke/readiness-window-live.smoke.ts"
+  ],
   "guard": "an `uncertain` launch verdict reaches the operator carrying the MANAGER's diagnosis and its inspect-rather-than-re-issue instruction, not core's generic deadline line",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:readiness:live",
   "completionMarker": "a child that never joins settles the goal `uncertain`",

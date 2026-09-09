@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/run-driver-auth.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/run-driver-auth.smoke.ts"
+  ],
   "guard": "A narrow workflow driver writes its own journal and records while a separate trusted host performs effects. The program record, host timer epoch and operator record walk are exercised on an enforcing broker.",
   "command": "pnpm smoke:runtime-run-driver-auth",
   "completionMarker": "run-driver-auth.smoke:",

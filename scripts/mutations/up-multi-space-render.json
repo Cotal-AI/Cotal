@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/up-multi-space-render-live.smoke.ts"
+  ],
   "grades": "suite",
   "guard": "`cotal up` renders server.conf from the whole validated tenant inventory, and refuses to render while any account record is unreadable",
   "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",

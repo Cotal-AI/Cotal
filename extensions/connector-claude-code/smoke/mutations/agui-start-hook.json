@@ -1,6 +1,8 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
-  "guard": "Claude event hooks may reach the connector out of lifecycle order: SessionStart.source still reaches the source factory, and early flush/terminal work waits for that context before adopt \u2192 flush \u2192 close",
+  "suite": [
+    "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts"
+  ],
+  "guard": "Claude event hooks may reach the connector out of lifecycle order: SessionStart.source still reaches the source factory, and early flush/terminal work waits for that context before adopt → flush → close",
   "command": "pnpm smoke:claude-run-error",
   "completionMarker": "claude-run-error smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/agui-start-hook.json",

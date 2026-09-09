@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:component-health",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 13,
   "mutations": [
     {
@@ -48,5 +48,8 @@
       "cell": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
+  ],
+  "suite": [
+    "implementations/cli/smoke/component-health.smoke.ts"
   ]
 }

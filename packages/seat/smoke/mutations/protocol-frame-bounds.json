@@ -1,5 +1,7 @@
 {
-  "suite": "packages/seat/smoke/protocol.smoke.ts",
+  "suite": [
+    "packages/seat/smoke/protocol.smoke.ts"
+  ],
   "guard": "FrameReader refuses a client-claimed length above MAX_FRAME_SIZE at the header, drains complete frames before bounding residual, and still round-trips a max-size frame coalesced with a small one",
   "command": "pnpm smoke:seat-protocol",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/protocol-frame-bounds.json",

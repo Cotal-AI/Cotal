@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/cross-path-dedup.smoke.ts"
+  ],
   "guard": "a JetStream redelivery of an item that is still pending re-announces it through the ordinary incoming path and commits the freshest ack handle, so a wake the host dropped comes back on its own",
   "command": "pnpm smoke:cross-path-dedup",
   "progressPattern": "  ✓ ",
