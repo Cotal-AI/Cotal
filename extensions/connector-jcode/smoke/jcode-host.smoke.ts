@@ -518,10 +518,13 @@ try {
   // mesh or tool channel would pass every assertion above, so drive real work through it: the
   // refused notice must cost the notice and nothing else.
   const busyRead = () => readJsonLines<{ ev: string; session_id?: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(busyLog);
-  await waitFor("busypeer presence", () => busyPeerId);
-  await operator.unicast(busyPeerId!, "post-refusal-work cotal_orientation");
+  // These waits report a failed cell rather than throwing. A seat killed by the refusal never
+  // reaches this work at all, and an unhandled timeout would crash the suite as an unrelated early
+  // failure instead of naming which guarantee broke.
+  await waitFor("busypeer presence", () => busyPeerId).catch(() => undefined);
+  if (busyPeerId) await operator.unicast(busyPeerId, "post-refusal-work cotal_orientation");
   const busyTurn = await waitFor("a Harness API turn after the refused notice", () =>
-    busyRead().find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("post-refusal-work")));
+    busyRead().find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("post-refusal-work"))).catch(() => undefined);
   check("a seat whose notice was refused still receives later mesh work as a real turn", Boolean(busyTurn), busyTurn);
   // The fake records `orientation_done` only when a turn actually reaches the cotal_orientation
   // tool, so this is the tool path running end to end rather than a message merely being accepted.
@@ -529,7 +532,7 @@ try {
   const busyToolRuns = await waitFor("the post-refusal turn reaches its tool", () => {
     const runs = busyRead().filter((entry) => entry.ev === "orientation_done");
     return runs.length >= 2 ? runs : undefined;
-  });
+  }).catch(() => undefined);
   check("the post-refusal turn reaches the cotal tool, so the refusal cost the notice and not the session", (busyToolRuns?.length ?? 0) >= 2, busyToolRuns);
   await stopHostTree(busy, "SIGTERM");
   check("the launch whose post-join notice was refused exits cleanly", busy.exitCode === 0, { code: busy.exitCode, stderr: busyErr });

@@ -7,15 +7,15 @@
   "progressPattern": "^  ✓ ",
   "minTicks": 2,
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-post-join-notice-busy.json",
-  "why": "The refusal used to reach the startup catch and kill an already-joined seat, discarding the session being recovered. Rethrowing from the notice's own catch restores exactly that path, so the cell that must notice is the one asserting the launch survives rather than the ones reading the fake's log, which the dying host still writes.",
+  "why": "The refusal used to reach the startup catch and kill an already-joined seat, discarding the session being recovered. Rethrowing from the notice own catch restores that path. The named cell is the functional one: the join and the notice frame both precede the send, so those cells pass in BOTH directions, and the first guarantee that actually breaks is the seat continuing to do mesh work afterwards.",
   "mutations": [
     {
       "name": "the refused post-join notice is fatal to the launch again",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n    }",
       "replace": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n      throw notice;\n    }",
-      "expectRed": "the launch whose post-join notice was refused exits cleanly",
-      "cell": "the launch whose post-join notice was refused exits cleanly"
+      "expectRed": "a seat whose notice was refused still receives later mesh work as a real turn",
+      "cell": "a seat whose notice was refused still receives later mesh work as a real turn"
     }
   ]
 }
