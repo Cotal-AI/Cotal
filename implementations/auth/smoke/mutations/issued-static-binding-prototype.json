@@ -32,9 +32,10 @@
       "name": "issued credentials retain legacy grants",
       "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
       "find": "return epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref));",
-      "replace": "return [...epRequestGrantRows(ref.space, capability, ref), ...epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref))];",
+      "replace": "return [...epRequestGrantRows(ref.space, capability, { owner: ref.owner, actor: ref.actor, uid: ref.uid }), ...epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref))];",
       "expectRed": "new bound credentials have no legacy request fallback",
-      "cell": "new bound credentials have no legacy request fallback"
+      "cell": "new bound credentials have no legacy request fallback",
+      "note": "The added rows must be minted for the bare triple: passing the issued ref again yields the same versioned-rail rows the credential already holds, so the mutation changed nothing and survived. A triple without a generation is a legacy caller, and its rows sit on the legacy plane the cell publishes on."
     },
     {
       "name": "duplicate issued metadata is accepted",
