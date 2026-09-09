@@ -189,6 +189,7 @@ export function assertCurrentSessionFence(
   state: SessionTrustedState,
   bindingId: string,
   controllerEpoch: number,
+  operationId: string,
   recordedReceipt?: QueryOperationResult,
 ): QueryOperationResult | undefined {
   assertSessionManagementWritable(state);
@@ -197,6 +198,7 @@ export function assertCurrentSessionFence(
       recordedReceipt !== undefined
       && recordedReceipt.state !== "absent"
       && recordedReceipt.record.bindingId === bindingId
+      && recordedReceipt.record.operationId === operationId
     ) return recordedReceipt;
     throw new EpEnvelopeError("conflict", `stale native session operation: binding ${bindingId} is retired or epoch ${controllerEpoch} is below floor ${state.epochFloor}; it cannot act on a new binding`);
   }
