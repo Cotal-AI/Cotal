@@ -19,6 +19,7 @@ import {
 } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
+import { nativeLifecycleLookupForSupervisor } from "../src/commands.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
 let failures = 0;
@@ -277,7 +278,7 @@ let retainedAuthority = {
 // A cast AFTER the literal gives its members no contextual type, which is why the validator's
 // parameter was implicitly `any`; annotating the subset types the callback from the contract, and
 // the widening happens once, at the register call.
-const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | "validateRetainedAgent" | "grantAgent"> = {
+const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | "validateRetainedAgent" | "grantAgent" | "nativeLifecycleBindings"> = {
   kind: "auth-provider",
   name: "preserve-auth",
   agentBearerCommand: "agent-bearer",
@@ -292,8 +293,32 @@ const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | 
     retainedGrantCalls++;
     throw new Error("grantAgent must not run during resume");
   },
+  nativeLifecycleBindings: async () => ({ status: "unknown", bindings: [], reason: "test lookup not configured" }),
 };
 registry.register(preserveAuth as unknown as AuthProvider);
+
+// PRODUCTION CALLER: this is the exact commands.ts composition passed by `cotal supervise` into
+// Manager. Nothing is injected into Manager. The registered provider is reached through the shipped
+// resolveAuthProvider path and receives the complete closed-query coordinates.
+{
+  let providerInput: Parameters<NonNullable<AuthProvider["nativeLifecycleBindings"]>>[0] | undefined;
+  const original = preserveAuth.nativeLifecycleBindings;
+  preserveAuth.nativeLifecycleBindings = async (input) => {
+    providerInput = input;
+    return { status: "known", bindings: [] };
+  };
+  try {
+    const lookup = nativeLifecycleLookupForSupervisor(root, "preserve-smoke", "nats://scanner.invalid:4222");
+    const result = await lookup("owner.manager");
+    check("shipped supervisor entry point reaches the auth provider closed lookup without Manager injection",
+      result.status === "known" && providerInput?.space === "preserve-smoke"
+        && providerInput.server === "nats://scanner.invalid:4222"
+        && providerInput.managerPrincipal === "owner.manager"
+        && providerInput.dir.includes(".cotal"), providerInput);
+  } finally {
+    preserveAuth.nativeLifecycleBindings = original;
+  }
+}
 
 // Missing scan authority and a live binding are distinct durable answers. Both block destructive
 // shutdown, but the former names the reader grant remedy rather than pretending a binding exists.
