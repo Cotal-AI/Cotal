@@ -850,13 +850,22 @@ try {
     );
   });
   await waitFor("provider refusal host exit", () => refusal.exitCode === null ? undefined : refusal.exitCode, 20_000);
+  // The Jcode child is spawned `stdio: "inherit"`, so its own provider text reaches this same
+  // stderr pipe. Matching the codes there is therefore satisfied by the child and cannot witness
+  // the host rendering them. The seat's connector log is written only by writeJcodeDiagnostic, so
+  // assert the classified line there: that is the one place only the host can reach.
+  const refusalLogText = connectorLog(managedHome("jcodehost", "readinessrefusal"));
   check(
     "provider readiness refusal names its code and rejected model parameter",
-    refusal.exitCode === 1 && /model_not_found/.test(refusalErr) && /rejected-model-id/.test(refusalErr),
+    refusal.exitCode === 1 &&
+      /model_not_found/.test(refusalErr) &&
+      /rejected-model-id/.test(refusalErr) &&
+      /fatal: Jcode readiness turn refused model "rejected-model-id" \(model_not_found\)/.test(refusalLogText),
     {
       exitCode: refusal.exitCode,
       signalCode: refusal.signalCode,
       stderr: refusalErr,
+      connectorLog: refusalLogText,
       fakeEvents: readJsonLines(refusalLog),
     },
   );
