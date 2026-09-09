@@ -103,10 +103,12 @@ evidence; a changed scope is a fresh issuance on a fresh generation, adopted by 
 A static agent's evidence names its credential ledger family as the source it depends on, and the
 lifecycle terminal that retires that family retires its issuances with it.
 
-The manager, `cotal spawn`, and the CLI's one-shot instruments all mint through an `issuer`
-session. Only workflow `run-start` requires the binding today: a request for it on the legacy rail
-is refused with `permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority` naming
-the caller. Every other command serves both rails.
+The manager, `cotal spawn`, and the CLI's control-caller instruments all mint through an `issuer`
+session. The deployer instrument does not: it is the one instrument with no default expiry, and an
+issuance with no lifecycle gate must carry one, so a deploy rides the legacy rail under its own
+lifecycle uid. Only workflow `run-start` requires the binding today: a request for it on the legacy
+rail is refused with `permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority`
+naming the caller. Every other command serves both rails.
 
 ## Declared capabilities
 

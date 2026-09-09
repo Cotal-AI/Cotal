@@ -227,8 +227,8 @@
     {
       "name": "the issuer dial's transport error escapes as the first attach's refusal",
       "file": "packages/workspace/src/connect.ts",
-      "find": "        await preflightOrThrow(target);\n        throw e;",
-      "replace": "        throw e;",
+      "find": "          await preflightOrThrow(target);\n          throw e;",
+      "replace": "          throw e;",
       "expectRed": "...saying the mesh is not there, in the CLI's own words",
       "cell": "...saying the mesh is not there, in the CLI's own words",
       "note": "The instrument mint became an issuance, and the issuer session dials the broker BEFORE the preflight runs. Against a mesh that is not there that dial throws the transport's own words, which is what cell G saw: a raw `connection refused` where the classified `no mesh running at ... - run `cotal up`` sentence (and its registry prune) used to be. The catch runs the preflight on the dial failure so the classified refusal is what escapes; without it the raw error is the refusal and cell G reddens end to end through the real binary.",
