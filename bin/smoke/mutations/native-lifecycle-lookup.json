@@ -11,20 +11,20 @@
   ],
   "mutations": [
     {
-      "name": "drop every released row after the scan without a receipt check",
-      "file": "packages/core/src/session-lifecycle-store.ts",
-      "find": "      if (releasedBindingStillLive(binding, release)) bindings.push(binding);\n",
-      "replace": "",
+      "name": "sealed scan drops released-labelled rows before the receipt layer",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "          if (binding.managerPrincipal === managerPrincipal) bindings.push(binding);\n",
+      "replace": "          if (binding.managerPrincipal === managerPrincipal && binding.state !== \"released\") bindings.push(binding);\n",
       "expectRed": "PRODUCTION CALLER queryNativeLifecycleBindingsWithAuthority: released-unproven stays live",
       "cell": "PRODUCTION CALLER queryNativeLifecycleBindingsWithAuthority: released-unproven stays live"
     },
     {
-      "name": "treat cooperative-retirement proves alone as sufficient",
-      "file": "packages/core/src/session-lifecycle-store.ts",
-      "find": "  if (!nativeLifetimePreserved(release.result)) return true;\n",
-      "replace": "",
-      "expectRed": "cooperative-retirement without preserved native lifetime remains live",
-      "cell": "cooperative-retirement without preserved native lifetime remains live"
+      "name": "static lookup returns the scan without applying sessionop receipts",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "      label: `cotal:native-binding-receipts:${opts.space}`,\n      grants: (id) => nativeLifecycleReceiptReadGrants(opts.space, id),\n      log: opts.log,\n    });\n    try {\n      const kv = await new Kvm(receipts.nc).open(recordsBucket(opts.space));\n      return await applyReleaseReceiptsToNativeLookup(\n        scanned,\n        (resourceKey, operationId) => queryOperation(kv, resourceKey, operationId),\n      );\n",
+      "replace": "      label: `cotal:native-binding-receipts:${opts.space}`,\n      grants: (id) => nativeLifecycleReceiptReadGrants(opts.space, id),\n      log: opts.log,\n    });\n    try {\n      const kv = await new Kvm(receipts.nc).open(recordsBucket(opts.space));\n      return scanned;\n",
+      "expectRed": "native-effect proven release is not live",
+      "cell": "native-effect proven release is not live"
     },
     {
       "name": "receipt-read grants add CONSUMER.CREATE",
