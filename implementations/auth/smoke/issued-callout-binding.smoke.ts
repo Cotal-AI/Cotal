@@ -248,6 +248,10 @@ try {
     const clean = await open(random());
     await clean.nc.close();
     await assert.rejects(rebindOnAuthorizationClosure(clean, () => open(random())), /closed cleanly/);
+    // Nor is a transport failure. A live broker will not produce one on demand, so this half uses
+    // a hand-built closure result; the authorization half above is the live path.
+    const reset = { nc: { closed: async () => new Error("connection reset by peer") } as unknown as NatsConnection };
+    await assert.rejects(rebindOnAuthorizationClosure(reset, async () => { throw new Error("must not rebind"); }), /not an authorization refusal/);
   });
 
   await check("a callout client discovers the generation the issuer bound, not the one it proposed", async () => {
