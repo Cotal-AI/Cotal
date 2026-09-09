@@ -6,6 +6,7 @@ import {
   mayAdvanceBinding,
   parseBinding,
   queryOperation,
+  putSessionEnrollment,
   registry,
   sessionBindingKey,
   type Binding,
@@ -17,6 +18,7 @@ import {
   type NativeLifecycleProvider,
   type NativeLifecycleView,
   type ResourceKey,
+  type SessionEnrollment,
   type SessionManageGrant,
   type SessionOperationRecord,
 } from "../src/index.js";
@@ -71,7 +73,12 @@ const requestBase = {
   resourceKey: resource, resourceOwnerPrincipal: OWNER, managerPrincipal: MANAGER,
   authenticatedActor: MANAGER, grant, authenticatedGrantIssuer: OWNER, now: 1_000,
   expectedBindingRevision: 0, expectedControllerEpoch: 1, intendedResult: { nativeState: "preserved" },
+  expectedIncarnation: proof,
 };
+/** The proof a session reports after it has been replaced by a different one at the same key. */
+const reincarnateProof = { ...proof, sessionIncarnation: "s-2" };
+/** Flipped by the reincarnation cells so `inspect` starts reporting the replacement session. */
+let reincarnated = false;
 
 function bindingRevision(kv: MemKv, key = sessionBindingKey(resource)): number {
   const row = kv.rows.get(key);
@@ -83,6 +90,25 @@ function readBindingRow(kv: MemKv, key = sessionBindingKey(resource)): Binding |
   if (!row) return undefined;
   return parseBinding(row.value, key, resource);
 }
+/** The owner-authorized enrollment for `resource`. `authorizedBy` is the owner itself: the parser
+ *  refuses an enrollment authorized by anyone else. */
+const enrollment: SessionEnrollment = {
+  kind: "native-only",
+  resourceKey: resource,
+  ownerPrincipal: OWNER,
+  provenance: { authorizedBy: OWNER, nativeEvidence: { immutable: "x" }, authenticatedAt: 500 },
+  incarnationProof: proof,
+  rights: ["discover", "adopt", "control", "release", "transfer"],
+  expiry: 10_000,
+};
+/** A store whose session is already enrolled. Adopt, transfer and recover are enrollment-governed,
+ *  so a store with no enrollment row is not one they can run against at all. */
+async function enrolledKv(patch: Partial<SessionEnrollment> = {}): Promise<KV> {
+  const mem = new MemKv() as unknown as KV;
+  await putSessionEnrollment(mem, { ...enrollment, ...patch } as SessionEnrollment);
+  return mem;
+}
+
 const otherResource: ResourceKey = { ...resource, stableSessionId: "session-other" };
 const effects: string[] = [];
 const drainedProof = {
@@ -98,9 +124,13 @@ const drainedProof = {
 function connection(
   ops: readonly NativeLifecycleOperation[],
   mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
-  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" | "coop-release" | "coop-release-live" = "ok",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" | "coop-release" | "coop-release-live" | "reincarnate" = "ok",
 ): NativeLifecycleConnection {
-  const inspect = async () => { effects.push("inspect"); return observation(); };
+  const inspect = async () => {
+    effects.push("inspect");
+    if (kind === "reincarnate" && reincarnated) return observation({ incarnationProof: reincarnateProof });
+    return observation();
+  };
   const discover = async () => {
     effects.push("discover");
     return [observation(), observation({ resourceKey: otherResource, directory: "/tmp/session-other" })];
@@ -199,7 +229,7 @@ function register(
   name: string,
   ops: readonly NativeLifecycleOperation[],
   mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
-  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" | "coop-release" | "coop-release-live" = "ok",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" | "coop-release" | "coop-release-live" | "reincarnate" = "ok",
 ): void {
   const provider: NativeLifecycleProvider = {
     kind: "native-lifecycle",
@@ -219,6 +249,7 @@ register("executor-journal-release", mutatingOps, "cooperative-exclusive", "jour
 register("executor-coop-release", mutatingOps, "cooperative-exclusive", "coop-release");
 register("executor-coop-release-live", mutatingOps, "cooperative-exclusive", "coop-release-live");
 register("executor-preflight-refuse", ["preflight"], "cooperative-exclusive", "preflight-refuse");
+register("executor-reincarnate", mutatingOps, "cooperative-exclusive", "reincarnate");
 
 console.log("A. public entry refuses before any native effect");
 effects.length = 0;
@@ -252,7 +283,7 @@ c("observed-mode adopt left no native effects", effects.length === 0, effects);
 
 console.log("B. production caller: executeNativeLifecycle -> registry.resolve, nothing injected");
 effects.length = 0;
-const kv = new MemKv() as unknown as KV;
+const kv = await enrolledKv();
 const adopted = await executeNativeLifecycle(kv, {
   ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-adopt", bindingId: "binding-1",
 });
@@ -291,7 +322,7 @@ await rejects("preflight without targetOperation is refused", () => executeNativ
 
 console.log("C. lost native acknowledgement stays indeterminate");
 effects.length = 0;
-const kvRelease = new MemKv() as unknown as KV;
+const kvRelease = await enrolledKv();
 await executeNativeLifecycle(kvRelease, {
   ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-adopt-2", bindingId: "binding-2",
 });
@@ -304,7 +335,7 @@ const releaseRow = await queryOperation(kvRelease, resource, "op-rel");
 c("indeterminate release is journalled, not invented as native-effect", releaseRow.state === "indeterminate" && releaseRow.proofOrigin === undefined, releaseRow);
 
 effects.length = 0;
-const kvMismatch = new MemKv() as unknown as KV;
+const kvMismatch = await enrolledKv();
 const mismatched = await executeNativeLifecycle(kvMismatch, {
   ...requestBase, providerName: "executor-mismatch", operation: "adopt", operationId: "op-mismatch", bindingId: "binding-mismatch",
 });
@@ -313,7 +344,7 @@ const mismatchRow = await queryOperation(kvMismatch, resource, "op-mismatch");
 c("mismatched receipt is not stored as terminal-success", mismatchRow.state === "indeterminate" && mismatchRow.proofOrigin === undefined, mismatchRow);
 
 effects.length = 0;
-const kvNativeRel = new MemKv() as unknown as KV;
+const kvNativeRel = await enrolledKv();
 await executeNativeLifecycle(kvNativeRel, {
   ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-3", bindingId: "binding-3",
 });
@@ -327,7 +358,7 @@ c("native-effect release receipt is durable", nativeRelRow.state === "terminal-s
 c("native-effect release marked the binding released", readBindingRow(kvNativeRel as unknown as MemKv)?.state === "released");
 
 effects.length = 0;
-const kvJournalRel = new MemKv() as unknown as KV;
+const kvJournalRel = await enrolledKv();
 await executeNativeLifecycle(kvJournalRel, {
   ...requestBase, providerName: "executor-journal-release", operation: "adopt", operationId: "op-adopt-journal", bindingId: "binding-journal",
 });
@@ -346,7 +377,7 @@ c("journal-receipt release is not stored as terminal-success", journalRelRow.sta
 c("journal-receipt release did not mark the binding released", readBindingRow(kvJournalRel as unknown as MemKv)?.state === "managed");
 
 effects.length = 0;
-const kvCoopLive = new MemKv() as unknown as KV;
+const kvCoopLive = await enrolledKv();
 await executeNativeLifecycle(kvCoopLive, {
   ...requestBase, providerName: "executor-coop-release-live", operation: "adopt", operationId: "op-adopt-coop-live", bindingId: "binding-coop-live",
 });
@@ -360,7 +391,7 @@ c("cooperative-retirement without preserved lifetime is durable", coopLiveRow.st
 c("cooperative-retirement without preserved lifetime did not mark the binding released", readBindingRow(kvCoopLive as unknown as MemKv)?.state === "managed");
 
 effects.length = 0;
-const kvCoop = new MemKv() as unknown as KV;
+const kvCoop = await enrolledKv();
 await executeNativeLifecycle(kvCoop, {
   ...requestBase, providerName: "executor-coop-release", operation: "adopt", operationId: "op-adopt-coop", bindingId: "binding-coop-ok",
 });
@@ -374,7 +405,7 @@ c("cooperative-retirement with preserved lifetime is durable", coopRow.state ===
 c("cooperative-retirement with preserved lifetime marked the binding released", readBindingRow(kvCoop as unknown as MemKv)?.state === "released");
 
 effects.length = 0;
-const kvStale = new MemKv() as unknown as KV;
+const kvStale = await enrolledKv();
 await executeNativeLifecycle(kvStale, {
   ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-stale", bindingId: "binding-stale",
 });
@@ -386,7 +417,7 @@ await rejects("stale expectedBindingRevision is refused as conflict", () => exec
 c("stale revision did not dispatch native preflight, inspect, or release", !effects.includes("release") && !effects.includes("preflight:release") && effects.filter((e) => e === "inspect").length === inspectBeforeStale, effects);
 
 effects.length = 0;
-const kvTransfer = new MemKv() as unknown as KV;
+const kvTransfer = await enrolledKv();
 await executeNativeLifecycle(kvTransfer, {
   ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-xfer", bindingId: "binding-xfer",
 });
@@ -454,6 +485,96 @@ c("native-effect cannot advance when record.action mismatches operation",
     result: { bound: true },
     proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { bound: true }, proves: "native-effect" },
   }, "adopt") === false);
+
+console.log("E. the enrollment is the identity and authority source for acquiring management");
+effects.length = 0;
+await rejects("adopt against a store with no enrollment is refused", () => executeNativeLifecycle(new MemKv() as unknown as KV, {
+  ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-noenroll", bindingId: "binding-noenroll",
+}), "failed-precondition");
+c("unenrolled adopt never dispatched the native adopt", !effects.includes("adopt"), effects);
+
+await rejects("adopt on an expired enrollment is refused", async () => executeNativeLifecycle(await enrolledKv({ expiry: 900 }), {
+  ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-expired", bindingId: "binding-expired",
+}), "failed-precondition");
+
+await rejects("adopt whose enrollment records a different owner is refused", async () => executeNativeLifecycle(
+  await enrolledKv({ ownerPrincipal: "u_bob.operator", provenance: { ...enrollment.provenance, authorizedBy: "u_bob.operator" } }), {
+    ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-otherowner", bindingId: "binding-otherowner",
+  }), "permission-denied");
+
+await rejects("adopt the enrollment does not grant is refused", async () => executeNativeLifecycle(
+  await enrolledKv({ rights: ["discover", "release"] }), {
+    ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-noright", bindingId: "binding-noright",
+  }), "permission-denied");
+
+effects.length = 0;
+const changedIncarnation = await executeNativeLifecycle(
+  await enrolledKv({ incarnationProof: { ...proof, sessionIncarnation: "s-2" } }), {
+    ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-reincarnated", bindingId: "binding-reincarnated",
+  });
+c("adopt of a session whose incarnation left the enrolled proof is identity-unproven",
+  changedIncarnation.state === "identity-unproven", changedIncarnation);
+c("a changed incarnation never dispatched the native adopt", !effects.includes("adopt"), effects);
+
+const kvNarrow = await enrolledKv({ rights: ["adopt", "release"] });
+const narrowAdopt = await executeNativeLifecycle(kvNarrow, {
+  ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-narrow", bindingId: "binding-narrow",
+});
+c("adopt authorized by a narrow enrollment still succeeds", narrowAdopt.state === "recorded", narrowAdopt);
+c("the binding carries the enrolled rights, not a full hardcoded set",
+  JSON.stringify(readBindingRow(kvNarrow as unknown as MemKv)?.rights) === JSON.stringify(["adopt", "release"]),
+  readBindingRow(kvNarrow as unknown as MemKv)?.rights);
+
+const kvGiveUp = await enrolledKv({ rights: ["adopt"] });
+await executeNativeLifecycle(kvGiveUp, {
+  ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-giveup", bindingId: "binding-giveup",
+});
+const releasedUngated = await executeNativeLifecycle(kvGiveUp, {
+  ...requestBase, providerName: "executor-native-release", operation: "release", operationId: "op-giveup-rel", bindingId: "binding-giveup",
+  expectedBindingRevision: bindingRevision(kvGiveUp as unknown as MemKv), expectedControllerEpoch: 1,
+  intendedResult: { bindingState: "released", nativeState: "preserved" },
+});
+c("release is not gated on the enrollment, so a session can always be given up",
+  releasedUngated.state === "recorded" && releasedUngated.operation.state === "terminal-success", releasedUngated);
+c("release the enrollment never granted still marked the binding released",
+  readBindingRow(kvGiveUp as unknown as MemKv)?.state === "released");
+
+console.log("F. the incarnation under management is pinned by durable state, not by the requester");
+effects.length = 0;
+await rejects("adopt with no expected incarnation is refused, not silently uncompared", async () => executeNativeLifecycle(await enrolledKv(), {
+  ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-noexpect", bindingId: "binding-noexpect",
+  expectedIncarnation: undefined,
+}), "internal");
+c("an adopt with no expectation never reached the provider", effects.length === 0, effects);
+
+effects.length = 0;
+const wrongExpectation = await executeNativeLifecycle(await enrolledKv(), {
+  ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-wrongexpect", bindingId: "binding-wrongexpect",
+  expectedIncarnation: reincarnateProof,
+});
+c("adopt whose expected incarnation is not the observed one is identity-unproven", wrongExpectation.state === "identity-unproven", wrongExpectation);
+c("a wrong expectation never dispatched the native adopt", !effects.includes("adopt"), effects);
+
+// The unit form of the acceptance cell: the native session goes away and the observation changes.
+// The caller here has seen the replacement and asserts it, so `expectedIncarnation` agrees with the
+// provider; only the binding still remembers what was adopted, which is what has to refuse.
+const kvReborn = await enrolledKv();
+await executeNativeLifecycle(kvReborn, {
+  ...requestBase, providerName: "executor-reincarnate", operation: "adopt", operationId: "op-reborn-adopt", bindingId: "binding-reborn",
+});
+c("the binding recorded the incarnation it adopted",
+  readBindingRow(kvReborn as unknown as MemKv)?.incarnationProof.sessionIncarnation === "s-1");
+reincarnated = true;
+effects.length = 0;
+const onReplaced = await executeNativeLifecycle(kvReborn, {
+  ...requestBase, providerName: "executor-reincarnate", operation: "release", operationId: "op-reborn-rel", bindingId: "binding-reborn",
+  expectedBindingRevision: bindingRevision(kvReborn as unknown as MemKv), expectedControllerEpoch: 1,
+  expectedIncarnation: reincarnateProof, intendedResult: { bindingState: "released", nativeState: "preserved" },
+});
+c("release against a session replaced since it was bound is identity-unproven", onReplaced.state === "identity-unproven", onReplaced);
+c("the replacement session was never dispatched a native release", !effects.includes("release"), effects);
+c("the binding was not rewritten by a refused release", readBindingRow(kvReborn as unknown as MemKv)?.state === "managed");
+reincarnated = false;
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

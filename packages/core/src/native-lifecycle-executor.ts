@@ -20,6 +20,7 @@ import {
   type NativeLifecyclePreflight,
   type NativeLifecycleView,
 } from "./native-lifecycle-provider.js";
+import { getSessionEnrollment } from "./session-enrollment-renewal.js";
 import { authorizeSessionManage } from "./session-manage-authority.js";
 import {
   classifyIncarnationProof,
@@ -46,6 +47,11 @@ import {
 } from "./session-lifecycle-store.js";
 
 const MUTATING: ReadonlySet<NativeLifecycleOperation> = new Set(["adopt", "release", "transfer", "recover"]);
+
+/** Operations that acquire or move management authority over a native session. Release only
+ * gives authority up, so it is never gated on the enrollment: an expired or superseded
+ * enrollment must not strand a session under a manager that can no longer let go of it. */
+const ENROLLMENT_GOVERNED: ReadonlySet<NativeLifecycleOperation> = new Set(["adopt", "transfer", "recover"]);
 
 export type NativeLifecycleDispatchResult =
   | NativeLifecycleOperationResult
@@ -95,6 +101,32 @@ function mutatingAction(operation: NativeLifecycleOperation): Exclude<SessionMan
   const action = sessionActionFor(operation);
   if (action === "discover") throw new EpEnvelopeError("internal", `native lifecycle ${operation} is not a mutating session-manage action`);
   return action;
+}
+
+/** The durable, owner-authorized enrollment is the identity and authority source for acquiring
+ * management. `request.expectedIncarnation` cannot serve that purpose because the caller supplies
+ * it and may omit it, and a fresh provider observation cannot either, because a provider never
+ * grants ownership by discovery. A changed incarnation is refused rather than adopted: the plan
+ * requires renewed proof, and re-enrollment is what renews it. */
+async function authorizeAgainstEnrollment(
+  kv: KV,
+  request: NativeLifecycleExecutorRequest,
+  resourceKey: ResourceKey,
+  observedProof: IncarnationProof,
+  action: SessionManageAction,
+): Promise<{ readonly rights: readonly SessionManageAction[] } | { readonly state: "identity-unproven"; readonly reason: string }> {
+  const enrollment = await getSessionEnrollment(kv, resourceKey);
+  if (enrollment.expiry <= request.now)
+    throw new EpEnvelopeError("failed-precondition", `session enrollment for ${resourceKey.stableSessionId} expired at ${enrollment.expiry}; re-enroll before ${request.operation}`);
+  if (enrollment.provenance.authenticatedAt > request.now)
+    throw new EpEnvelopeError("failed-precondition", `session enrollment for ${resourceKey.stableSessionId} was authenticated at ${enrollment.provenance.authenticatedAt}, after the request`);
+  if (enrollment.ownerPrincipal !== request.resourceOwnerPrincipal)
+    throw new EpEnvelopeError("permission-denied", `session enrollment records owner ${enrollment.ownerPrincipal}; ${request.operation} was authorized against ${request.resourceOwnerPrincipal}`);
+  if (!enrollment.rights.includes(action))
+    throw new EpEnvelopeError("permission-denied", `session enrollment does not authorize ${action} on ${resourceKey.stableSessionId}`);
+  if (classifyIncarnationProof(enrollment.incarnationProof, observedProof) === "identity-unproven")
+    return { state: "identity-unproven", reason: "native incarnation differs from the enrolled proof; re-enrollment must renew the proof before management is acquired" };
+  return { rights: enrollment.rights };
 }
 
 function sameResource(a: ResourceKey, b: ResourceKey): boolean {
@@ -253,6 +285,11 @@ export async function executeNativeLifecycle(
 
   if (!MUTATING.has(request.operation))
     throw new EpEnvelopeError("internal", `native lifecycle ${request.operation} is not a known mutating operation`);
+  // Adopt is the operation that has no binding to pin the incarnation, so the caller has to say
+  // which one it means. An absent expectation is refused here rather than skipped below, because a
+  // condition the requester can omit is not a check.
+  if (request.operation === "adopt" && request.expectedIncarnation === undefined)
+    throw new EpEnvelopeError("internal", "native lifecycle adopt requires request.expectedIncarnation");
 
   const existing = await readBinding(kv, resourceKey);
   if (request.operation === "adopt" && existing !== undefined && existing.binding.state !== "released")
@@ -300,6 +337,24 @@ export async function executeNativeLifecycle(
       return { state: "recorded", operation: answered.record };
   }
 
+  // The binding this executor wrote is the durable statement of which incarnation is under
+  // management, so it is what a mutating operation is checked against. `request.expectedIncarnation`
+  // cannot serve: a caller that has observed the replacement session asserts the replacement and
+  // passes. A released binding is excluded, because re-adopting after re-enrollment legitimately
+  // carries a renewed proof and the enrollment is the artifact that renews it.
+  if (existing !== undefined && existing.binding.state !== "released"
+    && classifyIncarnationProof(existing.binding.incarnationProof, observedProof) === "identity-unproven")
+    return { state: "identity-unproven", reason: `native incarnation differs from the one bound as ${existing.binding.bindingId}; the managed session has been replaced` };
+
+  // After the fence, never before it: a replay whose operation is already recorded must return
+  // that answer, not be refused a second time by an enrollment that has since expired.
+  let enrolledRights: readonly SessionManageAction[] | undefined;
+  if (ENROLLMENT_GOVERNED.has(request.operation)) {
+    const enrolled = await authorizeAgainstEnrollment(kv, request, resourceKey, observedProof, mutatingAction(request.operation));
+    if ("state" in enrolled) return enrolled;
+    enrolledRights = enrolled.rights;
+  }
+
   const incarnationProof = existing?.binding.state === "released" || existing === undefined
     ? observedProof
     : existing.binding.incarnationProof;
@@ -315,6 +370,11 @@ export async function executeNativeLifecycle(
     intendedResult: request.intendedResult,
   });
 
+  // A released binding being re-released keeps the rights it already had; every other path to a
+  // fresh binding is enrollment-governed, so there is no set of rights to invent here.
+  const bindingRights = enrolledRights ?? existing?.binding.rights;
+  if (bindingRights === undefined)
+    throw new EpEnvelopeError("internal", `native lifecycle ${request.operation} reached binding creation with neither enrolled nor existing rights`);
   const nextBinding: Binding = existing !== undefined && existing.binding.state !== "released"
     ? existing.binding
     : {
@@ -324,7 +384,7 @@ export async function executeNativeLifecycle(
       controllerEpoch: request.expectedControllerEpoch,
       managerPrincipal: request.managerPrincipal,
       mode: connection.capabilities.mode,
-      rights: ["discover", "adopt", "control", "release", "transfer"],
+      rights: bindingRights,
       state: "adopt-prepared",
       operationId: request.operationId,
       desiredRevision: existing?.binding.desiredRevision ?? 0,
