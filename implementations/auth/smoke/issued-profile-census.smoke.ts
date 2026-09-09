@@ -13,7 +13,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -167,6 +167,21 @@ try {
       assert.notEqual(cls, "api-envelope", `${verb} configures server-side delivery and cannot be an envelope`);
     }
     observations.clientApiSurface = { verbs: verbs.length, classified: classified.length, refused: refused.length };
+  });
+
+  await check("no cell asserts a concurrent operation has not settled from one sample", async () => {
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    const suites = ["implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+      "implementations/auth/smoke/issued-callout-binding.smoke.ts"];
+    let guarded = 0;
+    for (const file of suites) {
+      const source = readFileSync(join(root, file), "utf8");
+      assert.deepEqual(singleSampledHoldAssertions(source), [], `${file} samples a settling operation once`);
+      guarded += [...source.matchAll(/assert\.\w+\(\s*(?:!)?settled\b/g)].length;
+    }
+    // Without this, an empty scan and a scan of the wrong thing look identical.
+    assert.ok(guarded >= 2, `found ${guarded} hold assertions; the scan is not reading the suites`);
+    observations.holdAssertions = guarded;
   });
 
   await check("every cell and mutation the claim ledger cites still exists", async () => {

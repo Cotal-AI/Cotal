@@ -5,7 +5,9 @@
     "packages/core/smoke/prototypes/issued-accepted-row.ts",
     "packages/core/src/endpoint-subjects.ts",
     "packages/core/src/provision.ts",
-    "packages/core/smoke/prototypes/CLAIMS.md"
+    "packages/core/smoke/prototypes/CLAIMS.md",
+    "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+    "implementations/auth/smoke/issued-callout-binding.smoke.ts"
   ],
   "guard": "Every Profile and generic callout view is represented in a direction-specific census. Native controls detect broad publication in the real operator builder. These are baseline migration observations; representative variants are not all option combinations and endpoint-serve uses raw grant rows.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
@@ -172,6 +174,14 @@
       "replace": "  \"STREAM.CREATE\", \"STREAM.UPDATE\", \"CONSUMER.CREATE\",",
       "expectRed": "every API verb the client library can call is classified or refused",
       "cell": "every API verb the client library can call is classified or refused"
+    },
+    {
+      "name": "a hold cell goes back to sampling once against its writer",
+      "file": "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+      "find": "      for (let i = 0; i < 15; i++) {\n        assert.equal(await state(a.ref), \"prepared\", `activated at sample ${i} while the finalizer was blocked`);\n        assert.equal(settled, false);\n        await wait(20);\n      }",
+      "replace": "      assert.equal(await state(a.ref), \"prepared\");\n      assert.equal(settled, false);",
+      "expectRed": "no cell asserts a concurrent operation has not settled from one sample",
+      "cell": "no cell asserts a concurrent operation has not settled from one sample"
     }
   ]
 }

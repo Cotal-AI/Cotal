@@ -342,3 +342,36 @@ export function clientApiVerbs(libDir: string): string[] {
 export const DELIVERY_CONFIGURING_VERBS: readonly string[] = Object.freeze([
   "STREAM.CREATE", "STREAM.UPDATE", "CONSUMER.CREATE", "CONSUMER.DURABLE.CREATE",
 ]);
+
+/**
+ * Spans of every bounded sampling loop in a source, as [start, end) offsets.
+ *
+ * Claim 72 was a cell that asserted a concurrent operation had NOT progressed, sampled once, and
+ * therefore raced the writer it was supposed to constrain. It passed for weeks without proving
+ * the ordering it named. Two instances were found by hand. This locates the loops so a scan can
+ * require the assertions to sit inside one.
+ */
+function samplingLoopSpans(source: string): [number, number][] {
+  const spans: [number, number][] = [];
+  for (const match of source.matchAll(/for \(let \w+ = 0; \w+ < \d+;/g)) {
+    let depth = 0, i = source.indexOf("{", match.index!);
+    if (i < 0) continue;
+    for (let j = i; j < source.length; j++) {
+      if (source[j] === "{") depth++;
+      else if (source[j] === "}" && --depth === 0) { spans.push([match.index!, j]); break; }
+    }
+  }
+  return spans;
+}
+
+/**
+ * Assertions that a concurrently-settling operation has not settled, which sit outside every
+ * sampling loop. Each one is a single sample against a live writer, so each proves nothing.
+ */
+export function singleSampledHoldAssertions(source: string): string[] {
+  const spans = samplingLoopSpans(source);
+  const loose: string[] = [];
+  for (const match of source.matchAll(/assert\.\w+\(\s*(?:!)?settled\b[^\n]*/g))
+    if (!spans.some(([from, to]) => match.index! > from && match.index! < to)) loose.push(match[0].trim());
+  return loose;
+}
