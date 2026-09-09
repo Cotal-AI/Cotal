@@ -306,10 +306,15 @@ const kvJournalRel = new MemKv() as unknown as KV;
 await executeNativeLifecycle(kvJournalRel, {
   ...requestBase, providerName: "executor-journal-release", operation: "adopt", operationId: "op-adopt-journal", bindingId: "binding-journal",
 });
-const journalReleased = await executeNativeLifecycle(kvJournalRel, {
-  ...requestBase, providerName: "executor-journal-release", operation: "release", operationId: "op-rel-journal", bindingId: "binding-journal",
-  expectedBindingRevision: bindingRevision(kvJournalRel as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
-});
+let journalReleased: Awaited<ReturnType<typeof executeNativeLifecycle>> | { state: "threw"; error: unknown };
+try {
+  journalReleased = await executeNativeLifecycle(kvJournalRel, {
+    ...requestBase, providerName: "executor-journal-release", operation: "release", operationId: "op-rel-journal", bindingId: "binding-journal",
+    expectedBindingRevision: bindingRevision(kvJournalRel as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
+  });
+} catch (e) {
+  journalReleased = { state: "threw", error: e };
+}
 c("journal-receipt terminal-success release stays indeterminate", journalReleased.state === "indeterminate", journalReleased);
 const journalRelRow = await queryOperation(kvJournalRel, resource, "op-rel-journal");
 c("journal-receipt release is not stored as terminal-success", journalRelRow.state === "indeterminate" && journalRelRow.proofOrigin === undefined, journalRelRow);
@@ -389,6 +394,13 @@ c("native-effect adopt still may advance to managed",
     result: { bound: true },
     proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { bound: true }, proves: "native-effect" },
   }, "adopt") === true);
+c("native-effect cannot advance when record.action mismatches operation",
+  mayAdvanceBinding({ ...managedBinding, state: "adopt-prepared", operationId: "op-adopt" }, {
+    state: "terminal-success",
+    record: { ...coopRecord, operationId: "op-adopt", bindingId: "binding-coop", action: "release" },
+    result: { bound: true },
+    proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { bound: true }, proves: "native-effect" },
+  }, "adopt") === false);
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

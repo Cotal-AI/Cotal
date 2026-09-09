@@ -129,7 +129,7 @@ export function mayAdvanceBinding(
   if (durable.record.bindingId !== current.bindingId) return false;
   if (resourceKeyId(durable.record.resourceKey) !== resourceKeyId(current.resourceKey)) return false;
   if (durable.proofOrigin?.proves === "native-effect")
-    return operation === "adopt" || operation === "release";
+    return (operation === "adopt" || operation === "release") && durable.record.action === operation;
   if (operation !== "release" || durable.record.action !== "release") return false;
   if (durable.record.operationId !== current.operationId) return false;
   if ((durable.proofOrigin?.proves as string | undefined) !== "cooperative-retirement") return false;
