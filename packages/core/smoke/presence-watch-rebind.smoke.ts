@@ -21,7 +21,10 @@
  * with the connection up, rebind a watch from the bucket's current state, and report the
  * peers live again, without emitting a wholesale offline verdict and without a reconnect.
  *
- * Section 5 then drives the incident's own shape: the presence STREAM is deleted and recreated
+ * Sections 6 and 7 hold the return of the real kv.watch() so a rebind is mid-bind when stop() or
+ * reconnect() lands: the late bind must install nothing (an epoch fence retires it).
+ *
+ * Section 5 drives the incident's own shape: the presence STREAM is deleted and recreated
  * under the same live connection. While it is gone the rebind is refused and must be retried
  * at most once per TTL (not per sweep tick); once it is back the observer must rebind and see
  * every heartbeating peer again.
@@ -215,6 +218,95 @@ try {
     peersAfterRecreate === true, statusOf(observer));
   ok("5.6 exactly one more rebind was reported for the recreation",
     warnings.filter((w) => /rebound/.test(w)).length === warningsBefore + 1, warnings);
+
+  // --- THE RACE (rev-1421-gpt BLOCK on c67c0bb9): a bind still awaiting the broker when stop()
+  // or reconnect() lands must NOT install its watch afterwards. The probe holds the RETURN of the
+  // real kv.watch(): the consumer and its iterator exist, the endpoint has not yet seen them.
+  type Held = { release?: () => void; bound: number };
+  const holdWatch = (ep: CotalEndpoint): Held => {
+    const held: Held = { bound: 0 };
+    const kv = (ep as unknown as { kv: { watch: (...a: unknown[]) => Promise<unknown> } }).kv;
+    const real = kv.watch.bind(kv);
+    kv.watch = async (...a: unknown[]) => {
+      const it = await real(...a);
+      held.bound++;
+      await new Promise<void>((r) => { held.release = r; });
+      return it;
+    };
+    return held;
+  };
+  const iterOf = (ep: CotalEndpoint) => (ep as unknown as { presenceWatchIter?: unknown }).presenceWatchIter;
+  const mkObserver = (name: string) => {
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS,
+      channels: [], consume: false, registerPresence: true, watchPresence: true,
+      heartbeatMs: HEARTBEAT_MS, ttlMs: TTL_MS,
+      card: { name, kind: "endpoint", role: "manager" },
+    });
+    const log = { warnings: [] as string[], errors: [] as string[] };
+    ep.on("error", (e: Error) => log.errors.push(e.message));
+    ep.on("warning", (e: Error) => log.warnings.push(e.message));
+    return { ep, log };
+  };
+  // Every observer's consumer on the stream except the named survivor.
+  const killConsumersExcept = async (keep: string[]) => {
+    for (const name of await consumerNames()) if (!keep.includes(name)) await jsm.consumers.delete(stream, name);
+  };
+  const survivors = await consumerNames(); // the first observer's rebound watch
+
+  // 6. stop() during an in-flight rebind.
+  {
+    const { ep, log } = mkObserver("stopper");
+    await ep.start();
+    await until(() => live(ep).length >= PEERS + 1, 3_000);
+    const held = holdWatch(ep);
+    await killConsumersExcept(survivors);
+    const inFlight = await until(() => held.bound === 1 && held.release !== undefined, TTL_MS * 4);
+    ok("6.1 SETUP: a rebind is in flight with its watch bound at the broker and not yet returned",
+      inFlight === true, { bound: held.bound, view: ep.presenceView() });
+    await ep.stop();
+    ok("6.2 after stop() the endpoint holds no presence watch",
+      iterOf(ep) === undefined);
+    const warningsAtStop = log.warnings.filter((w) => /rebound/.test(w)).length;
+    held.release!();
+    await wait(TTL_MS);
+    ok("6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)",
+      iterOf(ep) === undefined, { iter: iterOf(ep) !== undefined });
+    ok("6.4 and reports no successful rebind after stop",
+      log.warnings.filter((w) => /rebound/.test(w)).length === warningsAtStop, log.warnings);
+    ok("6.5 and raises no error for the retired bind (its epoch is gone, not faulty)",
+      log.errors.length === 0, log.errors);
+  }
+
+  // 7. reconnect() during an in-flight rebind: the fresh epoch's watch must stand.
+  {
+    const { ep, log } = mkObserver("rebuilder");
+    await ep.start();
+    await until(() => live(ep).length >= PEERS + 1, 3_000);
+    const held = holdWatch(ep);
+    await killConsumersExcept(survivors);
+    const inFlight = await until(() => held.bound === 1 && held.release !== undefined, TTL_MS * 4);
+    ok("7.1 SETUP: a rebind is in flight with its watch bound and not yet returned",
+      inFlight === true, { bound: held.bound, view: ep.presenceView() });
+    await ep.reconnect();
+    const freshCurrent = await until(() => ep.presenceView().state === "current" && live(ep).length >= PEERS + 1, TTL_MS * 3);
+    const fresh = iterOf(ep);
+    ok("7.2 after reconnect the fresh epoch's own watch is bound and current",
+      freshCurrent === true && fresh !== undefined, { view: ep.presenceView(), roster: statusOf(ep) });
+    const reboundBefore = log.warnings.filter((w) => /rebound/.test(w)).length;
+    held.release!();
+    await wait(TTL_MS * 2);
+    ok("7.3 the old epoch's late bind does not overwrite the fresh watch",
+      iterOf(ep) === fresh);
+    ok("7.4 the view stays current across the release (no stale relapse, no second rebind)",
+      ep.presenceView().state === "current" && log.warnings.filter((w) => /rebound/.test(w)).length === reboundBefore,
+      { view: ep.presenceView(), warnings: log.warnings });
+    ok("7.5 every heartbeating peer is still live on the fresh watch",
+      live(ep).filter((p) => p.card.name.startsWith("peer")).length === PEERS, statusOf(ep));
+    ok("7.6 no error was raised for the retired bind",
+      log.errors.length === 0, log.errors);
+    await ep.stop();
+  }
 
   for (const p of peers) await p.stop();
   await observer.stop();

@@ -503,6 +503,10 @@ export class CotalEndpoint extends EventEmitter {
   private presenceViewState: PresenceView["state"] = "unpopulated";
   /** A presence-watch rebind in flight (see {@link rebindStalePresenceWatch}); one at a time. */
   private presenceRebind?: Promise<void>;
+  /** Bumped by every connection-scoped teardown and by {@link stop}. A presence bind that was
+   *  awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
+   *  iterator it got and installs nothing (see {@link startPresenceWatch}). */
+  private presenceEpoch = 0;
   /** Wall-clock of the last rebind attempt, so a bucket that is silent because it is EMPTY (or a
    *  broker that keeps refusing the consumer create) is retried once per TTL, not per sweep tick. */
   private presenceRebindAt = 0;
@@ -1148,6 +1152,8 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     this.streamMsgs.length = 0;
+    this.presenceEpoch++;
+    this.presenceRebind = undefined;
     try {
       this.presenceWatchIter?.stop();
     } catch {
@@ -1450,6 +1456,10 @@ export class CotalEndpoint extends EventEmitter {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    // Retire any presence bind still awaiting the broker before the awaits below give it a
+    // window to install a watch on this stopped endpoint.
+    this.presenceEpoch++;
+    this.presenceRebind = undefined;
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
@@ -4847,11 +4857,24 @@ export class CotalEndpoint extends EventEmitter {
     await this.kv.put(this.card.id, JSON.stringify(record));
   }
 
-  private async startPresenceWatch(): Promise<void> {
-    if (!this.kv) return;
+  /** Bind a presence watch on the current connection. Resolves true when the watch was
+   *  installed, false when the endpoint stopped or rebuilt while the bind was in flight: that
+   *  bind's iterator is released here and nothing is installed, because the epoch that asked
+   *  for it is gone and the epoch that replaced it binds its own watch through
+   *  {@link connectAndBind}. Without this fence a bind that completes after {@link stop} would
+   *  resurrect a watch on a stopped endpoint, and one that completes after a rebuild would
+   *  overwrite the fresh epoch's watch with a dead-connection iterator. */
+  private async startPresenceWatch(): Promise<boolean> {
+    if (!this.kv) return false;
+    const epoch = this.presenceEpoch;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
+    if (epoch !== this.presenceEpoch) {
+      try { iter.stop(); } catch { /* its connection may already be gone */ }
+      hydrated();
+      return false;
+    }
     this.presenceWatchIter = iter;
     void (async () => {
       let ready = false;
@@ -4870,6 +4893,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
+    return true;
   }
 
   /**
@@ -4878,13 +4902,17 @@ export class CotalEndpoint extends EventEmitter {
    * heartbeating is re-observed within one replay and a peer that is gone is aged out by the
    * next sweep exactly as if the watch had never stalled. Rate-limited to one attempt per TTL
    * per observer, never overlapping, never on a stopped or rebuilding endpoint (those own their
-   * watch through {@link connectAndBind}). A failed bind is reported and the view stays stale.
+   * watch through {@link connectAndBind}). A stop or rebuild that lands while the bind is in
+   * flight retires it: {@link startPresenceWatch} releases the late iterator and reports
+   * nothing, since the epoch that was silent no longer exists. A failed bind is reported and
+   * the view stays stale.
    */
   private rebindStalePresenceWatch(now: number): void {
     if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
     if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;
     this.presenceRebindAt = now;
     const old = this.presenceWatchIter;
+    const epoch = this.presenceEpoch;
     this.presenceRebind = (async () => {
       try {
         const silentMs = now - this.lastPresenceWatchAt;
@@ -4892,7 +4920,11 @@ export class CotalEndpoint extends EventEmitter {
         // one a held link never answers must leave the old watch in place: on a plain stall that
         // watch is the one that recovers by itself, and its replay is still guarded against
         // expired PUTs. Only a successfully bound watch retires its predecessor.
-        await this.startPresenceWatch();
+        const installed = await this.startPresenceWatch();
+        // Retired mid-bind (stop or rebuild moved the epoch): the late iterator is already
+        // released and the old watch was torn down by whoever moved the epoch. Nothing to
+        // retire, nothing to report.
+        if (!installed) return;
         if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
         // A bucket with no keys replays nothing, so the new watch cannot refresh
         // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present, and the
@@ -4905,9 +4937,13 @@ export class CotalEndpoint extends EventEmitter {
           `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
         ));
       } catch (e) {
-        this.emit("error", e as Error);
+        // A bind the epoch swap itself rejected (connection drained under it) is not a fault of
+        // the epoch that replaced it; only a refusal on a still-current epoch is reported.
+        if (epoch === this.presenceEpoch) this.emit("error", e as Error);
       } finally {
-        this.presenceRebind = undefined;
+        // An epoch swap already disowned this flight (and may own a successor's by now); only
+        // a flight still in its own epoch clears the slot. Within one epoch there is one flight.
+        if (epoch === this.presenceEpoch) this.presenceRebind = undefined;
       }
     })();
   }
