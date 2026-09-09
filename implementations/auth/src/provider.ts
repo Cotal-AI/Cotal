@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type NativeLifecycleBindingLookup, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { parseBinding, registry, sessionBindingKey, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type NativeLifecycleBindingLookup, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, getSpaceAuth, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -261,10 +261,23 @@ export const cotalAuthProvider: AuthProvider = {
       const body = await res.json().catch(() => ({}));
       if (!res.ok)
         return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}` };
-      const out = body as NativeLifecycleBindingLookup;
-      if (out?.status !== "known" && out?.status !== "unknown")
-        return { status: "unknown", bindings: [], reason: "trusted native lifecycle lookup returned an invalid status" };
-      return out;
+      const out = body as Partial<NativeLifecycleBindingLookup>;
+      if (out.status === "unknown") {
+        if (!Array.isArray(out.bindings) || out.bindings.length !== 0 || typeof out.reason !== "string" || !out.reason)
+          return { status: "unknown", bindings: [], reason: "trusted native lifecycle lookup returned a malformed unknown result" };
+        return { status: "unknown", bindings: [], reason: out.reason };
+      }
+      if (out.status !== "known" || !Array.isArray(out.bindings))
+        return { status: "unknown", bindings: [], reason: "trusted native lifecycle lookup returned an invalid status or bindings list" };
+      try {
+        const bindings = out.bindings.map((binding) => parseBinding(
+          new TextEncoder().encode(JSON.stringify(binding)),
+          sessionBindingKey((binding as { resourceKey: Parameters<typeof sessionBindingKey>[0] }).resourceKey),
+        ));
+        return { status: "known", bindings: Object.freeze(bindings) };
+      } catch (e) {
+        return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup returned a malformed binding: ${e instanceof Error ? e.message : String(e)}` };
+      }
     } catch (e) {
       return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup did not answer: ${e instanceof Error ? e.message : String(e)}` };
     }
