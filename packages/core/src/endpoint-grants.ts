@@ -15,7 +15,7 @@ import {
   endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpTarget,
   epCallerReplyFilter, epResponderReplyPattern, epResponderIssuedReplyPattern, epClassQueueGroup,
-  epPlaneTokens, callerRailTokens, EP_RAIL_V1,
+  epPlaneTokens, callerRailTokens, callerTokens, EP_RAIL_V1,
 } from "./endpoint-subjects.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
@@ -61,6 +61,16 @@ function callerBlock(caller: EpCaller): string {
   return callerRailTokens(caller).join(".");
 }
 
+/** The caller's block on the planes that are NOT versioned: `epj` submissions and `epe` goal
+ *  progress carry the triple alone (§13.2 subject table), whatever rail the caller requests on.
+ *  A row minted with the generation here would name a subject nothing publishes: the endpoint
+ *  emits progress under the goal's caller triple, and the client submits journal work the same
+ *  way, so an issued caller would hold a journal row it cannot use and never hear its own
+ *  goal's terminal. */
+function callerTriple(caller: EpCaller): string {
+  return callerTokens(caller).join(".");
+}
+
 /** The `ep` plane prefix of a caller's request rows: `ep.v1` for an issued caller, `ep` for a
  *  legacy one. A legacy credential therefore holds NO row on the versioned rail, and an issued
  *  credential holds NO row on the legacy one: the two rails are disjoint at the broker. */
@@ -86,7 +96,7 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
  *  block as the request forms, caller-pinned, no nonce. Explicitly untrusted input (§13.4). */
 export function epJournalGrantRow(space: string, cap: EpCapability, caller: EpCaller): string {
   const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
-  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerBlock(caller)}`;
+  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerTriple(caller)}`;
 }
 
 /** The caller's reply-rail read row (§13.9 "Reply subscribe"): its own rail only, exact arity. */
@@ -98,7 +108,7 @@ export function epCallerReplyGrantRow(space: string, caller: EpCaller): string {
  *  `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>` — the caller identity in the subject gives
  *  mint-time read containment; delivered on the caller's own core subscription only. */
 export function epGoalProgressGrantRow(space: string, endpoint: string, caller: EpCaller): string {
-  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerBlock(caller)}.>`;
+  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTriple(caller)}.>`;
 }
 
 /** All caller-side rows for a capability set: request-publish (+ optional journal) into

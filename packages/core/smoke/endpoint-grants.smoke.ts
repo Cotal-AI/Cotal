@@ -65,6 +65,22 @@ c("caller bundle: request + journal pub, reply-rail + own-goal-progress sub (spa
   && bundle.sub[1] === epGoalProgressGrantRow("demo", "manager", caller));
 c("empty capability set mints nothing", JSON.stringify(epCallerGrantRows("demo", [], caller)) === '{"pub":[],"sub":[]}');
 
+// ── an ISSUED caller (SPEC 13.15): the generation rides the request and reply rails and NOTHING else ──
+// The endpoint publishes a goal's progress under the goal's caller TRIPLE and a client submits journal
+// work under the same triple; a generation minted into those rows names subjects nothing emits, so
+// an issued caller would hold a journal row it cannot use and never hear its own goal's terminal.
+const GEN = "a".repeat(32);
+const issued: EpCaller = { ...caller, generation: GEN } as EpCaller;
+c("issued request row rides ep.v1 with the generation before the nonce",
+  epRequestGrantRows("demo", spawnCap, issued).join("|")
+  === `cotal.demo.ep.v1.one.manager.spawn.owner.u_abc.u_abc.cli.${UID}.${GEN}.*`);
+c("issued reply-rail read row carries the generation",
+  epCallerReplyGrantRow("demo", issued) === `cotal.demo.ep.v1.reply.*.*.*.u_abc.cli.${UID}.${GEN}.*`);
+c("issued journal row is the plain triple: the same subject a legacy caller submits on",
+  epJournalGrantRow("demo", spawnCap, issued) === epJournalGrantRow("demo", spawnCap, caller));
+c("issued per-goal progress row is the plain triple: the subject the endpoint publishes progress on",
+  epGoalProgressGrantRow("demo", "manager", issued) === epGoalProgressGrantRow("demo", "manager", caller));
+
 // ── the Appendix-B baseline set ──
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
