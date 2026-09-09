@@ -218,6 +218,13 @@ export const cotalAuthProvider: AuthProvider = {
   },
 
   async nativeLifecycleBindings({ store, dir, space, server, managerPrincipal }): Promise<NativeLifecycleBindingLookup> {
+    const entry = findMesh(space);
+    if (entry?.mode === "user" && entry.userAuth.remote === true)
+      return {
+        status: "unknown",
+        bindings: [],
+        reason: `trusted native lifecycle lookup for remote space ${JSON.stringify(space)} has no pinned closed query endpoint; remote management shutdown remains blocked`,
+      };
     const info = loadAuthServiceInfo(dir);
     if (!info || !pidAlive(info.pid)) {
       // A pinned IdP means this is a user-auth composition. Its resident authority plane owns the
