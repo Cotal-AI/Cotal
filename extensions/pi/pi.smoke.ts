@@ -646,6 +646,11 @@ for (const assistant of [
     ok(env.UNRELATED_SECRET === undefined, "an unrelated operator variable is withheld");
     ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "ambient per-session COTAL_* is withheld");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
+    const managementFence = { resourceId: "resource-pi-smoke", bindingId: "binding-pi-smoke", controllerEpoch: 3 };
+    const managed = piConnector.buildLaunch({ space: "test", name: "pi-managed", managementControl: managementFence });
+    const managedMaterial = readLaunchMaterial(managed.env?.[LAUNCH_MATERIAL_ENV]);
+    ok(managedMaterial.managementControl?.bindingId === managementFence.bindingId && managedMaterial.managementControl.controllerEpoch === managementFence.controllerEpoch, "management verifier reaches Pi with its exact fence");
+    ok(managedMaterial.managementControl?.tokenDigest !== managed.control?.management?.token, "Pi child receives a verifier, not the raw management bearer");
     const freshSessionAt = launch.args.indexOf("--session-id");
     ok(
       freshSessionAt >= 0 && /^[0-9a-f-]{36}$/.test(launch.args[freshSessionAt + 1] ?? "") &&

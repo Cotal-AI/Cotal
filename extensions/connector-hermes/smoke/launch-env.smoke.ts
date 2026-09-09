@@ -75,6 +75,11 @@ for (const k of PER_SESSION)
 assert.notEqual(env.COTAL_LAUNCH_MATERIAL, "parent-COTAL_LAUNCH_MATERIAL", "Hermes replaces ambient launch material with a fresh private carrier");
 assert.notEqual(env.COTAL_CONTROL_SOCKET, "parent-COTAL_CONTROL_SOCKET", "Hermes replaces the ambient control socket with this launch's endpoint");
 assert.equal(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).controlToken, launch.control?.token, "Hermes fresh launch material carries the exact hook control token retained by the manager");
+const managementFence = { resourceId: "resource-hermes-smoke", bindingId: "binding-hermes-smoke", controllerEpoch: 3 };
+const managed = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-managed", managementControl: managementFence });
+const managedMaterial = readLaunchMaterial(managed.env?.COTAL_LAUNCH_MATERIAL!);
+assert.equal(managedMaterial.managementControl?.bindingId, managementFence.bindingId, "Hermes management verifier carries the exact binding ID");
+assert.notEqual(managedMaterial.managementControl?.tokenDigest, managed.control?.management?.token, "Hermes child receives a verifier, not the raw management bearer");
 
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
