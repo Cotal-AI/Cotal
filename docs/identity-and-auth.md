@@ -90,14 +90,16 @@ host that acts on a caller's behalf (a workflow run, [workflows](workflows.md)) 
 the issuer, not from a ledger that may have changed since. So a static agent credential is an
 **issuance** ([SPEC §13.15](../SPEC.md#1315-issued-authority)): before the material is handed
 out, the issuer records the credential's final permission ceiling, as evidence keyed by a fresh
-**generation**, in `cotal_issued_<space>`. The credential's endpoint rows then ride a versioned
+**generation**, in `cotal_issued_<space>`. That store is append-only at the broker and the
+evidence is read as the first message on its key, so nothing written later on the same key, by
+anyone, changes what a resolver sees. The credential's endpoint rows then ride a versioned
 rail, `cotal.<space>.ep.v1.…`, with that generation pinned beside the caller triple, so the
 broker binds every request to the ceiling the issuer accepted. The legacy `ep.` rail and the
 `ep.v1.` rail are disjoint subject spaces; a credential holds rows on one of them, and every
 endpoint serves both.
 
 A connected client learns its generation by reading one row in `cotal_accepted_<space>` under a
-token it chose at mint time, through a per-key read grant its own ceiling carries. It never trusts
+token the launching party chose at mint time, through a per-key read grant its own ceiling carries. It never trusts
 what the file says. A renewal keeps the generation only while the ceiling is byte-identical to the
 evidence; a changed scope is a fresh issuance on a fresh generation, adopted by a new connection.
 A static agent's evidence names its credential ledger family as the source it depends on, and the

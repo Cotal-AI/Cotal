@@ -24,6 +24,9 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { assertIdToken, endpointToken, type EpCaller } from "./endpoint-subjects.js";
 import { isCasLoss } from "./endpoint-records.js";
 import {
+  AUTHORITY_STORE_IMMUTABLE_FLAGS,
+  WRITE_ONCE_PER_KEY,
+  assertStoreShape,
   issuedPermitsPattern,
   issuedPermitsSubject,
   readIssuedSubjectPermissions,
@@ -237,9 +240,23 @@ export function assertNotRevoked(view: RunAdmissionView): void {
 export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
   const bucket = admissionBucket(space);
   const stream = `KV_${bucket}`;
-  if (await jsm.streams.info(stream).catch(() => undefined) === undefined) await kvm.create(bucket, { allow_direct: false });
+  // WRITE-ONCE PER KEY, AT THE BROKER. Both rows are create-only and the marker is permanent
+  // (SPEC 14.8), and the create-only CAS enforces neither on its own: the `run-admitter` holds a
+  // `$KV.<bucket>.<key>` publish row, and that row carries a plain replacement of the value, a
+  // `Nats-Rollup` header (which replaces the row, or with `all` empties the bucket), a deletion
+  // marker, and a per-key purge. None of them is a CAS write, so none loses the CAS, and a
+  // replacement leaves no marker for the deletion-marker read to catch. The three immutability
+  // flags close rollup, message delete and purge; write-once closes the rest, so the admission a
+  // host reads is the one that was admitted, and each run and each marker still gets its one write.
+  const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY };
+  if (await jsm.streams.info(stream).catch(() => undefined) === undefined) {
+    await kvm.create(bucket, { allow_direct: false });
+    const created = (await jsm.streams.info(stream)).config;
+    await jsm.streams.update(stream, { ...created, ...shape });
+  }
   const cfg = (await jsm.streams.info(stream)).config;
   if (cfg.allow_direct !== false || cfg.storage !== "file" || (cfg.max_age ?? 0) !== 0 || (cfg.max_msgs ?? -1) > 0 || (cfg.max_bytes ?? -1) > 0
     || !Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== `$KV.${bucket}.>`)
-    throw new Error(`the run admission store ${bucket} has a drifted shape; an authority store is never silently adopted - reprovision it (SPEC 14.8)`);
+    throw new Error(`the run admission store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}); an authority store is never silently adopted - reprovision it (SPEC 14.8)`);
+  assertStoreShape(cfg as unknown as Record<string, unknown>, shape, bucket, "SPEC 14.8");
 }

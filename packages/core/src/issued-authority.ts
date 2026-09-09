@@ -27,7 +27,7 @@
  * mediated reads stay the remedy.
  */
 import { randomBytes } from "node:crypto";
-import type { JetStreamManager } from "@nats-io/jetstream";
+import { DiscardPolicy, type JetStreamManager, type MsgRequest } from "@nats-io/jetstream";
 import type { KV, Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
@@ -337,6 +337,23 @@ export interface IssuanceSeam {
   readonly finalize?: (credentialId: string) => Promise<void>;
 }
 
+/** The broker-enforced part of every authority store's immutability (SPEC 13.12): no rollup
+ *  header, no message delete, no purge. The records store carries the same three. */
+export const AUTHORITY_STORE_IMMUTABLE_FLAGS = Object.freeze({ allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });
+/** Write-once per key: one message per subject and `discard: new` applied per subject, so the
+ *  broker refuses the SECOND message on a key whatever it carries. Other keys are unaffected. */
+export const WRITE_ONCE_PER_KEY = Object.freeze({ max_msgs_per_subject: 1, discard: DiscardPolicy.New, discard_new_per_subject: true });
+/** Append-only per key: unlimited per-key history, nothing ever removed. A reader that wants the
+ *  row that was created reads the FIRST message on its key. */
+export const APPEND_ONLY_PER_KEY = Object.freeze({ max_msgs_per_subject: -1 });
+
+/** Every field of `shape` must read back from the broker as set; the mismatches are named. */
+export function assertStoreShape(cfg: Record<string, unknown>, shape: Record<string, unknown>, bucket: string, spec: string): void {
+  const drifted = Object.entries(shape).filter(([k, v]) => cfg[k] !== v).map(([k]) => `${k}=${String(cfg[k])}`);
+  if (drifted.length > 0)
+    throw new Error(`the authority store ${bucket} has a drifted shape (${drifted.join(", ")}); an authority store is never silently adopted - reprovision it (${spec})`);
+}
+
 /** The two issued-authority streams, for the provisioner's create-or-verify inventory. */
 export function issuedStoreStreamNames(space: string): string[] {
   return [`KV_${issuedBucket(space)}`, `KV_${acceptedBucket(space)}`];
@@ -357,10 +374,18 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
   };
   // LEADER-SERVED point read. `kv.get` on an `allow_direct=false` bucket already rides
   // STREAM.MSG.GET, but the fence is stated here rather than inherited from a client default.
-  async function read(key: string): Promise<{ value: unknown; revision: number } | undefined> {
+  // `first` reads the FIRST message on the key: the store keeps unlimited per-key history and
+  // removes nothing (see ensureIssuedStores), so the first message on an immutable row's key is
+  // the row that was created, whatever was published on that key since. The attempt row reads
+  // last, because it advances by CAS at the revision the last read observed.
+  async function read(key: string, at: "first" | "last" = "last"): Promise<{ value: unknown; revision: number } | undefined> {
     let m;
     try {
-      m = await jsm.streams.getMessage(stream, { last_by_subj: `$KV.${bucket}.${key}` });
+      const subject = `$KV.${bucket}.${key}`;
+      // `next_by_subj` is the wire's first-on-or-after-sequence read (STREAM.MSG.GET, no `seq`
+      // means from the start); the client's request union omits it, the implementation forwards it.
+      const query = (at === "first" ? { next_by_subj: subject } : { last_by_subj: subject }) as MsgRequest;
+      m = await jsm.streams.getMessage(stream, query);
     } catch (e) {
       if ((e as { code?: unknown }).code === 10037) return undefined;
       throw e;
@@ -372,7 +397,7 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
   }
   async function readEvidence(ref: IssuedAuthorityRef): Promise<{ evidence: IssuedEvidence; digest: string }> {
     const key = own(ref);
-    const entry = await read(key);
+    const entry = await read(key, "first");
     if (entry === undefined) throw new EpEnvelopeError("permission-denied", `no issued evidence for generation ${ref.generation}; an unrecorded generation authorizes nothing (SPEC 13.15)`);
     const evidence = evidenceSnapshot(entry.value as IssuedEvidence);
     if (canonicalJson(evidence.ref) !== canonicalJson(refSnapshot(ref)))
@@ -408,7 +433,7 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
       const evidence = evidenceSnapshot(input);
       const key = own(evidence.ref);
       // A fresh generation only: an explicit read refuses first, the create-only CAS is the second line.
-      if (await read(key) !== undefined) throw new EpEnvelopeError("conflict", `generation ${evidence.ref.generation} already has issued evidence; a generation is never reused (SPEC 13.15)`);
+      if (await read(key, "first") !== undefined) throw new EpEnvelopeError("conflict", `generation ${evidence.ref.generation} already has issued evidence; a generation is never reused (SPEC 13.15)`);
       const digest = rawDigest(canonicalJson(evidence));
       await kv.create(key, bytes(evidence));
       const revision = await kv.create(issuedAttemptKey(evidence.ref), bytes({ version: 1, state: "prepared", digest }));
@@ -465,7 +490,7 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
       let count = 0;
       const keys = await kv.keys(`${issuedSourcePrefix(s)}>`);
       for await (const key of keys) {
-        const entry = await read(key);
+        const entry = await read(key, "first");
         if (entry === undefined) continue;
         const index = closed(entry.value, ["source", "ref"], "issued source index");
         const ref = refSnapshot(index.ref as IssuedAuthorityRef);
@@ -485,13 +510,33 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
 /** Create-or-verify the two issued-authority stores. Evidence: `allow_direct=false`, file,
  *  no eviction. Accepted: `allow_direct=true`, file, no eviction. A drifted store fails loud. */
 export async function ensureIssuedStores(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
+  // IMMUTABLE AT THE BROKER, not by CAS discipline alone. The `issuer` holds a bucket-wide publish
+  // row on the evidence store, and that row carries a plain replacement of a row, a `Nats-Rollup`
+  // header, a deletion marker and a per-key purge; none is a CAS write, so the create-only CAS
+  // and the deletion-marker read see none of them. The three immutability flags close rollup,
+  // message delete and purge on both stores. What closes plain replacement differs by store:
+  //
+  // - the ACCEPTED store is write-once per key: a row is written once at release and never
+  //   advanced, so the broker refuses any second message on its key, and the client's
+  //   `DIRECT.GET` still serves the one row there is;
+  // - the EVIDENCE store is append-only: the attempt row advances by CAS (`prepared` to `active`
+  //   to a terminal state), so a one-message cap is not an option there. Instead nothing on a key
+  //   is ever removed, and every immutable row (the evidence, the source index) is read as the
+  //   FIRST message on its key, so a later write on the same key is inert to every reader. The
+  //   attempt row is read last-by-key, as its CAS requires.
   for (const [bucket, direct] of [[issuedBucket(space), false], [acceptedBucket(space), true]] as const) {
     const stream = `KV_${bucket}`;
-    if (await jsm.streams.info(stream).catch(() => undefined) === undefined) await kvm.create(bucket, { allow_direct: direct });
+    const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? WRITE_ONCE_PER_KEY : APPEND_ONLY_PER_KEY) };
+    if (await jsm.streams.info(stream).catch(() => undefined) === undefined) {
+      await kvm.create(bucket, { allow_direct: direct });
+      const created = (await jsm.streams.info(stream)).config;
+      await jsm.streams.update(stream, { ...created, ...shape });
+    }
     const cfg = (await jsm.streams.info(stream)).config;
     if (cfg.allow_direct !== direct || cfg.storage !== "file" || (cfg.max_age ?? 0) !== 0 || (cfg.max_msgs ?? -1) > 0 || (cfg.max_bytes ?? -1) > 0
       || !Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== `$KV.${bucket}.>`)
-      throw new Error(`the issued-authority store ${bucket} has a drifted shape; an authority store is never silently adopted - reprovision it (SPEC 13.15)`);
+      throw new Error(`the issued-authority store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}); an authority store is never silently adopted - reprovision it (SPEC 13.15)`);
+    assertStoreShape(cfg as unknown as Record<string, unknown>, shape, bucket, "SPEC 13.15");
   }
 }
 

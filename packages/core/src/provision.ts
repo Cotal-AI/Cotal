@@ -79,7 +79,7 @@ import {
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedStoreStreamNames, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
@@ -2098,6 +2098,12 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         // then reads each slot BODY (phase/uid/actor) to plan resume — the reads ride the
         // stream-scoped MSG.GET residual named below (records lifecycle metadata, no secrets).
         `$JS.API.STREAM.UPDATE.KV_${recordsBucket(space)}`,
+        // The issued, accepted and admission stores (SPEC 13.15, 14.8) take the same one-time
+        // hardening UPDATE at fresh creation, for the same reason: their rows are create-only and
+        // their markers permanent, and a rollup header on a holder's own key row would replace
+        // them as a value write. Same create, update, verify discipline, same three flags.
+        ...issuedStoreStreamNames(space).map((s) => `$JS.API.STREAM.UPDATE.${s}`),
+        `$JS.API.STREAM.UPDATE.KV_${admissionBucket(space)}`,
         `$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.>`,
         `$JS.API.CONSUMER.INFO.KV_${recordsBucket(space)}.>`,
         `$JS.API.CONSUMER.DELETE.KV_${recordsBucket(space)}.>`,

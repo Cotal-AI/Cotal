@@ -1,0 +1,62 @@
+{
+  "suite": [
+    "packages/core/smoke/endpoint-binding.smoke.ts"
+  ],
+  "guard": "The three caller-authority stores are immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup, message delete and purge. A key holder's own publish row cannot replace, widen, erase or empty what was recorded.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+  "completionMarker": "ENDPOINT BINDING SMOKE",
+  "progressPattern": "  ✓ ",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/authority-store-immutability.json",
+  "why": [
+    "A run-admitter holds `$KV.cotal_admission_<s>.<its key>` and an issuer holds `$KV.cotal_issued_<s>.>`. A",
+    "publish row carries a Nats-Rollup header, a plain replacement, a deletion marker and a per-key purge,",
+    "and none of them is a CAS write, so the create-only CAS and the deletion-marker read see none of them.",
+    "Measured on a store built by the real provisioning path: `Nats-Rollup: sub` on the admitter's own key",
+    "replaced a `none` ceiling with `all` and dropped the revocation marker; `Nats-Rollup: all` on that one key",
+    "purged the other run's row. Each mutation removes one part of the shape; the suite reads the shape back",
+    "from the broker and exercises every route live, so the cell named is the one the broker stops refusing.",
+    "The ep-binding suite reads core through the binary's dist, so every mutation rebuilds core first."
+  ],
+  "mutations": [
+    {
+      "name": "the admission store keeps the three immutability flags but loses write-once (a plain second write lands)",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY };",
+      "replace": "  const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS };",
+      "expectRed": "a plain second write onto an admission key is refused by the broker (write-once per key)",
+      "cell": "a plain second write onto an admission key is refused by the broker (write-once per key)",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the immutability flags are dropped from every authority store (rollup lands again)",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "export const AUTHORITY_STORE_IMMUTABLE_FLAGS = Object.freeze({ allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });",
+      "replace": "export const AUTHORITY_STORE_IMMUTABLE_FLAGS = Object.freeze({});",
+      "expectRed": "a `Nats-Rollup: sub` publish onto an admission key is refused by the broker",
+      "cell": "a `Nats-Rollup: sub` publish onto an admission key is refused by the broker",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the evidence reader takes the LAST message on the key (a shadow write is what resolves)",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "    const entry = await read(key, \"first\");\n    if (entry === undefined) throw new EpEnvelopeError(\"permission-denied\", `no issued evidence",
+      "replace": "    const entry = await read(key);\n    if (entry === undefined) throw new EpEnvelopeError(\"permission-denied\", `no issued evidence",
+      "expectRed": "and the resolver still returns the evidence that was CREATED, not the shadow: the first message on the key is the row (SPEC 13.15)",
+      "cell": "and the resolver still returns the evidence that was CREATED, not the shadow: the first message on the key is the row (SPEC 13.15)",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the accepted store is built without write-once (verify is what reddens: a drifted shape is never adopted)",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "    const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? WRITE_ONCE_PER_KEY : APPEND_ONLY_PER_KEY) };",
+      "replace": "    const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? {} : APPEND_ONLY_PER_KEY) };",
+      "expectRed": "the accepted store is write-once per key at the broker (SPEC 13.15)",
+      "cell": "the accepted store is write-once per key at the broker (SPEC 13.15)",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

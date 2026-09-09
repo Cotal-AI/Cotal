@@ -173,6 +173,7 @@ before its next channel effect, so an open `wait` refuses at its next poll, and 
 takeover or manager restart continues the run. Revoking twice is not an error, and the first
 reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
+
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
 `journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
@@ -191,8 +192,8 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | a checkpoint answer | `answer.<endpoint>.<token>.<answerId>` | the payload beside the one-use settle fact; the settle names the answer it accepted |
 | a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |
 | a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
-| the admission | `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>` | the caller the run was admitted for, its channel ceiling and its provenance; written once before the driver starts, never rewritten |
-| a revocation | `revoked.v1.<endpoint>.<runId>` in the same store | who revoked the run and why; create-only, idempotent, read by every host before its next channel effect |
+| the admission | `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>` | the caller the run was admitted for, its channel ceiling and its provenance; written once before the driver starts, and the store refuses a second write on the key |
+| a revocation | `revoked.v1.<endpoint>.<runId>` in the same store | who revoked the run and why; create-only, idempotent, permanent at the broker, read by every host before its next channel effect |
 
 A run's **driver** connects on a `run-driver` credential minted for one run and takeover
 attempt. It can append to its journal, use its replay durable, and write its own `run`, `program`,

@@ -165,6 +165,14 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "a run with no admission record is refused at its first channel effect, never served under the host's scope",
       "cell": "a run with no admission record is refused at its first channel effect, never served under the host's scope"
+    },
+    {
+      "name": "hosted conclave publish is checked against the run-driver principal instead of the admitted caller",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      assertAdmittedPublish(view, plan.channel, view.admission.caller);",
+      "replace": "      assertAdmittedPublish(view, plan.channel, this.binding.caller);",
+      "expectRed": "a conclave on a channel the admitted caller may publish to is admitted under THAT caller's triple, not the run-driver's",
+      "cell": "a conclave on a channel the admitted caller may publish to is admitted under THAT caller's triple, not the run-driver's"
     }
   ]
 }

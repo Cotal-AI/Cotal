@@ -140,11 +140,11 @@ const withAdmitter = async <T>(runId: string, fn: (kv: import("@nats-io/kv").KV)
   const nc = await open(await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId } }));
   try { return await fn(await new Kvm(nc).open(admissionBucket(S))); } finally { await nc.drain(); }
 };
-const admit = async (runId: string, ceiling: IssuedSubjectPermissions = suiteCeiling(runId)): Promise<void> => {
+const admit = async (runId: string, ceiling: IssuedSubjectPermissions = suiteCeiling(runId), caller = runDriverCaller(runId)): Promise<void> => {
   if (admitted.has(runId)) return;
   admitted.add(runId);
   const admission: RunAdmission = {
-    version: 1, space: S, endpoint: EP, runId, instanceId: IID, caller: runDriverCaller(runId), ceiling,
+    version: 1, space: S, endpoint: EP, runId, instanceId: IID, caller, ceiling,
     provenance: { kind: "operator", by: "run-driver-auth.smoke", reason: "suite admission" },
     admittedAt: Date.now(),
   };
@@ -595,6 +595,50 @@ const A = await driver(RUN_A, TK_A);
   const after = await channels.get(foreign);
   c("a forged conclave plan leaves the existing channel unchanged",
     after?.operation === "PUT" && Buffer.from(after.value).equals(Buffer.from(value)), after?.operation);
+}
+
+// The ceiling a hosted run is admitted under is the STARTING CALLER's: an agent credential's
+// publish rows name the agent's own triple (`chat.<owner>.<agent>.<channel>`), and the manager
+// admits the run with that caller and that ceiling verbatim. The handler runs as the run-driver
+// principal, which holds no chat row at all, so a conclave check against the driver's triple
+// would deny every room the caller may in fact hold. The suite's other admissions are driver-
+// shaped, which is why this hole was invisible to them: this one is agent-shaped.
+{
+  const runId = "run-conclave-caller";
+  const takeover = newTakeoverId();
+  const agent = { owner: DEV_OWNER, actor: "ALICEAGENT12", uid: "a".repeat(26) };
+  const room = "triage";
+  await admit(runId, {
+    publish: { allow: { mode: "patterns", patterns: [chatSubject(S, agent.owner, agent.actor, room)] }, deny: [] },
+    subscribe: { allow: { mode: "patterns", patterns: [chatSubject(S, "*", "*", room)] }, deny: [] },
+  }, agent);
+  const H = await driver(runId, takeover);
+  const out = await startRun(H.js, H.jsm, {
+    space: S, endpoint: EP, runId,
+    source: `const r = await conclave([], async (ch) => ch.channel, { name: "room", channel: ${JSON.stringify(room)} }); log("room", r);`,
+    kv: H.kv, lease: lease(takeover, 1), handler: H.handler,
+  }).then((o) => ({ out: o }), (error: Error) => ({ error: error.message }));
+  c("a conclave on a channel the admitted caller may publish to is admitted under THAT caller's triple, not the run-driver's",
+    "out" in out && out.out.status === "completed", "out" in out ? out.out.status : out.error);
+  const elsewhere = "run-conclave-elsewhere";
+  const takeover2 = newTakeoverId();
+  await admit(elsewhere, {
+    publish: { allow: { mode: "patterns", patterns: [chatSubject(S, agent.owner, agent.actor, room)] }, deny: [] },
+    subscribe: { allow: { mode: "patterns", patterns: [chatSubject(S, "*", "*", room)] }, deny: [] },
+  }, agent);
+  const H2 = await driver(elsewhere, takeover2);
+  const openConclave = H2.handler.openConclave;
+  let why = "";
+  H2.handler.openConclave = async (req, ctx) => {
+    try { return await openConclave(req, ctx); }
+    catch (error) { why = (error as Error).message; throw error; }
+  };
+  await startRun(H2.js, H2.jsm, {
+    space: S, endpoint: EP, runId: elsewhere,
+    source: 'try { await conclave([], async (ch) => ch.channel, { name: "room", channel: "war-room" }); } catch (e) { log("refused", true); }',
+    kv: H2.kv, lease: lease(takeover2, 1), handler: H2.handler,
+  });
+  c("and a room outside the admitted caller's publish ceiling is still refused for that same caller", why.includes("not admitted to publish to"), why);
 }
 
 // Cross-run controls use resources created through run B's own connection.

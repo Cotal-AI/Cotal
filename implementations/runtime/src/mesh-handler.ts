@@ -1840,8 +1840,12 @@ export class MeshHandler {
       // the run performs as its own principal, so the admitted ceiling must cover the channel in
       // BOTH directions. A program-named room the run merely borrows is held to the same rule: a
       // conclave is a channel effect whichever way the name was chosen.
+      // The publish row an agent's credential carries names the AGENT's triple, so the ceiling
+      // is checked under the caller the run was admitted for, never under the run-driver principal
+      // this handler runs as: that principal holds no chat row and would deny every conclave the
+      // starting caller may in fact hold.
       const view = await this.services.admission();
-      assertAdmittedPublish(view, plan.channel, this.binding.caller);
+      assertAdmittedPublish(view, plan.channel, view.admission.caller);
       assertAdmittedSubscribe(view, plan.channel);
     }
     if (plan.registered) {
