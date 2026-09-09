@@ -508,9 +508,12 @@ export async function runJcodeHost(): Promise<void> {
   const drive = async (): Promise<void> => {
     if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
     driving = true;
+    if (pendingKickoff !== undefined && steering)
+      writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
     await steerSettled;
     if (stopping || reconnecting || turnActive || !client || !sessionId) {
       driving = false;
+      writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");
       return;
     }
     if (surfacedIds.length) {
@@ -518,7 +521,9 @@ export async function runJcodeHost(): Promise<void> {
       surfacedIds = [];
       agent.drainInboxDeliveries(committed);
     }
-    wakeQueued = false;
+    // Kickoff excludes the automatic inbox. Preserve that deferred work even when ordinary
+    // dnd traffic contributes nothing to pendingWake(). Pull-only traffic stays excluded.
+    wakeQueued = pendingKickoff !== undefined && agent.peekInbox("automatic").length > 0;
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];

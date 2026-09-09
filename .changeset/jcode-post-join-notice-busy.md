@@ -21,6 +21,12 @@ retry. The SDK resolves its acceptance wait on acknowledgement, timeout, and clo
 model execution after an ambiguous dispatch cannot be established locally; stronger guarantees
 require protocol deduplication or confirmation by effect.
 
+Preserve the deferred automatic-inbox wake across the kickoff, so ordinary `dnd` traffic buffered
+before startup reaches the following turn without another message. Quiet traffic stays pull-only.
+Recovery tests now hold a steering acknowledgement across a native state change, exercise an error
+followed by a connection close, and report a missing kickoff through its named assertion.
+
+
 Also repairs two shared jcode smoke guards that were latently broken and are only selected once
 a change touches this suite:
 

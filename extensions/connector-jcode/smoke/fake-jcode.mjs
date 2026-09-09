@@ -106,6 +106,7 @@ let attachedExisting;
 let createdFresh = false;
 let sessionWorkingDir;
 let orientationTurns = 0;
+let heldSteer = false;
 // Busy model, opt-in via FAKE_JCODE_BUSY_MODEL=1 so every existing suite keeps its exact
 // behaviour. What it encodes was MEASURED against real jcode 0.81.5 (R1, 2026-09-09), not invented:
 // a plain send against a busy agent is accepted and QUEUED and still gets `message_accepted`
@@ -304,9 +305,32 @@ const server = createServer((socket) => {
             reply({ ev: "ok" });
           }
           break;
-        case "soft_interrupt":
-          reply({ ev: "ok" });
+        case "soft_interrupt": {
+          const releaseFile = process.env.FAKE_JCODE_STEER_RELEASE_FILE;
+          const idleFile = process.env.FAKE_JCODE_STEER_IDLE_FILE;
+          if (!heldSteer && releaseFile && idleFile) {
+            heldSteer = true;
+            log({ ev: "steer_held", session_id: frame.session_id });
+            const release = setInterval(() => {
+              if (!existsSync(releaseFile)) return;
+              clearInterval(release);
+              turnBusy = true;
+              event({ ev: "session_status", session_id: frame.session_id, status: "working" });
+              reply({ ev: "ok" });
+              const idle = setInterval(() => {
+                if (!existsSync(idleFile)) return;
+                clearInterval(idle);
+                turnBusy = false;
+                event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
+              }, 10);
+              idle.unref();
+            }, 10);
+            release.unref();
+          } else {
+            reply({ ev: "ok" });
+          }
           break;
+        }
         case "get_runtime_info":
           reply({ ev: "runtime_info", session_id: frame.session_id, model: process.env.FAKE_JCODE_RUNTIME_MODEL ?? "fake-model", routes: [] });
           break;
@@ -340,13 +364,24 @@ const server = createServer((socket) => {
                 // readiness turn_done that completed the run.
                 log({ ev: "busy_after_readiness_status", status: "working", session_id: frame.session_id });
                 event({ ev: "session_status", session_id: frame.session_id, status: "working" });
-                setTimeout(() => {
+                const finishBusy = () => {
                   turnBusy = false;
                   log({ ev: "busy_after_readiness_status", status: "idle", session_id: frame.session_id });
                   event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
                   const afterBusy = queuedTurns.shift();
                   if (afterBusy) afterBusy();
-                }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
+                };
+                const releaseFile = process.env.FAKE_JCODE_BUSY_RELEASE_FILE;
+                if (releaseFile) {
+                  const release = setInterval(() => {
+                    if (!existsSync(releaseFile)) return;
+                    clearInterval(release);
+                    finishBusy();
+                  }, 10);
+                  release.unref();
+                } else {
+                  setTimeout(finishBusy, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
+                }
               }
               reply({
                 ev: "error",
@@ -382,8 +417,13 @@ const server = createServer((socket) => {
             (!closeBeforeAcceptFile || !existsSync(closeBeforeAcceptFile))
           ) {
             if (closeBeforeAcceptFile) writeFileSync(closeBeforeAcceptFile, "closed");
-            socket.destroy();
-            setImmediate(() => server.close());
+            const close = () => { socket.destroy(); server.close(); };
+            if (process.env.FAKE_JCODE_ERROR_BEFORE_CLOSE === "1") {
+              socket.write(JSON.stringify({ v: 1, ev: "error", session_id: frame.session_id,
+                code: "internal", message: "synthetic error after request dispatch" }) + "\n", close);
+            } else {
+              close();
+            }
             break;
           }
           event({ ev: "message_accepted", session_id: frame.session_id });

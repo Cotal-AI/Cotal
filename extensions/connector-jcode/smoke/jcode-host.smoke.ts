@@ -20,10 +20,10 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
-async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 20_000): Promise<T> {
+async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | undefined>, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = read();
+    const value = await read();
     if (value !== undefined) return value;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${name}`);
     await sleep(100);
@@ -137,6 +137,7 @@ async function callJcodeMcp(
   socket: string,
   token: string,
   arguments_: Record<string, unknown>,
+  name = "cotal_inbox",
 ): Promise<{ text: string; isError?: boolean }> {
   const entry = jcodeMcpEntry(home);
   const client = new Client({ name: "jcode-host-smoke", version: "0.0.0" });
@@ -149,7 +150,7 @@ async function callJcodeMcp(
   });
   try {
     await client.connect(transport);
-    const result = await client.callTool({ name: "cotal_inbox", arguments: arguments_ });
+    const result = await client.callTool({ name, arguments: arguments_ });
     return {
       text: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"),
       isError: result.isError,
@@ -287,6 +288,7 @@ try {
   operator.on("error", () => {});
   let peerId: string | undefined;
   let busyPeerId: string | undefined;
+  let busyActivity = "";
   const announced = new Set<string>();
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string } }) => {
     if (event.type === "offline") return;
@@ -294,6 +296,7 @@ try {
     if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
     if (event.presence.card.name === "busypeer") {
       busyPeerId = event.presence.card.id;
+      busyActivity = event.presence.activity ?? "";
     }
   });
   await operator.start();
@@ -482,6 +485,7 @@ try {
   // reach the startup catch and kill an already-joined seat, taking its accumulated session with
   // it. The notice is cosmetic; the seat is not.
   const busyLog = join(root, "join-notice-busy.jsonl");
+  const busyRelease = join(root, "release-startup-busy");
   const busy = spawnHost({
     cwd: root,
     env: {
@@ -491,7 +495,7 @@ try {
       FAKE_JCODE_BUSY_MODEL: "1",
       FAKE_JCODE_BUSY_AFTER_READINESS: "1",
       FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
-      FAKE_JCODE_BUSY_HOLD_MS: "500",
+      FAKE_JCODE_BUSY_RELEASE_FILE: busyRelease,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "busypeer",
@@ -523,6 +527,20 @@ try {
   const markerCount = (text: string, marker: string): number => text.split(marker).length - 1;
   await waitFor("the post-readiness continuation to make the watched session busy", () =>
     busyRead().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "working"));
+  const busyHome = managedHome("jcodehost", "busypeer");
+  const busyMcp = jcodeMcpEntry(busyHome);
+  const busySocket = busyMcp.env.COTAL_JCODE_MCP_SOCKET!;
+  const busyToken = busyMcp.env.COTAL_JCODE_MCP_TOKEN!;
+  const dnd = await callJcodeMcp(busyHome, busySocket, busyToken, { attention: "dnd" }, "cotal_status");
+  check("the busy startup peer enters dnd through its real MCP tool", !dnd.isError, dnd);
+  const deferred = "DND-AMBIENT-BEFORE-KICKOFF";
+  await operator.multicast(deferred, { channel: "team" });
+  // Jcode's cotal_inbox exposes pull-only traffic. The host's health activity is the
+  // observable receipt for an automatic item that must remain owned by the connector.
+  await waitFor("ordinary dnd traffic buffered before kickoff", () =>
+    busyActivity.includes("inbound: 1 automatic queued") ? busyActivity : undefined);
+  check("ordinary dnd traffic does not start a turn while kickoff is held", !busyTurns().some((entry) => String(entry.frame?.content).includes(deferred)), busyTurns());
+  writeFileSync(busyRelease, "release");
   await waitFor("the external busy turn to become idle", () =>
     busyRead().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "idle"));
   const kickoffTurn = await waitFor("the deferred kickoff turn", () =>
@@ -539,6 +557,20 @@ try {
     kickoffTurns.length === 1 && kickoffOccurrences === 1,
     { kickoffTurn, kickoffTurns, kickoffOccurrences },
   );
+  check("the startup kickoff does not contain the deferred automatic inbox", !String(kickoffTurn?.frame?.content).includes(deferred), kickoffTurn);
+  const deferredTurn = await waitFor("ordinary dnd traffic after kickoff without another wake", () =>
+    busyTurns().find((entry) => String(entry.frame?.content).includes(deferred))).catch(() => undefined);
+  check("ordinary dnd traffic deferred by kickoff reaches the following turn without another wake", Boolean(deferredTurn), { deferredTurn, turns: busyTurns() });
+  await waitFor("the deferred dnd turn boundary", () =>
+    busyRead().find((entry) => entry.ev === "turn_done_emitted" && String((entry as { content?: string }).content).includes(deferred)));
+  const quietMode = await callJcodeMcp(busyHome, busySocket, busyToken, { channel: "team", mode: "quiet" }, "cotal_channel_mode");
+  check("the startup peer enables quiet through its real MCP tool", !quietMode.isError, quietMode);
+  const quiet = "QUIET-AMBIENT-MUST-STAY-PULL-ONLY";
+  await operator.multicast(quiet, { channel: "team" });
+  await waitFor("quiet traffic retained for explicit pull", async () => {
+    const peek = await callJcodeMcp(busyHome, busySocket, busyToken, { peek: true });
+    return !peek.isError && peek.text.includes(quiet) ? peek : undefined;
+  });
   check("a seat whose post-join notice is refused still joins the mesh", announced.has("busypeer"), { announced: [...announced], stderr: busyErr });
   check("the refused notice is still sent as a no-reply context message, not promoted to a turn", Boolean(busyNotice), busyNotice);
   const settledTurnCount = busyTurns().length;
@@ -563,6 +595,9 @@ try {
     return runs.length >= 2 ? runs : undefined;
   }).catch(() => undefined);
   check("the post-refusal turn reaches the cotal tool, so the refusal cost the notice and not the session", (busyToolRuns?.length ?? 0) >= 2, busyToolRuns);
+  check("quiet traffic never rides the kickoff or later directed turn", !busyTurns().some((entry) => String(entry.frame?.content).includes(quiet)), busyTurns());
+  const quietPull = await callJcodeMcp(busyHome, busySocket, busyToken, { peek: false });
+  check("quiet traffic remains available to explicit pull after later work", !quietPull.isError && quietPull.text.includes(quiet), quietPull);
   await stopHostTree(busy, "SIGTERM");
   check("the launch whose post-join notice was refused exits cleanly", busy.exitCode === 0, { code: busy.exitCode, stderr: busyErr });
 

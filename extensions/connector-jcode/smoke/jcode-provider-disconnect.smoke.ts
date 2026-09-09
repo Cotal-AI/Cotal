@@ -29,7 +29,6 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
     const value = read();
     if (value !== undefined) return value;
     if (Date.now() > deadline) {
-      console.error(`  ✗ ${name}`);
       throw new Error(`timed out waiting for ${name}`);
     }
     await sleep(100);
@@ -56,6 +55,10 @@ const safetyLaunchCount = join(root, "safety-launch-count");
 const kickoffLog = join(root, "kickoff.jsonl");
 const kickoffSessionState = join(root, "kickoff-session.json");
 const kickoffNoticeClosed = join(root, "kickoff-notice-closed");
+const guardLog = join(root, "guard-kickoff.jsonl");
+const guardIdle = join(root, "guard-native-idle");
+const guardSteerAck = join(root, "guard-steer-ack");
+const guardSteerIdle = join(root, "guard-steer-idle");
 const ambiguousLog = join(root, "ambiguous-kickoff.jsonl");
 const ambiguousSessionState = join(root, "ambiguous-session.json");
 const ambiguousRequestClosed = join(root, "ambiguous-request-closed");
@@ -64,6 +67,7 @@ let child: ChildProcess | undefined;
 let safetyChild: ChildProcess | undefined;
 let kickoffChild: ChildProcess | undefined;
 let ambiguousChild: ChildProcess | undefined;
+let guardChild: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -107,11 +111,13 @@ try {
   let safetyPeerId: string | undefined;
   let kickoffPeerId: string | undefined;
   let ambiguousPeerId: string | undefined;
+  let guardPeerId: string | undefined;
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodesafety") safetyPeerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodekickoff") kickoffPeerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodeambiguous") ambiguousPeerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodeguard") guardPeerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -165,7 +171,7 @@ try {
         String((entry.frame as { content?: string }).content).includes("KICKOFF-PENDING-ACROSS-RECOVERY"),
     );
     return turns.length ? turns : undefined;
-  });
+  }).catch(() => []);
   check("a startup kickoff still pending before send is delivered once after recovery without an inbox wake", recoveredKickoff.length === 1, { recoveredKickoff, stderr: kickoffStderr });
   await waitFor("pending kickoff recovery turn boundary", () => entriesOf(kickoffLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("KICKOFF-PENDING-ACROSS-RECOVERY")));
   await new Promise<void>((resolve) => setTimeout(resolve, 250));
@@ -177,6 +183,65 @@ try {
   kickoffChild.kill("SIGTERM");
   await Promise.race([once(kickoffChild, "exit"), sleep(15_000)]);
 
+  // A directed delivery can enter drive while an earlier steer is still awaiting its reply.
+  // Hold that reply, observe the host waiting, then make the native session busy before acking.
+  guardChild = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: guardLog,
+      FAKE_JCODE_BUSY_MODEL: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
+      FAKE_JCODE_BUSY_RELEASE_FILE: guardIdle,
+      FAKE_JCODE_STEER_RELEASE_FILE: guardSteerAck,
+      FAKE_JCODE_STEER_IDLE_FILE: guardSteerIdle,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodeclose",
+      COTAL_NAME: "jcodeguard",
+      COTAL_ID: "jcodeguard",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_JCODE_PROMPT: "KICKOFF-AFTER-SECOND-GUARD",
+      COTAL_CONTROL_SOCKET: join(root, "guard-control.sock"),
+      COTAL_CONTROL_TOKEN: "guard-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let guardStderr = "";
+  guardChild.stderr?.on("data", (chunk: Buffer) => (guardStderr += chunk.toString()));
+  await waitFor("guard peer joins", () => guardPeerId);
+  await waitFor("guard peer has an external busy turn", () =>
+    entriesOf(guardLog).find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "working"));
+  await operator.unicast(guardPeerId!, "STEER-HELD-BEFORE-KICKOFF");
+  await waitFor("first steer reply is held", () => entriesOf(guardLog).find((entry) => entry.ev === "steer_held"));
+  writeFileSync(guardIdle, "idle");
+  for (let attempt = 0; attempt < 100 && !guardStderr.includes("startup kickoff waiting for in-flight steering"); attempt++) {
+    await operator.unicast(guardPeerId!, "WAKE-KICKOFF-WHILE-STEER-PENDING");
+    await sleep(100);
+  }
+  check("the second guard fixture observes startup waiting on an unacknowledged steer", guardStderr.includes("startup kickoff waiting for in-flight steering"), guardStderr);
+  writeFileSync(guardSteerAck, "ack");
+  await waitFor("the host defers after native state changes during steering", () =>
+    guardStderr.includes("deferred turn after steering: native session unavailable") ? true : undefined);
+  writeFileSync(guardSteerIdle, "idle");
+  const guardKickoffs = await waitFor("kickoff after the observed second pre-send guard", () => {
+    const turns = entriesOf(guardLog).filter((entry) => {
+      const frame = entry.frame as { req?: string; no_reply?: boolean; content?: string } | undefined;
+      return entry.ev === "request" && frame?.req === "send_message" && !frame.no_reply &&
+        String(frame.content).includes("KICKOFF-AFTER-SECOND-GUARD");
+    });
+    return turns.length ? turns : undefined;
+  }).catch(() => []);
+  check("a startup kickoff survives native state changing while steering settles", guardKickoffs.length === 1, { guardKickoffs, stderr: guardStderr });
+  guardChild.kill("SIGTERM");
+  await Promise.race([once(guardChild, "exit"), sleep(15_000)]);
+
   // Once run() has emitted its request, acceptance is unknowable across a close. Recovery may restore
   // the seat, but it must not invent a second kickoff attempt or claim that the first executed.
   ambiguousChild = spawn(tsx, [host], {
@@ -186,6 +251,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: ambiguousLog,
       FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ON_CONTENT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
+      FAKE_JCODE_ERROR_BEFORE_CLOSE: "1",
       FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ONCE_FILE: ambiguousRequestClosed,
       FAKE_JCODE_SESSION_STATE: ambiguousSessionState,
       JCODE_HOME: inheritedJcodeHome,
@@ -398,7 +464,8 @@ try {
   if (safetyChild && safetyChild.exitCode === null) safetyChild.kill("SIGKILL");
   if (kickoffChild && kickoffChild.exitCode === null) kickoffChild.kill("SIGKILL");
   if (ambiguousChild && ambiguousChild.exitCode === null) ambiguousChild.kill("SIGKILL");
-  for (const entry of [...entriesOf(log), ...entriesOf(safetyLog)]) {
+  if (guardChild && guardChild.exitCode === null) guardChild.kill("SIGKILL");
+  for (const entry of [...entriesOf(log), ...entriesOf(safetyLog), ...entriesOf(kickoffLog), ...entriesOf(ambiguousLog), ...entriesOf(guardLog)]) {
     if (entry.ev !== "listening" || typeof entry.pid !== "number") continue;
     try {
       process.kill(entry.pid, "SIGKILL");
