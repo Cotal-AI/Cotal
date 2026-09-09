@@ -4856,9 +4856,8 @@ export class CotalEndpoint extends EventEmitter {
     void (async () => {
       let ready = false;
       for await (const e of iter) {
-        // Defensive, not graded: a rebind stops this iterator before replacing it, and a stopped
-        // iterator does not yield again on nats.js 3.4.0. Kept so a client that ever drained its
-        // buffer after stop() could not write a dead epoch's replay over the rebound roster.
+        // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
+        // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
         if (this.presenceWatchIter !== iter) break;
         this.handleKvEntry(e);
         // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
@@ -4888,10 +4887,13 @@ export class CotalEndpoint extends EventEmitter {
     const old = this.presenceWatchIter;
     this.presenceRebind = (async () => {
       try {
-        this.presenceWatchIter = undefined;
-        try { old?.stop(); } catch { /* already closed with its consumer */ }
         const silentMs = now - this.lastPresenceWatchAt;
+        // Bind the replacement FIRST. A rebind the broker refuses (stream gone, create denied) or
+        // one a held link never answers must leave the old watch in place: on a plain stall that
+        // watch is the one that recovers by itself, and its replay is still guarded against
+        // expired PUTs. Only a successfully bound watch retires its predecessor.
         await this.startPresenceWatch();
+        if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
         // A bucket with no keys replays nothing, so the new watch cannot refresh
         // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present, and the
         // frozen roster ages out on the next sweep (each peer's ts is a full window behind). Read

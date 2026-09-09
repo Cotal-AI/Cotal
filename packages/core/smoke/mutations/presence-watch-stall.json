@@ -2,11 +2,11 @@
   "command": "pnpm smoke:presence-watch-stall",
   "mutations": [
     {
-      "name": "S1 the freshness gate is dropped, so a silent watch still ages every peer out: the observer reports 3 offline verdicts and the online list empties",
+      "name": "S1 the whole-bucket freshness gate is dropped, so the observer never reports its own view stale during a held link (the sidebar has nothing to surface, and the rebind that hangs off that gate never fires)",
       "file": "packages/core/src/endpoint.ts",
       "find": "    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {\n      this.emitPresenceViewIfChanged();\n",
       "replace": "    if (false) {\n      this.emitPresenceViewIfChanged();\n",
-      "expectRed": "1.4 sweep did NOT emit a wholesale offline verdict"
+      "expectRed": "1.7 and that stale transition was emitted (the page has something to surface)"
     },
     {
       "name": "S2 expired replay PUTs materialize as offline again, so recovery emits per-peer deaths before rejoins",
