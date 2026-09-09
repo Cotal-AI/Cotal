@@ -71,25 +71,34 @@ const requestBase = {
   expectedBindingRevision: 0, expectedControllerEpoch: 1, intendedResult: { nativeState: "preserved" },
 };
 
+const otherResource: ResourceKey = { ...resource, stableSessionId: "session-other" };
 const effects: string[] = [];
-function connection(ops: readonly NativeLifecycleOperation[], mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive"): NativeLifecycleConnection {
+function connection(
+  ops: readonly NativeLifecycleOperation[],
+  mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" = "ok",
+): NativeLifecycleConnection {
   const inspect = async () => { effects.push("inspect"); return observation(); };
-  const discover = async () => { effects.push("discover"); return [observation()]; };
+  const discover = async () => {
+    effects.push("discover");
+    return [observation(), observation({ resourceKey: otherResource, directory: "/tmp/session-other" })];
+  };
   const preflight = async (operation: NativeLifecycleOperation) => {
     effects.push(`preflight:${operation}`);
+    if (kind === "preflight-refuse")
+      return { ok: false, code: "authority-required", reason: "release needs exclusive mode" } satisfies NativeLifecyclePreflight;
     return { ok: true, observation: observation() } satisfies NativeLifecyclePreflight;
   };
   const adopt = async (_binding: Binding, operation: SessionOperationRecord): Promise<NativeLifecycleOperationResult> => {
     effects.push("adopt");
-    return {
-      state: "recorded",
-      operation: {
-        ...operation,
-        state: "terminal-success",
-        result: { bound: true },
-        proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { bound: true }, proves: "native-effect" },
-      },
+    const recorded = {
+      ...operation,
+      state: "terminal-success" as const,
+      result: { bound: true },
+      proofOrigin: { kind: "native-readback" as const, provider: "com.cotal.test", evidence: { bound: true }, proves: "native-effect" as const },
     };
+    if (kind === "mismatch") return { state: "recorded", operation: { ...recorded, operationId: "op-forged" } };
+    return { state: "recorded", operation: recorded };
   };
   const queryOperationNative = async (): Promise<NativeLifecycleOperationResult> => {
     effects.push("queryOperation");
@@ -108,22 +117,45 @@ function connection(ops: readonly NativeLifecycleOperation[], mode: NativeLifecy
   if (ops.includes("adopt")) conn.adopt = adopt;
   if (ops.includes("queryOperation")) conn.queryOperation = queryOperationNative;
   if (ops.includes("openView")) conn.openView = openView;
-  if (ops.includes("release")) conn.release = async () => { effects.push("release"); throw new Error("native acknowledgement lost"); };
+  if (ops.includes("release")) {
+    conn.release = async (_binding, operation) => {
+      effects.push("release");
+      if (kind === "lost-release") throw new Error("native acknowledgement lost");
+      return {
+        state: "recorded",
+        operation: {
+          ...operation,
+          state: "terminal-success",
+          result: { bindingState: "released", nativeState: "preserved" },
+          proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { released: true }, proves: "native-effect" },
+        },
+      };
+    };
+  }
   return conn;
 }
 
-function register(name: string, ops: readonly NativeLifecycleOperation[], mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive"): void {
+function register(
+  name: string,
+  ops: readonly NativeLifecycleOperation[],
+  mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" = "ok",
+): void {
   const provider: NativeLifecycleProvider = {
     kind: "native-lifecycle",
     name,
-    connect: () => connection(ops, mode),
+    connect: () => connection(ops, mode, kind),
   };
   registry.register(provider);
 }
 
-register("executor-coop", ["discover", "inspect", "preflight", "adopt", "release", "queryOperation", "openView"]);
+const mutatingOps: readonly NativeLifecycleOperation[] = ["discover", "inspect", "preflight", "adopt", "release", "queryOperation", "openView"];
+register("executor-coop", mutatingOps, "cooperative-exclusive", "lost-release");
 register("executor-observed", ["discover", "inspect", "preflight", "adopt", "queryOperation"], "observed");
 register("executor-missing-adopt", ["discover", "inspect"]);
+register("executor-mismatch", ["inspect", "preflight", "adopt"], "cooperative-exclusive", "mismatch");
+register("executor-native-release", mutatingOps, "cooperative-exclusive", "native-release");
+register("executor-preflight-refuse", ["preflight"], "cooperative-exclusive", "preflight-refuse");
 
 console.log("A. public entry refuses before any native effect");
 effects.length = 0;
@@ -174,7 +206,26 @@ const discovered = await executeNativeLifecycle(kvDiscover as unknown as KV, {
   ...requestBase, providerName: "executor-coop", operation: "discover", operationId: "op-disc", bindingId: "binding-disc",
 });
 c("discover returns observations through the public entry", discovered.state === "observations" && discovered.observations.length === 1, discovered);
+c("discover dropped observations outside the grant selector", discovered.state === "observations" && discovered.observations.every((o) => o.resourceKey.stableSessionId === "session-1"), discovered);
 c("discover did not write a binding", !kvDiscover.rows.has(sessionBindingKey(resource)));
+
+effects.length = 0;
+const viewed = await executeNativeLifecycle(new MemKv() as unknown as KV, {
+  ...requestBase, providerName: "executor-coop", operation: "openView", operationId: "op-view", bindingId: "binding-view",
+});
+c("openView returns the NativeLifecycleView through the public entry", viewed.state === "view" && viewed.view.command === "echo" && viewed.view.credentialRequired === false, viewed);
+c("openView reached the provider once", effects.join(",") === "openView", effects);
+
+effects.length = 0;
+const preflighted = await executeNativeLifecycle(new MemKv() as unknown as KV, {
+  ...requestBase, providerName: "executor-preflight-refuse", operation: "preflight", operationId: "op-pre", bindingId: "binding-pre",
+  targetOperation: "release",
+});
+c("preflight uses targetOperation and preserves the typed refusal", preflighted.state === "preflight" && preflighted.preflight.ok === false && preflighted.preflight.code === "authority-required", preflighted);
+c("preflight dispatched the requested target operation", effects.join(",") === "preflight:release", effects);
+await rejects("preflight without targetOperation is refused", () => executeNativeLifecycle(new MemKv() as unknown as KV, {
+  ...requestBase, providerName: "executor-coop", operation: "preflight", operationId: "op-pre-missing", bindingId: "binding-pre-missing",
+}), "internal");
 
 console.log("C. lost native acknowledgement stays indeterminate");
 effects.length = 0;
@@ -189,6 +240,28 @@ const lost = await executeNativeLifecycle(kvRelease, {
 c("lost native release acknowledgement is indeterminate", lost.state === "indeterminate", lost);
 const releaseRow = await queryOperation(kvRelease, resource, "op-rel");
 c("indeterminate release is journalled, not invented as native-effect", releaseRow.state === "indeterminate" && releaseRow.proofOrigin === undefined, releaseRow);
+
+effects.length = 0;
+const kvMismatch = new MemKv() as unknown as KV;
+const mismatched = await executeNativeLifecycle(kvMismatch, {
+  ...requestBase, providerName: "executor-mismatch", operation: "adopt", operationId: "op-mismatch", bindingId: "binding-mismatch",
+});
+c("mismatched recorded receipt stays indeterminate", mismatched.state === "indeterminate", mismatched);
+const mismatchRow = await queryOperation(kvMismatch, resource, "op-mismatch");
+c("mismatched receipt is not stored as terminal-success", mismatchRow.state === "indeterminate" && mismatchRow.proofOrigin === undefined, mismatchRow);
+
+effects.length = 0;
+const kvNativeRel = new MemKv() as unknown as KV;
+await executeNativeLifecycle(kvNativeRel, {
+  ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-3", bindingId: "binding-3",
+});
+const released = await executeNativeLifecycle(kvNativeRel, {
+  ...requestBase, providerName: "executor-native-release", operation: "release", operationId: "op-rel-ok", bindingId: "binding-3",
+  expectedBindingRevision: 1, expectedControllerEpoch: 1, intendedResult: { bindingState: "released", nativeState: "preserved" },
+});
+c("cooperative-exclusive release with native-effect is terminal-success", released.state === "recorded" && released.operation.state === "terminal-success" && released.operation.proofOrigin?.proves === "native-effect", released);
+const nativeRelRow = await queryOperation(kvNativeRel, resource, "op-rel-ok");
+c("native-effect release receipt is durable", nativeRelRow.state === "terminal-success" && nativeRelRow.proofOrigin?.proves === "native-effect", nativeRelRow);
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

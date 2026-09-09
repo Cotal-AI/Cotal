@@ -17,6 +17,8 @@ import {
   type NativeLifecycleObservation,
   type NativeLifecycleOperation,
   type NativeLifecycleOperationResult,
+  type NativeLifecyclePreflight,
+  type NativeLifecycleView,
 } from "./native-lifecycle-provider.js";
 import { authorizeSessionManage } from "./session-manage-authority.js";
 import {
@@ -48,7 +50,9 @@ export type NativeLifecycleDispatchResult =
   | { readonly state: "unsupported"; readonly operation: NativeLifecycleOperation }
   | { readonly state: "identity-unproven"; readonly reason: string }
   | { readonly state: "observations"; readonly observations: readonly NativeLifecycleObservation[] }
-  | { readonly state: "observation"; readonly observation: NativeLifecycleObservation };
+  | { readonly state: "observation"; readonly observation: NativeLifecycleObservation }
+  | { readonly state: "view"; readonly view: NativeLifecycleView }
+  | { readonly state: "preflight"; readonly preflight: NativeLifecyclePreflight };
 
 export interface NativeLifecycleExecutorRequest {
   readonly providerName: string;
@@ -70,6 +74,8 @@ export interface NativeLifecycleExecutorRequest {
   readonly delegation?: unknown;
   readonly authenticatedDelegationIssuer?: string;
   readonly expectedIncarnation?: IncarnationProof;
+  /** Required when `operation` is `preflight`. The operation the provider should preflight. */
+  readonly targetOperation?: NativeLifecycleOperation;
 }
 
 export interface NativeLifecycleExecutor {
@@ -91,6 +97,12 @@ function mutatingAction(operation: NativeLifecycleOperation): Exclude<SessionMan
 
 function sameResource(a: ResourceKey, b: ResourceKey): boolean {
   return resourceKeyId(a) === resourceKeyId(b);
+}
+
+function samePreparedIdentity(prepared: SessionOperationRecord, claimed: SessionOperationRecord): boolean {
+  return claimed.operationId === prepared.operationId
+    && claimed.bindingId === prepared.bindingId
+    && resourceKeyId(claimed.resourceKey) === resourceKeyId(prepared.resourceKey);
 }
 
 async function readBinding(kv: KV, resourceKey: ResourceKey): Promise<{ readonly binding: Binding; readonly revision: number } | undefined> {
@@ -172,19 +184,45 @@ export async function executeNativeLifecycle(
 
   if (request.operation === "discover") {
     const observations = await (method as NonNullable<NativeLifecycleConnection["discover"]>)(request.signal);
-    return { state: "observations", observations };
+    const authorized: NativeLifecycleObservation[] = [];
+    for (const observation of observations) {
+      try {
+        authorizeSessionManage(
+          request.grant,
+          {
+            authenticatedActor: request.authenticatedActor,
+            managerPrincipal: request.managerPrincipal,
+            resourceOwnerPrincipal: request.resourceOwnerPrincipal,
+            resourceKey: parseResourceKey(observation.resourceKey, "native discover observation.resourceKey"),
+            action: "discover",
+            now: request.now,
+          },
+          request.authenticatedGrantIssuer,
+          request.delegation,
+          request.authenticatedDelegationIssuer,
+        );
+        authorized.push(observation);
+      } catch (e) {
+        if (e instanceof EpEnvelopeError && (e.code === "permission-denied" || e.code === "expired" || e.code === "internal")) continue;
+        throw e;
+      }
+    }
+    return { state: "observations", observations: authorized };
   }
   if (request.operation === "inspect") {
     const observation = await (method as NonNullable<NativeLifecycleConnection["inspect"]>)(resourceKey, request.signal);
     return { state: "observation", observation };
   }
   if (request.operation === "openView") {
-    await (method as NonNullable<NativeLifecycleConnection["openView"]>)(resourceKey, request.signal);
-    return { state: "absent" };
+    const view = await (method as NonNullable<NativeLifecycleConnection["openView"]>)(resourceKey, request.signal);
+    return { state: "view", view };
   }
   if (request.operation === "preflight") {
-    await (method as NonNullable<NativeLifecycleConnection["preflight"]>)("inspect", resourceKey, request.signal);
-    return { state: "absent" };
+    const target = request.targetOperation;
+    if (target === undefined)
+      throw new EpEnvelopeError("internal", "native lifecycle preflight requires request.targetOperation");
+    const preflight = await (method as NonNullable<NativeLifecycleConnection["preflight"]>)(target, resourceKey, request.signal);
+    return { state: "preflight", preflight };
   }
   if (request.operation === "queryOperation") {
     const recorded = await queryOperation(kv, resourceKey, request.operationId);
@@ -274,16 +312,22 @@ export async function executeNativeLifecycle(
     return persistIndeterminate(kv, prepared.record, e instanceof Error ? e.message : "native provider threw");
   }
   if (native.state === "recorded") {
+    if (!samePreparedIdentity(prepared.record, native.operation))
+      return persistIndeterminate(kv, prepared.record, "provider recorded receipt does not match prepared resourceKey/bindingId/operationId");
     if (native.operation.state === "terminal-success" && native.operation.proofOrigin?.proves !== "native-effect")
       return persistIndeterminate(kv, prepared.record, "provider returned terminal-success without native-effect proof");
-    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);
-    await updateSessionOperation(kv, {
+    const stored: SessionOperationRecord = {
       ...prepared.record,
       state: native.operation.state,
       ...(native.operation.result !== undefined ? { result: native.operation.result } : {}),
       ...(native.operation.proofOrigin !== undefined ? { proofOrigin: native.operation.proofOrigin } : {}),
-    }, revision);
-    return native;
+    };
+    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);
+    await updateSessionOperation(kv, stored, revision);
+    const durable = await queryOperation(kv, prepared.record.resourceKey, prepared.record.operationId);
+    if (durable.state === "absent")
+      throw new EpEnvelopeError("internal", `session operation ${prepared.record.operationId} vanished after receipt persist`);
+    return { state: "recorded", operation: durable.record };
   }
   if (native.state === "absent") return native;
   return persistIndeterminate(kv, prepared.record, native.reason);

@@ -7,7 +7,9 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/native-lifecycle-executor.json",
   "why": [
     "Capability refusal must happen before inspect or prepare.",
-    "At least one cell drives executeNativeLifecycle with a real registry provider and nothing injected."
+    "At least one cell drives executeNativeLifecycle with a real registry provider and nothing injected.",
+    "Recorded receipts must match prepared resourceKey/bindingId/operationId before persist.",
+    "openView and preflight return typed provider results; discover authorizes each observation."
   ],
   "mutations": [
     {
@@ -29,10 +31,42 @@
     {
       "name": "return recorded native receipt without persisting it",
       "file": "packages/core/src/native-lifecycle-executor.ts",
-      "find": "    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);\n    await updateSessionOperation(kv, {\n      ...prepared.record,\n      state: native.operation.state,\n      ...(native.operation.result !== undefined ? { result: native.operation.result } : {}),\n      ...(native.operation.proofOrigin !== undefined ? { proofOrigin: native.operation.proofOrigin } : {}),\n    }, revision);\n    return native;\n",
-      "replace": "    return native;\n",
+      "find": "    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);\n    await updateSessionOperation(kv, stored, revision);\n    const durable = await queryOperation(kv, prepared.record.resourceKey, prepared.record.operationId);\n    if (durable.state === \"absent\")\n      throw new EpEnvelopeError(\"internal\", `session operation ${prepared.record.operationId} vanished after receipt persist`);\n    return { state: \"recorded\", operation: durable.record };\n",
+      "replace": "    return { state: \"recorded\", operation: stored };\n",
       "expectRed": "adopt native-effect receipt is durable in the trusted store",
       "cell": "adopt native-effect receipt is durable in the trusted store"
+    },
+    {
+      "name": "skip prepared receipt identity check",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    if (!samePreparedIdentity(prepared.record, native.operation))\n      return persistIndeterminate(kv, prepared.record, \"provider recorded receipt does not match prepared resourceKey/bindingId/operationId\");\n",
+      "replace": "",
+      "expectRed": "mismatched recorded receipt stays indeterminate",
+      "cell": "mismatched recorded receipt stays indeterminate"
+    },
+    {
+      "name": "discard NativeLifecycleView",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const view = await (method as NonNullable<NativeLifecycleConnection[\"openView\"]>)(resourceKey, request.signal);\n    return { state: \"view\", view };\n",
+      "replace": "    await (method as NonNullable<NativeLifecycleConnection[\"openView\"]>)(resourceKey, request.signal);\n    return { state: \"absent\" };\n",
+      "expectRed": "openView returns the NativeLifecycleView through the public entry",
+      "cell": "openView returns the NativeLifecycleView through the public entry"
+    },
+    {
+      "name": "hardcode preflight inspect and drop result",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const target = request.targetOperation;\n    if (target === undefined)\n      throw new EpEnvelopeError(\"internal\", \"native lifecycle preflight requires request.targetOperation\");\n    const preflight = await (method as NonNullable<NativeLifecycleConnection[\"preflight\"]>)(target, resourceKey, request.signal);\n    return { state: \"preflight\", preflight };\n",
+      "replace": "    await (method as NonNullable<NativeLifecycleConnection[\"preflight\"]>)(\"inspect\", resourceKey, request.signal);\n    return { state: \"absent\" };\n",
+      "expectRed": "preflight uses targetOperation and preserves the typed refusal",
+      "cell": "preflight uses targetOperation and preserves the typed refusal"
+    },
+    {
+      "name": "return every discover observation",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const authorized: NativeLifecycleObservation[] = [];\n    for (const observation of observations) {\n      try {\n        authorizeSessionManage(\n          request.grant,\n          {\n            authenticatedActor: request.authenticatedActor,\n            managerPrincipal: request.managerPrincipal,\n            resourceOwnerPrincipal: request.resourceOwnerPrincipal,\n            resourceKey: parseResourceKey(observation.resourceKey, \"native discover observation.resourceKey\"),\n            action: \"discover\",\n            now: request.now,\n          },\n          request.authenticatedGrantIssuer,\n          request.delegation,\n          request.authenticatedDelegationIssuer,\n        );\n        authorized.push(observation);\n      } catch (e) {\n        if (e instanceof EpEnvelopeError && (e.code === \"permission-denied\" || e.code === \"expired\" || e.code === \"internal\")) continue;\n        throw e;\n      }\n    }\n    return { state: \"observations\", observations: authorized };\n",
+      "replace": "    return { state: \"observations\", observations };\n",
+      "expectRed": "discover dropped observations outside the grant selector",
+      "cell": "discover dropped observations outside the grant selector"
     }
   ]
 }
