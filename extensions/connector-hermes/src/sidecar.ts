@@ -59,9 +59,12 @@ export function startSidecar(): Sidecar {
   // Managed listener: own the endpoint (fatal bind) and authenticate every frame against the token.
   const controlServer = startControlServer(
     agent,
-    { path: controlSock, token: controlToken },
+    { path: controlSock, token: controlToken, ...(control.managementVerifier ? { managementVerifier: control.managementVerifier } : {}) },
     hermesHookHandle,
-    { fatalBind: true },
+    {
+      fatalBind: true,
+      ...(control.managementVerifier ? { authorizeManagement: () => false } : {}),
+    },
   );
   const bridge = startBridgeServer(agent, config, bridgeSock);
 

@@ -59,7 +59,7 @@ export const piConnector: Connector = {
     }
 
     // Minted before the env is built: the token goes into the launch material, the path into the env.
-    const control = controlEndpoint(opts.space, opts.name);
+    const control = controlEndpoint(opts.space, opts.name, undefined, opts.managementControl);
     const stateRoot = opts.workspaceRoot ? join(opts.workspaceRoot, ".cotal", "pi-sessions") : undefined;
     const sessionStatePath = stateRoot ? join(stateRoot, `${opts.name}-${opts.lifecycleUid ?? "unmanaged"}.json`) : undefined;
     if (stateRoot) mkSecretDir(stateRoot);
@@ -69,7 +69,7 @@ export const piConnector: Connector = {
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
       // extension drops even that once it has read it, so a shell this seat runs inherits neither.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, managementControl: control.management?.verifier, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

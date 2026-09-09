@@ -49,6 +49,11 @@ try {
     "control token recoverable from the launch material, matching the spec",
     controlFromEnv(base.env)?.token === base.control?.token,
   );
+  const managementFence = { resourceId: "resource-codex-smoke", bindingId: "binding-codex-smoke", controllerEpoch: 3 };
+  const managed = codexConnector.buildLaunch({ space: "s", name: "managed", managementControl: managementFence });
+  const managedMaterial = readLaunchMaterial(managed.env?.[LAUNCH_MATERIAL_ENV] ?? "");
+  check("management verifier reaches Codex with its exact fence", managedMaterial.managementControl?.bindingId === managementFence.bindingId && managedMaterial.managementControl.controllerEpoch === managementFence.controllerEpoch);
+  check("raw management bearer differs from the Codex child verifier", managedMaterial.managementControl?.tokenDigest !== managed.control?.management?.token);
   check("codex data root defaults to the launch dir", base.env?.COTAL_CODEX_HOME === process.cwd());
   check("unrelated operator variable is withheld", base.env?.SUPER_SECRET_LEAK_CANARY === undefined);
   check("declared provider key is forwarded", base.env?.OPENAI_API_KEY === "sk-test-canary");

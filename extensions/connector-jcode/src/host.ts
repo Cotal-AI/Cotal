@@ -752,7 +752,9 @@ export async function runJcodeHost(): Promise<void> {
   };
   startControl = startControlServer(agent, control, async () => ({ ok: false, error: "jcode has no lifecycle hook relay" }), {
     fatalBind: true,
-    onShutdown: () => void shutdownControl(),
+    ...(control.managementVerifier
+      ? { onShutdown: () => void shutdownControl(), authorizeManagement: () => false }
+      : {}),
   });
 
   process.on("SIGINT", () => void shutdown());

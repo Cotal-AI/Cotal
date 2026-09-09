@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlFromEnv, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
@@ -118,7 +118,9 @@ async function main(): Promise<void> {
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
-  const control = controlEndpoint(config.space, config.name);
+  const control = controlFromEnv();
+  if (!control)
+    throw new Error("Hermes connector launch is BLOCKED: manager supplied no control endpoint");
   const bridgeSock = bridgeSocketPath(config.space, config.name);
   const toolsFile = join(home, "cotal-tools.json");
   // This launcher mints the control endpoint itself, so it has to hand the token onward to two
@@ -138,10 +140,7 @@ async function main(): Promise<void> {
   // reading a launch with no creds in it, which is open mode wearing the wrong hat. Merging keeps
   // one carrier per launch, which is the invariant configFromEnv enforces.
   const inherited = process.env[LAUNCH_MATERIAL_ENV]?.trim();
-  const material = writeLaunchMaterial({
-    ...(inherited ? readLaunchMaterial(inherited) : {}),
-    controlToken: control.token,
-  });
+  const material = writeLaunchMaterial({ ...(inherited ? readLaunchMaterial(inherited) : {}) });
   process.env[LAUNCH_MATERIAL_ENV] = material;
   // The inherited copy has been folded into the merged one and has no reader left. Leaving it on
   // disk would mean this connector, alone among the five, keeps TWO files holding the same

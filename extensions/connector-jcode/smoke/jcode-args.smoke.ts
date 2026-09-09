@@ -122,6 +122,11 @@ try {
   check("mints a manager control endpoint", Boolean(base.control?.path && base.control?.token));
   check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_TOKEN === undefined);
   check("control token round-trips through launch material", controlFromEnv(base.env)?.token === base.control?.token);
+  const managementFence = { resourceId: "resource-jcode-smoke", bindingId: "binding-jcode-smoke", controllerEpoch: 3 };
+  const managed = jcodeConnector.buildLaunch({ space: "space", name: "managed", managementControl: managementFence });
+  const managedMaterial = readLaunchMaterial(managed.env?.[LAUNCH_MATERIAL_ENV] ?? "");
+  check("management verifier reaches Jcode with its exact fence", managedMaterial.managementControl?.bindingId === managementFence.bindingId && managedMaterial.managementControl.controllerEpoch === managementFence.controllerEpoch);
+  check("raw management bearer differs from the Jcode child verifier", managedMaterial.managementControl?.tokenDigest !== managed.control?.management?.token);
 
   const rooted = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir });
   check("workspaceRoot pins private state", rooted.env?.COTAL_JCODE_HOME === dir);

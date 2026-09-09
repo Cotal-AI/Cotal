@@ -1172,7 +1172,12 @@ export async function runCodexHost(): Promise<void> {
       agent,
       control,
       async () => ({ ok: false, error: "codex runs cotal in-process; only the shutdown control op is supported" }),
-      { fatalBind: true, onShutdown: () => void shutdown() },
+      {
+        fatalBind: true,
+        ...(control.managementVerifier
+          ? { onShutdown: () => void shutdown(), authorizeManagement: () => false }
+          : {}),
+      },
     );
   }
   // Config and control pair are both materialized now, so the pointer to the launch material has no

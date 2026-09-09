@@ -19,6 +19,7 @@
  * Run: pnpm smoke:claude-launch-env
  */
 import { readFileSync } from "node:fs";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
 
 let pass = 0;
@@ -96,6 +97,11 @@ for (const k of HOST_MARKERS) process.env[k] = `parent-${k}`;
 for (const k of UNRELATED) process.env[k] = `parent-${k}`;
 
 const env = claudeConnector.buildLaunch({ space: "smoke", name: "claude-1" } as never).env ?? {};
+const managementFence = { resourceId: "resource-claude-smoke", bindingId: "binding-claude-smoke", controllerEpoch: 3 };
+const managed = claudeConnector.buildLaunch({ space: "smoke", name: "claude-managed", managementControl: managementFence } as never);
+const managedMaterial = readLaunchMaterial(managed.env?.[LAUNCH_MATERIAL_ENV] ?? "");
+check("management verifier reaches Claude with its exact fence", managedMaterial.managementControl?.bindingId === managementFence.bindingId && managedMaterial.managementControl.controllerEpoch === managementFence.controllerEpoch);
+check("raw management bearer stays out of Claude launch material", !readFileSync(managed.env?.[LAUNCH_MATERIAL_ENV] ?? "", "utf8").includes(managed.control?.management?.token ?? "missing"));
 
 check(
   "CLAUDE_CODE_OAUTH_TOKEN reached the child",

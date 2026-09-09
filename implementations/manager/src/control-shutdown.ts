@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import type { ManagementControlFence } from "@cotal-ai/core";
 
 /** Window to deliver the cooperative shutdown frame before we give up and let the runtime's own
  *  grace timer hard-kill. Short — the frame is one small write; this only guards a hung connect. */
@@ -9,14 +10,29 @@ const TIMEOUT_MS = 2_000;
  *
  * On a runtime that can't deliver a clean exit signal (ConPTY/Windows: node-pty `kill(SIGTERM)`
  * throws, a pseudoconsole can't carry a signal), a hard kill denies the agent its exit handlers —
- * so it never leaves the mesh / publishes offline presence. This sends `{token, op:"shutdown"}`;
- * the agent's control server (which validated the token) runs `agent.stop()` then exits on its own.
+ * so it never leaves the mesh / publishes offline presence. This sends the separate management token
+ * plus the exact Binding.bindingId/controllerEpoch fence; the server rechecks both before it runs
+ * `agent.stop()` and exits on its own. A legacy endpoint without that split throws BLOCKED.
  *
  * Best-effort and fire-and-forget: the runtime hard-kills as a fallback after its own grace window,
  * so a failed, refused, or slow send never blocks the stop — it just falls through to the kill. The
- * token authenticates the frame; it is held in memory only (never logged or persisted).
+ * management token authenticates the frame; it is held in memory only (never logged or persisted).
  */
-export function controlShutdown(endpoint: { path: string; token: string }): void {
+export interface ShutdownControlEndpoint {
+  path: string;
+  management?: {
+    token: string;
+    fence: ManagementControlFence;
+  };
+}
+
+export function controlShutdown(endpoint: ShutdownControlEndpoint): void {
+  const management = endpoint.management;
+  if (!management)
+    throw new Error(
+      "control shutdown BLOCKED: the endpoint carries no separate management credential bound to " +
+        "Binding.bindingId + controllerEpoch; refusing to fall back to the hook credential",
+    );
   let sock: ReturnType<typeof connect>;
   let done = false;
   const finish = (): void => {
@@ -40,7 +56,13 @@ export function controlShutdown(endpoint: { path: string; token: string }): void
   sock.setEncoding("utf8");
   sock.on("connect", () => {
     try {
-      sock.write(JSON.stringify({ token: endpoint.token, op: "shutdown" }) + "\n");
+      sock.write(JSON.stringify({
+        token: management.token,
+        op: "shutdown",
+        resourceId: management.fence.resourceId,
+        bindingId: management.fence.bindingId,
+        controllerEpoch: management.fence.controllerEpoch,
+      }) + "\n");
     } catch {
       /* ignore — fallback kill covers it */
     }

@@ -601,7 +601,9 @@ export const cotal: Plugin = async () => {
     });
     controlServer = startControlServer(agent, control, handle, {
       fatalBind: true,
-      onShutdown: () => void shutdown(),
+      ...(control.managementVerifier
+        ? { onShutdown: () => void shutdown(), authorizeManagement: () => false }
+        : {}),
     });
   }
 

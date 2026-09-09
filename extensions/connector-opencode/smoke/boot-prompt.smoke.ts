@@ -24,7 +24,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
+import { seedChannelRegistry, isReachable, CotalEndpoint, LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { bootPlugin } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -52,6 +52,11 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const BOOT_TEXT = "Introduce yourself in #general, then wait.";
 {
   const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT });
+  const managementFence = { resourceId: "resource-opencode-smoke", bindingId: "binding-opencode-smoke", controllerEpoch: 3 };
+  const managed = opencodeConnector.buildLaunch({ space: "bootspace", name: "managed", managementControl: managementFence });
+  const managedMaterial = readLaunchMaterial(managed.env?.[LAUNCH_MATERIAL_ENV] ?? "");
+  check("management verifier reaches OpenCode with its exact fence", managedMaterial.managementControl?.bindingId === managementFence.bindingId && managedMaterial.managementControl.controllerEpoch === managementFence.controllerEpoch);
+  check("raw management bearer differs from the OpenCode child verifier", managedMaterial.managementControl?.tokenDigest !== managed.control?.management?.token);
   check(
     "the launch spec carries the initial prompt to the plugin",
     withPrompt.env?.COTAL_OPENCODE_PROMPT === BOOT_TEXT,

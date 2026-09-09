@@ -9,6 +9,7 @@
  */
 import { strict as assert } from "node:assert";
 import type { ChildProcess } from "node:child_process";
+import { readLaunchMaterial } from "@cotal-ai/core";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { assertHermesVersion } from "../src/launch.js";
@@ -41,8 +42,8 @@ const HOST_MARKERS = [
 
 /** One name from every per-session family a connector assigns conditionally. None may cross. */
 const PER_SESSION = [
-  "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN",
-  "COTAL_CONTROL_SOCKET", "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
+  "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN",
+  "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
   "COTAL_HERMES_UV_BIN",
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
@@ -58,7 +59,8 @@ for (const k of [...PER_SESSION, ...OPERATOR_KNOBS]) process.env[k] = `parent-${
 process.env.SOME_UNRELATED_SECRET = "smoke-unrelated";
 
 // ── Default allow-list (no operator extras declared) ─────────────────────────────────────────────
-const env = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1" }).env ?? {};
+const launch = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1" });
+const env = launch.env ?? {};
 
 for (const k of PROVIDER_KEYS)
   assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: this connector declares it`);
@@ -70,6 +72,14 @@ for (const k of HOST_MARKERS)
 
 for (const k of PER_SESSION)
   assert.ok(!(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
+assert.notEqual(env.COTAL_LAUNCH_MATERIAL, "parent-COTAL_LAUNCH_MATERIAL", "Hermes replaces ambient launch material with a fresh private carrier");
+assert.notEqual(env.COTAL_CONTROL_SOCKET, "parent-COTAL_CONTROL_SOCKET", "Hermes replaces the ambient control socket with this launch's endpoint");
+assert.equal(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).controlToken, launch.control?.token, "Hermes fresh launch material carries the exact hook control token retained by the manager");
+const managementFence = { resourceId: "resource-hermes-smoke", bindingId: "binding-hermes-smoke", controllerEpoch: 3 };
+const managed = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-managed", managementControl: managementFence });
+const managedMaterial = readLaunchMaterial(managed.env?.COTAL_LAUNCH_MATERIAL!);
+assert.equal(managedMaterial.managementControl?.bindingId, managementFence.bindingId, "Hermes management verifier carries the exact binding ID");
+assert.notEqual(managedMaterial.managementControl?.tokenDigest, managed.control?.management?.token, "Hermes child receives a verifier, not the raw management bearer");
 
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
@@ -87,6 +97,8 @@ assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allo
 assert.ok(confined.PATH !== undefined, "the OS allow-list still carries what the child needs to run");
 for (const k of PER_SESSION)
   assert.ok(!(k in confined), `${k} must be absent under containment too`);
+assert.notEqual(confined.COTAL_LAUNCH_MATERIAL, "parent-COTAL_LAUNCH_MATERIAL", "containment still replaces ambient material with the launch's fresh carrier");
+assert.notEqual(confined.COTAL_CONTROL_SOCKET, "parent-COTAL_CONTROL_SOCKET", "containment still replaces the ambient control socket");
 for (const k of HOST_MARKERS)
   assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
 

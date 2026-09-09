@@ -1,6 +1,19 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import type { ManagementControlFence, ManagementControlVerifier } from "@cotal-ai/core";
+
+export interface MintedControlEndpoint {
+  path: string;
+  /** Hook-only bearer handed to the session and its hook relays. */
+  token: string;
+  /** Raw bearer remains in the launching manager; only `verifier` crosses into launch material. */
+  management?: {
+    token: string;
+    fence: ManagementControlFence;
+    verifier: ManagementControlVerifier;
+  };
+}
 
 /**
  * A connector's local control endpoint: the OS path its lifecycle hooks (and the manager's
@@ -25,12 +38,24 @@ export function controlEndpoint(
   space: string,
   name: string,
   token: string = randomBytes(32).toString("base64url"),
-): { path: string; token: string } {
+  managementFence?: ManagementControlFence,
+  managementToken: string = randomBytes(32).toString("base64url"),
+): MintedControlEndpoint {
   const id = createHash("sha256")
     .update(`${space}\0${name}\0${process.pid}\0${token}`)
     .digest("base64url")
     .slice(0, 32);
   const path =
     process.platform === "win32" ? `\\\\.\\pipe\\cotal-${id}` : join(tmpdir(), `cotal-${id}.sock`);
-  return { path, token };
+  const management = managementFence
+    ? {
+        token: managementToken,
+        fence: managementFence,
+        verifier: {
+          tokenDigest: createHash("sha256").update(managementToken).digest("base64url"),
+          ...managementFence,
+        },
+      }
+    : undefined;
+  return { path, token, ...(management ? { management } : {}) };
 }

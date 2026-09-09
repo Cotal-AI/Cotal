@@ -145,7 +145,7 @@ export const opencodeConnector: Connector = {
     // Identity rides the process env: the plugin runs in the opencode process and inherits it.
     // Provider inputs cross only through the connector's declared allow-list; spawn.env adds names.
     // Minted before the env is built: the token goes into the launch material, the path into the env.
-    const control = controlEndpoint(opts.space, opts.name);
+    const control = controlEndpoint(opts.space, opts.name, undefined, opts.managementControl);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -157,7 +157,7 @@ export const opencodeConnector: Connector = {
       // executes the session's tool calls, so a shell this seat runs inherits neither the material
       // nor a reference to it. The shim itself keeps the reference, because the server it starts is
       // the reader; it runs no tools of its own.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, managementControl: control.management?.verifier, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

@@ -172,9 +172,15 @@ async function main(): Promise<void> {
   };
   controlServer = startControlServer(
     agent,
-    { path: controlPath, token: controlToken },
+    { path: controlPath, token: controlToken, ...(control.managementVerifier ? { managementVerifier: control.managementVerifier } : {}) },
     claude.handle,
-    { fatalBind: true, onShutdown: () => void shutdown(), onReply: claude.onReply },
+    {
+      fatalBind: true,
+      onReply: claude.onReply,
+      ...(control.managementVerifier
+        ? { onShutdown: () => void shutdown(), authorizeManagement: () => false }
+        : {}),
+    },
   );
 
   const server = new McpServer(

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, credsClaims, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
+import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, credsClaims, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial, type ManagementControlVerifier } from "@cotal-ai/core";
+import type { ControlEndpoint } from "./control.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -181,10 +182,21 @@ function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined {
  * this call in a try/catch because a hook that throws is a hook that blocked the session, and fail
  * open is that relay's whole documented contract. Every other caller wants exactly this throw.
  */
-export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: string; token: string } | undefined {
+export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): ControlEndpoint | undefined {
   const path = env.COTAL_CONTROL_SOCKET?.trim();
-  const token = readMaterial(env)?.controlToken ?? env.COTAL_CONTROL_TOKEN?.trim();
-  if (path && token) return { path, token };
+  const material = readMaterial(env);
+  const token = material?.controlToken ?? env.COTAL_CONTROL_TOKEN?.trim();
+  const management = material?.managementControl;
+  if (management && (!path || !token))
+    throw new Error(
+      "COTAL config: launch material carries a managementControl verifier without a complete hook control endpoint. " +
+        "Management authorization cannot repair a broken hook plane, so this launch is BLOCKED.",
+    );
+  if (path && token) return {
+    path,
+    token,
+    ...(management ? { managementVerifier: managementEndpoint(management) } : {}),
+  };
   if (!path && !token) return undefined;
   if (path)
     throw new Error(
@@ -195,6 +207,17 @@ export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: st
     "COTAL config: a control token was supplied but COTAL_CONTROL_SOCKET is unset, so there is no socket to authenticate against. " +
       "Half a pair is not a control endpoint, so this launch is refused rather than started without the control plane it was configured to have.",
   );
+}
+
+function managementEndpoint(verifier: ManagementControlVerifier): NonNullable<ControlEndpoint["managementVerifier"]> {
+  return {
+    tokenDigest: verifier.tokenDigest,
+    fence: {
+      resourceId: verifier.resourceId,
+      bindingId: verifier.bindingId,
+      controllerEpoch: verifier.controllerEpoch,
+    },
+  };
 }
 
 /**
