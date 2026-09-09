@@ -76,7 +76,7 @@ import {
 import { reconcileEndpointGate } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const EXPECTED_CELLS = 20;
+const EXPECTED_CELLS = 30;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -95,6 +95,8 @@ const IID_A = "a".repeat(26); // the instance that dies between its slot-take an
 const IID_B = "b".repeat(26); // the operator's real manager, which must be able to register
 const IID_C = "c".repeat(26); // section 6: the holder whose slot-take was AMBIGUOUS (gate never froze open)
 const IID_D = "d".repeat(26); // section 6: the successor that must reclaim C's open-gate orphan
+const IID_E = "e".repeat(26); // section 8: a freshly staged orphan holder, for the fail-closed cases
+const IID_F = "f".repeat(26); // section 8: the registrant whose seam is aimed at that orphan
 
 const dec = new TextDecoder();
 
@@ -205,6 +207,14 @@ try {
   const govDuringFlight = await readGov();
   c("the in-flight slot is untouched by the refusal - still A's, still stamped 0",
     govDuringFlight?.provisional?.instanceId === IID_A && govDuringFlight?.provisional?.generation === 0, govDuringFlight);
+  // HONEST ACCOUNTING for the matched pair. B's refusal above abort-reopened B's OWN gate, so by
+  // section 5 B sits at a different generation than it did here. That is the operator's real
+  // sequence (they retried), and it is not an input to the decision: the predicate reads the SLOT's
+  // stamp against the HOLDER's gate, never the registrant's. Asserted rather than claimed, so the
+  // pair is not credited with holding one variable fixed when a second one moved.
+  const gateBAfterRefusal = await readGate(IID_B);
+  c("the registrant's OWN gate moved between the pair's two halves, and is not an input to the predicate",
+    gateBAfterRefusal?.generation === 1 && gateBAfterRefusal.state === "open", gateBAfterRefusal);
 
   console.log("4. is that control a DISCRIMINATOR? re-run its observation through a LOOSENED predicate");
   // The single most plausible off-by-one a future edit introduces: `<` widened to `<=`, which reads
@@ -292,27 +302,36 @@ try {
   console.log("8. every doubtful observation FAILS CLOSED (AGENTS.md: throw, never silently degrade)");
   // Re-stage a genuine orphan, then aim a doubtful seam at it. Each case below WOULD be reclaimed
   // on a good observation, so a green cell here is the refusal and never an incidental block.
-  await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_A, principal: principalKey(DEV_OWNER, "govslotaaaa").key });
-  await errOf(() => register(faulting(recordsKv, specKeyA), IID_A));
-  await reconcileEndpointGate({
-    kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_A,
+  await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_E, principal: principalKey(DEV_OWNER, "govsloteeee").key });
+  const specKeyE = recordSpecKey(RECORD_KINDS.svc, [ENDPOINT, IID_E]);
+  const healE = () => reconcileEndpointGate({
+    kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_E,
     probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
     evict: async () => true, log: () => {}, recordsKv,
   });
+  // Staged TWICE on purpose, so the orphan's stamp lands at generation 1 rather than 0. A stamp of
+  // 0 has nothing below it, so the `behind the stamp` case could not be expressed against it and
+  // that fail-closed branch would go ungraded while its cell still read green.
+  await errOf(() => register(faulting(recordsKv, specKeyE), IID_E));
+  await healE();
+  await errOf(() => register(faulting(recordsKv, specKeyE), IID_E));
+  await healE();
   const govOrphan = await readGov();
-  const gateOrphan = await readGate(IID_A);
-  c("an orphan is staged for section 8: slot behind its holder's live gate",
-    govOrphan?.provisional?.instanceId === IID_A && gateOrphan !== null && govOrphan.provisional!.generation < gateOrphan.generation,
+  const gateOrphan = await readGate(IID_E);
+  c("an orphan is staged for section 8: slot behind its holder's live gate, and its stamp is above 0",
+    govOrphan?.provisional?.instanceId === IID_E && gateOrphan !== null
+    && govOrphan.provisional!.generation > 0 && govOrphan.provisional!.generation < gateOrphan.generation,
     { slot: govOrphan?.provisional?.generation, gate: gateOrphan?.generation });
 
+  await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_F, principal: principalKey(DEV_OWNER, "govslotffff").key });
   const withSeam = (seam: (h: string) => Promise<number> | number) =>
     errOf(() => registerServiceInstance(recordsKv, {
-      space: SPACE, spec: specFor(), instanceId: IID_B, registrant: { owner: DEV_OWNER }, authority,
-      barrier: endpointRegistrationBarrier(epKv, SPACE, { endpoint: ENDPOINT, instanceId: IID_B, opId: mintLifecycleUid(), evict: async () => true }),
+      space: SPACE, spec: specFor(), instanceId: IID_F, registrant: { owner: DEV_OWNER }, authority,
+      barrier: endpointRegistrationBarrier(epKv, SPACE, { endpoint: ENDPOINT, instanceId: IID_F, opId: mintLifecycleUid(), evict: async () => true }),
       readClusterArtifact, observeHolderGeneration: seam,
     }));
 
-  const noSeam = await errOf(() => register(recordsKv, IID_B, { seam: false }));
+  const noSeam = await errOf(() => register(recordsKv, IID_F, { seam: false }));
   c("NO SEAM wired -> refuses exactly as today, so no caller silently gains a reclaim it never asked for",
     noSeam.code === "conflict" && /cannot observe that instance's issuance gate/.test(noSeam.message), noSeam);
   const threw = await withSeam(() => { throw new Error("auth store unreachable"); });
@@ -324,6 +343,12 @@ try {
   const behind = await withSeam(() => 0);
   c("an observation BEHIND the slot's stamp -> `unavailable`; ahead-or-garbled never licenses a reclaim",
     behind.code === "unavailable" && /ahead of its observed live gate generation/.test(behind.message), behind);
+  // The positive control for this whole section: the SAME registrant against the SAME orphan, with
+  // a truthful seam, SUCCEEDS. Without it every refusal above could be an incidental block rather
+  // than the fail-closed branch it names.
+  const truthful = await withSeam(observeHolderGeneration);
+  c("...while a TRUTHFUL observation of that same orphan reclaims it - the refusals above are the guard, not a block",
+    truthful.message === "NO THROW", truthful);
 
   await nc.drain().catch(() => nc.close());
 } finally {
