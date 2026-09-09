@@ -232,7 +232,6 @@ function releasedBindingStillLive(binding: Binding, release: QueryOperationResul
   if (release.record.operationId !== binding.operationId) return true;
   if (resourceKeyId(release.record.resourceKey) !== resourceKeyId(binding.resourceKey)) return true;
   if (release.proofOrigin?.proves === "native-effect") return false;
-  if (release.proofOrigin?.proves === "dispatcher-retirement-only") return true;
   if (release.proofOrigin?.proves !== "cooperative-retirement") return true;
   if (!nativeLifetimePreserved(release.result)) return true;
   return false;
