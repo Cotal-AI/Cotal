@@ -121,7 +121,13 @@ throws("mesh lifecycle is closed", () => parseSessionEnrollment(enc({ ...meshEnr
 throws("mesh lifecycle id uses canonical principal grammar", () => parseSessionEnrollment(enc({ ...meshEnrolled, meshLifecycle: { ...meshEnrolled.meshLifecycle, id: "native_session" } }), key));
 throws("mesh lifecycle id names the session actor", () => parseSessionEnrollment(enc({ ...meshEnrolled, meshLifecycle: { ...meshEnrolled.meshLifecycle, id: "u_alice.other" } }), key));
 throws("mesh lifecycle uid is nonempty", () => parseSessionEnrollment(enc({ ...meshEnrolled, meshLifecycle: { ...meshEnrolled.meshLifecycle, lifecycleUid: "" } }), key));
-throws("authority ceiling is closed", () => parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, role: "worker" } }), key));
+throws("authority ceiling is closed", () => parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, extra: true } }), key));
+c("authority ceiling may omit role (role-less enrollment stays valid)",
+  parseSessionEnrollment(enc(meshEnrolled), key).kind === "mesh-enrolled"
+  && !("role" in (parseSessionEnrollment(enc(meshEnrolled), key) as MeshEnrolledSessionEnrollment).ceiling));
+c("authority ceiling may record which role was authenticated",
+  (parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, role: "reviewer" } }), key) as MeshEnrolledSessionEnrollment).ceiling.role === "reviewer");
+throws("authority ceiling role uses the ledger token grammar", () => parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, role: "bad role" } }), key));
 throws("authority ceiling requires every authority dimension", () => parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, allowPublish: undefined } }), key));
 throws("authority ceiling identity uses principal grammar", () => parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, actor: "native.session" } }), key));
 throws("authority ceiling identity names the session actor", () => parseSessionEnrollment(enc({ ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, actor: "other" } }), key));

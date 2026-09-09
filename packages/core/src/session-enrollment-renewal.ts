@@ -45,6 +45,26 @@ function refuseIfExpired(enrollment: SessionEnrollment, now: number): void {
     refuse("failed-precondition", "session enrollment provenance is not yet authentic and cannot renew a session credential");
 }
 
+/** Enrollment role records WHICH role was authenticated. Roles are non-hierarchical
+ *  (each maps to its own `svc_<role>` TASK durable), so R ∩ S has no meet and refuses.
+ *  Absence cannot acquire a later live role. R ∩ none attenuates to role-less. */
+function issuedRole(
+  enrollment: Extract<SessionEnrollment, { kind: "mesh-enrolled" }>,
+  grant: SessionRenewalGrant,
+): string | undefined {
+  const enrolled = enrollment.ceiling.role;
+  const live = grant.role;
+  if (!enrolled) {
+    if (live)
+      refuse("permission-denied", "session renewal cannot acquire a role the enrollment did not authorize");
+    return undefined;
+  }
+  if (!live) return undefined;
+  if (live !== enrolled)
+    refuse("permission-denied", `session renewal cannot issue role ${live}; enrolled role ${enrolled} does not authorize a different role's TASK grants (re-enroll)`);
+  return live;
+}
+
 function intersectScope(ceiling: readonly string[], live: readonly string[]): string[] {
   const allowed = new Set(ceiling);
   return live.filter((entry) => allowed.has(entry));
@@ -75,13 +95,17 @@ export async function getSessionEnrollment(kv: KV, resourceKey: ResourceKey): Pr
 
 export type SessionRenewalGrant = Pick<
   RetainedAgentAuthority,
-  "owner" | "actor" | "lifecycleUid" | "scope" | "allowSubscribe" | "allowPublish"
+  "owner" | "actor" | "lifecycleUid" | "scope" | "allowSubscribe" | "allowPublish" | "role"
 >;
 
 /**
  * Bound a fresh grant by the authenticated enrollment ceiling.
  * Identity (owner, actor, lifecycleUid) must match exactly. Channel lists use
  * allow-pattern containment. Scope uses exact token membership. supervise is refused.
+ * ceiling.role records WHICH role was authenticated. The live ledger is a bound
+ * (revocation lands as role-less), not a source of a different role. Roles are
+ * non-hierarchical, so enrolled R and live S have no meet and refuse. A missing
+ * role is an explicit role-less remint.
  */
 export function issuedSessionRenewalAuthority(args: {
   enrollment: SessionEnrollment;
@@ -95,6 +119,7 @@ export function issuedSessionRenewalAuthority(args: {
     refuse("permission-denied", "session renewal grant is not bound to the enrolled owner, actor, and lifecycle");
   if (ceiling.scope.includes("supervise") || grant.scope.includes("supervise"))
     refuse("permission-denied", "session renewal authority must never include supervise; renewal is not management authority");
+  const role = issuedRole(enrollment, grant);
   return Object.freeze({
     owner: ceiling.owner,
     actor: ceiling.actor,
@@ -102,6 +127,7 @@ export function issuedSessionRenewalAuthority(args: {
     scope: Object.freeze(intersectScope(ceiling.scope, grant.scope)),
     allowSubscribe: Object.freeze(intersectChannels(ceiling.allowSubscribe, grant.allowSubscribe)),
     allowPublish: Object.freeze(intersectChannels(ceiling.allowPublish, grant.allowPublish)),
+    ...(role ? { role } : {}),
   });
 }
 
@@ -140,6 +166,7 @@ export async function issueSessionRenewal(args: IssueSessionRenewalArgs): Promis
     capabilities: [...authority.scope],
     allowSubscribe: [...authority.allowSubscribe],
     allowPublish: [...authority.allowPublish],
+    ...(authority.role ? { role: authority.role } : {}),
   });
   return { jwt: minted.jwt, exp: minted.exp, authority };
 }

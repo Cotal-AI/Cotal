@@ -19,6 +19,8 @@ import {
   createSpaceAuth,
   newIdentity,
   putSessionEnrollment,
+  taskDurable,
+  taskStream,
   type MeshEnrolledSessionEnrollment,
   type NativeOnlySessionEnrollment,
   type ResourceKey,
@@ -153,6 +155,38 @@ const post = async (body: unknown, headers: Record<string, string> = {}) => {
     body: JSON.stringify(body),
   });
   return { status: res.status, json: await res.json() as Record<string, unknown> };
+};
+
+const taskRows = (role: string): string[] => {
+  const TASK = taskStream(space);
+  const svcD = taskDurable(role);
+  return [
+    `$JS.API.STREAM.INFO.${TASK}`,
+    `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
+    `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
+    `$JS.ACK.${TASK}.${svcD}.>`,
+  ];
+};
+
+const serve = async (override: Partial<typeof ctx> = {}) => {
+  const server = createServer((req, res) => {
+    void handleSessionRenewal(req, res, { ...ctx, ...override }, send, readJsonBody);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  const call = async (body: unknown = { resourceKey: resource }) => {
+    const res = await fetch(`http://127.0.0.1:${port}${SESSION_RENEWAL_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, json: await res.json() as Record<string, unknown> };
+  };
+  return { server, call };
 };
 
 try {
@@ -315,6 +349,130 @@ try {
     narrowJson.authority);
   narrowHttp.close();
   rmSync(narrowDir, { recursive: true, force: true });
+
+  console.log("E. PRODUCTION CALLER handleSessionRenewal handles role and parent explicitly");
+  const enroll = async (role?: string) => {
+    const records = new MemKv() as unknown as KV;
+    await putSessionEnrollment(records, {
+      ...meshEnrolled,
+      ceiling: role ? { ...meshEnrolled.ceiling, role } : meshEnrolled.ceiling,
+    });
+    return records;
+  };
+  {
+    // R ∩ R through handleSessionRenewal: enrolled reviewer + live reviewer keeps TASK grants.
+    const roleDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-role-"));
+    grantActor(roleDir, {
+      owner, actor, lifecycleUid,
+      scope: ["session:control"], allowSubscribe: ["general"], allowPublish: ["general"],
+      role: "reviewer",
+    });
+    const { server, call } = await serve({ dir: roleDir, records: await enroll("reviewer") });
+    const res = await call();
+    const jwt = typeof res.json.jwt === "string" ? res.json.jwt : "";
+    const pub = jwt ? (decodeJwt(jwt).nats?.pub?.allow ?? []) : [];
+    const want = taskRows("reviewer");
+    c("PRODUCTION CALLER handleSessionRenewal: unchanged-role R∩R keeps reviewer TASK grants",
+      res.status === 200 && want.every((row) => pub.includes(row)),
+      { status: res.status, missing: want.filter((row) => !pub.includes(row)) });
+    server.close();
+    rmSync(roleDir, { recursive: true, force: true });
+  }
+  {
+    // R ∩ S through handleSessionRenewal. Roles are non-hierarchical (own svc_<role> durables),
+    // so there is no meet: refuse, never mint implementer's TASK rows.
+    const changeDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-role-change-"));
+    grantActor(changeDir, {
+      owner, actor, lifecycleUid,
+      scope: ["session:control"], allowSubscribe: ["general"], allowPublish: ["general"],
+      role: "implementer",
+    });
+    const { server, call } = await serve({ dir: changeDir, records: await enroll("reviewer") });
+    const res = await call();
+    const err = typeof res.json.error === "string" ? res.json.error : "";
+    c("PRODUCTION CALLER handleSessionRenewal: R→S refuses and never grants implementer TASK rows",
+      res.status === 403 && err.includes("re-enroll") && !("jwt" in res.json),
+      { status: res.status, error: err, keys: Object.keys(res.json) });
+    server.close();
+    rmSync(changeDir, { recursive: true, force: true });
+  }
+  {
+    const noneDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-role-none-"));
+    grantActor(noneDir, {
+      owner, actor, lifecycleUid,
+      scope: ["session:control"], allowSubscribe: ["general"], allowPublish: ["general"],
+    });
+    const { server, call } = await serve({ dir: noneDir, records: await enroll() });
+    const res = await call();
+    const jwt = typeof res.json.jwt === "string" ? res.json.jwt : "";
+    const pub = jwt ? (decodeJwt(jwt).nats?.pub?.allow ?? []) : [];
+    const TASK = taskStream(space);
+    c("PRODUCTION CALLER handleSessionRenewal: role-less enrollment renews role-less and is not an error",
+      res.status === 200
+      && !pub.some((row) => row.includes(`STREAM.INFO.${TASK}`) || row.includes(`.${TASK}.`)),
+      { status: res.status, taskish: pub.filter((row) => row.includes("TASK_")) });
+    server.close();
+    rmSync(noneDir, { recursive: true, force: true });
+  }
+  {
+    // none ∩ live R: a later ledger role cannot be acquired from a role-less enrollment.
+    const acquireDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-role-acquire-"));
+    grantActor(acquireDir, {
+      owner, actor, lifecycleUid,
+      scope: ["session:control"], allowSubscribe: ["general"], allowPublish: ["general"],
+      role: "reviewer",
+    });
+    const { server, call } = await serve({ dir: acquireDir, records: await enroll() });
+    const res = await call();
+    const err = typeof res.json.error === "string" ? res.json.error : "";
+    c("PRODUCTION CALLER handleSessionRenewal: role-less enrollment cannot acquire a later live role",
+      res.status === 403 && err.includes("cannot acquire") && !("jwt" in res.json),
+      { status: res.status, error: err });
+    server.close();
+    rmSync(acquireDir, { recursive: true, force: true });
+  }
+  {
+    // R ∩ none: revocation lands as role-less attenuation.
+    const revokeDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-role-revoke-"));
+    grantActor(revokeDir, {
+      owner, actor, lifecycleUid,
+      scope: ["session:control"], allowSubscribe: ["general"], allowPublish: ["general"],
+    });
+    const { server, call } = await serve({ dir: revokeDir, records: await enroll("reviewer") });
+    const res = await call();
+    const jwt = typeof res.json.jwt === "string" ? res.json.jwt : "";
+    const pub = jwt ? (decodeJwt(jwt).nats?.pub?.allow ?? []) : [];
+    const TASK = taskStream(space);
+    c("PRODUCTION CALLER handleSessionRenewal: role revocation remints role-less (no TASK grants)",
+      res.status === 200
+      && !pub.some((row) => row.includes(`STREAM.INFO.${TASK}`) || row.includes(`.${TASK}.`)),
+      { status: res.status, taskish: pub.filter((row) => row.includes("TASK_")) });
+    server.close();
+    rmSync(revokeDir, { recursive: true, force: true });
+  }
+  {
+    // Live-chain only: these cells bind assertWithinSpawnerGrant, not an enrolled parent.
+    const parentDir = mkdtempSync(join(tmpdir(), "cotal-session-renewal-reparent-"));
+    grantActor(parentDir, {
+      owner, actor: "cli", lifecycleUid: "0123456789abcdefghijklmnoq",
+      scope: ["spawn", "session:control", "role:reviewer"],
+      allowSubscribe: ["general"], allowPublish: ["general"],
+    });
+    grantManagedActor(parentDir, {
+      owner, actor, lifecycleUid,
+      scope: ["session:control"], allowSubscribe: ["general"], allowPublish: ["general"],
+      role: "reviewer", parent: `${owner}.cli`, tokenHash: newActorToken().tokenHash,
+    });
+    const { server: okServer, call: okCall } = await serve({ dir: parentDir, records: await enroll("reviewer") });
+    const okRes = await okCall();
+    const okJwt = typeof okRes.json.jwt === "string" ? okRes.json.jwt : "";
+    const okPub = okJwt ? (decodeJwt(okJwt).nats?.pub?.allow ?? []) : [];
+    c("PRODUCTION CALLER handleSessionRenewal: live parent chain holding still remints reviewer TASK grants",
+      okRes.status === 200 && taskRows("reviewer").every((row) => okPub.includes(row)),
+      { status: okRes.status, missing: taskRows("reviewer").filter((row) => !okPub.includes(row)) });
+    okServer.close();
+    rmSync(parentDir, { recursive: true, force: true });
+  }
 } finally {
   http.close();
   rmSync(dir, { recursive: true, force: true });

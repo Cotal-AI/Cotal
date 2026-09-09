@@ -78,6 +78,14 @@ export interface AuthorityCeiling extends Readonly<Pick<RetainedAgentAuthority,
   readonly scope: readonly string[];
   readonly allowSubscribe: readonly string[];
   readonly allowPublish: readonly string[];
+  /**
+   * Which role was authenticated at enrollment. Optional: absent is a role-less
+   * enrollment and stays valid. Roles are non-hierarchical (each maps to its own
+   * `svc_<role>` TASK durable), so a later live role S has no meet with enrolled R
+   * and renewal must refuse rather than mint S. A later live role cannot be acquired
+   * from absence either.
+   */
+  readonly role?: string;
 }
 
 export interface EnrollmentCommon {
@@ -190,7 +198,7 @@ const MESH_ENROLLMENT_FIELDS = new Set([
 ]);
 const MESH_LIFECYCLE_FIELDS = new Set(["id", "lifecycleUid"]);
 const CEILING_FIELDS = new Set([
-  "owner", "actor", "lifecycleUid", "scope", "allowSubscribe", "allowPublish",
+  "owner", "actor", "lifecycleUid", "scope", "allowSubscribe", "allowPublish", "role",
 ]);
 const BINDING_FIELDS = new Set([
   "bindingId", "resourceKey", "incarnationProof", "controllerEpoch", "managerPrincipal", "mode",
@@ -299,6 +307,12 @@ function parseAuthorityCeiling(
   });
   const allowSubscribe = stringList(value.allowSubscribe, `${label}.allowSubscribe`, (entry) => { assertValidChannel(entry); });
   const allowPublish = stringList(value.allowPublish, `${label}.allowPublish`, (entry) => { assertValidChannel(entry); });
+  let role: string | undefined;
+  if (value.role !== undefined) {
+    if (typeof value.role !== "string" || !/^[A-Za-z0-9_-]+$/.test(value.role))
+      return fail(label, "carries a role that is not a plain token");
+    role = value.role;
+  }
   return Object.freeze({
     owner: value.owner,
     actor: value.actor,
@@ -306,6 +320,7 @@ function parseAuthorityCeiling(
     scope,
     allowSubscribe,
     allowPublish,
+    ...(role ? { role } : {}),
   });
 }
 

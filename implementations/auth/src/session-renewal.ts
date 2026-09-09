@@ -5,7 +5,8 @@
  * enrollment through {@link getSessionEnrollment} (parse on every read),
  * intersects a FRESH ledger grant on every issued dimension, and signs a
  * bounded `session-agent` JWT for the enrolled public nkey. The connector
- * retains the matching seed. No manager is in the path.
+ * retains the matching seed. No manager is in the path. Live `row.role` is
+ * forwarded here and issued only after enrollment∩live in issueSessionRenewal.
  *
  * `ctx.cap` is the daemon's loopback operator exchange capability. It is not
  * proof of possession and must never be distributed to session connectors. A
@@ -66,6 +67,7 @@ export function liveSessionRenewalGrant(
     scope: row.scope,
     allowSubscribe: row.allowSubscribe,
     allowPublish: row.allowPublish,
+    ...(row.role ? { role: row.role } : {}),
   };
 }
 

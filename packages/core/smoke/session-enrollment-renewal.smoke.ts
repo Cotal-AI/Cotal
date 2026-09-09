@@ -153,5 +153,19 @@ await rejects("expired enrollment cannot renew a session credential",
   () => issueSessionRenewal({ kv: expiredKv, resourceKey: resource, grant, auth, now: Date.now() }),
   "failed-precondition");
 
+console.log("D. enrolled role VALUE intersect");
+const roleKv = new MemKv() as unknown as KV;
+await putSessionEnrollment(roleKv, { ...meshEnrolled, ceiling: { ...meshEnrolled.ceiling, role: "reviewer" } });
+const same = await issueSessionRenewal({ kv: roleKv, resourceKey: resource, grant: { ...grant, role: "reviewer" }, auth });
+c("PRODUCTION CALLER issueSessionRenewal: R∩R keeps enrolled reviewer", same.authority.role === "reviewer");
+await rejects("PRODUCTION CALLER issueSessionRenewal: role-less enrollment cannot acquire a later live role",
+  () => issueSessionRenewal({ kv, resourceKey: resource, grant: { ...grant, role: "reviewer" }, auth }),
+  "permission-denied");
+await rejects("PRODUCTION CALLER issueSessionRenewal: R→S refuses (roles are non-hierarchical; re-enroll)",
+  () => issueSessionRenewal({ kv: roleKv, resourceKey: resource, grant: { ...grant, role: "implementer" }, auth }),
+  "permission-denied");
+const revoked = await issueSessionRenewal({ kv: roleKv, resourceKey: resource, grant, auth });
+c("PRODUCTION CALLER issueSessionRenewal: R∩none attenuates to role-less", revoked.authority.role === undefined);
+
 console.log(`${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
