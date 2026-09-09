@@ -200,14 +200,15 @@ function runTurn(frame, socket) {
     const next = queuedTurns.shift();
     if (next) next();
     // v8's measured boot, opt-in so no existing suite changes: its TUI submitted a recovered
-    // in-flight continuation that queued BEHIND the readiness turn and dequeued as that turn
-    // finished, so the agent was busy again at the moment the connector sent its post-join notice.
-    // busyOwner stays undefined because the turn belonged to the TUI's connection and not to the
-    // connector's, which is why all 81 of v8's rejections logged client_processing=false.
+    // continuation that begins after the readiness turn finishes, so the host sees a real working
+    // transition before it sends the post-join notice. Emit this after readiness turn_done: putting
+    // working before that event lets the host immediately clear turnActive again and makes the
+    // supposedly deterministic busy fixture race its own completion frame.
     if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS === "1" && String(frame.content).includes("cotal_orientation")) {
       turnBusy = true;
       busyOwner = undefined;
-      setTimeout(() => { turnBusy = false; }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
+      if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS_STATUS !== "1")
+        setTimeout(() => { turnBusy = false; }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
     }
   }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
 }
@@ -332,12 +333,35 @@ const server = createServer((socket) => {
                 request_kind: "context_message",
                 session_id: frame.session_id,
               });
+              if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS_STATUS === "1") {
+                // The host arms its client watcher after the readiness run returns and before it
+                // sends this notice. Publishing working from the refused notice therefore orders
+                // the status after the watcher, rather than racing a status written behind the
+                // readiness turn_done that completed the run.
+                log({ ev: "busy_after_readiness_status", status: "working", session_id: frame.session_id });
+                event({ ev: "session_status", session_id: frame.session_id, status: "working" });
+                setTimeout(() => {
+                  turnBusy = false;
+                  log({ ev: "busy_after_readiness_status", status: "idle", session_id: frame.session_id });
+                  event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
+                  const afterBusy = queuedTurns.shift();
+                  if (afterBusy) afterBusy();
+                }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
+              }
               reply({
                 ev: "error",
                 code: "internal",
                 message:
                   "internal: Cannot handle context_message while the session is busy. Try again after the current turn finishes.",
               });
+              const closeAfterNoticeFile = process.env.FAKE_JCODE_CLOSE_AFTER_BUSY_NOTICE_FILE;
+              if (closeAfterNoticeFile && !existsSync(closeAfterNoticeFile)) {
+                writeFileSync(closeAfterNoticeFile, "closed");
+                setImmediate(() => {
+                  socket.destroy();
+                  server.close();
+                });
+              }
               break;
             }
             // Accepted and queued. The acknowledgement is immediate even though the turn is not:
@@ -348,6 +372,18 @@ const server = createServer((socket) => {
           }
           if (frame.no_reply) {
             reply({ ev: "ok" });
+            break;
+          }
+          const closeBeforeAccept = process.env.FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ON_CONTENT;
+          const closeBeforeAcceptFile = process.env.FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ONCE_FILE;
+          if (
+            closeBeforeAccept &&
+            String(frame.content).includes(closeBeforeAccept) &&
+            (!closeBeforeAcceptFile || !existsSync(closeBeforeAcceptFile))
+          ) {
+            if (closeBeforeAcceptFile) writeFileSync(closeBeforeAcceptFile, "closed");
+            socket.destroy();
+            setImmediate(() => server.close());
             break;
           }
           event({ ev: "message_accepted", session_id: frame.session_id });

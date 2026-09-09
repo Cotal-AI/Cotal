@@ -1,0 +1,65 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts"
+  ],
+  "guard": "a startup kickoff remains owned until the Harness request is invoked, is dispatched once after pre-send idle or bridge recovery, and is never guessed back into the queue after an ambiguous post-dispatch close",
+  "command": "pnpm smoke:jcode-host",
+  "progressPattern": "^  ✓ ",
+  "minTicks": 2,
+  "proveWith": "pnpm mutation-proof --config extensions/connector-jcode/smoke/mutations/boot-prompt-delivery.json",
+  "why": "The busy-startup cell first-reds on zero delivery and also counts marker occurrences so a double send fails. Recovery mutations run the production provider-disconnect fixture: a close before dispatch must still deliver once without an inbox wake, while a close after the fake records the request must stay at one attempt without claiming model execution. The hasDriveWork calls inside the error-retry timer and drive finally are structurally non-discriminable for pendingKickoff: the kickoff is cleared before the only run() that can increment consecutiveFailures and before every entry to that finally, and it is never re-armed. Mutating those sites could only grade unrelated inbox work or impossible state, so the reachable idle and bridge-recovery triggers are the ones mutated here.",
+  "mutations": [
+    {
+      "name": "startup no longer owns the kickoff after the first busy pre-send guard",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "  let pendingKickoff = bootPrompt;",
+      "replace": "  let pendingKickoff: string | undefined;",
+      "expectRed": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
+      "cell": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once"
+    },
+    {
+      "name": "the first pre-send guard consumes the kickoff before returning",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;",
+      "replace": "    if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) { pendingKickoff = undefined; return; }",
+      "expectRed": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
+      "cell": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once"
+    },
+    {
+      "name": "the second pre-send guard consumes the kickoff after steering settles",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (stopping || reconnecting || turnActive || !client || !sessionId) {\n      driving = false;",
+      "replace": "    if (stopping || reconnecting || turnActive || !client || !sessionId) {\n      pendingKickoff = undefined;\n      driving = false;",
+      "expectRed": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
+      "cell": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
+      "command": "pnpm smoke:jcode-provider-disconnect"
+    },
+    {
+      "name": "idle completion ignores the owned startup kickoff when no inbox wake exists",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (!sessionBusy() && !reconnecting && hasDriveWork()) void drive();",
+      "replace": "    if (!sessionBusy() && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();",
+      "expectRed": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
+      "cell": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once"
+    },
+    {
+      "name": "bridge recovery ignores the owned startup kickoff when no inbox wake exists",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (!stopping && hasDriveWork()) void drive();",
+      "replace": "      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();",
+      "expectRed": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
+      "cell": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
+      "command": "pnpm smoke:jcode-provider-disconnect"
+    },
+    {
+      "name": "the kickoff is consumed only after completion and duplicates across recovery",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      pendingKickoff = undefined;\n      await turnClient.run(sessionId, parts.join(\"\\n\\n\"), { autoApprove: true });",
+      "replace": "      await turnClient.run(sessionId, parts.join(\"\\n\\n\"), { autoApprove: true });\n      pendingKickoff = undefined;",
+      "expectRed": "a kickoff request closed after dispatch is attempted at most once across recovery",
+      "cell": "a kickoff request closed after dispatch is attempted at most once across recovery",
+      "command": "pnpm smoke:jcode-provider-disconnect"
+    }
+  ]
+}

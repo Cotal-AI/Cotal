@@ -288,11 +288,13 @@ try {
   let peerId: string | undefined;
   let busyPeerId: string | undefined;
   const announced = new Set<string>();
-  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
+  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string } }) => {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
     if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
-    if (event.presence.card.name === "busypeer") busyPeerId = event.presence.card.id;
+    if (event.presence.card.name === "busypeer") {
+      busyPeerId = event.presence.card.id;
+    }
   });
   await operator.start();
 
@@ -488,6 +490,8 @@ try {
       FAKE_JCODE_LOG: busyLog,
       FAKE_JCODE_BUSY_MODEL: "1",
       FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
+      FAKE_JCODE_BUSY_HOLD_MS: "500",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "busypeer",
@@ -498,6 +502,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
+      COTAL_JCODE_PROMPT: "KICKOFF-MUST-SURVIVE-REFUSED-NOTICE",
       COTAL_CONTROL_SOCKET: controlSock("busy-control.sock"),
       COTAL_CONTROL_TOKEN: "busy-control-token",
     },
@@ -511,13 +516,37 @@ try {
   // while the real server still rejects.
   const busyRefusal = busyEntries.find((entry) => entry.ev === "busy_agent_rejected");
   check("the post-join notice is actually refused as agent_busy, so this cell is not vacuous", busyRefusal?.reason === "agent_busy" && busyRefusal.request_kind === "context_message" && busyRefusal.client_processing === false, busyRefusal);
-  check("a seat whose post-join notice is refused still joins the mesh", announced.has("busypeer"), { announced: [...announced], stderr: busyErr });
   const busyNotice = busyEntries.find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame?.no_reply === true && String(entry.frame?.content).includes("earlier cotal_orientation result was captured before this join"));
+  const busyRead = () => readJsonLines<{ ev: string; status?: string; session_id?: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(busyLog);
+  const busyTurns = () => busyRead().filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply);
+  const kickoff = "KICKOFF-MUST-SURVIVE-REFUSED-NOTICE";
+  const markerCount = (text: string, marker: string): number => text.split(marker).length - 1;
+  await waitFor("the post-readiness continuation to make the watched session busy", () =>
+    busyRead().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "working"));
+  await waitFor("the external busy turn to become idle", () =>
+    busyRead().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "idle"));
+  const kickoffTurn = await waitFor("the deferred kickoff turn", () =>
+    busyTurns().find((entry) => String(entry.frame?.content).includes(kickoff))).catch(() => undefined);
+  if (kickoffTurn) {
+    await waitFor("the deferred kickoff turn boundary", () =>
+      busyRead().find((entry) => entry.ev === "turn_done_emitted" && String((entry as { content?: string }).content).includes(kickoff))).catch(() => undefined);
+    await sleep(250);
+  }
+  const kickoffTurns = busyTurns().filter((entry) => String(entry.frame?.content).includes(kickoff));
+  const kickoffOccurrences = kickoffTurns.reduce((count, entry) => count + markerCount(String(entry.frame?.content), kickoff), 0);
+  check(
+    "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
+    kickoffTurns.length === 1 && kickoffOccurrences === 1,
+    { kickoffTurn, kickoffTurns, kickoffOccurrences },
+  );
+  check("a seat whose post-join notice is refused still joins the mesh", announced.has("busypeer"), { announced: [...announced], stderr: busyErr });
   check("the refused notice is still sent as a no-reply context message, not promoted to a turn", Boolean(busyNotice), busyNotice);
+  const settledTurnCount = busyTurns().length;
+  await sleep(500);
+  check("the deferred kickoff leaves no idle drive loop", busyTurns().length === settledTurnCount, busyTurns());
   // Surviving the refusal is not the same as still working. A seat that stayed up but lost its
   // mesh or tool channel would pass every assertion above, so drive real work through it: the
   // refused notice must cost the notice and nothing else.
-  const busyRead = () => readJsonLines<{ ev: string; session_id?: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(busyLog);
   // These waits report a failed cell rather than throwing. A seat killed by the refusal never
   // reaches this work at all, and an unhandled timeout would crash the suite as an unrelated early
   // failure instead of naming which guarantee broke.

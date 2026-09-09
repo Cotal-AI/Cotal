@@ -53,9 +53,17 @@ const safetyCloseOnce = join(root, "safety-first-bridge-closed");
 const safetyFailAttachOnce = join(root, "safety-recovery-attach-failed");
 const safetySessionState = join(root, "safety-session.json");
 const safetyLaunchCount = join(root, "safety-launch-count");
+const kickoffLog = join(root, "kickoff.jsonl");
+const kickoffSessionState = join(root, "kickoff-session.json");
+const kickoffNoticeClosed = join(root, "kickoff-notice-closed");
+const ambiguousLog = join(root, "ambiguous-kickoff.jsonl");
+const ambiguousSessionState = join(root, "ambiguous-session.json");
+const ambiguousRequestClosed = join(root, "ambiguous-request-closed");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
 let safetyChild: ChildProcess | undefined;
+let kickoffChild: ChildProcess | undefined;
+let ambiguousChild: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -97,9 +105,13 @@ try {
   operator.on("error", () => {});
   let peerId: string | undefined;
   let safetyPeerId: string | undefined;
+  let kickoffPeerId: string | undefined;
+  let ambiguousPeerId: string | undefined;
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodesafety") safetyPeerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodekickoff") kickoffPeerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodeambiguous") ambiguousPeerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -108,6 +120,106 @@ try {
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "provider-disconnect-smoke-token", { mode: 0o600 });
+
+  // A close after the refused notice but before drive() dispatches the busy startup kickoff leaves
+  // that kickoff provably unsent. Recovery must reattach and drive it without any inbox wake.
+  kickoffChild = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: kickoffLog,
+      FAKE_JCODE_BUSY_MODEL: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
+      FAKE_JCODE_BUSY_HOLD_MS: "500",
+      FAKE_JCODE_CLOSE_AFTER_BUSY_NOTICE_FILE: kickoffNoticeClosed,
+      FAKE_JCODE_SESSION_STATE: kickoffSessionState,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodeclose",
+      COTAL_NAME: "jcodekickoff",
+      COTAL_ID: "jcodekickoff",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_JCODE_PROMPT: "KICKOFF-PENDING-ACROSS-RECOVERY",
+      COTAL_CONTROL_SOCKET: join(root, "kickoff-control.sock"),
+      COTAL_CONTROL_TOKEN: "jcode-kickoff-recovery-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let kickoffStderr = "";
+  kickoffChild.stderr?.on("data", (chunk: Buffer) => (kickoffStderr += chunk.toString()));
+  await waitFor("pending-kickoff notice close", () => existsSync(kickoffNoticeClosed) ? true : undefined);
+  await waitFor("pending-kickoff recovery reattachment", () => {
+    const attaches = entriesOf(kickoffLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
+    return attaches.length ? attaches : undefined;
+  });
+  const recoveredKickoff = await waitFor("pending kickoff after recovery without inbox wake", () => {
+    const turns = entriesOf(kickoffLog).filter(
+      (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+        !(entry.frame as { no_reply?: boolean }).no_reply &&
+        String((entry.frame as { content?: string }).content).includes("KICKOFF-PENDING-ACROSS-RECOVERY"),
+    );
+    return turns.length ? turns : undefined;
+  });
+  check("a startup kickoff still pending before send is delivered once after recovery without an inbox wake", recoveredKickoff.length === 1, { recoveredKickoff, stderr: kickoffStderr });
+  await waitFor("pending kickoff recovery turn boundary", () => entriesOf(kickoffLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("KICKOFF-PENDING-ACROSS-RECOVERY")));
+  await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  const stableRecoveredKickoffs = entriesOf(kickoffLog).filter(
+    (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+      !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("KICKOFF-PENDING-ACROSS-RECOVERY"),
+  );
+  check("the recovered pre-send kickoff is not duplicated", stableRecoveredKickoffs.length === 1, stableRecoveredKickoffs);
+  kickoffChild.kill("SIGTERM");
+  await Promise.race([once(kickoffChild, "exit"), sleep(15_000)]);
+
+  // Once run() has emitted its request, acceptance is unknowable across a close. Recovery may restore
+  // the seat, but it must not invent a second kickoff attempt or claim that the first executed.
+  ambiguousChild = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: ambiguousLog,
+      FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ON_CONTENT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
+      FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ONCE_FILE: ambiguousRequestClosed,
+      FAKE_JCODE_SESSION_STATE: ambiguousSessionState,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodeclose",
+      COTAL_NAME: "jcodeambiguous",
+      COTAL_ID: "jcodeambiguous",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_JCODE_PROMPT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
+      COTAL_CONTROL_SOCKET: join(root, "ambiguous-control.sock"),
+      COTAL_CONTROL_TOKEN: "jcode-ambiguous-kickoff-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let ambiguousStderr = "";
+  ambiguousChild.stderr?.on("data", (chunk: Buffer) => (ambiguousStderr += chunk.toString()));
+  await waitFor("ambiguous kickoff request close", () => existsSync(ambiguousRequestClosed) ? true : undefined);
+  await waitFor("ambiguous kickoff recovery reattachment", () => {
+    const attaches = entriesOf(ambiguousLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
+    return attaches.length ? attaches : undefined;
+  });
+  await waitFor("ambiguous kickoff seat returns to the roster", () => ambiguousPeerId);
+  await sleep(500);
+  const ambiguousAttempts = entriesOf(ambiguousLog).filter(
+    (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+      !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("KICKOFF-DISPATCHED-OUTCOME-UNKNOWN"),
+  );
+  check("a kickoff request closed after dispatch is attempted at most once across recovery", ambiguousAttempts.length === 1, { ambiguousAttempts, stderr: ambiguousStderr });
+  ambiguousChild.kill("SIGTERM");
+  await Promise.race([once(ambiguousChild, "exit"), sleep(15_000)]);
   child = spawn(tsx, [host], {
     cwd: root,
     env: {
@@ -284,6 +396,8 @@ try {
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   if (safetyChild && safetyChild.exitCode === null) safetyChild.kill("SIGKILL");
+  if (kickoffChild && kickoffChild.exitCode === null) kickoffChild.kill("SIGKILL");
+  if (ambiguousChild && ambiguousChild.exitCode === null) ambiguousChild.kill("SIGKILL");
   for (const entry of [...entriesOf(log), ...entriesOf(safetyLog)]) {
     if (entry.ev !== "listening" || typeof entry.pid !== "number") continue;
     try {

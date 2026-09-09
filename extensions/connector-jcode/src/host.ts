@@ -267,6 +267,10 @@ export async function runJcodeHost(): Promise<void> {
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
+  // Startup owns the kickoff until the Harness request is invoked. Any return before that boundary
+  // is provably unsent and safe to defer; after invocation acceptance is not knowable, so it is
+  // consumed and never guessed back into the queue.
+  let pendingKickoff = bootPrompt;
   const readinessBudgetMs = readinessTurnTimeoutMs();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
@@ -435,6 +439,10 @@ export async function runJcodeHost(): Promise<void> {
   const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
   const BRIDGE_RECOVERY_RETRY_MS = 1_000;
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
+  // increment failures and is never re-armed. The error-retry timer therefore never owns kickoff
+  // liveness; idle and bridge recovery below are the reachable pre-dispatch triggers.
+  const hasDriveWork = (): boolean => pendingKickoff !== undefined || agent.pendingWake() > 0 || wakeQueued;
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
@@ -452,7 +460,7 @@ export async function runJcodeHost(): Promise<void> {
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
       if (stopping || driving || turnActive) return;
-      if (agent.pendingWake() > 0 || wakeQueued) void drive();
+      if (hasDriveWork()) void drive();
     }, delay);
     // Never hold the process open on a pending retry.
     errorRetryTimer.unref?.();
@@ -494,10 +502,10 @@ export async function runJcodeHost(): Promise<void> {
 
   const finishHostIdleTurn = async (): Promise<void> => {
     await commitSteeredIfHostIdle();
-    if (!sessionBusy() && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+    if (!sessionBusy() && !reconnecting && hasDriveWork()) void drive();
   };
 
-  const drive = async (override?: string): Promise<void> => {
+  const drive = async (): Promise<void> => {
     if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
     driving = true;
     await steerSettled;
@@ -517,7 +525,7 @@ export async function runJcodeHost(): Promise<void> {
     // Run turns ride the same composed injection; their ids commit as surfaced only after the
     // turn verifiably ran (two-phase — a failed or severed turn re-surfaces them, never a lie).
     const turnPeek = agent.peekPendingTurns();
-    if (override) parts.push(override);
+    if (pendingKickoff !== undefined) parts.push(pendingKickoff);
     else {
       const inbox = agent.peekInbox("automatic");
       const injection = formatInjection(inbox);
@@ -545,6 +553,9 @@ export async function runJcodeHost(): Promise<void> {
     let turnClient: JcodeClient | undefined;
     try {
       turnClient = client;
+      // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
+      // run() is invoked, a close or timeout cannot prove the model rejected it, so never retry it.
+      pendingKickoff = undefined;
       await turnClient.run(sessionId, parts.join("\n\n"), { autoApprove: true });
       // The SDK's event iterator returns normally when its socket closes. That is not a successful
       // turn: the model may never have received the injection, so preserving the inbox batch is the
@@ -592,7 +603,7 @@ export async function runJcodeHost(): Promise<void> {
           scheduleErrorRetry();
         } else {
           void agent.setStatus("idle").catch(() => {});
-          if (agent.pendingWake() > 0 || wakeQueued) void drive();
+          if (hasDriveWork()) void drive();
         }
       }
     }
@@ -703,7 +714,7 @@ export async function runJcodeHost(): Promise<void> {
       await shutdown(1);
     } finally {
       reconnecting = false;
-      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+      if (!stopping && hasDriveWork()) void drive();
     }
   };
 
@@ -935,7 +946,7 @@ export async function runJcodeHost(): Promise<void> {
     } catch (notice) {
       writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
     }
-    if (bootPrompt) await drive(bootPrompt);
+    if (pendingKickoff !== undefined) await drive();
   } catch (error) {
     // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
     // flight. That is the shutdown completing, not a startup failure: let its teardown own the
