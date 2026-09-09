@@ -249,14 +249,22 @@ export function holdsServerView(permissions: Record<string, unknown>): boolean {
  *    write on the same stream, which `writeAndRawReadStreams` forbids for peer-held profiles.
  *  - `stored-captured-subject`: delivers stored bytes, under the message's own captured subject.
  *  - `stored-marked`: delivers raw stored bytes under the chosen subject, carrying `Nats-` headers.
+ *  - `creates-push-delivery`: the response is an API envelope, but the call also creates a consumer
+ *    that can carry a caller-chosen `deliver_subject`. Its own ground is separate and measured:
+ *    push delivery is interest-gated and does not reach an endpoint's wildcard queue subscription.
  *  - `no-delivery`: publishes nothing back to a caller-chosen subject.
+ *
+ *  A verb that configures the SERVER to publish on the holder's behalf, such as a stream create or
+ *  update carrying `republish`, is deliberately absent. No peer-held profile holds one, and the
+ *  table refuses an unclassified verb rather than guessing, so granting one forces a decision.
  *  Classes two and three are measured in `issued-ingress-origin.smoke.ts`, and so is the
  *  `$SYS.REQ.USER.INFO` response the issued contract's discovery rule would add. */
-export type DeliveryClass = "api-envelope" | "stored-captured-subject" | "stored-marked" | "no-delivery";
+export type DeliveryClass = "api-envelope" | "stored-captured-subject" | "stored-marked" | "creates-push-delivery" | "no-delivery";
 const DELIVERY_CLASSES: readonly (readonly [RegExp, DeliveryClass])[] = Object.freeze([
   [/^\$JS\.API\.DIRECT\.GET\./, "stored-marked"],
   [/^\$JS\.API\.CONSUMER\.MSG\.NEXT\./, "stored-captured-subject"],
-  [/^\$JS\.API\.(INFO$|STREAM\.(INFO|MSG\.GET)\.|CONSUMER\.(INFO|CREATE|DELETE)\.)/, "api-envelope"],
+  [/^\$JS\.API\.CONSUMER\.CREATE\./, "creates-push-delivery"],
+  [/^\$JS\.API\.(INFO$|STREAM\.(INFO|MSG\.GET)\.|CONSUMER\.(INFO|DELETE)\.)/, "api-envelope"],
   [/^\$JS\.(ACK|FC)\./, "no-delivery"],
   // The discovery grant the issued contract adds. Its response reaches a caller-chosen reply
   // subject with no headers, measured in issued-ingress-origin.smoke.ts, so it belongs here rather

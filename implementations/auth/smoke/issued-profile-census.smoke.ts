@@ -123,6 +123,12 @@ try {
     // how that argument silently goes stale, so every $JS. grant is classified and an unknown
     // verb refuses.
     assert.throws(() => deliveryClassOf("$JS.API.STREAM.PURGE.CHAT_x"), /unclassified/);
+    // A stream create or update can carry `republish`, which makes the server publish stored
+    // messages to a destination the holder names. No peer holds one; the table must refuse it
+    // rather than fold it into an envelope class.
+    assert.throws(() => deliveryClassOf("$JS.API.STREAM.CREATE.CHAT_x"), /unclassified/);
+    assert.throws(() => deliveryClassOf("$JS.API.STREAM.UPDATE.CHAT_x"), /unclassified/);
+    assert.equal(deliveryClassOf("$JS.API.CONSUMER.CREATE.CHAT_x.d"), "creates-push-delivery");
     assert.throws(() => deliveryClassOf("$SYS.REQ.ACCOUNT.x.CONNZ"), /unclassified/);
     assert.equal(deliveryClassOf("$SYS.REQ.USER.INFO"), "api-envelope");
     const classified: Record<string, string[]> = {};
@@ -131,7 +137,7 @@ try {
       for (const { row, cls } of deliveryPaths(fixture.permissions)) (classified[cls] ??= []).push(row);
     }
     // Each class fails the forgery on its own ground, so none is absent by accident.
-    assert.deepEqual(Object.keys(classified).sort(), ["api-envelope", "no-delivery", "stored-captured-subject", "stored-marked"]);
+    assert.deepEqual(Object.keys(classified).sort(), ["api-envelope", "creates-push-delivery", "no-delivery", "stored-captured-subject", "stored-marked"]);
     observations.peerDeliveryClasses = Object.fromEntries(Object.entries(classified).map(([k, v]) => [k, [...new Set(v)].length]));
   });
 

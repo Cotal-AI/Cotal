@@ -131,6 +131,14 @@
       "replace": "",
       "expectRed": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap",
       "cell": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap"
+    },
+    {
+      "name": "a stream-configuring verb folds into an envelope class",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  [/^\\\\$JS\\\\.API\\\\.CONSUMER\\\\.CREATE\\\\./, \"creates-push-delivery\"],",
+      "replace": "  [/^\\\\$JS\\\\.API\\\\.CONSUMER\\\\.CREATE\\\\./, \"creates-push-delivery\"],\n  [/^\\\\$JS\\\\.API\\\\.STREAM\\\\./, \"api-envelope\"],",
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
     }
   ]
 }
