@@ -138,8 +138,8 @@
     {
       "name": "run-start admits a legacy-rail caller",
       "file": "implementations/manager/src/run-hosting.ts",
-      "find": "    if (ctx.subject.rail !== \"v1\" || !isIssuedCaller(caller))\n      throw new EpEnvelopeError(",
-      "replace": "    if (ctx.subject.rail !== \"v1\" && isIssuedCaller(caller))\n      throw new EpEnvelopeError(",
+      "find": "    if (ctx.subject.rail !== \"v1\" || !isIssuedCaller(caller))\n      throw new EpEnvelopeError(\n        \"permission-denied\",\n        `run-start binds a run to the caller's issued authority, and this request rode the legacy rail with none; re-mint the credential as an issuance and call on the versioned rail (SPEC 13.15, 14.8)`,\n        [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }],\n      );\n    const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };",
+      "replace": "    const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: (caller as { generation?: string }).generation ?? \"0\".repeat(32) };",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "run-start on the legacy rail is permission-denied with the unbound-caller-authority detail naming the caller",
       "cell": "run-start on the legacy rail is permission-denied with the unbound-caller-authority detail naming the caller"
