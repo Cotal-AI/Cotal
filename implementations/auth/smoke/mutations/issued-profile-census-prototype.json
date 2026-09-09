@@ -156,6 +156,22 @@
       "replace": "/\\b(cells?|mutations?)\\b((?:(?!\\b(?:cells?|mutations?)\\b)[^|])*)/g",
       "expectRed": "every cell and mutation the claim ledger cites still exists",
       "cell": "every cell and mutation the claim ledger cites still exists"
+    },
+    {
+      "name": "the legacy consumer-create door is treated as an envelope",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],",
+      "replace": "  [/^\\$JS\\.API\\.CONSUMER\\.DURABLE\\.CREATE\\./, \"api-envelope\"],\n  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],",
+      "expectRed": "every API verb the client library can call is classified or refused",
+      "cell": "every API verb the client library can call is classified or refused"
+    },
+    {
+      "name": "a delivery-configuring verb is dropped from the pairing",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  \"STREAM.CREATE\", \"STREAM.UPDATE\", \"CONSUMER.CREATE\", \"CONSUMER.DURABLE.CREATE\",",
+      "replace": "  \"STREAM.CREATE\", \"STREAM.UPDATE\", \"CONSUMER.CREATE\",",
+      "expectRed": "every API verb the client library can call is classified or refused",
+      "cell": "every API verb the client library can call is classified or refused"
     }
   ]
 }

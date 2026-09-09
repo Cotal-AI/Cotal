@@ -315,3 +315,30 @@ export function suiteCellNames(source: string): string[] {
   }
   return names;
 }
+
+/**
+ * Every stream, consumer and direct API verb the INSTALLED client library can call, read out of
+ * its own source. The exhaustiveness claim quantifies over grants a peer could hold, and the set
+ * a client can usefully hold is bounded by what its library can call. Reading the library rather
+ * than typing a list means a version bump that adds a verb forces a classification decision
+ * instead of silently widening the set the origin argument ranges over.
+ */
+export function clientApiVerbs(libDir: string): string[] {
+  const found = new Set<string>();
+  for (const file of readdirSync(libDir).filter((name) => name.endsWith(".js"))) {
+    for (const match of readFileSync(join(libDir, file), "utf8").matchAll(/\b(STREAM|CONSUMER|DIRECT)((?:\.[A-Z]+)+)\b/g))
+      found.add(`${match[1]}${match[2]}`);
+  }
+  if (found.size < 15) throw new Error(`only ${found.size} API verbs found under ${libDir}; the extractor is not reading the library`);
+  return [...found].sort();
+}
+
+/**
+ * Verbs that configure where the SERVER delivers: a stream's `republish`, and the two subjects
+ * that create a consumer carrying a `deliver_subject`. `CONSUMER.DURABLE.CREATE` is the legacy
+ * spelling of `CONSUMER.CREATE` and creates the same push consumer, so a classifier that knows
+ * only the modern spelling covers one of two doors. None of these may ever be an envelope class.
+ */
+export const DELIVERY_CONFIGURING_VERBS: readonly string[] = Object.freeze([
+  "STREAM.CREATE", "STREAM.UPDATE", "CONSUMER.CREATE", "CONSUMER.DURABLE.CREATE",
+]);

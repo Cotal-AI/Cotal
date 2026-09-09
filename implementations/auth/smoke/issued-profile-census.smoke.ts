@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
@@ -13,7 +13,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -139,6 +139,34 @@ try {
     // Each class fails the forgery on its own ground, so none is absent by accident.
     assert.deepEqual(Object.keys(classified).sort(), ["api-envelope", "creates-push-delivery", "no-delivery", "stored-captured-subject", "stored-marked"]);
     observations.peerDeliveryClasses = Object.fromEntries(Object.entries(classified).map(([k, v]) => [k, [...new Set(v)].length]));
+  });
+
+  await check("every API verb the client library can call is classified or refused", async () => {
+    const { createRequire } = await import("node:module");
+    const lib = dirname(createRequire(import.meta.url).resolve("@nats-io/jetstream"));
+    const verbs = clientApiVerbs(lib);
+    const classified: string[] = [], refused: string[] = [];
+    for (const verb of verbs) {
+      const row = `$JS.API.${verb}${verb.endsWith("LIST") || verb.endsWith("NAMES") ? "" : ".s"}`;
+      try { deliveryClassOf(row); classified.push(verb); }
+      catch (error) {
+        assert.match(String((error as Error).message), /unclassified JetStream grant/, `${verb} failed for a reason other than being unclassified`);
+        refused.push(verb);
+      }
+    }
+    assert.equal(classified.length + refused.length, verbs.length);
+    // A verb that configures where the server delivers must never resolve to an envelope class:
+    // an envelope is answered to the requester, while these hand the server a destination.
+    // The pairing is derived, not trusted: any verb that creates or updates a stream or consumer
+    // hands the server a configuration, so dropping one from the constant fails here.
+    assert.deepEqual(verbs.filter((verb) => /\.(CREATE|UPDATE)$/.test(verb)), [...DELIVERY_CONFIGURING_VERBS].sort());
+    for (const verb of DELIVERY_CONFIGURING_VERBS) {
+      assert.ok(verbs.includes(verb), `${verb} is no longer in the library surface; the pairing is stale`);
+      let cls: string | undefined;
+      try { cls = deliveryClassOf(`$JS.API.${verb}.s`); } catch { cls = undefined; }
+      assert.notEqual(cls, "api-envelope", `${verb} configures server-side delivery and cannot be an envelope`);
+    }
+    observations.clientApiSurface = { verbs: verbs.length, classified: classified.length, refused: refused.length };
   });
 
   await check("every cell and mutation the claim ledger cites still exists", async () => {
