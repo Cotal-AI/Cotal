@@ -93,9 +93,9 @@
       "cell": "transfer dispatches the transfer method through the public entry"
     },
     {
-      "name": "persist terminal-success without native-effect proof",
+      "name": "persist terminal-success without native-effect or cooperative-retirement proof",
       "file": "packages/core/src/native-lifecycle-executor.ts",
-      "find": "    if (native.operation.state === \"terminal-success\" && native.operation.proofOrigin?.proves !== \"native-effect\")\n      return persistIndeterminate(kv, prepared.record, \"provider returned terminal-success without native-effect proof\");\n",
+      "find": "    if (native.operation.state === \"terminal-success\") {\n      const proves = native.operation.proofOrigin?.proves;\n      if (proves !== \"native-effect\" && proves !== \"cooperative-retirement\")\n        return persistIndeterminate(kv, prepared.record, \"provider returned terminal-success without native-effect or cooperative-retirement proof\");\n    }\n",
       "replace": "",
       "expectRed": "journal-receipt terminal-success release stays indeterminate",
       "cell": "journal-receipt terminal-success release stays indeterminate"
@@ -111,10 +111,10 @@
     {
       "name": "treat cooperative-retirement as sufficient without preserved lifetime",
       "file": "packages/core/src/native-lifecycle-executor.ts",
-      "find": "  if ((durable.proofOrigin?.proves as string | undefined) !== \"cooperative-retirement\") return false;\n  return nativeLifetimePreserved(durable.result);\n",
-      "replace": "  if ((durable.proofOrigin?.proves as string | undefined) !== \"cooperative-retirement\") return false;\n  return true;\n",
-      "expectRed": "cooperative-retirement without nativeLifetimePreserved cannot advance to released",
-      "cell": "cooperative-retirement without nativeLifetimePreserved cannot advance to released"
+      "find": "  if (operation !== \"release\") return false;\n  return !releasedBindingStillLive({ ...current, operationId: durable.record.operationId }, durable);\n",
+      "replace": "  if (operation !== \"release\") return false;\n  return true;\n",
+      "expectRed": "cooperative-retirement without preserved lifetime did not mark the binding released",
+      "cell": "cooperative-retirement without preserved lifetime did not mark the binding released"
     }
   ]
 }

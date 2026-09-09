@@ -40,7 +40,9 @@ import {
   prepareSessionOperation,
   queryOperation,
   readSessionTrustedState,
+  releasedBindingStillLive,
   updateSessionOperation,
+  type QueryOperationResult,
 } from "./session-lifecycle-store.js";
 
 const MUTATING: ReadonlySet<NativeLifecycleOperation> = new Set(["adopt", "release", "transfer", "recover"]);
@@ -105,35 +107,23 @@ function samePreparedIdentity(prepared: SessionOperationRecord, claimed: Session
     && resourceKeyId(claimed.resourceKey) === resourceKeyId(prepared.resourceKey);
 }
 
-function nativeLifetimePreserved(result: unknown): boolean {
-  return result !== null && typeof result === "object" && !Array.isArray(result)
-    && (result as { nativeState?: unknown }).nativeState === "preserved";
-}
-
-/** Forward guard for binding advance. Native-effect may settle adopt/release.
- *  Cooperative-retirement may settle release only with matching resourceKey,
- *  bindingId and operationId AND preserved native lifetime. A proves value
- *  alone never writes `released`. Same obligation as releasedBindingStillLive,
- *  seen from the writer; not a copy of that function. */
+/** Writer-side binding advance. Native-effect may settle adopt/release when
+ *  resourceKey, bindingId and record.action match the requested operation.
+ *  Cooperative-retirement may settle release only when the imported store
+ *  predicate would treat that receipt as a completed release (matching ids
+ *  and preserved native lifetime). A proves value alone never writes `released`. */
 export function mayAdvanceBinding(
   current: Binding,
-  durable: {
-    readonly state: string;
-    readonly record?: SessionOperationRecord;
-    readonly result?: unknown;
-    readonly proofOrigin?: SessionOperationRecord["proofOrigin"];
-  },
+  durable: QueryOperationResult,
   operation: NativeLifecycleOperation,
 ): boolean {
-  if (durable.state !== "terminal-success" || durable.record === undefined) return false;
+  if (durable.state !== "terminal-success") return false;
   if (durable.record.bindingId !== current.bindingId) return false;
   if (resourceKeyId(durable.record.resourceKey) !== resourceKeyId(current.resourceKey)) return false;
   if (durable.proofOrigin?.proves === "native-effect")
     return (operation === "adopt" || operation === "release") && durable.record.action === operation;
-  if (operation !== "release" || durable.record.action !== "release") return false;
-  if (durable.record.operationId !== current.operationId) return false;
-  if ((durable.proofOrigin?.proves as string | undefined) !== "cooperative-retirement") return false;
-  return nativeLifetimePreserved(durable.result);
+  if (operation !== "release") return false;
+  return !releasedBindingStillLive({ ...current, operationId: durable.record.operationId }, durable);
 }
 
 async function readBinding(kv: KV, resourceKey: ResourceKey): Promise<{ readonly binding: Binding; readonly revision: number } | undefined> {
@@ -352,8 +342,11 @@ export async function executeNativeLifecycle(
   if (native.state === "recorded") {
     if (!samePreparedIdentity(prepared.record, native.operation))
       return persistIndeterminate(kv, prepared.record, "provider recorded receipt does not match prepared resourceKey/bindingId/operationId");
-    if (native.operation.state === "terminal-success" && native.operation.proofOrigin?.proves !== "native-effect")
-      return persistIndeterminate(kv, prepared.record, "provider returned terminal-success without native-effect proof");
+    if (native.operation.state === "terminal-success") {
+      const proves = native.operation.proofOrigin?.proves;
+      if (proves !== "native-effect" && proves !== "cooperative-retirement")
+        return persistIndeterminate(kv, prepared.record, "provider returned terminal-success without native-effect or cooperative-retirement proof");
+    }
     const stored: SessionOperationRecord = {
       ...prepared.record,
       state: native.operation.state,

@@ -85,10 +85,20 @@ function readBindingRow(kv: MemKv, key = sessionBindingKey(resource)): Binding |
 }
 const otherResource: ResourceKey = { ...resource, stableSessionId: "session-other" };
 const effects: string[] = [];
+const drainedProof = {
+  kind: "dispatcher-retirement" as const,
+  admissionClosed: true as const,
+  dispatcherSettled: true as const,
+  retiredStatePersisted: true as const,
+  liveRequestCollector: "complete" as const,
+  unprovenLiveRequestIds: [] as const,
+  proves: "cooperative-retirement" as const,
+};
+
 function connection(
   ops: readonly NativeLifecycleOperation[],
   mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
-  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" = "ok",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" | "coop-release" | "coop-release-live" = "ok",
 ): NativeLifecycleConnection {
   const inspect = async () => { effects.push("inspect"); return observation(); };
   const discover = async () => {
@@ -144,6 +154,19 @@ function connection(
           },
         };
       }
+      if (kind === "coop-release" || kind === "coop-release-live") {
+        return {
+          state: "recorded",
+          operation: {
+            ...operation,
+            state: "terminal-success",
+            result: kind === "coop-release"
+              ? { bindingState: "released", nativeState: "preserved" }
+              : { bindingState: "released" },
+            proofOrigin: drainedProof,
+          },
+        };
+      }
       return {
         state: "recorded",
         operation: {
@@ -176,7 +199,7 @@ function register(
   name: string,
   ops: readonly NativeLifecycleOperation[],
   mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
-  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" = "ok",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" | "coop-release" | "coop-release-live" = "ok",
 ): void {
   const provider: NativeLifecycleProvider = {
     kind: "native-lifecycle",
@@ -193,6 +216,8 @@ register("executor-missing-adopt", ["discover", "inspect"]);
 register("executor-mismatch", ["inspect", "preflight", "adopt"], "cooperative-exclusive", "mismatch");
 register("executor-native-release", mutatingOps, "cooperative-exclusive", "native-release");
 register("executor-journal-release", mutatingOps, "cooperative-exclusive", "journal-release");
+register("executor-coop-release", mutatingOps, "cooperative-exclusive", "coop-release");
+register("executor-coop-release-live", mutatingOps, "cooperative-exclusive", "coop-release-live");
 register("executor-preflight-refuse", ["preflight"], "cooperative-exclusive", "preflight-refuse");
 
 console.log("A. public entry refuses before any native effect");
@@ -321,6 +346,34 @@ c("journal-receipt release is not stored as terminal-success", journalRelRow.sta
 c("journal-receipt release did not mark the binding released", readBindingRow(kvJournalRel as unknown as MemKv)?.state === "managed");
 
 effects.length = 0;
+const kvCoopLive = new MemKv() as unknown as KV;
+await executeNativeLifecycle(kvCoopLive, {
+  ...requestBase, providerName: "executor-coop-release-live", operation: "adopt", operationId: "op-adopt-coop-live", bindingId: "binding-coop-live",
+});
+const coopLive = await executeNativeLifecycle(kvCoopLive, {
+  ...requestBase, providerName: "executor-coop-release-live", operation: "release", operationId: "op-rel-coop-live", bindingId: "binding-coop-live",
+  expectedBindingRevision: bindingRevision(kvCoopLive as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
+});
+c("cooperative-retirement without preserved lifetime persists as terminal-success", coopLive.state === "recorded" && coopLive.operation.state === "terminal-success" && coopLive.operation.proofOrigin?.proves === "cooperative-retirement", coopLive);
+const coopLiveRow = await queryOperation(kvCoopLive, resource, "op-rel-coop-live");
+c("cooperative-retirement without preserved lifetime is durable", coopLiveRow.state === "terminal-success" && coopLiveRow.proofOrigin?.proves === "cooperative-retirement", coopLiveRow);
+c("cooperative-retirement without preserved lifetime did not mark the binding released", readBindingRow(kvCoopLive as unknown as MemKv)?.state === "managed");
+
+effects.length = 0;
+const kvCoop = new MemKv() as unknown as KV;
+await executeNativeLifecycle(kvCoop, {
+  ...requestBase, providerName: "executor-coop-release", operation: "adopt", operationId: "op-adopt-coop", bindingId: "binding-coop-ok",
+});
+const coopReleased = await executeNativeLifecycle(kvCoop, {
+  ...requestBase, providerName: "executor-coop-release", operation: "release", operationId: "op-rel-coop", bindingId: "binding-coop-ok",
+  expectedBindingRevision: bindingRevision(kvCoop as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released", nativeState: "preserved" },
+});
+c("cooperative-retirement with preserved lifetime is terminal-success", coopReleased.state === "recorded" && coopReleased.operation.state === "terminal-success" && coopReleased.operation.proofOrigin?.proves === "cooperative-retirement", coopReleased);
+const coopRow = await queryOperation(kvCoop, resource, "op-rel-coop");
+c("cooperative-retirement with preserved lifetime is durable", coopRow.state === "terminal-success" && coopRow.proofOrigin?.proves === "cooperative-retirement", coopRow);
+c("cooperative-retirement with preserved lifetime marked the binding released", readBindingRow(kvCoop as unknown as MemKv)?.state === "released");
+
+effects.length = 0;
 const kvStale = new MemKv() as unknown as KV;
 await executeNativeLifecycle(kvStale, {
   ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-stale", bindingId: "binding-stale",
@@ -383,9 +436,9 @@ const coopRecord: SessionOperationRecord = {
 c("cooperative-retirement without nativeLifetimePreserved cannot advance to released",
   mayAdvanceBinding(managedBinding, {
     state: "terminal-success",
-    record: coopRecord,
+    record: { ...coopRecord, proofOrigin: drainedProof, result: { bindingState: "released" } },
     result: { bindingState: "released" },
-    proofOrigin: { kind: "journal-receipt", journalRevision: 1, proves: "cooperative-retirement" as "journal-transition-only" },
+    proofOrigin: drainedProof,
   }, "release") === false);
 c("native-effect adopt still may advance to managed",
   mayAdvanceBinding({ ...managedBinding, state: "adopt-prepared", operationId: "op-adopt" }, {
