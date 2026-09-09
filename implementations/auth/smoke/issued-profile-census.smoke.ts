@@ -113,6 +113,17 @@ try {
       try { importNativeSubjectPermissions(fixture.permissions); }
       catch (error) { normalization = (error as Error).message; }
       reports.push({ profile: fixture.profile, variant: fixture.variant, producer: fixture.producer, pub, sub, normalization, native });
+      if (fixture.profile === "endpoint-serve") {
+        // The one standing profile on the versioned rail (SPEC 13.15): an endpoint serves both
+        // rails, so its rows reach `ep.v1` on the reply publish (attribution-pinned, one more
+        // spanned token) and the three subscribe shapes per command. Never a request form: the
+        // serve credential cannot spell a request on either rail.
+        assert.deepEqual(pub.overlaps, pub.overlaps.filter((row) => /\.ep\.v1\.reply\./.test(row)), JSON.stringify(pub));
+        assert.ok(pub.overlaps.length === 1, JSON.stringify(pub));
+        assert.deepEqual(sub.overlaps, sub.overlaps.filter((row) => /\.ep\.v1\.(one|all|inst)\./.test(row)), JSON.stringify(sub));
+        assert.deepEqual(native.map((r) => [r.publish, r.subscribe]), [[false, false], [true, false]], JSON.stringify(native));
+        return;
+      }
       assert.equal(pub.potential, false, JSON.stringify(pub));
       assert.equal(sub.potential, false, JSON.stringify(sub));
       assert.ok(native.every((r) => !r.publish && !r.subscribe));
@@ -225,13 +236,20 @@ try {
     assert.deepEqual(fixtures.filter((f) => holdsServerView(f.permissions)).map((f) => `${f.profile}/${f.variant}`), []);
   });
 
-  await check("no shipped source emits an issued-rail subject, under any option combination", async () => {
-    // The per-variant checks above cover representative options only. This closes the rest: a
-    // namespace no shipped builder ever writes cannot be reached by any option combination.
+  await check("the issued rail is spelled only by core's endpoint subject and grant builders", async () => {
+    // The versioned rail (SPEC 13.15) is reachable only through the builders that pin the
+    // generation token beside the caller triple. Any other shipped file spelling `ep.v1` is a
+    // second, unpinned way onto the rail, so the scan closes over every shipped source and
+    // names the four files that may.
     const root = fileURLToPath(new URL("../../..", import.meta.url));
     const files = shippedSources(root);
-    const offenders = files.filter((file) => /ep\.v1/.test(readFileSync(file, "utf8")));
-    assert.deepEqual(offenders.map((f) => f.slice(root.length)), []);
+    const builders = ["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
+      "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts"];
+    // The generated docs bundle mirrors the published pages, which describe the rail in prose;
+    // it builds no subject. It is the one shipped file allowed to spell the rail outside core.
+    const prose = "extensions/connector-core/src/docs-bundle.generated.ts";
+    const spelled = files.filter((file) => /ep\.v1/.test(readFileSync(file, "utf8"))).map((f) => f.slice(root.length)).filter((f) => f !== prose).sort();
+    assert.deepEqual(spelled, [...builders].sort());
     // Positive control: the corpus really contains the endpoint subject builders it must cover.
     assert.ok(files.some((file) => /function epRequestSubject/.test(readFileSync(file, "utf8"))), `scanned ${files.length} files without reaching the subject builders`);
     // The published composition root is shipped code. A negative claim about shipped code that
@@ -331,7 +349,7 @@ try {
     nativeProfileDecisions: fixtures.length * subjects.length * 2,
     nonProfileKinds: ["membership-observer", "connection-evictor"],
     refusedCalloutViews: ["manager-service"],
-    scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
+    scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint, and is the one standing profile that reaches the versioned rail (its reply publish and serve subscriptions); an issued caller mint reaches it by construction and is measured by the binding suites, not here. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
     rows: reports, peerHeldProfiles: PEER_HELD_PROFILES, ...observations,
   };
   if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify(report, null, 2) + "\n");

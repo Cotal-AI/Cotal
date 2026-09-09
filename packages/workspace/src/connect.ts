@@ -7,7 +7,11 @@ import {
   isReachable,
   mintCreds,
   mintLifecycleUid,
+  mintGeneration,
+  mintAcceptedToken,
   newIdentity,
+  withIssuerSession,
+  type IssuedCaller,
   probeConnect,
   registry,
   type AuthProvider,
@@ -48,7 +52,7 @@ export interface ConnectFlags {
  *  and attempt, a `run-operator`'s endpoint and call) straight into `mintCreds`. */
 export interface ConnectOpts {
   instanceId?: string | string[];
-  mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator">;
+  mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
 }
 
 /** Raw NATS auth for an off-registry connection — a join link / --token / --user+--pass / --creds.
@@ -357,8 +361,19 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       const pinned = opts.instanceId !== undefined && role !== "deployer"
         ? instancePinnedInstrumentCapabilities(tier, opts.instanceId)
         : undefined;
-      creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid, ...(pinned ? { endpointCapabilities: pinned } : {}) });
-      epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
+      // The instrument is an ISSUANCE (SPEC 13.15): its rails carry a fresh generation, and its
+      // ceiling is recorded before the material exists. A one-shot instrument depends on no
+      // lifecycle gate, so its evidence carries the credential's own expiry as its liveness.
+      const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+      creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
+        mintCreds(target.auth!, identity, role, {
+          lifecycleUid: uid,
+          ...(pinned ? { endpointCapabilities: pinned } : {}),
+          issued,
+          issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
+        }),
+      );
+      epCaller = { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller;
     } else {
       creds = await mintCreds(target.auth, identity, role, opts.mint ?? {});
     }

@@ -19,14 +19,15 @@ export function readIssuedStaticTag(tags: unknown): IssuedRef {
   evidenceKey(ref);
   return ref;
 }
-function bound(legacy: string, ref: IssuedRef): string {
+/** The core builders spell the versioned rail themselves once the caller carries a generation
+ *  (SPEC 13.15); this prototype only checks the shape it relied on before the contract shipped:
+ *  `cotal.<space>.ep.v1.<mode>.….<generation>.<nonce-or-wildcard>`. */
+function bound(subject: string, ref: IssuedRef): string {
   evidenceKey(ref);
-  const parts = legacy.split(".");
-  if (parts[0] !== "cotal" || parts[1] !== ref.space || parts[2] !== "ep"
-    || !["one", "all", "inst", "reply"].includes(parts[3])) throw new Error("unsupported prototype rail");
-  parts.splice(3, 0, "v1");
-  parts.splice(parts.length - 1, 0, ref.generation);
-  const subject = parts.join(".");
+  const parts = subject.split(".");
+  if (parts[0] !== "cotal" || parts[1] !== ref.space || parts[2] !== "ep" || parts[3] !== "v1"
+    || !["one", "all", "inst", "reply"].includes(parts[4]) || parts[parts.length - 2] !== ref.generation)
+    throw new Error("unsupported prototype rail");
   if (Buffer.byteLength(subject) > 1024) throw new Error("issued subject exceeds 1024 bytes");
   return subject;
 }

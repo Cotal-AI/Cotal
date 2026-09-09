@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import {
   isReachable,
   createSpaceAuth,
@@ -47,7 +48,14 @@ import {
   eptReqStreamName,
   eptSubject,
   chatSubject,
+  admissionBucket,
+  createRunAdmission,
+  readRunAdmission,
+  revokeRunAdmission,
+  RunAdmissionDenied,
   recordsKvStreamName,
+  type RunAdmission,
+  type IssuedSubjectPermissions,
   wfjStreamName,
   wfjSubject,
   DEV_OWNER,
@@ -117,9 +125,37 @@ const open = async (creds: string): Promise<NatsConnection> => {
   conns.push(nc);
   return nc;
 };
+/** The admission a run's host enforces (SPEC 14.8): written once per run by a `run-admitter`
+ *  pinned to that run, under the suite's channel as the whole ceiling. Idempotent per run so the
+ *  successor hosts below read the same record. */
+const admitted = new Set<string>();
+const suiteCeiling = (runId: string): IssuedSubjectPermissions => {
+  const caller = runDriverCaller(runId);
+  return {
+    publish: { allow: { mode: "patterns", patterns: [chatSubject(S, caller.owner, caller.actor, CHANNEL)] }, deny: [] },
+    subscribe: { allow: { mode: "patterns", patterns: [chatSubject(S, "*", "*", CHANNEL)] }, deny: [] },
+  };
+};
+const withAdmitter = async <T>(runId: string, fn: (kv: import("@nats-io/kv").KV) => Promise<T>): Promise<T> => {
+  const nc = await open(await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId } }));
+  try { return await fn(await new Kvm(nc).open(admissionBucket(S))); } finally { await nc.drain(); }
+};
+const admit = async (runId: string, ceiling: IssuedSubjectPermissions = suiteCeiling(runId)): Promise<void> => {
+  if (admitted.has(runId)) return;
+  admitted.add(runId);
+  const admission: RunAdmission = {
+    version: 1, space: S, endpoint: EP, runId, instanceId: IID, caller: runDriverCaller(runId), ceiling,
+    provenance: { kind: "operator", by: "run-driver-auth.smoke", reason: "suite admission" },
+    admittedAt: Date.now(),
+  };
+  await withAdmitter(runId, (kv) => createRunAdmission(kv, admission));
+};
+const admissionOf = (planes: { jsm: Awaited<ReturnType<typeof jetstreamManager>> }, runId: string) => () => readRunAdmission(planes.jsm, S, EP, runId);
+
 /** The same split the manager uses: raw driver connection plus host-only mediation. */
 const driver = async (runId: string, takeoverId: string, epoch = EPOCH, holder = "manager", fencingToken = 1) => {
   const pin = { endpoint: EP, runId, takeoverId, instanceId: IID, epoch };
+  await admit(runId);
   const nc = await open(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: pin }));
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
@@ -130,7 +166,7 @@ const driver = async (runId: string, takeoverId: string, epoch = EPOCH, holder =
   const handler = { ...createRunEffectHost(hostPlanes, {
     space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID, epoch,
     holder: { id: holder, lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h",
-  }, authority) };
+  }, authority, admissionOf(hostPlanes, runId)) };
   const kv = runRecordView(rawKv, createRunRecordHost(hostPlanes, EP, runId), S);
   return { nc, js, jsm, kv, rawKv, hostPlanes, handler };
 };
@@ -270,7 +306,7 @@ const A = await driver(RUN_A, TK_A);
   const takeover = newTakeoverId();
   const H = await driver(runId, takeover);
   const authority = createRunScopeAuthority(H.hostPlanes, runId, lease(takeover, 1));
-  const host = createRunWaitHost(H.hostPlanes, authority);
+  const host = createRunWaitHost(H.hostPlanes, authority, admissionOf(H.hostPlanes, runId));
   const refused = async (action: () => Promise<unknown>) => action().then(() => false, (e) => e instanceof RunScopeDenied);
   H.handler.wait = async (_req, ctx) => {
     await ctx.bind({ waitChannel: CHANNEL });
@@ -326,9 +362,97 @@ const A = await driver(RUN_A, TK_A);
     .then(() => "allowed", (e: Error) => e.message);
   c("the previous host refuses operations after the next activation", oldHost.includes("superseded host"), oldHost);
   const nextAuthority = createRunScopeAuthority(successor.hostPlanes, runId, nextLease);
-  const nextHost = createRunWaitHost(successor.hostPlanes, nextAuthority);
+  const nextHost = createRunWaitHost(successor.hostPlanes, nextAuthority, admissionOf(successor.hostPlanes, runId));
   const recovered = await nextHost.messageAt(waited.requestId!, waited.external!.chatSeq as number);
   c("the current host can recover the same recorded match", recovered.length > 0);
+
+  // SPEC 14.8: the admitted ceiling, not the mediator's own reach, is what a wait may read.
+  const admitDenied = async (action: () => Promise<unknown>) => action().then(() => "allowed", (e) => e instanceof RunAdmissionDenied ? "denied" : short(e));
+  const narrow = "run-admitted-none";
+  const narrowTakeover = newTakeoverId();
+  await admit(narrow, { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } });
+  const N = await driver(narrow, narrowTakeover);
+  const narrowHost = createRunWaitHost(N.hostPlanes, createRunScopeAuthority(N.hostPlanes, narrow, lease(narrowTakeover, 1)), admissionOf(N.hostPlanes, narrow));
+  let narrowOpen = "", narrowFetch = "";
+  N.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    narrowOpen = await admitDenied(() => narrowHost.open(ctx.requestId, CHANNEL));
+    narrowFetch = await admitDenied(() => narrowHost.fetch(ctx.requestId));
+    return null;
+  };
+  await startRun(N.js, N.jsm, {
+    space: S, endpoint: EP, runId: narrow, source,
+    kv: runRecordView(N.kv, createRunRecordHost(N.hostPlanes, EP, narrow), S),
+    lease: lease(narrowTakeover, 1), handler: N.handler,
+  });
+  c("a run admitted with an explicit `none` ceiling cannot open a wait on any channel, though the mediator itself could", narrowOpen === "denied", narrowOpen);
+  c("nor fetch from it", narrowFetch === "denied", narrowFetch);
+  const denyWins = "run-admitted-deny";
+  const denyTakeover = newTakeoverId();
+  await admit(denyWins, { ...suiteCeiling(denyWins), subscribe: { allow: { mode: "all" }, deny: [chatSubject(S, "*", "*", CHANNEL)] } });
+  const D = await driver(denyWins, denyTakeover);
+  const denyHost = createRunWaitHost(D.hostPlanes, createRunScopeAuthority(D.hostPlanes, denyWins, lease(denyTakeover, 1)), admissionOf(D.hostPlanes, denyWins));
+  let denied = "";
+  D.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    denied = await admitDenied(() => denyHost.open(ctx.requestId, CHANNEL));
+    return null;
+  };
+  await startRun(D.js, D.jsm, {
+    space: S, endpoint: EP, runId: denyWins, source,
+    kv: runRecordView(D.kv, createRunRecordHost(D.hostPlanes, EP, denyWins), S),
+    lease: lease(denyTakeover, 1), handler: D.handler,
+  });
+  c("a deny row on the admitted ceiling wins over an unrestricted allow", denied === "denied", denied);
+  const unadmitted = "run-never-admitted";
+  const unTakeover = newTakeoverId();
+  admitted.add(unadmitted); // the driver helper must NOT write one
+  const U = await driver(unadmitted, unTakeover);
+  const unHost = createRunWaitHost(U.hostPlanes, createRunScopeAuthority(U.hostPlanes, unadmitted, lease(unTakeover, 1)), admissionOf(U.hostPlanes, unadmitted));
+  let missing = "";
+  U.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    missing = await unHost.open(ctx.requestId, CHANNEL).then(() => "allowed", (e) => (e as { code?: string }).code === "permission-denied" ? "denied" : short(e));
+    return null;
+  };
+  await startRun(U.js, U.jsm, {
+    space: S, endpoint: EP, runId: unadmitted, source,
+    kv: runRecordView(U.kv, createRunRecordHost(U.hostPlanes, EP, unadmitted), S),
+    lease: lease(unTakeover, 1), handler: U.handler,
+  });
+  c("a run with no admission record is refused at its first channel effect, never served under the host's scope", missing === "denied", missing);
+  // Revocation lands within one poll: the wait is open and fetching, the record is revoked
+  // under the admitter, and the next fetch refuses while the recovered match stays unreadable.
+  const revokable = "run-revoked-midwait";
+  const revTakeover = newTakeoverId();
+  const R = await driver(revokable, revTakeover);
+  const revHost = createRunWaitHost(R.hostPlanes, createRunScopeAuthority(R.hostPlanes, revokable, lease(revTakeover, 1)), admissionOf(R.hostPlanes, revokable));
+  let before = 0, after = "", recoveredAfter = "";
+  R.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    await revHost.open(ctx.requestId, CHANNEL);
+    await say("before revocation");
+    const first = await revHost.fetch(ctx.requestId);
+    before = first.length;
+    await ctx.bind({ waitChannel: CHANNEL, chatSeq: first[0]!.sequence });
+    await withAdmitter(revokable, (kv) => revokeRunAdmission(kv, EP, { version: 1, runId: revokable, reason: "suite revoke", by: "operator", revokedAt: Date.now() }));
+    after = await revHost.fetch(ctx.requestId).then(() => "allowed", (e) => (e as { code?: string }).code === "permission-denied" ? "revoked" : short(e));
+    recoveredAfter = await revHost.messageAt(ctx.requestId, first[0]!.sequence).then(() => "allowed", (e) => (e as { code?: string }).code === "permission-denied" ? "revoked" : short(e));
+    await revHost.close(ctx.requestId);
+    return null;
+  };
+  await startRun(R.js, R.jsm, {
+    space: S, endpoint: EP, runId: revokable, source,
+    kv: runRecordView(R.kv, createRunRecordHost(R.hostPlanes, EP, revokable), S),
+    lease: lease(revTakeover, 1), handler: R.handler,
+  });
+  c("a wait fetches under its admission before revocation", before === 1, before);
+  c("a revocation written under the admitter refuses the next fetch of an open wait", after === "revoked", after);
+  c("and the already-matched message is no longer readable once revoked", recoveredAfter === "revoked", recoveredAfter);
+  const twice = await withAdmitter(revokable, (kv) => revokeRunAdmission(kv, EP, { version: 1, runId: revokable, reason: "again", by: "operator", revokedAt: Date.now() })).then(() => "ok", short);
+  c("revocation is idempotent: a second revoke is not an error and does not rewrite the first", twice === "ok" && (await readRunAdmission(R.hostPlanes.jsm, S, EP, revokable)).revoked?.reason === "suite revoke", twice);
+  const reAdmit = await withAdmitter(revokable, (kv) => createRunAdmission(kv, { version: 1, space: S, endpoint: EP, runId: revokable, instanceId: IID, caller: runDriverCaller(revokable), ceiling: suiteCeiling(revokable), provenance: { kind: "operator", by: "x", reason: "widen" }, admittedAt: Date.now() })).then(() => "written", (e) => (e as { code?: string }).code ?? short(e));
+  c("an admission is immutable: a second record for the same run is a conflict, never a replacement", reAdmit === "conflict", reAdmit);
 
   const vault = new WaitReceipts();
   let acknowledgements = 0;

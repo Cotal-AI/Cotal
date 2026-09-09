@@ -76,16 +76,16 @@
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "  for (const tier of [\"packages\", \"implementations\", \"extensions\"]) {",
       "replace": "  for (const tier of [\"extensions\"]) {",
-      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
-      "cell": "no shipped source emits an issued-rail subject, under any option combination"
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
     },
     {
-      "name": "a shipped builder emits an issued-rail subject",
-      "file": "packages/core/src/endpoint-subjects.ts",
-      "find": "  const parts = [spacePrefix(space), \"ep\", req.route.mode, endpointToken(req.endpoint)];",
-      "replace": "  const parts = [spacePrefix(space), \"ep.v1\", req.route.mode, endpointToken(req.endpoint)];",
-      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
-      "cell": "no shipped source emits an issued-rail subject, under any option combination"
+      "name": "a shipped file outside the builders spells the issued rail",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "const admission = await this.admit(ctx, runId);",
+      "replace": "const admission = await this.admit(ctx, runId); void \"ep.v1\";",
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
     },
     {
       "name": "the server-view detector stops matching",
@@ -116,8 +116,8 @@
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "      else if (entry.name.endsWith(\".ts\") && !entry.name.endsWith(\".d.ts\")) found.push(full);",
       "replace": "      else if (entry.name.endsWith(\".tsx\")) found.push(full);",
-      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
-      "cell": "no shipped source emits an issued-rail subject, under any option combination"
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
     },
     {
       "name": "a new profile drifts into the trusted half",
@@ -204,8 +204,8 @@
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "  walk(join(root, \"bin\"));",
       "replace": "",
-      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
-      "cell": "no shipped source emits an issued-rail subject, under any option combination"
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
     },
     {
       "name": "the option sweep loses a dimension",

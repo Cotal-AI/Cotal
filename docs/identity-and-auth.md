@@ -69,7 +69,9 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
 | **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
 | **run-mediator** | The trusted hosting process's separate connection for workflow effects and leader reads. It exposes journal-checked, run-bound operations and never hands its credential to the driver. |
-| **run-operator** | One served run read, or one half of an answer, minted per call: a read holds the records walk and one run's replay; the answering half is minted for one checkpoint token and holds that pause's answer record and settle alone. |
+| **run-operator** | One served run read, or one half of an answer, minted per call: a read holds the records walk, one run's replay and the admission read; the answering half is minted for one checkpoint token and holds that pause's answer record and settle alone. |
+| **issuer** | One issuance window: the party holding the space signer mints it for a few minutes to stage and release a credential's evidence, retire the issuances a lifecycle terminal leaves behind, or resolve the evidence a request rides. |
+| **run-admitter** | One run's admission record or revocation marker, minted per run for a minute: two exact keys in the admission store and nothing else. |
 
 **An agent's channel scope is three verbs**: `subscribe` (reads at boot),
 `allowSubscribe` (read ACL), `allowPublish` (post ACL, default-deny), declared in its
@@ -80,6 +82,31 @@ with the recipes: [Channels & permissions](channels-and-permissions.md).
 inbox prefixes, and the DM/task consumers are provisioner-pre-created and bind-only, so an
 agent cannot create a consumer filtered to someone else's inbox
 ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) items 1–5).
+
+## Issued authority
+
+A credential says who is calling. It does not, by itself, say what the caller was granted, and a
+host that acts on a caller's behalf (a workflow run, [workflows](workflows.md)) needs that from
+the issuer, not from a ledger that may have changed since. So a static agent credential is an
+**issuance** ([SPEC §13.15](../SPEC.md#1315-issued-authority)): before the material is handed
+out, the issuer records the credential's final permission ceiling, as evidence keyed by a fresh
+**generation**, in `cotal_issued_<space>`. The credential's endpoint rows then ride a versioned
+rail, `cotal.<space>.ep.v1.…`, with that generation pinned beside the caller triple, so the
+broker binds every request to the ceiling the issuer accepted. The legacy `ep.` rail and the
+`ep.v1.` rail are disjoint subject spaces; a credential holds rows on one of them, and every
+endpoint serves both.
+
+A connected client learns its generation by reading one row in `cotal_accepted_<space>` under a
+token it chose at mint time, through a per-key read grant its own ceiling carries. It never trusts
+what the file says. A renewal keeps the generation only while the ceiling is byte-identical to the
+evidence; a changed scope is a fresh issuance on a fresh generation, adopted by a new connection.
+A static agent's evidence names its credential ledger family as the source it depends on, and the
+lifecycle terminal that retires that family retires its issuances with it.
+
+The manager, `cotal spawn`, and the CLI's one-shot instruments all mint through an `issuer`
+session. Only workflow `run-start` requires the binding today: a request for it on the legacy rail
+is refused with `permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority` naming
+the caller. Every other command serves both rails.
 
 ## Declared capabilities
 

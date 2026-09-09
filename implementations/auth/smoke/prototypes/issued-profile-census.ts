@@ -69,6 +69,8 @@ export function profileFixtures(space: string): ProfileFixture[] {
     "run-mediator": () => one("run-mediator", { runMediator: run }),
     "run-operator": () => one("run-operator", { runOperator: { endpoint: "manager", takeoverId: "take0001" } }),
     "endpoint-evictor": () => one("endpoint-evictor"),
+    issuer: () => one("issuer"),
+    "run-admitter": () => one("run-admitter", { runAdmitter: { endpoint: "manager", runId: "census-run" } }),
     "remote-manager"() {
       for (const actor of [`manager_${instance}`, `manager_exec_${instance}`]) {
         one("remote-manager", { remoteManager: { owner: "local", instanceId: instance, actor } }, actor.startsWith("manager_exec") ? "executor" : "server", { ...principal, actor });
@@ -145,10 +147,12 @@ export function streamSubjects(space: string): Record<string, string> {
     [`KV_${aclBucket(space)}`]: kv(aclBucket(space)),
     [`KV_${epAuthBucket(space)}`]: kv(epAuthBucket(space)),
     [`KV_${recordsBucket(space)}`]: kv(recordsBucket(space)),
-    // Candidate stores the issued contract would add. No shipped profile touches them; they are
-    // listed so a ceiling carrying the contract's own grants can be checked for the overlap.
+    // The issued-authority stores (SPEC 13.15) and the run admission store (SPEC 14.8): the
+    // `issuer` and `run-admitter` profiles write them, so a ceiling carrying those grants is
+    // checked for the write-plus-raw-read overlap like any other.
     [`KV_cotal_issued_${space}`]: kv(`cotal_issued_${space}`),
     [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),
+    [`KV_cotal_admission_${space}`]: kv(`cotal_admission_${space}`),
     [`KV_${sessionsBucket(space)}`]: kv(sessionsBucket(space)),
   };
 }
@@ -211,6 +215,7 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
+  "issuer", "run-admitter",
 ]);
 
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */

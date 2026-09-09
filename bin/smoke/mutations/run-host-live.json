@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/run-host-live.smoke.ts"
   ],
-  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records (frame stripped) and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside under the caller's own name; a manager restart takes a run recorded running back under the next epoch, each attempt under its own holder id, and no launch is served until that reconcile has returned. An answer's writes are pinned to the one pause it answers; a refusal at the admission cap gives its slot back; a user-auth mesh refuses the family by name.",
+  "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records (frame stripped) and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside under the caller's own name; a manager restart takes a run recorded running back under the next epoch, each attempt under its own holder id, and no launch is served until that reconcile has returned. An answer's writes are pinned to the one pause it answers; a refusal at the admission cap gives its slot back; a user-auth mesh refuses the family by name. A hosted run is admitted under the caller's issued generation before run-start answers; a legacy-rail caller is refused by name; a revoked run is not resumed.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-host-live.json",
@@ -12,7 +12,8 @@
     "aims at one guarantee the family makes: validation before any record, the answer-after-record",
     "wait, and the boot reconcile filter that decides which runs a successor takes back.",
     "The fix round's mutants each remove one gate the review named: the boot gate, the per-attempt holder id, the caller-derived answerer, the frame strip, and the client deadline outliving the activation wait.",
-    "The second review round's mutants: the pre-claimed slot a cap refusal used to keep, the token pin on the answering credential's write rows, and the user-mesh refusal of the whole family."
+    "The second review round's mutants: the pre-claimed slot a cap refusal used to keep, the token pin on the answering credential's write rows, and the user-mesh refusal of the whole family.",
+    "The admission round's mutants: the legacy-rail refusal on run-start, and the revocation read a hosted resume decides on."
   ],
   "mutations": [
     {
@@ -133,6 +134,24 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a user-auth mesh refuses run-start as unimplemented, naming the space",
       "cell": "a user-auth mesh refuses run-start as unimplemented, naming the space: no host stands there, and no `--local` is offered"
+    },
+    {
+      "name": "run-start admits a legacy-rail caller",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "    if (ctx.subject.rail !== \"v1\" || !isIssuedCaller(caller))\n      throw new EpEnvelopeError(",
+      "replace": "    if (ctx.subject.rail !== \"v1\" && isIssuedCaller(caller))\n      throw new EpEnvelopeError(",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "run-start on the legacy rail is permission-denied with the unbound-caller-authority detail naming the caller",
+      "cell": "run-start on the legacy rail is permission-denied with the unbound-caller-authority detail naming the caller"
+    },
+    {
+      "name": "a hosted resume ignores the revocation marker",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "        if (admission.revoked !== undefined)\n          throw new EpEnvelopeError(\"permission-denied\", `run ${args.runId} was revoked by",
+      "replace": "        if (admission.revoked !== undefined && admission.revoked.by === \"nobody\")\n          throw new EpEnvelopeError(\"permission-denied\", `run ${args.runId} was revoked by",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a hosted resume of a revoked run is permission-denied naming who revoked it and why, and no drive is launched",
+      "cell": "a hosted resume of a revoked run is permission-denied naming who revoked it and why, and no drive is launched"
     }
   ]
 }

@@ -78,7 +78,9 @@ import {
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
-import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
+import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
@@ -158,6 +160,14 @@ export type Profile =
   // the predecessor's principal. Ephemeral (one re-registration's window), narrower than the
   // `supervisor` profile the auth barrier-evict reuses (its #30 residual, done here for the manager).
   | "endpoint-evictor"
+  // The ISSUER (SPEC 13.15): the one-shot connection an issuing mint stages evidence over, writes
+  // the accepted row with, and a lifecycle terminal retires issuances through. Writes the two
+  // issued-authority stores and reads the evidence store leader-served; nothing else.
+  | "issuer"
+  // The RUN ADMITTER (SPEC 14.8): the one-shot connection a hosting manager admits a workflow run
+  // over. Creates that ONE run's admission record and, later, its revocation marker. The driver
+  // holds nothing on this store; the mediator reads it.
+  | "run-admitter"
   // Closed human-issued remote manager authority. Never exposed as a generic profile string: the
   // auth provider's typed manager-service protocol is the only mint door.
   | "remote-manager";
@@ -231,6 +241,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
   "run-mediator": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "trusted workflow host operations, bound to one run and attempt; kept on the hosting process's connection" },
   "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
+  issuer: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one issuance's evidence stage/release or one lifecycle terminal's issuance retirement (SPEC 13.15)" },
+  "run-admitter": { class: "one-shot", defaultTtlSeconds: 60, note: "one hosted run's admission record create, or its revocation marker (SPEC 14.8); 60s bounds a copied cred to a minute" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
@@ -640,6 +652,22 @@ export interface MintOpts {
   expiresInSeconds?: number;
   /** Absolute JWT `exp` timestamp in seconds. Used by cutover/test code that needs already-expired creds. */
   expiresAt?: number;
+  /** Issued authority (SPEC 13.15): mint this credential's ep-rail rows on the VERSIONED rail,
+   *  pinned to `generation`, and grant the per-key read of its accepted row. The issuer chose the
+   *  generation and persisted its evidence before calling; the client chose `acceptedToken` and
+   *  learns the accepted generation by reading that one row after it connects. Taken by the
+   *  profiles that hold caller rails (`agent`, the operator instruments); every other profile
+   *  refuses it. */
+  issued?: { generation: string; acceptedToken: string };
+  /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
+   *  the credential is built first, then its evidence is staged create-only, the existing
+   *  finalizer runs, and the attempt activates by CAS at the revision the stage observed; only
+   *  then is the accepted row written and the material returned (SPEC 13.15). `renew` confirms an
+   *  existing generation's ceiling is unchanged and stages nothing. */
+  issuance?: IssuanceSeam;
+  /** `run-admitter` profile only: the ONE hosted run whose admission record and revocation marker
+   *  this connection may create. */
+  runAdmitter?: { endpoint: string; runId: string };
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;
   /** `restore` profile only: one discriminated initiate, upload, validate, or checkpoint phase. */
@@ -849,6 +877,7 @@ export async function mintCreds(
   // orphan authority record). fmtCreds only wraps the already-signed JWT with the seed, so it is
   // done here and the fence is the mint's LAST step.
   const creds = new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
+  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, rawDigest(creds).replace("sha256:", "sha256-"));
   // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
   // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
   // coordinates) is durably staged and its revision-pinned CAS wins the instance's single issuance
@@ -877,6 +906,48 @@ export async function mintCreds(
     });
   }
   return creds;
+}
+
+/** The SPEC 13.15 issuance fence: an issuing mint persists the ceiling it is handing out BEFORE
+ *  the material is returned. The evidence is the minted permission set itself (deny rules
+ *  included), imported from the same object the JWT was encoded from, so the record and the
+ *  credential cannot disagree. `sources` name the gates the issuance depends on; an issuance bound
+ *  to none (a one-shot instrument) carries the credential's own expiry as its liveness. A renewal
+ *  confirms the existing generation's ceiling is unchanged and records nothing new. */
+async function releaseIssuance(
+  space: string,
+  profile: Profile,
+  pr: MintPrincipal,
+  opts: MintOpts,
+  perms: Record<string, unknown>,
+  exp: number | undefined,
+  credentialId: string,
+): Promise<void> {
+  if (!opts.issued) {
+    if (opts.issuance) throw new Error("mintCreds: opts.issuance without opts.issued; an issuance names its generation");
+    return;
+  }
+  const seam = opts.issuance;
+  if (!seam) throw new Error(`mintCreds: an issued "${profile}" mint requires opts.issuance (the evidence store seam); the material is released only after its evidence is durable (SPEC 13.15)`);
+  if (!pr.lifecycleUid) throw new Error("mintCreds: an issuance is lifecycle-keyed; mint with opts.lifecycleUid");
+  const ref: IssuedAuthorityRef = { space, owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid, generation: opts.issued.generation };
+  const permissions = importNativeSubjectPermissions(perms);
+  if (seam.mode === "renew") {
+    await seam.store.confirm(ref, permissions);
+    await seam.finalize?.(credentialId);
+    return;
+  }
+  if (seam.sources.length === 0 && exp === undefined)
+    throw new Error("mintCreds: an issuance bound to no source gate must be a bounded credential; nothing else can end its liveness (SPEC 13.15)");
+  const prepared = await seam.store.stage({
+    version: 1,
+    ref,
+    sources: seam.sources,
+    permissions,
+    ...(seam.sources.length === 0 ? { expiresAt: exp } : {}),
+  });
+  await seam.store.release(prepared, async () => { await seam.finalize?.(credentialId); });
+  await writeAcceptedRow(seam.accepted, opts.issued.acceptedToken, ref);
 }
 
 /** Issue a host-signed NATS user JWT for a caller-generated nkey. The private seed stays with
@@ -932,6 +1003,10 @@ export async function mintPublicUserJwt(
  *  owner + ledger actor + the per-connection ephemeral nkey; the static/dev mint passes
  *  `{owner:"local", actor:<id>, connId:<id>}` via {@link principalOf}. EXPORTED so the callout's injected
  *  `permissionsFor` hook can feed a validated principal straight into the same builder. */
+/** The profiles whose credential carries caller rails, and can therefore be minted as an
+ *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
+const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer"]);
+
 export function permissionsFor(
   profile: Profile,
   space: string,
@@ -948,6 +1023,10 @@ export function permissionsFor(
   // The "endpoint-serve" profile is excluded so its own arm below keeps the call-mintCreds redirect.
   if (opts.endpointServe && profile !== "endpoint-serve")
     throw new Error(`permissionsFor: endpointServe rides the dedicated "endpoint-serve" profile - a serve credential is per-instance authority (SPEC 13.9), never folded into a "${profile}" cred`);
+  // An issuance binds CALLER rails (SPEC 13.15). A profile with no caller rail has nothing to bind
+  // the generation to, so `issued` on it is a misconfiguration refused here, never dropped.
+  if (opts.issued && !ISSUABLE_PROFILES.has(profile))
+    throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
@@ -1015,6 +1094,11 @@ export function permissionsFor(
     if (!opts.remoteManager)
       throw new Error('permissionsFor: "remote-manager" requires opts.remoteManager ({instanceId, owner} of the authorized manager lifecycle)');
     return remoteManagerPermissions(space, pr, opts.remoteManager);
+  }
+  if (profile === "issuer") return issuerPermissions(space, pr);
+  if (profile === "run-admitter") {
+    if (!opts.runAdmitter) throw new Error("permissionsFor: run-admitter requires opts.runAdmitter ({endpoint, runId} of the ONE run it admits)");
+    return runAdmitterPermissions(space, pr, opts.runAdmitter);
   }
   if (profile === "endpoint-evictor") {
     // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
@@ -1301,9 +1385,10 @@ export function permissionsFor(
   // the explicit capabilities ALL build their caller triple from it. opts.lifecycleUid is a public
   // seam (the IdP-adapter path) that must AGREE, never a second source of truth for the triple: a
   // divergent value would mint two reply rails on one credential, so it fails loud here.
-  const epCaller = { owner: pr.owner, actor: pr.actor, uid };
+  const epCaller: EpCaller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid }, opts);
   const baseline = epBaselineGrantRows(space, epCaller);
   pubAllow.push(...baseline.pub);
+  if (opts.issued) pubAllow.push(acceptedReadGrant(space, opts.issued.acceptedToken));
   const epSub: string[] = [...baseline.sub];
   // BOTH HALVES OF THE ROLLUP, NOT JUST `pub`. `epCallerGrantRows` returns `{pub, sub}` and its
   // `sub` is the per-goal progress row its own docblock promises: "a goal-bearing capability
@@ -1683,7 +1768,7 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "pri
   // `extra` seam is the same one the deployer's owner-equality `launch` row already rides, and the
   // emitter's `if (cap.instanceId)` branch validates the token, so a malformed id fails loud at
   // mint rather than widening a subject.
-  const ep = instrumentEpRows(space, pr, epTier, opts.endpointCapabilities ?? []);
+  const ep = instrumentEpRows(space, pr, epTier, opts.endpointCapabilities ?? [], opts);
   return {
     // The PRIVILEGED tier (the `cotal ps` instrument) also carries the SCOPED §13.9 records read the
     // class scatter's freeze rides (P2 item 3): `freezeExpectedSet` enumerates `svc.<endpoint>.*.spec`
@@ -1736,19 +1821,30 @@ function instrumentEpRows(
   pr: MintPrincipal,
   tier: "privileged" | "admin",
   extra: EpCapability[] = [],
+  opts: MintOpts = {},
 ): { pub: string[]; sub: string[] } {
   if (!pr.lifecycleUid)
     throw new Error(`permissionsFor: an operator instrument's ep caller rows are lifecycle-keyed (SPEC 13.1/13.2) - mint with opts.lifecycleUid (mintLifecycleUid()) so the reply rail pins the instrument's own incarnation`);
-  const epCaller = { owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid };
+  const epCaller: EpCaller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid }, opts);
   const rows = epCallerGrantRows(space, [...operatorInstrumentCapabilities(tier, pr.owner), ...extra], epCaller);
   return {
     pub: [
       epDescribeAllGrantRow(space, epCaller),
       `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      ...(opts.issued ? [acceptedReadGrant(space, opts.issued.acceptedToken)] : []),
       ...rows.pub,
     ],
     sub: rows.sub,
   };
+}
+
+/** The ep caller a mint pins: the triple, plus the issued generation when the mint is an
+ *  issuance (SPEC 13.15). One place decides the rail so a credential's request rows, its reply
+ *  read, and its describe row all land on the same one. */
+function issuedCallerFor(triple: EpCaller, opts: MintOpts): EpCaller {
+  if (!opts.issued) return triple;
+  assertGeneration(opts.issued.acceptedToken, "acceptedToken");
+  return { ...triple, generation: assertGeneration(opts.issued.generation) } as IssuedCaller;
 }
 
 /** ENDPOINT-SERVE (v0.4, SPEC §13.9 "Serve grants") — the per-instance serve credential:
@@ -1825,8 +1921,8 @@ function deployerPermissions(space: string, pr: MintPrincipal, epTier: "privileg
   // exact `ep.inst.<endpoint>.<iid>.<command>` row for the instance this deploy resolved.
   const pinned = opts.endpointCapabilities ?? [];
   const ep = epTier === "admin"
-    ? instrumentEpRows(space, pr, "admin", pinned)
-    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }, ...pinned]);
+    ? instrumentEpRows(space, pr, "admin", pinned, opts)
+    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }, ...pinned], opts);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
   const DLVKV = `KV_${deliveryBucket(space)}`;
@@ -2031,6 +2127,54 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
  *  are body-selected `STREAM.MSG.GET` — stream-scoped, NOT key-scoped (the requested key rides
  *  the PAYLOAD, which a subject grant cannot see). NAMED RESIDUAL: for its one-shot lifetime the
  *  executor can READ (never write) other rows in the auth store. */
+/** The ISSUER permission set (SPEC 13.15): value-writes on the evidence store (evidence, attempt,
+ *  source index: create-only and CAS rows, keyed by generation) and on the accepted-row store
+ *  (create-only, keyed by the client's token); the leader-served point read on the evidence
+ *  store; and the ordered `keys()` walk a source retirement enumerates the reverse index with.
+ *  NAMED RESIDUAL (the contract's section 8): this profile holds a write and a raw read on ONE
+ *  stream, the pairing no peer-held profile may hold, so it is never issuable to a peer. */
+function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  const ISSUED = `KV_${issuedBucket(space)}`;
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        `$KV.${issuedBucket(space)}.>`,
+        `$KV.${acceptedBucket(space)}.>`,
+        `$JS.API.STREAM.INFO.${ISSUED}`,
+        `$JS.API.STREAM.MSG.GET.${ISSUED}`,
+        // Source liveness: the leader-served point read of a static incarnation's issuance gate on
+        // the auth store (body-selected, stream-wide: the same named residual every records
+        // reader accepts). No auth-store WRITE of any shape.
+        `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`,
+        `$JS.API.CONSUMER.CREATE.${ISSUED}.>`,
+        `$JS.API.CONSUMER.INFO.${ISSUED}.>`,
+        `$JS.API.CONSUMER.DELETE.${ISSUED}.>`,
+        "$JS.FC.>",
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The RUN ADMITTER permission set (SPEC 14.8): exactly ONE run's admission record and
+ *  revocation marker on the admission store (both create-only), plus the leader-served read the
+ *  create-before-read and the marker's own re-read ride. No other run's keys, no other store. */
+function runAdmitterPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string; runId: string }): Record<string, unknown> {
+  const bucket = admissionBucket(space);
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        `$KV.${bucket}.${admissionKey(pin.endpoint, pin.runId)}`,
+        `$KV.${bucket}.${revocationKey(pin.endpoint, pin.runId)}`,
+        `$JS.API.STREAM.MSG.GET.KV_${bucket}`,
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+  };
+}
+
 function lifecycleExecutorPermissions(
   space: string,
   pr: MintPrincipal,

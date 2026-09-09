@@ -140,22 +140,27 @@ c("an any-mode instrument row spans the target owner (grant `*`), pinned to the 
   === `cotal.demo.ep.one.manager.despawn.any.*.u_abc.cli.${UID}.*`);
 
 // ── serve rows against the §13.9 matrix forms ──
-c("serve subscribe: queue-qualified class rail + plain scatter + exact instance, per command",
+// Both rails are served (SPEC 13.15): the legacy `ep.` shapes first, then the same three on
+// `ep.v1.`, whose request tail carries the issued generation before the nonce.
+c("serve subscribe: queue-qualified class rail + plain scatter + exact instance, per command, on both rails",
   epServeSubscribeRows("demo", "com.acme.deploy", IID, "run").join("|")
-  === `cotal.demo.ep.one.com_acme_deploy.run.> com_acme_deploy|cotal.demo.ep.all.com_acme_deploy.run.>|cotal.demo.ep.inst.com_acme_deploy.${IID}.run.>`);
-c("serve publish: reply attribution pin + events + timer schedule-only + record ingress, all epoch-pinned",
+  === `cotal.demo.ep.one.com_acme_deploy.run.> com_acme_deploy|cotal.demo.ep.all.com_acme_deploy.run.>|cotal.demo.ep.inst.com_acme_deploy.${IID}.run.>`
+  + `|cotal.demo.ep.v1.one.com_acme_deploy.run.> com_acme_deploy|cotal.demo.ep.v1.all.com_acme_deploy.run.>|cotal.demo.ep.v1.inst.com_acme_deploy.${IID}.run.>`);
+c("serve publish: reply attribution pin on both rails + events + timer schedule-only + record ingress, all epoch-pinned",
   epServePublishRows("demo", "manager", IID, 5).join("|")
-  === `cotal.demo.ep.reply.manager.${IID}.5.*.*.*.*|cotal.demo.epe.manager.${IID}.5.>|cotal.demo.ept.manager.${IID}.5.*.schedule|cotal.demo.epr.manager.${IID}.5.>`);
+  === `cotal.demo.ep.reply.manager.${IID}.5.*.*.*.*|cotal.demo.ep.v1.reply.manager.${IID}.5.*.*.*.*.*|cotal.demo.epe.manager.${IID}.5.>|cotal.demo.ept.manager.${IID}.5.*.schedule|cotal.demo.epr.manager.${IID}.5.>`);
+c("the issued reply pin is one token wider than the legacy one (generation slot), nothing else differs",
+  epServePublishRows("demo", "manager", IID, 5)[1]!.split(".").length === epServePublishRows("demo", "manager", IID, 5)[0]!.split(".").length + 2);
 const serve = epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, ephemeralCommands: ["spawn"] });
-c("serve bundle: 3 sub rows per ephemeral command incl. the DERIVED describe, plus the own timer-fire read; 4 pub rows",
-  serve.sub.length === 7 && serve.pub.length === 4);
+c("serve bundle: 6 sub rows per ephemeral command (both rails) incl. the DERIVED describe, plus the own timer-fire read; 5 pub rows",
+  serve.sub.length === 13 && serve.pub.length === 5);
 c("the timer-fire read row is the own instance's, epoch-pinned (§13.9 Timer fire consume)",
   serve.sub.includes(`cotal.demo.ept.manager.${IID}.5.*.fire`));
 // A journal-only endpoint has no ephemeral (rail-served) commands, but still serves mandatory
 // describe (§13.7): the bundle is describe rails + the own timer-fire read only.
 const journalOnly = epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, ephemeralCommands: [] });
 c("a journal-only serve bundle (no ephemeral commands) still grants the DERIVED describe rails + timer-fire",
-  journalOnly.sub.length === 4 && journalOnly.sub.some((r) => r.includes(".describe.")) && journalOnly.sub.includes(`cotal.demo.ept.manager.${IID}.5.*.fire`) && journalOnly.pub.length === 4);
+  journalOnly.sub.length === 7 && journalOnly.sub.some((r) => r.includes(".describe.")) && journalOnly.sub.includes(`cotal.demo.ept.manager.${IID}.5.*.fire`) && journalOnly.pub.length === 5);
 throws("serve bundle refuses an EXPLICIT describe (reserved, derived in this one seam)",
   () => epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, ephemeralCommands: ["spawn", "describe"] }));
 c("no serve rail row crosses commands (no bare cross-command tail)",
