@@ -163,9 +163,15 @@ try {
   await check("prepared callout success stays private until the awaited issuer gate completes", async () => {
     try {
       await until(() => entered || settled, "issuer gate entry");
-      assert.equal(entered, true); assert.equal(settled, false);
-      const state = JSON.parse(new TextDecoder().decode((await kv.get(`attempt.${evidenceKey(refFor(generation))}`))!.value));
-      assert.equal(state.state, "prepared");
+      assert.equal(entered, true);
+      // Same shape as the lifecycle hold cell: one sample of `settled` races the connection, so a
+      // gate that stopped awaiting its release could complete just after the sample and pass.
+      for (let i = 0; i < 15; i++) {
+        assert.equal(settled, false, `connection completed at sample ${i} while the issuer gate was held`);
+        const state = JSON.parse(new TextDecoder().decode((await kv.get(`attempt.${evidenceKey(refFor(generation))}`))!.value));
+        assert.equal(state.state, "prepared");
+        await wait(20);
+      }
     } finally { unblock(); hold = undefined; }
   });
   const first = await connecting;
