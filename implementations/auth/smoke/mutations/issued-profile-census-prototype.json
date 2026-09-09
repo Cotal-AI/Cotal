@@ -109,6 +109,14 @@
       "replace": "      else if (entry.name.endsWith(\".tsx\")) found.push(full);",
       "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
       "cell": "no shipped source emits an issued-rail subject, under any option combination"
+    },
+    {
+      "name": "a new profile drifts into the trusted half",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  \"control-caller-admin\", \"backup\", \"restore\", \"endpoint-evictor\", \"retirement-requester\",",
+      "replace": "  \"control-caller-admin\", \"backup\", \"restore\", \"endpoint-evictor\",",
+      "expectRed": "every profile is classified peer-held or trusted",
+      "cell": "every profile is classified peer-held or trusted"
     }
   ]
 }

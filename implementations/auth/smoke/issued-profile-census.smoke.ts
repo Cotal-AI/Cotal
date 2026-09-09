@@ -12,7 +12,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, jetStreamDeliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, TRUSTED_PROFILES, jetStreamDeliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -170,6 +170,15 @@ try {
     const named = (profile: string) => overlaps.some((row) => row.profile === profile);
     assert.ok(named("run-mediator") && named("provisioner"), `expected trusted overlaps, got ${JSON.stringify(overlaps)}`);
     observations.trustedOverlaps = overlaps;
+  });
+
+  await check("every profile is classified peer-held or trusted", async () => {
+    // Peer-heldness is a deployment property, so nothing here can settle the partition. The closed
+    // union only makes a NEW profile fail rather than drift into "trusted" by default.
+    const all = [...new Set(fixtures.map((f) => f.profile))].sort();
+    const classified = [...PEER_HELD_PROFILES, ...TRUSTED_PROFILES].sort();
+    assert.deepEqual(classified, all);
+    assert.equal(new Set(classified).size, classified.length, "a profile is classified twice");
   });
 
   await check("no peer-held profile can both write and raw-read one stream", async () => {

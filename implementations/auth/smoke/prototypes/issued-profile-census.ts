@@ -195,6 +195,20 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  */
 export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver"]);
 
+/**
+ * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a
+ * property of deployment rather than of this repo, so no cell can settle the partition. What the
+ * closed union does buy is that a NEW profile lands in neither list and fails, forcing whoever
+ * adds it to decide, instead of drifting into "trusted" by default.
+ */
+export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
+  "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
+  "teardown", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
+  "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
+  "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
+  "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
+]);
+
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */
 export function shippedSources(root: string): string[] {
   const found: string[] = [];
