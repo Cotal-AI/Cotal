@@ -286,11 +286,13 @@ try {
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
   let peerId: string | undefined;
+  let busyPeerId: string | undefined;
   const announced = new Set<string>();
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
     if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.presence.card.name === "busypeer") busyPeerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -512,6 +514,23 @@ try {
   check("a seat whose post-join notice is refused still joins the mesh", announced.has("busypeer"), { announced: [...announced], stderr: busyErr });
   const busyNotice = busyEntries.find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame?.no_reply === true && String(entry.frame?.content).includes("earlier cotal_orientation result was captured before this join"));
   check("the refused notice is still sent as a no-reply context message, not promoted to a turn", Boolean(busyNotice), busyNotice);
+  // Surviving the refusal is not the same as still working. A seat that stayed up but lost its
+  // mesh or tool channel would pass every assertion above, so drive real work through it: the
+  // refused notice must cost the notice and nothing else.
+  const busyRead = () => readJsonLines<{ ev: string; session_id?: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(busyLog);
+  await waitFor("busypeer presence", () => busyPeerId);
+  await operator.unicast(busyPeerId!, "post-refusal-work cotal_orientation");
+  const busyTurn = await waitFor("a Harness API turn after the refused notice", () =>
+    busyRead().find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("post-refusal-work")));
+  check("a seat whose notice was refused still receives later mesh work as a real turn", Boolean(busyTurn), busyTurn);
+  // The fake records `orientation_done` only when a turn actually reaches the cotal_orientation
+  // tool, so this is the tool path running end to end rather than a message merely being accepted.
+  // The readiness turn logs one before the join; a second proves the post-refusal turn ran too.
+  const busyToolRuns = await waitFor("the post-refusal turn reaches its tool", () => {
+    const runs = busyRead().filter((entry) => entry.ev === "orientation_done");
+    return runs.length >= 2 ? runs : undefined;
+  });
+  check("the post-refusal turn reaches the cotal tool, so the refusal cost the notice and not the session", (busyToolRuns?.length ?? 0) >= 2, busyToolRuns);
   await stopHostTree(busy, "SIGTERM");
   check("the launch whose post-join notice was refused exits cleanly", busy.exitCode === 0, { code: busy.exitCode, stderr: busyErr });
 
