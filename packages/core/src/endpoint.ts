@@ -5083,9 +5083,10 @@ function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
 
 /** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
  *  `from.id` equals the subject sender; on mismatch, a missing `from`, or an unparseable delivery
- *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
- *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
- *  god-view history must include the viewer's own sends. */
+ *  subject, reject and never surface. Fail closed on shape too: `isCotalMessage` (exactly one
+ *  route key, finite `ts`, string `space`, full EndpointRef `from`, well-formed `parts`) plus a
+ *  usable `id`. A stored JSON `null` or a truthy non-object `from` must not throw mid-array. Do
+ *  not echo-drop `from.id === this.card.id`: god-view history must include the viewer's own sends. */
 function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): CotalMessage | undefined {
   let raw: unknown;
   try {
@@ -5093,11 +5094,11 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): C
   } catch {
     return undefined;
   }
-  if (!isRecord(raw) || !isUsableMessageId(raw.id) || !isRecord(raw.from)) return undefined;
+  if (!isCotalMessage(raw) || !isUsableMessageId(raw.id)) return undefined;
   const parsed = parseSubject(m.subject);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
   if (raw.from.id !== parsed.sender) return undefined;
-  return authenticatedMessage(raw as CotalMessage, parsed);
+  return authenticatedMessage(raw, parsed);
 }
 
 function isPlane3DeliveryFrame(value: unknown): value is Plane3DeliveryFrame {
