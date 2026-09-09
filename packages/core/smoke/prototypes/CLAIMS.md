@@ -30,6 +30,8 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | # | Claim | | Backing |
 |---|---|---|---|
 | 72 | Release does not activate until the existing finalizer resolves | M | cell "release waits for the pending existing finalizer before activation"; mutation "existing finalizer is not awaited". The cell watches a bounded window; a single sample raced the writer and stopped discriminating when the branch was merged onto current main |
+| 73 | Callout success stays private until the awaited issuer gate completes | M | cell of that name; mutation "issuer release is not awaited". Had the same single-sample shape as 72 and now watches a window too |
+| 74 | No other cell in these suites samples once against a concurrent writer | A | audited after finding 72: the remaining absence assertions all sit after an awaited rejection, so nothing is in flight when they run. An audit by the person who wrote the cells |
 | 9 | Activation uses the revision the prepare observed, not a re-read | M | cell "activation before the source walk is irreversibly revoked"; mutation "activation takes a fresh revision after abort" |
 | 10 | An abort that wins the activation CAS prevents release | M | cells "source freeze before finalization releases nothing", "a winning source fence followed by prepared retirement loses activation" |
 | 11 | Each source index ends in the generation, so a reused credential id cannot merge issuances | M | cell "two issuances of one root credential retain distinct generation indexes" |
@@ -140,6 +142,10 @@ still a judgement with no cell behind it, and it cannot have one: whether a cred
 untrusted holder depends on how a space is deployed, not on this repo. Claim 71 only stops the
 partition from drifting silently. If you think one of the twenty-eight trusted profiles can reach
 a peer, say which, because that is the shape of a real finding here.
+
+Claim 74 is the newest **A** and the least comfortable: it is my own audit of my own cells for the
+shape that claim 72 turned out to have. Two instances found, both fixed. A third would not
+surprise me.
 
 Claim 7 was an **A** when this ledger was first written, with the note that it would be cheap
 to falsify and that I had not tried. I then tried: zero shipped files import the prototypes, and
