@@ -31,9 +31,20 @@ async function check(name: string, run: () => Promise<void>) {
 }
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const space = "issuedproof";
+const REVOKER_ROWS = (space: string) => {
+  const bucket = `cotal_issued_${space}`, stream = `KV_${bucket}`;
+  return [
+    `$KV.${bucket}.>`, "$JS.API.INFO", `$JS.API.STREAM.INFO.${stream}`,
+    `$JS.API.STREAM.MSG.GET.${stream}`, `$JS.API.CONSUMER.CREATE.${stream}`,
+    `$JS.API.CONSUMER.CREATE.${stream}.>`, `$JS.API.CONSUMER.MSG.NEXT.${stream}.>`,
+    `$JS.API.CONSUMER.DELETE.${stream}.>`, `$JS.API.CONSUMER.INFO.${stream}.>`, `$JS.ACK.${stream}.>`,
+  ];
+};
+
 const port = await pickFreePort();
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), `listen: 127.0.0.1:${port}\njetstream { store_dir: ${JSON.stringify(dir)} }\nauthorization { users: [{user: "issuer", password: "synthetic-proof"}] }\n`);
+const revokerPerms = { publish: { allow: REVOKER_ROWS(space) }, subscribe: { allow: ["_INBOX_issuedrevoker.>"] } };
+writeFileSync(join(dir, "server.conf"), `listen: 127.0.0.1:${port}\njetstream { store_dir: ${JSON.stringify(dir)} }\nauthorization { users: [{user: "issuer", password: "synthetic-proof"}, {user: "revoker", password: "synthetic-revoker", permissions: ${JSON.stringify(revokerPerms)}}] }\n`);
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const exited = new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
 const releaseBroker = teardownOnSignal(broker, dir);
@@ -253,6 +264,24 @@ try {
     const a = await f.next();
     await lifecycle.release(a.prepared, a.finalize);
     await assert.rejects(lifecycle.resolve(a.ref, async () => { throw new Error("synthetic source outage"); }), /source outage/);
+  });
+
+  await check("the index walk runs on a least-privilege revoker credential, not an operator one", async () => {
+    // The walk is what a production revoker performs, so it must not need space-wide reach. This
+    // principal is granted the issued bucket and nothing else.
+    const scopedNc = await connect({ servers: `nats://127.0.0.1:${port}`, user: "revoker", pass: "synthetic-revoker", inboxPrefix: "_INBOX_issuedrevoker", maxReconnectAttempts: 0 });
+    try {
+      const scoped = await openIssuedLifecycle(await new Kvm(scopedNc).open(`cotal_issued_${space}`), space);
+      const f = await fixture();
+      const a = await f.next();
+      await lifecycle.release(a.prepared, a.finalize);
+      assert.equal(await scoped.retireSource(await f.freeze()), 1);
+      assert.equal(await state(a.ref), "revoked");
+      // Same credential, another bucket in the same space: refused. The walk gained no extra reach.
+      // Kvm.open is lazy, so the read is what reaches the broker.
+      const foreign = await new Kvm(scopedNc).open(epAuthBucket(space));
+      await assert.rejects(foreign.get(a.sources[0].key), /[Pp]ermission/);
+    } finally { await scopedNc.close(); }
   });
 
   await check("an unreadable attempt row refuses instead of resolving", async () => {
