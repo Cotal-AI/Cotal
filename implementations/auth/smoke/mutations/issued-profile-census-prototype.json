@@ -188,6 +188,14 @@
       "file": "packages/core/src/provision.ts",
       "find": "      `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)",
       "replace": "      `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)\n      `$JS.API.STREAM.UPDATE.${KV}`,",
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "a second peer profile is granted the push-consumer door",
+      "file": "packages/core/src/provision.ts",
+      "find": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\")] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
+      "replace": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\"), `$JS.API.CONSUMER.CREATE.KV_cotal_presence_${space}.>`] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
       "expectRed": "peers hold the push-consumer door and none of the republish doors",
       "cell": "peers hold the push-consumer door and none of the republish doors"
     }
