@@ -114,6 +114,7 @@ const dispatcherProof = {
   dispatcherSettled: true as const,
   retiredStatePersisted: true as const,
   unprovenLiveRequestIds: ["req-live-1"],
+  liveRequestCollector: "unproven" as const,
   proves: "dispatcher-retirement-only" as const,
 };
 const parsedDisp = parseSessionOperation(enc({ ...opBase, inputDigest: opDigest, state: "indeterminate", proofOrigin: dispatcherProof }), opKey);
@@ -142,6 +143,35 @@ try {
   coopSuccess = false;
 }
 c("cooperative §121 drain can settle terminal-success without native-effect", coopSuccess);
+throws("empty unproven ids without a completed collector is not a proven drain", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "terminal-success",
+  result: { bindingState: "released", nativeState: "preserved" },
+  proofOrigin: { ...drainedProof, liveRequestCollector: "unproven" },
+}), opKey));
+throws("omitted liveRequestCollector is not a proven drain", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "indeterminate",
+  proofOrigin: { kind: "dispatcher-retirement", admissionClosed: true, dispatcherSettled: true, retiredStatePersisted: true, unprovenLiveRequestIds: [], proves: "dispatcher-retirement-only" },
+}), opKey));
+const brokenCollector = parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "indeterminate",
+  proofOrigin: { ...dispatcherProof, unprovenLiveRequestIds: [] },
+}), opKey);
+c("empty unproven ids with unproven collector persist as indeterminate", brokenCollector.state === "indeterminate" && brokenCollector.proofOrigin?.proves === "dispatcher-retirement-only" && brokenCollector.proofOrigin.kind === "dispatcher-retirement" && brokenCollector.proofOrigin.liveRequestCollector === "unproven");
+throws("cooperative-retirement cannot claim success while live requests remain unproven", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "terminal-success",
+  result: { bindingState: "released" },
+  proofOrigin: { ...drainedProof, unprovenLiveRequestIds: ["req-live-1"] },
+}), opKey));
+const controlBase = { ...opBase, action: "control" as const };
+const controlDigest = sessionOperationInputDigest(sessionOperationInput(controlBase));
+throws("control cannot settle success on cooperative-retirement", () => parseSessionOperation(enc({
+  ...controlBase, inputDigest: controlDigest, state: "terminal-success",
+  result: { applied: true }, proofOrigin: drainedProof,
+}), sessionOperationKey(resource, "op-disp")));
+throws("empty drain with dispatcher-retirement-only still cannot be terminal-success", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "terminal-success", result: { bindingState: "released" },
+  proofOrigin: { ...dispatcherProof, unprovenLiveRequestIds: [], liveRequestCollector: "complete" },
+}), opKey));
 throws("dispatcher-retirement cannot sit on a prepared operation", () => parseSessionOperation(enc({
   ...opBase, inputDigest: opDigest, state: "prepared", proofOrigin: dispatcherProof,
 }), opKey));

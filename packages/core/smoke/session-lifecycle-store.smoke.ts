@@ -98,11 +98,31 @@ const dispatcherProof = {
   dispatcherSettled: true as const,
   retiredStatePersisted: true as const,
   unprovenLiveRequestIds: ["req-live-1"],
+  liveRequestCollector: "unproven" as const,
   proves: "dispatcher-retirement-only" as const,
 };
 await rejects("dispatcher-retirement cannot prove terminal native success", () => updateSessionOperation(kv, {
   ...terminal, proofOrigin: dispatcherProof,
 }, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
+const coopRes = { ...resource, stableSessionId: "coop-success" };
+const coopPrepared = await prepareSessionOperation(kv, { ...base, resourceKey: coopRes, operationId: "op-coop-release", action: "release" });
+const coopProof = {
+  kind: "dispatcher-retirement" as const,
+  admissionClosed: true as const,
+  dispatcherSettled: true as const,
+  retiredStatePersisted: true as const,
+  liveRequestCollector: "complete" as const,
+  unprovenLiveRequestIds: [] as const,
+  proves: "cooperative-retirement" as const,
+};
+await updateSessionOperation(kv, {
+  ...coopPrepared.record,
+  state: "terminal-success",
+  result: { bindingState: "released", nativeState: "preserved" },
+  proofOrigin: coopProof,
+}, (kv as unknown as MemKv).rows.get(sessionOperationKey(coopRes, "op-coop-release"))!.revision);
+const coopStored = await queryOperation(kv, coopRes, "op-coop-release");
+c("store update accepts cooperative-retirement as terminal-success", coopStored.state === "terminal-success" && coopStored.proofOrigin?.proves === "cooperative-retirement");
 
 console.log("B. monotonic trusted state, rollback read-only, and retired fences");
 const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, retireBindingIds: ["binding-old"], observedNativeEpochFloor: 7 });
@@ -179,6 +199,13 @@ const releasedDisp = { ...nativeBinding, resourceKey: dispRes, state: "released"
 c("released lookup with dispatcher-retirement remains live without native-effect", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
   key: sessionBindingKey(dispRes),
   value: new TextEncoder().encode(JSON.stringify(releasedDisp)),
+  revision: 1,
+  operation: "PUT" as const,
+}] as never));
+const releasedCoop = { ...nativeBinding, resourceKey: coopRes, state: "released" as const, operationId: "op-coop-release" };
+c("released lookup with cooperative-retirement remains live without native-effect", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
+  key: sessionBindingKey(coopRes),
+  value: new TextEncoder().encode(JSON.stringify(releasedCoop)),
   revision: 1,
   operation: "PUT" as const,
 }] as never));
