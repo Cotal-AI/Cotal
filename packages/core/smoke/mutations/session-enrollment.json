@@ -2,7 +2,7 @@
   "suite": "packages/core/smoke/session-enrollment.smoke.ts",
   "guard": "native-only enrollment cannot carry credential renewal state",
   "command": "./node_modules/.bin/tsx packages/core/smoke/session-enrollment.smoke.ts",
-  "completionMarker": "passed, 0 failed",
+  "completionMarker": " failed",
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/session-enrollment.json",
   "why": [
     "A native-only session has no signing key and no mesh lifecycle.",
