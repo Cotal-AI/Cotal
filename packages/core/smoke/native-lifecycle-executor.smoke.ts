@@ -3,6 +3,7 @@ import type { KV } from "@nats-io/kv";
 import {
   EpEnvelopeError,
   executeNativeLifecycle,
+  parseBinding,
   queryOperation,
   registry,
   sessionBindingKey,
@@ -71,6 +72,11 @@ const requestBase = {
   expectedBindingRevision: 0, expectedControllerEpoch: 1, intendedResult: { nativeState: "preserved" },
 };
 
+function readBindingRow(kv: MemKv, key = sessionBindingKey(resource)): Binding | undefined {
+  const row = kv.rows.get(key);
+  if (!row) return undefined;
+  return parseBinding(row.value, key, resource);
+}
 const otherResource: ResourceKey = { ...resource, stableSessionId: "session-other" };
 const effects: string[] = [];
 function connection(
@@ -197,8 +203,7 @@ c("adopt returns a native-effect receipt through the public entry", adopted.stat
 c("adopt journalled then dispatched inspect/preflight/adopt in order", effects.join(",") === "preflight:adopt,inspect,adopt", effects);
 const prepared = await queryOperation(kv, resource, "op-adopt");
 c("adopt native-effect receipt is durable in the trusted store", prepared.state === "terminal-success" && prepared.proofOrigin?.proves === "native-effect", prepared);
-const bound = (kv as unknown as MemKv).rows.has(sessionBindingKey(resource));
-c("adopt wrote a sessionbinding row", bound);
+c("adopt wrote a managed sessionbinding row", readBindingRow(kv as unknown as MemKv)?.state === "managed");
 
 effects.length = 0;
 const kvDiscover = new MemKv();
@@ -262,6 +267,7 @@ const released = await executeNativeLifecycle(kvNativeRel, {
 c("cooperative-exclusive release with native-effect is terminal-success", released.state === "recorded" && released.operation.state === "terminal-success" && released.operation.proofOrigin?.proves === "native-effect", released);
 const nativeRelRow = await queryOperation(kvNativeRel, resource, "op-rel-ok");
 c("native-effect release receipt is durable", nativeRelRow.state === "terminal-success" && nativeRelRow.proofOrigin?.proves === "native-effect", nativeRelRow);
+c("native-effect release marked the binding released", readBindingRow(kvNativeRel as unknown as MemKv)?.state === "released");
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -327,8 +327,20 @@ export async function executeNativeLifecycle(
     const durable = await queryOperation(kv, prepared.record.resourceKey, prepared.record.operationId);
     if (durable.state === "absent")
       throw new EpEnvelopeError("internal", `session operation ${prepared.record.operationId} vanished after receipt persist`);
+    if (durable.state === "terminal-success") {
+      const current = await readBinding(kv, prepared.record.resourceKey);
+      if (current === undefined)
+        throw new EpEnvelopeError("internal", `session binding vanished after ${request.operation} receipt persist`);
+      const nextState = request.operation === "release" ? "released" : request.operation === "adopt" ? "managed" : current.binding.state;
+      if (nextState !== current.binding.state || current.binding.operationId !== prepared.record.operationId) {
+        await persistBinding(kv, {
+          ...current.binding,
+          state: nextState,
+          operationId: prepared.record.operationId,
+        }, current.revision);
+      }
+    }
     return { state: "recorded", operation: durable.record };
   }
-  if (native.state === "absent") return native;
-  return persistIndeterminate(kv, prepared.record, native.reason);
+  return persistIndeterminate(kv, prepared.record, native.state === "absent" ? "mutating provider returned absent" : native.reason);
 }

@@ -31,8 +31,8 @@
     {
       "name": "return recorded native receipt without persisting it",
       "file": "packages/core/src/native-lifecycle-executor.ts",
-      "find": "    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);\n    await updateSessionOperation(kv, stored, revision);\n    const durable = await queryOperation(kv, prepared.record.resourceKey, prepared.record.operationId);\n    if (durable.state === \"absent\")\n      throw new EpEnvelopeError(\"internal\", `session operation ${prepared.record.operationId} vanished after receipt persist`);\n    return { state: \"recorded\", operation: durable.record };\n",
-      "replace": "    return { state: \"recorded\", operation: stored };\n",
+      "find": "    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);\n    await updateSessionOperation(kv, stored, revision);\n    const durable = await queryOperation(kv, prepared.record.resourceKey, prepared.record.operationId);\n    if (durable.state === \"absent\")\n      throw new EpEnvelopeError(\"internal\", `session operation ${prepared.record.operationId} vanished after receipt persist`);\n",
+      "replace": "    const durable = { state: stored.state, record: stored } as Awaited<ReturnType<typeof queryOperation>>;\n",
       "expectRed": "adopt native-effect receipt is durable in the trusted store",
       "cell": "adopt native-effect receipt is durable in the trusted store"
     },
@@ -67,6 +67,14 @@
       "replace": "    return { state: \"observations\", observations };\n",
       "expectRed": "discover dropped observations outside the grant selector",
       "cell": "discover dropped observations outside the grant selector"
+    },
+    {
+      "name": "leave adopt binding at adopt-prepared",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    if (durable.state === \"terminal-success\") {\n      const current = await readBinding(kv, prepared.record.resourceKey);\n      if (current === undefined)\n        throw new EpEnvelopeError(\"internal\", `session binding vanished after ${request.operation} receipt persist`);\n      const nextState = request.operation === \"release\" ? \"released\" : request.operation === \"adopt\" ? \"managed\" : current.binding.state;\n      if (nextState !== current.binding.state || current.binding.operationId !== prepared.record.operationId) {\n        await persistBinding(kv, {\n          ...current.binding,\n          state: nextState,\n          operationId: prepared.record.operationId,\n        }, current.revision);\n      }\n    }\n",
+      "replace": "",
+      "expectRed": "adopt wrote a managed sessionbinding row",
+      "cell": "adopt wrote a managed sessionbinding row"
     }
   ]
 }
