@@ -18,11 +18,12 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/tool-input-closed.smoke.ts",
+    "test": "tsx smoke/tool-input-closed.smoke.ts && tsx smoke/native-api.smoke.ts && tsx smoke/native-lifecycle.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/plugin.entry.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "test:native-provider": "tsx smoke/native-server.smoke.ts"
   },
   "peerDependencies": {
     "@cotal-ai/core": ">=0.1.0"
