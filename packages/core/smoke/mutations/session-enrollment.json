@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/session-enrollment.smoke.ts",
+  "suite": [
+    "packages/core/smoke/session-enrollment.smoke.ts"
+  ],
   "guard": "native-only enrollment cannot carry credential renewal state",
   "command": "./node_modules/.bin/tsx packages/core/smoke/session-enrollment.smoke.ts",
   "completionMarker": " failed",

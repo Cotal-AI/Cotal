@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/session-enrollment-renewal.smoke.ts",
+  "suite": [
+    "packages/core/smoke/session-enrollment-renewal.smoke.ts"
+  ],
   "guard": "independent remint intersects every issued dimension, including both channel directions, and refuses expired enrollment",
   "command": "./node_modules/.bin/tsx packages/core/smoke/session-enrollment-renewal.smoke.ts",
   "completionMarker": " failed",
