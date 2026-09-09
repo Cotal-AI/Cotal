@@ -159,13 +159,14 @@ export async function executeNativeLifecycle(
 
   const connection = resolveNativeLifecycleProvider(request.providerName).connect(request.connectOptions);
   // Capability refusal happens before inspect, prepare, or any other provider effect.
-  let method: ReturnType<typeof requireNativeLifecycleOperation>;
+  let dispatched: ReturnType<typeof requireNativeLifecycleOperation> | undefined;
   try {
-    method = requireNativeLifecycleOperation(connection, request.operation);
+    dispatched = requireNativeLifecycleOperation(connection, request.operation);
   } catch (e) {
     if (e instanceof NativeLifecycleUnsupported) return { state: "unsupported", operation: request.operation };
     throw e;
   }
+  const method = dispatched;
   if (MUTATING.has(request.operation) && connection.capabilities.mode === "observed")
     return { state: "unsupported", operation: request.operation };
 

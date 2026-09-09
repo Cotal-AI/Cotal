@@ -12,8 +12,8 @@
     {
       "name": "skip capability require before mutating dispatch",
       "file": "packages/core/src/native-lifecycle-executor.ts",
-      "find": "  try {\n    method = requireNativeLifecycleOperation(connection, request.operation);\n  } catch (e) {\n    if (e instanceof NativeLifecycleUnsupported) return { state: \"unsupported\", operation: request.operation };\n    throw e;\n  }\n",
-      "replace": "  const method = connection[request.operation];\n",
+      "find": "    dispatched = requireNativeLifecycleOperation(connection, request.operation);\n",
+      "replace": "    dispatched = ((connection[request.operation] ?? (async () => { throw new Error(\"missing\"); })) as typeof dispatched);\n",
       "expectRed": "unsupported adopt is refused before inspect",
       "cell": "unsupported adopt is refused before inspect"
     },

@@ -134,17 +134,25 @@ await rejects("spawn is not a session-manage grant", () => executeNativeLifecycl
 c("unauthorized adopt never reached the provider", effects.length === 0, effects);
 
 effects.length = 0;
-const missing = await executeNativeLifecycle(new MemKv() as unknown as KV, {
-  ...requestBase, providerName: "executor-missing-adopt", operation: "adopt", operationId: "op-unsup", bindingId: "binding-unsup",
-});
-c("unsupported adopt is refused before inspect", missing.state === "unsupported" && missing.operation === "adopt", missing);
+try {
+  const missing = await executeNativeLifecycle(new MemKv() as unknown as KV, {
+    ...requestBase, providerName: "executor-missing-adopt", operation: "adopt", operationId: "op-unsup", bindingId: "binding-unsup",
+  });
+  c("unsupported adopt is refused before inspect", missing.state === "unsupported" && missing.operation === "adopt", missing);
+} catch (e) {
+  c("unsupported adopt is refused before inspect", false, (e as Error).message);
+}
 c("unsupported adopt left no native inspect/adopt effects", effects.length === 0, effects);
 
 effects.length = 0;
-const observed = await executeNativeLifecycle(new MemKv() as unknown as KV, {
-  ...requestBase, providerName: "executor-observed", operation: "adopt", operationId: "op-obs", bindingId: "binding-obs",
-});
-c("observed-mode adopt is refused before inspect", observed.state === "unsupported" && observed.operation === "adopt", observed);
+try {
+  const observed = await executeNativeLifecycle(new MemKv() as unknown as KV, {
+    ...requestBase, providerName: "executor-observed", operation: "adopt", operationId: "op-obs", bindingId: "binding-obs",
+  });
+  c("observed-mode adopt is refused before inspect", observed.state === "unsupported" && observed.operation === "adopt", observed);
+} catch (e) {
+  c("observed-mode adopt is refused before inspect", false, (e as Error).message);
+}
 c("observed-mode adopt left no native effects", effects.length === 0, effects);
 
 console.log("B. production caller: executeNativeLifecycle -> registry.resolve, nothing injected");
