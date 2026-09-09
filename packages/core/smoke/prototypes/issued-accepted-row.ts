@@ -5,9 +5,15 @@ import { evidenceKey, type IssuedRef } from "./issued-authority-lifecycle.js";
 
 /**
  * The alternative to reading the accepted generation out of `$SYS.REQ.USER.INFO`: the issuer
- * writes it to one row, and the client reads that row itself. A read the client performs is not
- * a confused deputy, so this costs no delivery path at all, where the server-answered request
- * puts an unmarked server-authored document on any subject the client can name.
+ * writes it to one row, and the client reads that row itself.
+ *
+ * This does NOT cost zero delivery paths, and an earlier version of this comment said it did.
+ * `readAccepted` is an `nc.request`, so the reply subject is chosen by the caller and the grant
+ * does not stop a holder naming the rail instead of its own inbox. The grant therefore adds a
+ * `stored-marked` path. Three things still make it the better option: that path arrives carrying
+ * `Nats-` markers an endpoint can refuse at ingress, the client cannot write this bucket so it
+ * cannot choose the bytes that come back, and `$SYS.REQ.USER.INFO` would instead add a second
+ * UNMARKED path whose body carries the connection's own permission ceiling.
  *
  * The key is a token the CLIENT chose and therefore always knows, on both the static and the
  * callout path, where it may not know its own lifecycle uid before connecting.

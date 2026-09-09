@@ -329,7 +329,9 @@ a compatibility fallback.
 `implementations/auth/smoke/issued-ingress-origin.smoke.ts` measures the SPEC 678-695
 consumer-delivery confused deputy against the candidate rail, using the stock agent
 profile as production mints it and the serve subscription shape an endpoint really
-uses (wildcard filter, queue-qualified). Measured on NATS 2.14.5:
+opens for the `one` class (wildcard filter, queue-qualified). It is one of three per command:
+`endpoint-serve.ts:551-553` also opens non-queued `all` and `inst`, and push delivery is measured
+against all three. Measured on NATS 2.14.5, and independently reproduced by a reviewer on 2.14.0:
 
 - A direct publish onto the rail is denied.
 - A push consumer whose `deliver_subject` is the rail is created, but its delivery is

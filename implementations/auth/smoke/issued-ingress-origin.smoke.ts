@@ -17,7 +17,8 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
  * Origin binding for the candidate issued rail (SPEC 678-695, 3084-3094): a JetStream read
  * delivers stored bytes to a caller-chosen destination the broker does NOT confine to the
  * requester's `pub.allow`. This measures which of those paths actually reach an endpoint's
- * REAL serve subscription shape (wildcard + queue), and whether the arriving frame is
+ * QUEUED `one`-class serve subscription shape, one of the three an endpoint opens per command
+ * (endpoint-serve.ts:551-553 also opens non-queued `all` and `inst`), and whether the frame is
  * distinguishable from a conforming request. Test-only; no production code is attached.
  */
 let passed = 0;
@@ -64,7 +65,9 @@ try {
 
   const uid = "u".repeat(26), generation = "a".repeat(32), nonce = "n".repeat(22);
   const rail = `cotal.${space}.ep.v1.one.manager.run-start.local.victim.${uid}.${generation}.${nonce}`;
-  // The REAL serve shape an endpoint uses (§13.9): wildcard filter, queue-qualified.
+  // The queued `one`-class shape, which is ONE of the three subscriptions endpoint-serve.ts
+  // opens per command; `all` and `inst` carry no queue group. Coverage of the other two is the
+  // three-shape cell below, added after review flagged this as a family conclusion from one member.
   const serveFilter = `cotal.${space}.ep.v1.one.>`, queue = "manager";
   const frames: Frame[] = [];
   const serve = operator.subscribe(serveFilter, { queue });
@@ -202,6 +205,9 @@ try {
     // Unlike the pull path, a MSG.GET response is an ordinary request/reply publish by the
     // server's internal client, so it arrives UNDER the attacker-chosen rail subject.
     assert.equal(frame.subject, rail, "measured: the KV read response arrives under the victim rail subject");
+    // Claims 64 and 68 rest on this frame being UNMARKED, and this cell used to leave that to the
+    // aggregate cell downstream, which skips any frame that has headers. Assert it here.
+    assert.deepEqual(frame.headerKeys, [], "measured: the KV read response carries no header at all");
   });
 
   await check("a DIRECT.GET reply delivers raw stored bytes under the rail subject", async () => {
@@ -243,6 +249,60 @@ try {
     brokerVersion: operator.info?.version, serveFilter, queue, rail, observations,
     scope: "Isolated localhost broker, stock agent profile, candidate ep.v1 subject. Measures namespace delivery into an endpoint's real serve subscription shape; no endpoint handler runs and no production ingress is attached.",
   }, null, 2) + "\n");
+
+  await check("push delivery reaches none of the three production serve shapes", async () => {
+    // Review finding: the cells above measure the QUEUED `one` shape, and the push-consumer cell
+    // sets deliver_group to match that queue. endpoint-serve.ts:551-553 also opens `all` and
+    // `inst` with NO queue group, and a push consumer with no deliver_group is an ordinary core
+    // publish that a plain subscriber would receive. That is the case most likely to break the
+    // interest-gating conclusion, and it was the one member never measured.
+    const instId = "i".repeat(26);
+    const allRail = `cotal.${space}.ep.v1.all.manager.run-start.local.victim.${uid}.${generation}.${nonce}`;
+    const instRail = `cotal.${space}.ep.v1.inst.manager.${instId}.run-start.local.victim.${uid}.${generation}.${nonce}`;
+    const allFrames: Frame[] = [], instFrames: Frame[] = [];
+    const drain = (sub: { [Symbol.asyncIterator](): AsyncIterator<Msg> }, into: Frame[]) =>
+      void (async () => { for await (const m of sub) into.push(frameOf(m)); })();
+    drain(operator.subscribe(`cotal.${space}.ep.v1.all.manager.run-start.>`), allFrames);
+    drain(operator.subscribe(`cotal.${space}.ep.v1.inst.manager.${instId}.run-start.>`), instFrames);
+    await operator.flush();
+
+    const arrived = async (into: Frame[], from: number) => {
+      for (let i = 0; i < 40; i++) { if (into.length > from) return into[from]; await wait(25); }
+      return undefined;
+    };
+    // Positive control on every collector FIRST. A collector that receives nothing makes each
+    // negative below vacuous, and on the first run of this probe one of them did exactly that:
+    // it had joined the existing `manager` queue group, so delivery split away from it.
+    for (const [label, subject, into] of [["all", allRail, allFrames], ["inst", instRail, instFrames]] as [string, string, Frame[]][]) {
+      const before = into.length;
+      operator.publish(subject, enc("direct-control"));
+      await operator.flush();
+      assert.ok(await arrived(into, before), `${label} collector never received a direct publish; its negatives would be vacuous`);
+    }
+
+    const filterSubject = chatSubject(space, principal.owner, principal.actor, "public");
+    const createRow = (perms.pub.allow as string[]).find((r) => r.includes("CONSUMER.CREATE") && r.includes(stream))!;
+    const name = createRow.split(".")[5];
+    for (const [label, target, into, deliverGroup] of [
+      ["one, no deliver_group", rail, frames, undefined],
+      ["all, no deliver_group", allRail, allFrames, undefined],
+      ["inst, no deliver_group", instRail, instFrames, undefined],
+    ] as [string, string, Frame[], string | undefined][]) {
+      const before = into.length;
+      // The agent's CONSUMER.CREATE grant pins one durable name, and an earlier cell left a PULL
+      // consumer under it. A push config over a pull consumer is refused, so clear it first.
+      await jsm.consumers.delete(stream, name).catch(() => undefined);
+      const config: Record<string, unknown> = { name, durable_name: name, filter_subject: filterSubject, deliver_subject: target, ack_policy: "none", deliver_policy: "last", replay_policy: "instant" };
+      if (deliverGroup) config.deliver_group = deliverGroup;
+      const created = JSON.parse(dec((await agent.request(`$JS.API.CONSUMER.CREATE.${stream}.${name}.${filterSubject}`, enc(JSON.stringify({ stream_name: stream, config })), { timeout: 3000 })).data)) as { error?: unknown };
+      assert.equal(created.error, undefined, `${label}: ${JSON.stringify(created.error)}`);
+      const frame = await arrived(into, before);
+      observations.push({ vector: `push consumer, ${label}`, reachedServeShape: !!frame, frame: frame ?? null });
+      assert.equal(frame, undefined, `measured: push delivery did not reach the ${label} serve shape`);
+      await jsm.consumers.delete(stream, name).catch(() => undefined);
+    }
+  });
+
   console.log(`issued ingress origin: ${passed} passed`);
 } finally {
   for (const nc of connections) await nc.close();
