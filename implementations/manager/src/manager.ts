@@ -7486,7 +7486,9 @@ export class Manager {
     // support "offline" or "absent" for anyone: netcup 2026-09-09 rendered every live seat as
     // one of those for hours after the presence stream was recreated under a still-open watch.
     // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
-    const view = this.ep.presenceView();
+    // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as
+    // `current`: that is exactly what every row meant before the field existed.
+    const view = typeof this.ep.presenceView === "function" ? this.ep.presenceView() : { state: "current" as const };
     return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
       // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
       // bearer command writes each attempt's outcome to the health file, and `ps` renders it
