@@ -71,6 +71,21 @@ try {
   const alice = await scanner.scanNativeBindings("u_alice.manager");
   c("closed query returns only THIS manager principal's live binding", alice.status === "known" && alice.bindings.length === 1 && alice.bindings[0]?.bindingId === "binding-a", alice);
 
+  console.log("C. released-labelled unproven binding is not dropped before a receipt check");
+  const resourceReleased: ResourceKey = { ...resourceA, stableSessionId: "s-released" };
+  const releasedUnproven = {
+    ...binding(resourceReleased, "binding-released-unproven", "u_alice.manager"),
+    state: "released",
+    operationId: "op-released-unproven",
+  };
+  await createRecordEntry(kv, sessionBindingKey(resourceReleased), releasedUnproven);
+  const afterReleased = await scanner.scanNativeBindings("u_alice.manager");
+  c("released-labelled binding with no receipt still reaches the shutdown lookup",
+    afterReleased.status === "known"
+      && afterReleased.bindings.some((row) => row.bindingId === "binding-released-unproven")
+      && afterReleased.bindings.some((row) => row.bindingId === "binding-a"),
+    afterReleased);
+
   console.log("B. failure classes stay explicit and scanner authority remains closed");
   const malformedPrincipal = await scanner.scanNativeBindings("manager");
   c("malformed manager principal is explicit unknown, not empty", malformedPrincipal.status === "unknown" && /canonical/.test(malformedPrincipal.reason), malformedPrincipal);

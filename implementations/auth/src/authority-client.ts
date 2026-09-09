@@ -82,6 +82,34 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   };
 }
 
+/**
+ * Point-read of native lifecycle *receipts* (`sessionop.*`) for the shutdown guard.
+ * This is a slice of the mint-writer's already-accepted records residual
+ * (`STREAM.INFO` + stream-wide `STREAM.MSG.GET` + `DIRECT.GET`). It adds no
+ * `CONSUMER.CREATE`, no `$KV` write, and no `sessionop` enumeration. The sealed
+ * records scanner remains the only CREATE holder; completing a `released` label
+ * is a KV point-read at a layer that already holds that residual.
+ *
+ * The resident authority plane uses the mint-writer connection it already holds
+ * rather than minting this profile. {@link queryNativeLifecycleBindingsWithAuthority}
+ * mints it for the static/local composition so that path does not open a second
+ * writer beside the sealed scanner.
+ */
+export function nativeLifecycleReceiptReadGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const records = `KV_${recordsBucket(space)}`;
+  const inbox = assertInboxConnId(connId);
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.INFO.${records}`,
+      `$JS.API.STREAM.MSG.GET.${records}`,
+      `$JS.API.DIRECT.GET.${records}`,
+      `$JS.API.DIRECT.GET.${records}.>`,
+    ],
+    subscribe: [`_INBOX_${inbox}.>`],
+  };
+}
+
 /** The host-side REMOTE MANAGER ISSUER adds only the endpoint-instance gate/credential family
  * needed by the typed manager-service protocol. It carries no generic profile/mint endpoint; the
  * HTTP handler chooses fixed profiles and caller-generated nkeys. */

@@ -1,0 +1,38 @@
+{
+  "suite": "implementations/auth/smoke/native-lifecycle-lookup.smoke.ts",
+  "guard": "the production native-lifecycle lookup keeps released-unproven rows live, completes only matching native-effect or fully-validated cooperative receipts, and never widens the sealed scanner CREATE",
+  "command": "pnpm smoke:native-lifecycle-lookup:auth",
+  "completionMarker": "passed, ",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/native-lifecycle-lookup.json",
+  "why": [
+    "PRODUCTION CALLER: provider.ts static nativeLifecycleBindings and service.ts queryNativeLifecycleBindings apply sessionop receipts after the sealed sessionbinding scan.",
+    "A released label without a matching receipt must remain live. Cooperative-retirement without preserved native lifetime must remain live. Native-effect and fully-validated cooperative receipts may complete.",
+    "Receipt-read grants are a mint-writer residual slice: STREAM.MSG.GET + DIRECT.GET, no CONSUMER.CREATE."
+  ],
+  "mutations": [
+    {
+      "name": "drop every released row after the scan without a receipt check",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "      if (releasedBindingStillLive(binding, release)) bindings.push(binding);\n",
+      "replace": "",
+      "expectRed": "PRODUCTION CALLER queryNativeLifecycleBindingsWithAuthority: released-unproven stays live",
+      "cell": "PRODUCTION CALLER queryNativeLifecycleBindingsWithAuthority: released-unproven stays live"
+    },
+    {
+      "name": "treat cooperative-retirement proves alone as sufficient",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  if (!nativeLifetimePreserved(release.result)) return true;\n",
+      "replace": "",
+      "expectRed": "cooperative-retirement without preserved native lifetime remains live",
+      "cell": "cooperative-retirement without preserved native lifetime remains live"
+    },
+    {
+      "name": "receipt-read grants add CONSUMER.CREATE",
+      "file": "implementations/auth/src/authority-client.ts",
+      "find": "      `$JS.API.STREAM.INFO.${records}`,\n      `$JS.API.STREAM.MSG.GET.${records}`,\n      `$JS.API.DIRECT.GET.${records}`,\n",
+      "replace": "      `$JS.API.STREAM.INFO.${records}`,\n      `$JS.API.STREAM.MSG.GET.${records}`,\n      `$JS.API.CONSUMER.CREATE.${records}`,\n      `$JS.API.DIRECT.GET.${records}`,\n",
+      "expectRed": "receipt-read grants carry STREAM.MSG.GET and DIRECT.GET and no CONSUMER.CREATE",
+      "cell": "receipt-read grants carry STREAM.MSG.GET and DIRECT.GET and no CONSUMER.CREATE"
+    }
+  ]
+}

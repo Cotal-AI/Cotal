@@ -51,7 +51,7 @@ import {
   runDriverGrants, runMediatorGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
-import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
+import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, nativeLifecycleReceiptReadGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
 import { authAdminListenerGrants } from "../src/auth-admin.js";
@@ -326,6 +326,15 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // Point-read of sessionop receipts for the shutdown guard: a slice of the mint-writer residual,
+  // no CONSUMER.CREATE, no $KV write. Completing a released label is not a sealed-scanner job.
+  "native-lifecycle-receipt-read": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "auth-connect-reader": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
@@ -441,6 +450,7 @@ put("auth-writer", authorityWriterGrants(S, CONN));
 put("auth-barrier", authorityBarrierGrants(S, CONN));
 put("auth-scanner", authorityScannerGrants(S, CONN));
 put("records-scanner", recordsScannerGrants(S, CONN));
+put("native-lifecycle-receipt-read", nativeLifecycleReceiptReadGrants(S, CONN));
 put("auth-connect-reader", authConnectReaderGrants(S, CONN));
 put("barrier-executor", { publish: barrierExecutorSettlementGrants(S, EPJ, ["pa", "pb"]).publish, subscribe: [] });
 put("retirement-executor", retirementExecutorClientGrants(S, EPJ, ["pa", "pb"], CONN));
@@ -556,6 +566,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
+    "native-lifecycle-receipt-read:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
     "barrier-executor:EPF_d32m",
     // The full production executor client (#29 piece 2): the settlement EPF read plus the
@@ -599,7 +610,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     const stream = m[1], tail = m[2];
     const bodySelected = tail === undefined || tail === ">";
     if (!bodySelected) continue; // subject-appended, broker-confined
-    if (stream !== "KV_cotal_records_d32m" || (principal !== "auth-writer" && principal !== "auth-barrier"))
+    if (stream !== "KV_cotal_records_d32m" || (principal !== "auth-writer" && principal !== "auth-barrier" && principal !== "native-lifecycle-receipt-read"))
       bad.push(`${principal}: ${row}`);
   }
   c("body-selected Direct-Get exists ONLY as the auth path's records pair (every other tail fully qualified)", bad.length === 0, bad);

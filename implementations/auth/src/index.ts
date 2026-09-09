@@ -111,7 +111,7 @@ export {
   type ActorRow,
 } from "./ledger.js";
 export { runAuthService, openAuthAuthorityPlane, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
-export { remoteManagerIssuerGrants } from "./authority-client.js";
+export { remoteManagerIssuerGrants, nativeLifecycleReceiptReadGrants } from "./authority-client.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
 // shape-proved reader, and the pure connect-credential check the production composition runs.
 // The WRITE side (authority-client, root-credential, activateLifecycleAtUid) stays

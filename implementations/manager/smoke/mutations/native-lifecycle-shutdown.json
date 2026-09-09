@@ -1,0 +1,30 @@
+{
+  "suite": "implementations/manager/smoke/native-lifecycle-shutdown.smoke.ts",
+  "guard": "stopForSignal and managerStatusData consume the shipped supervisor lookup; a released-unproven binding stays live and selects preserve-native cleanup",
+  "command": "pnpm smoke:native-lifecycle-shutdown",
+  "completionMarker": "NATIVE-LIFECYCLE-SHUTDOWN SMOKE OK",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/native-lifecycle-shutdown.json",
+  "why": [
+    "PRODUCTION CALLER: caught SIGINT/SIGTERM -> Manager.stopForSignal and the served status command -> managerStatusData both call nativeLifecycleBindings.",
+    "The suite reaches nativeLifecycleLookupForSupervisor and the auth closed query. Injected Manager.nativeLifecycleBindings stubs do not grade this.",
+    "A released-unproven row must appear in status liveBindingIds and must select stopPreservingNative, not stop."
+  ],
+  "mutations": [
+    {
+      "name": "signal shutdown always takes the legacy destructive path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (native.bindings.length > 0) await this.stopPreservingNative();\n    else await this.stop();\n",
+      "replace": "    await this.stop();\n",
+      "expectRed": "PRODUCTION CALLER stopForSignal: released-unproven selects preserve-native cleanup",
+      "cell": "PRODUCTION CALLER stopForSignal: released-unproven selects preserve-native cleanup"
+    },
+    {
+      "name": "status reports zero live bindings on a known lookup",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        ? { status: \"known\", liveBindings: native.bindings.length, liveBindingIds: native.bindings.map((binding) => binding.bindingId) }\n",
+      "replace": "        ? { status: \"known\", liveBindings: 0, liveBindingIds: [] }\n",
+      "expectRed": "PRODUCTION CALLER managerStatusData: released-unproven is a live binding",
+      "cell": "PRODUCTION CALLER managerStatusData: released-unproven is a live binding"
+    }
+  ]
+}

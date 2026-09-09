@@ -55,7 +55,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, applyReleaseReceiptsToNativeLookup, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, queryOperation, rawDigest, recordsBucket, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -522,7 +522,16 @@ export async function openAuthAuthorityPlane(opts: {
     },
     queryNativeLifecycleBindings: async (managerPrincipal) => {
       refuseIfFenced();
-      return recordsScanner!.scanNativeBindings(managerPrincipal);
+      const scanned = await recordsScanner!.scanNativeBindings(managerPrincipal);
+      if (scanned.status === "unknown") return scanned;
+      // PRODUCTION CALLER: service.ts handleNativeLifecycleBindings -> plane.queryNativeLifecycleBindings
+      // -> Manager.stopForSignal / managerStatusData. Receipts ride the mint-writer residual
+      // (DIRECT.GET / STREAM.MSG.GET) already held by this plane; the sealed scanner is not widened.
+      const kv = await new Kvm(writer.nc).open(recordsBucket(space));
+      return await applyReleaseReceiptsToNativeLookup(
+        scanned,
+        (resourceKey, operationId) => queryOperation(kv, resourceKey, operationId),
+      );
     },
     fenced,
     close: async () => {

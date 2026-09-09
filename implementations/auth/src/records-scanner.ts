@@ -49,16 +49,19 @@
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
+  applyReleaseReceiptsToNativeLookup,
   EpEnvelopeError,
   assertInboxConnId,
   parseBinding,
   parsePrincipalKey,
+  queryOperation,
   recordsBucket,
   recordsKvStreamName,
   type NativeLifecycleBindingLookup,
   type PlaneConnTuple,
 } from "@cotal-ai/core";
-import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
+import { Kvm } from "@nats-io/kv";
+import { nativeLifecycleReceiptReadGrants, openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
 
 /** The ONE literal consumer name every obligation scan over the records stream reuses (the grant
@@ -137,9 +140,11 @@ export interface RecordsScanner {
    *  last of every obligation row under the filter (markers included, so the caller sees a DEL/PURGE
    *  a bucket's own `keys()`/`watch()` would hide). */
   scanObligations(filter: string): Promise<RawRecordsEntry[]>;
-  /** Closed shutdown-guard query. The caller supplies only one canonical manager principal; the
+  /** Closed shutdown-guard scan. The caller supplies only one canonical manager principal; the
    * scanner fixes the records filter to `sessionbinding.*`, parses every value through core's
-   * trusted binding grammar, and returns only that manager's non-released bindings. */
+   * trusted binding grammar, and returns that manager's bindings including released-labelled
+   * rows. Completing a release is a `sessionop` point-read at a layer that already holds
+   * DIRECT.GET, never this sealed CREATE credential. */
   scanNativeBindings(managerPrincipal: string): Promise<NativeLifecycleBindingLookup>;
   /** Tear down the owned credential+connection. */
   close(): Promise<void>;
@@ -237,10 +242,32 @@ export async function queryNativeLifecycleBindingsWithAuthority(opts: {
       log: opts.log,
     });
     const scanner = buildScanner(client.nc, opts.space, () => client.close());
+    let scanned: NativeLifecycleBindingLookup;
     try {
-      return await scanner.scanNativeBindings(opts.managerPrincipal);
+      scanned = await scanner.scanNativeBindings(opts.managerPrincipal);
     } finally {
       await scanner.close();
+    }
+    if (scanned.status === "unknown") return scanned;
+    // PRODUCTION CALLER: provider.ts:241 static/local nativeLifecycleBindings falls through
+    // here when no resident auth service is running. Receipts are a sessionop point-read
+    // under the mint-writer residual, not a second CREATE on the sealed scanner.
+    const receipts = await openAuthorityClient({
+      server: opts.server,
+      space: opts.space,
+      dataAccount: opts.dataAccount,
+      label: `cotal:native-binding-receipts:${opts.space}`,
+      grants: (id) => nativeLifecycleReceiptReadGrants(opts.space, id),
+      log: opts.log,
+    });
+    try {
+      const kv = await new Kvm(receipts.nc).open(recordsBucket(opts.space));
+      return await applyReleaseReceiptsToNativeLookup(
+        scanned,
+        (resourceKey, operationId) => queryOperation(kv, resourceKey, operationId),
+      );
+    } finally {
+      await receipts.close();
     }
   } catch (e) {
     return { status: "unknown", bindings: [], reason: `trusted native lifecycle lookup is unavailable: ${(e as Error).message}` };
@@ -410,7 +437,7 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
           if (row.op !== undefined)
             throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${row.key} carries a ${row.op} marker`);
           const binding = parseBinding(row.data, row.key);
-          if (binding.managerPrincipal === managerPrincipal && binding.state !== "released") bindings.push(binding);
+          if (binding.managerPrincipal === managerPrincipal) bindings.push(binding);
         }
         return { status: "known", bindings: Object.freeze(bindings) };
       } catch (e) {
@@ -426,8 +453,10 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
 /**
  * The SEALED records scanner's credential grant on the RECORDS stream (SPEC 13.9): exactly the ONE
  * literal enumeration consumer's lifecycle (CREATE/INFO/NEXT/DELETE pinned to
- * {@link RECORDS_SCANNER_CONSUMER_NAME}, the CREATE filter confined to the `oblig.` subtree) + the
- * stream shape read + the scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE` on
+ * {@link RECORDS_SCANNER_CONSUMER_NAME}, the CREATE filters confined to the `oblig.` subtree and
+ * exact `sessionbinding.*`) + the stream shape read + the scoped inbox. Completing a `released`
+ * label is a sessionop point-read on {@link nativeLifecycleReceiptReadGrants}, not a CREATE widen.
+ * This is the ONLY profile that holds `CONSUMER.CREATE` on
  * `KV_cotal_records_<space>` for obligation enumeration; {@link openRecordsScannerCandidate} opens it for the
  * trusted process and it is NEVER registered as an external/mintable profile. The bucket is DERIVED
  * from the validated space and the name is the module constant, so no caller-supplied token forms a
