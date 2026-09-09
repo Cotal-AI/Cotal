@@ -39,10 +39,18 @@
     {
       "name": "E skip the prepare writable gate",
       "file": "packages/core/src/session-lifecycle-store.ts",
-      "find": "  await assertStoredSessionManagementWritable(kv, value.resourceKey);\n",
-      "replace": "",
+      "find": "  await assertStoredSessionManagementWritable(kv, value.resourceKey);\n  try {\n    await createRecordEntry(kv, key, record);",
+      "replace": "  try {\n    await createRecordEntry(kv, key, record);",
       "expectRed": "recovery-read-only refuses a new prepare",
       "cell": "recovery-read-only refuses a new prepare"
+    },
+    {
+      "name": "E check writable before returning an existing prepare",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  const existing = await queryOperation(kv, value.resourceKey, value.operationId);\n  if (existing.state !== \"absent\") {",
+      "replace": "  await assertStoredSessionManagementWritable(kv, value.resourceKey);\n  const existing = await queryOperation(kv, value.resourceKey, value.operationId);\n  if (existing.state !== \"absent\") {",
+      "expectRed": "recovery-read-only still returns an identical recorded prepare",
+      "cell": "recovery-read-only still returns an identical recorded prepare"
     },
     {
       "name": "E skip the update writable gate",

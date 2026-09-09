@@ -103,6 +103,16 @@ const unknownFloor = await advanceSessionTrustedState(kv, { ...resource, stableS
 c("unknown native epoch floor starts management recovery-read-only", unknownFloor.epochFloor === 0 && unknownFloor.managementMode === "management-recovery-read-only");
 throws("recovery-read-only blocks management writes", () => assertSessionManagementWritable(rolled), "failed-precondition");
 await rejects("recovery-read-only refuses a new prepare", () => prepareSessionOperation(kv, { ...base, operationId: "op-readonly-prepare", action: "adopt" }), "failed-precondition");
+const retryRes = { ...resource, stableSessionId: "retry-readonly" };
+const preparedReadonly = await prepareSessionOperation(kv, { ...base, resourceKey: retryRes, operationId: "op-retry-ro" });
+await advanceSessionTrustedState(kv, retryRes, { epochFloor: 0, observedNativeEpochFloor: "unknown" });
+let againReadonly;
+try {
+  againReadonly = await prepareSessionOperation(kv, { ...base, resourceKey: retryRes, operationId: "op-retry-ro" });
+} catch (e) {
+  againReadonly = { created: true, record: { inputDigest: "threw:" + (e instanceof Error ? e.message : String(e)) } as never };
+}
+c("recovery-read-only still returns an identical recorded prepare", !againReadonly.created && againReadonly.record.inputDigest === preparedReadonly.record.inputDigest, againReadonly.created ? againReadonly.record.inputDigest : undefined);
 await rejects("recovery-read-only refuses an operation update", () => updateSessionOperation(kv, {
   ...terminal,
   state: "terminal-success",

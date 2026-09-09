@@ -97,21 +97,27 @@ export async function prepareSessionOperation(
   kv: KV,
   value: Omit<SessionOperationRecord, "inputDigest" | "state" | "result" | "proofOrigin">,
 ): Promise<{ readonly created: boolean; readonly record: SessionOperationRecord }> {
-  await assertStoredSessionManagementWritable(kv, value.resourceKey);
   const input = sessionOperationInput(value);
   const key = sessionOperationKey(value.resourceKey, value.operationId);
   const record = parseSessionOperation(encoded({ ...value, inputDigest: sessionOperationInputDigest(input), state: "prepared" }), key, value.resourceKey);
+  const existing = await queryOperation(kv, value.resourceKey, value.operationId);
+  if (existing.state !== "absent") {
+    if (existing.record.inputDigest !== record.inputDigest)
+      throw new EpEnvelopeError("conflict", `operationId ${value.operationId} is already bound to different transition input for resource ${resourceKeyId(value.resourceKey)}`);
+    return { created: false, record: existing.record };
+  }
+  await assertStoredSessionManagementWritable(kv, value.resourceKey);
   try {
     await createRecordEntry(kv, key, record);
     return { created: true, record };
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    const existing = await queryOperation(kv, value.resourceKey, value.operationId);
-    if (existing.state === "absent")
+    const raced = await queryOperation(kv, value.resourceKey, value.operationId);
+    if (raced.state === "absent")
       throw new EpEnvelopeError("internal", `session operation ${key} lost its create CAS but is not readable; reconcile the store`);
-    if (existing.record.inputDigest !== record.inputDigest)
+    if (raced.record.inputDigest !== record.inputDigest)
       throw new EpEnvelopeError("conflict", `operationId ${value.operationId} is already bound to different transition input for resource ${resourceKeyId(value.resourceKey)}`);
-    return { created: false, record: existing.record };
+    return { created: false, record: raced.record };
   }
 }
 
