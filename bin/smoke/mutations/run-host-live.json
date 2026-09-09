@@ -48,8 +48,8 @@
     {
       "name": "run-start is served before the boot reconcile has returned",
       "file": "implementations/manager/src/run-hosting.ts",
-      "find": "  async start(args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {\n    this.assertReconciled();\n",
-      "replace": "  async start(args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {\n",
+      "find": "  async start(ctx: EpServeContext, args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {\n    this.assertReconciled();\n",
+      "replace": "  async start(ctx: EpServeContext, args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {\n",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a start before the reconcile has returned is refused unavailable, never launched",
       "cell": "a start before the reconcile has returned is refused unavailable, never launched"

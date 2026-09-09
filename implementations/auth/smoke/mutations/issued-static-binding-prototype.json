@@ -127,8 +127,8 @@
     {
       "name": "the generation is placed at a mode-dependent offset",
       "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
-      "find": "  parts.splice(parts.length - 1, 0, ref.generation);",
-      "replace": "  parts.splice(parts.length - (parts[4] === \"inst\" ? 2 : 1), 0, ref.generation);",
+      "find": "    || ![\"one\", \"all\", \"inst\", \"reply\"].includes(parts[4]) || parts[parts.length - 2] !== ref.generation)",
+      "replace": "    || ![\"one\", \"all\", \"inst\", \"reply\"].includes(parts[4]) || parts[parts.length - (parts[4] === \"inst\" ? 3 : 2)] !== ref.generation)",
       "expectRed": "the generation sits at one offset from the tail for every rail mode",
       "cell": "the generation sits at one offset from the tail for every rail mode"
     },
