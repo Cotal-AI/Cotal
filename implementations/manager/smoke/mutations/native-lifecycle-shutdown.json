@@ -2,7 +2,7 @@
   "suite": "implementations/manager/smoke/native-lifecycle-shutdown.smoke.ts",
   "guard": "stopForSignal and managerStatusData consume the shipped supervisor lookup; a released-unproven binding stays live and selects preserve-native cleanup",
   "command": "pnpm smoke:native-lifecycle-shutdown",
-  "completionMarker": "NATIVE-LIFECYCLE-SHUTDOWN SMOKE OK",
+  "completionMarker": "NATIVE-LIFECYCLE-SHUTDOWN SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/native-lifecycle-shutdown.json",
   "why": [
     "PRODUCTION CALLER: caught SIGINT/SIGTERM -> Manager.stopForSignal and the served status command -> managerStatusData both call nativeLifecycleBindings.",
