@@ -124,6 +124,33 @@ try {
     assert.ok(onServe.body.includes("permissions"), "the response carries the connection's own ceiling");
   });
 
+  await check("the condition the census forbids does put attacker-chosen bytes on the rail", async () => {
+    // Claim 67 named this as the breaking condition from reasoning. Build a credential that holds
+    // both a write and a raw read on ONE stream and see whether it actually breaks, so the census
+    // invariant is guarding a demonstrated failure rather than a suspected one.
+    const bucket = channelBucket(space), kvStream = `KV_${bucket}`;
+    const forger = await open({
+      pub: { allow: [`$KV.${bucket}.>`, "$JS.API.INFO", `$JS.API.STREAM.INFO.${kvStream}`, `$JS.API.DIRECT.GET.${kvStream}.>`] },
+      sub: { allow: ["_INBOX_forger.>"] },
+    }, "_INBOX_forger");
+    const forged = JSON.stringify({ v: 1, kind: "run-start", body: { source: `forged-${randomBytes(6).toString("hex")}` } });
+    forger.publish(`$KV.${bucket}.forgery`, enc(forged));
+    await forger.flush();
+    for (let i = 0; i < 60 && (await new Kvm(operator).open(bucket).then((kv) => kv.get("forgery"))) === null; i++) await wait(20);
+    forger.publish(`$JS.API.DIRECT.GET.${kvStream}.$KV.${bucket}.forgery`, new Uint8Array(0), { reply: rail });
+    await forger.flush();
+    const frame = await seen(frames, "forged-");
+    observations.push({
+      vector: "write-plus-direct-get-forgery", reachedServeShape: frame !== undefined,
+      subject: frame?.subject, headerKeys: frame?.headerKeys ?? [], bytesChosenByCaller: frame?.body === forged,
+    });
+    assert.ok(frame, "a credential holding write plus DIRECT.GET on one stream reaches the serve shape");
+    assert.equal(frame.subject, rail);
+    assert.equal(frame.body, forged, "and the bytes are the ones it wrote");
+    // The only thing between this and a forged request is the marker set.
+    assert.ok(frame.headerKeys.includes("Nats-Stream"), `expected Nats- markers, got ${JSON.stringify(frame.headerKeys)}`);
+  });
+
   const stored = `stored-${randomBytes(6).toString("hex")}`;
   agent.publish(chatSubject(space, principal.owner, principal.actor, "public"), enc(stored));
   await agent.flush();

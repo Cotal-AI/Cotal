@@ -324,9 +324,12 @@ JetStream API envelope the agent cannot shape; the frame that carries raw bytes 
 rail carries `Nats-` headers and replays a stream the agent cannot write; the frame whose
 bytes the agent does control arrives under its original captured subject.
 
-That is a property of the current grant set, not an invariant. It closes the moment one
-credential can both write a stream and `DIRECT.GET` it, which would put attacker-chosen
-raw bytes under an arbitrary subject. Treat the present result as exposure measurement,
+That is a property of the current grant set, not an invariant, and the breaking condition is now
+demonstrated rather than reasoned about. A synthetic credential holding both `$KV.<bucket>.>` and
+`$JS.API.DIRECT.GET.KV_<bucket>.>` writes a request-shaped document, reads it back with the reply
+naming the rail, and the frame arrives on the real serve subscription under the rail subject
+carrying exactly the bytes it chose. The only thing between that and a forged request is the
+marker set: `Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, `Nats-Time-Stamp`. Treat the present result as exposure measurement,
 not as the origin defense; a later schema or subject miss is not an origin proof. The
 raw `STREAM.MSG.GET` and `DIRECT.GET` reads the v0.3 agent binding still holds are what
 SPEC 3151-3152 places in scope for v0.4 remediation. The census now asserts that closing

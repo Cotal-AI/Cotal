@@ -126,11 +126,16 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | 78 | A ceiling carrying the contract's own discovery grant introduces no write-plus-raw-read overlap | M | census cell "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap", with an in-cell control that the opposite pairing is still caught; mutation "the candidate issued stores are not modelled" |
 | 77 | That read is marked and the `$SYS` response is not, so only one of the two can be refused at ingress | M-nomut | the ingress matrix measured `DIRECT.GET` arriving with `Nats-` headers and the `$SYS` response arriving with none |
 | 75 | The `$SYS.REQ.USER.INFO` grant the contract adds is itself an unmarked delivery path onto the rail | M-nomut | ingress cell "the discovery grant the contract adds is itself a delivery path onto the rail": it reaches the real serve shape, under the rail subject, with no headers, carrying the connection's own ceiling |
-| 67 | The condition that would break it is one credential holding a write and a raw read on one stream | A | reasoning, now guarded by 56 but not derived from a cell |
+| 67 | The condition that would break it is one credential holding a write and a raw read on one stream | M-nomut | ingress cell "the condition the census forbids does put attacker-chosen bytes on the rail": a synthetic credential with both writes a request-shaped document, reads it back with the reply naming the rail, and the frame arrives under the rail subject with exactly those bytes. Was **A**. Only the `Nats-` markers separate it from a forged request |
 | 68 | Marker-based refusal cannot cover the `STREAM.MSG.GET` path | M | follows directly from 64: there is no marker to refuse on |
 | 69 | The durable fix is the mediated-read rule scoped for v0.4 | A | design position |
 
 ## Where I would attack this
+
+Claim 67 was asserted when this page was first written and is now demonstrated: the forbidden
+pairing really does put caller-chosen bytes on the rail. That makes the census invariant in claim
+56 a guard on a shown failure rather than a suspected one, and it makes the marker set the whole
+remaining margin.
 
 Claim 66 is the load-bearing one and it is still an **A**, but it is narrower than it was. It
 used to quantify over a set of four paths I picked by hand. Claim 70 now enumerates every `$JS.`
