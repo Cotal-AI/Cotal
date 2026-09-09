@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/agui-multi-session.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/agui-multi-session.smoke.ts"
+  ],
   "guard": "many sessions of one principal share one subject, so the publish expectation comes from a record that outlives any single session, while a genuine foreign writer is still refused",
   "command": "pnpm smoke:agui-multi-session",
   "completionMarker": "agui-multi-session smoke:",

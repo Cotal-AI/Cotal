@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/pid-identity.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/pid-identity.smoke.ts"
+  ],
   "guard": "pinned teardown refuses reused pids and torn pins, while a legacy live record warns and remains signalable for upgrade compatibility",
   "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pid-identity.json",

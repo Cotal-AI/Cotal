@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts"
+  ],
   "guard": "a persistent permanent SDK replacement refusal terminates the shipped Jcode host before another bridge launch",
   "command": "pnpm smoke:jcode-provider-permanent-refusal",
   "progressPattern": "✓",

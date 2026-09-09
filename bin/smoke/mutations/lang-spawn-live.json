@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/lang-spawn-live.smoke.ts",
+  "suite": [
+    "bin/smoke/lang-spawn-live.smoke.ts"
+  ],
   "guard": "The turn relay on the REAL manager serializes two turns on one seat at the dispatch (cotal-lang 6.5): the seat is shown the oldest unsettled turn alone, and the next one only once it yields.",
   "command": "pnpm smoke:lang-spawn-live",
   "completionMarker": "lang-spawn-live.smoke:",

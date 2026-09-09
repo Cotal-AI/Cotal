@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-conclave.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-conclave.smoke.ts"
+  ],
   "guard": "the mesh handler's durable conclave recovers by derivation: the channel derives from the step's request id, the plan is bound before a row is written, a re-entered open converges from the recorded plan alone, the close releases exactly what the open created, an absent member is the effect's own catchable L4002, and a cancelled conclave's membership is released by the discharge",
   "command": "pnpm smoke:runtime-mesh-conclave",
   "completionMarker": "mesh-conclave.smoke:",

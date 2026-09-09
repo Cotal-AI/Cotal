@@ -1,8 +1,10 @@
 {
-  "suite": "extensions/connector-jcode/smoke/private-state.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/private-state.smoke.ts"
+  ],
   "guard": "The cwd-inode credential-mirror pin verifies the directory it entered and restores the working directory it moved",
   "command": "pnpm smoke:jcode-private-state",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 19,
   "why": [
     "THIS CONFIG IS NOT GRADABLE ON LINUX, and its two mutants fail differently rather than both",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-effort-model.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-effort-model.smoke.ts"
+  ],
   "guard": "an effort-refusal diagnostic names the requested model pin, not the session default RuntimeInfo still reports after setModel",
   "command": "pnpm smoke:jcode-effort-model",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-effort-model.json",

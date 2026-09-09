@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/renewal-terminal-race.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/renewal-terminal-race.smoke.ts"
+  ],
   "guard": "a managed-static credential renewal accepted before terminalization is drained before the terminal revokes and cleans its family, while a later renewal is refused by the synchronous latch",
   "command": "pnpm smoke:renewal-terminal-race",
   "completionMarker": "RENEWAL-TERMINAL RACE SMOKE",

@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/seat-native-ci.smoke.ts",
+  "suite": [
+    "bin/smoke/seat-native-ci.smoke.ts"
+  ],
   "guard": "PR pack and Changesets version/snapshot keep both native linux builders on needs, download both artifacts, and invoke the shared assembler",
   "command": "pnpm smoke:seat-native-ci",
   "completionMarker": "SUITE COMPLETE",

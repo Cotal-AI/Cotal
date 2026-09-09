@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-monitor.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-monitor.smoke.ts"
+  ],
   "guard": "the mesh handler's liveness pair is real: `down` is the death of ONE incarnation read off presence (name AND lifecycle uid), the reason distinguishes a lapsed name from a superseded one, the timeout is one absolute deadline that arms, expires, is attached to on re-entry, and is claimed on every ending, and `monitor` validates the registration it journals, and `monitor` is the prerequisite: the registration binds the handle, `wait(down)` refuses an agent nobody monitored, and an adopted run rebuilds the registry from settled monitor entries",
   "command": "pnpm smoke:runtime-mesh-monitor",
   "completionMarker": "mesh-monitor.smoke:",

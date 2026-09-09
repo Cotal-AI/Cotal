@@ -75,5 +75,8 @@
       "note": "The fixture walks the whole union, so a rewrite aimed at waiting has nowhere to hide either.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
+  ],
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
   ]
 }

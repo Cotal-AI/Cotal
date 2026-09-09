@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/delivery-explicit-space.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/delivery-explicit-space.smoke.ts"
+  ],
   "guard": "the shipped control-plane ensure resolves signer trust for the explicitly selected space while an implicit call still refuses a multi-space root",
   "command": "pnpm smoke:delivery-explicit-space",
   "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/delivery-explicit-space.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts"
+  ],
   "guard": "the permanent recovery classifier keeps exactly seven direct SDK refusal codes plus connect_failed/EACCES, while unknown codes retry",
   "command": "pnpm smoke:jcode-recovery-classifier",
   "progressPattern": "✓",

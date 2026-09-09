@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/orientation.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/orientation.smoke.ts"
+  ],
   "guard": "the advertised tool surface and the orientation card gate on AUTHENTICATED (static creds or user-mode auth), never on \"has static creds\", and open mode and token mode stay ungated",
   "command": "pnpm smoke:orientation",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/orientation-identity-plane.json",

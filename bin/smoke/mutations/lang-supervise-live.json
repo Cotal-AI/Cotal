@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/lang-supervise-live.smoke.ts",
+  "suite": [
+    "bin/smoke/lang-supervise-live.smoke.ts"
+  ],
   "guard": "A cotal-lang program that spawn()s with supervise restarts the REAL seat in place after SIGKILL: the replacement pulls and yields the same turn goal, then a second kill spends the budget and the next turn fails L4002.",
   "command": "pnpm smoke:lang-supervise-live",
   "completionMarker": "lang-supervise-live.smoke:",

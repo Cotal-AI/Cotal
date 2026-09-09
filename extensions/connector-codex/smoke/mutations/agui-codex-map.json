@@ -92,5 +92,8 @@
       "replace": "  let open: string | null = null;",
       "expectRed": "resume:a task_complete after process recovery closes the WAL's existing run"
     }
+  ],
+  "suite": [
+    "extensions/connector-codex/smoke/agui-map.smoke.ts"
   ]
 }

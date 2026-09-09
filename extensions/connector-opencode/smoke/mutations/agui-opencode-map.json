@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/agui-map.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/agui-map.smoke.ts"
+  ],
   "guard": "the mapper emits no user-authored text, spends the native callID as the tool identity, and reads a tool part's clock from where a tool part actually keeps it",
   "command": "pnpm smoke:agui-opencode-map",
   "completionMarker": "agui-opencode-map smoke:",

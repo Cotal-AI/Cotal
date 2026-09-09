@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+  ],
   "guard": "a managed seat's launch environment pins the Jcode binary against the background self-updater, so the seat cannot restart its own process tree and lose the client that holds the server's idle reaper off",
   "command": "pnpm smoke:jcode-host",
   "progressPattern": "✓",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/turn-intake.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/turn-intake.smoke.ts"
+  ],
   "guard": "The seat side of the turn relay: a turn is yielded only once its payload was surfaced into the host session, whether the yield names the turn or takes the oldest surfaced one.; an ask relayed as a turn is rendered with the record wanted, the attempt, the previous refusal and the answer command",
   "command": "pnpm smoke:turn-intake",
   "completionMarker": "turn-intake.smoke:",

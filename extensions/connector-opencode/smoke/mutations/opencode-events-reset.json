@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/agui-session-reset.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/agui-session-reset.smoke.ts"
+  ],
   "guard": "a second top-level session gets its own emitter, and a session it replaces that drains inside the bound is flushed and closed on the wire first",
   "command": "pnpm smoke:opencode-events-reset",
   "completionMarker": "opencode-events-reset smoke:",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/fork-run.smoke.ts"
+  ],
   "guard": "Version-correct, read-only compiled fork and migration inspection with unchanged recorded pins and explicit worker snapshots.",
   "command": "pnpm --filter @cotal-ai/lang build >/dev/null 2>&1 && pnpm smoke:runtime-fork",
   "completionMarker": "fork-run.smoke:",

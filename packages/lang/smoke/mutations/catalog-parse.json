@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "The two cells that compare Appendix A with CATALOG compare COLLECTIONS, and two empty collections agree perfectly. A floor asserted against a number is what makes a parser that stopped matching red instead of reporting that every row agrees. This config breaks the document side, which is the side no code change would announce.",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/catalog-parse.json",

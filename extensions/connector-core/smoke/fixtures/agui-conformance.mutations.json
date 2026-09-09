@@ -99,5 +99,8 @@
       "replace": "",
       "expectRed": "runFinished refuses an interrupt entry missing its reason"
     }
+  ],
+  "suite": [
+    "extensions/connector-core/smoke/agui-conformance.smoke.ts"
   ]
 }

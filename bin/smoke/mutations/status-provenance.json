@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/status-provenance.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/status-provenance.smoke.ts"
+  ],
   "guard": "the status Machine block identifies its resolved source or installed CLI artifact and names the stale skills version pair",
   "command": "pnpm smoke:status-provenance",
   "completionMarker": "STATUS PROVENANCE SMOKE COMPLETE",
@@ -29,8 +31,8 @@
     {
       "name": "the stale skills row hides the compared versions",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "      return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup --skills`);",
-      "replace": "      return c.yellow(`stale \u00b7 ${displayCmd()} setup --skills`);",
+      "find": "      return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : \"\"}stale · ${displayCmd()} setup --skills`);",
+      "replace": "      return c.yellow(`stale · ${displayCmd()} setup --skills`);",
       "expectRed": "source status names the source checkout root",
       "cell": "source status names the source checkout root"
     }

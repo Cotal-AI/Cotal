@@ -72,5 +72,8 @@
       "replace": "      if (!(e instanceof PayloadTooLarge)) console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
       "expectRed": "7.3 an oversized CHUNKED body over keep-alive is cut off and RECORDED BY THE OPERATOR even though the uploading caller may get no readable reply, which is the durable half of the refusal and the half this change actually owns"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/body-cap.smoke.ts"
   ]
 }

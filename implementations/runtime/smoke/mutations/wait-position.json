@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-wait.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-wait.smoke.ts"
+  ],
   "guard": "a wait's durable position survives a refused bind, and is deleted when the wait is genuinely over",
   "command": "pnpm smoke:runtime-mesh-wait",
   "completionMarker": "mesh-wait.smoke:",

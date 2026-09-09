@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/interpret.smoke.ts"
+  ],
   "guard": "A capability refusal settles the entry `refused` and holds the run uncatchably, and a later activation re-performs the step live: recorded as `failed`, or replayed instead of re-performed, or catchable, the run is broken forever instead of waiting.",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/refused-retry.json",

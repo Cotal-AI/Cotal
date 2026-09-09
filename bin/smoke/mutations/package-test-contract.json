@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/package-test-contract.smoke.ts",
+  "suite": [
+    "bin/smoke/package-test-contract.smoke.ts"
+  ],
   "guard": "the pinned workspace declares package-local test intent, and each of the 11 formerly silent packages executes a counted assertion",
   "command": "pnpm smoke:package-test-contract",
   "completionMarker": "PACKAGE TEST CONTRACT:",

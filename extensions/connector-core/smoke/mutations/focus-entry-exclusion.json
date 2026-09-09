@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/cross-path-dedup.smoke.ts"
+  ],
   "guard": "traffic retained while the asynchronous focus frontier is captured is excluded from recall without depending on a fixed microtask count",
   "command": "pnpm smoke:cross-path-dedup",
   "completionMarker": "CROSS-PATH DEDUP SMOKE",

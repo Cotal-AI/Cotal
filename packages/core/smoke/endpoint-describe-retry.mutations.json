@@ -1,5 +1,8 @@
 {
-  "suite": "packages/core/smoke/endpoint-invoke.smoke.ts + implementations/cli/smoke/ep-rail-failure.smoke.ts",
+  "suite": [
+    "packages/core/smoke/endpoint-invoke.smoke.ts",
+    "implementations/cli/smoke/ep-rail-failure.smoke.ts"
+  ],
   "guard": "reserved describe retries inside the original deadline, retry publication failure settles cleanly including poisoned formatters, and resolved commands remain exactly one-shot",
   "command": "pnpm smoke:ep-invoke && pnpm --filter @cotal-ai/core build && pnpm smoke:ep-rail-failure",
   "completionMarker": "ENDPOINT-INVOKE BINDING SMOKE",

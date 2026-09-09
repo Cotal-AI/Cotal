@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/spawn-foreground-events.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/spawn-foreground-events.smoke.ts"
+  ],
   "guard": "the foreground spawn hands an armed session the same launch the manager does, and refuses a connector that publishes no event plane",
   "command": "pnpm smoke:spawn-foreground-events",
   "completionMarker": "SUITE COMPLETE:",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/events-release.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/events-release.smoke.ts"
+  ],
   "guard": "a session's durable event state is released on a lifetime the connector states: the principal lock at the final teardown, a thread's write-ahead log only once it can no longer answer a recovery",
   "command": "pnpm smoke:opencode-events-release",
   "completionMarker": "OPENCODE EVENTS-RELEASE SMOKE",

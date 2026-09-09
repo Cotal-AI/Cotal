@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/private-lifecycle.smoke.ts"
+  ],
   "guard": "a live bridge whose launch identity is unprovable during the process exit window proceeds through teardown, while readable broken wiring still refuses",
   "command": "pnpm smoke:jcode-private-lifecycle",
   "progressPattern": "^  ✓ ",

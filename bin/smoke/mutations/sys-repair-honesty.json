@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/delivery/smoke/sys-repair-honesty.smoke.ts",
+  "suite": [
+    "implementations/delivery/smoke/sys-repair-honesty.smoke.ts"
+  ],
   "guard": "the $SYS repair advice instructs exactly when the guard would permit the command it names",
   "command": "pnpm smoke:sys-repair-honesty",
   "completionMarker": "SYS-REPAIR-HONESTY SMOKE",

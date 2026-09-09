@@ -51,5 +51,8 @@
       "replace": "    if (stale.some((s) => s.name === \"membership\")) membershipUnreadable();",
       "expectRed": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/graph-boot.smoke.ts"
   ]
 }

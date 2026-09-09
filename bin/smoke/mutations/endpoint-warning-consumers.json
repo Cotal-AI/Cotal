@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/endpoint-warning-consumers.smoke.ts",
+  "suite": [
+    "bin/smoke/endpoint-warning-consumers.smoke.ts"
+  ],
   "guard": "every shipped endpoint consumer explicitly surfaces or ignores recoverable warnings in source and the published artifact",
   "command": "pnpm smoke:endpoint-warning-consumers",
   "progressPattern": "✓",

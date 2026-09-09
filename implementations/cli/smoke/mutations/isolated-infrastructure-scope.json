@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts"
+  ],
   "guard": "restore infrastructure can update only an exact subset of the streams it may create and inspect",
   "command": "pnpm smoke:isolated-infrastructure-scope",
   "completionMarker": "isolated infrastructure scope:",

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/failed-bind-cleanup.smoke.ts",
+  "suite": [
+    "packages/core/smoke/failed-bind-cleanup.smoke.ts"
+  ],
   "guard": "closeFailedBind's layered fallback (drain, then transport.close/disconnect) must actually run when nc.close() throws, so the broker's /varz.connections returns to 0 after a bind failure whose close leg rejects",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:failed-bind-cleanup",
   "completionMarker": "failed bind cleanup smoke:",

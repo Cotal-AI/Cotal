@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/fuzz-journal.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/fuzz-journal.smoke.ts"
+  ],
   "guard": "The journal refuses what it cannot faithfully hold: an oversized ok result ahead of the settling append (L5006), and a seeded entry whose state or status is outside the vocabulary, which lookup would otherwise misread as a replayable success. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-fuzz-journal",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/journal-guards.json",

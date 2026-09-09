@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/shard-stability.smoke.ts",
+  "suite": [
+    "bin/smoke/shard-stability.smoke.ts"
+  ],
   "guard": "frozen legacy suites retain exact parsed indices, including moves by a complete shard cycle and removals",
   "command": "pnpm smoke:shard-stability",
   "completionMarker": "SHARD INDEX SMOKE",

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/space-segmentation.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/space-segmentation.smoke.ts"
+  ],
   "guard": "every P7 kind reaches its per-space location through ONE migrating choke point; the owners that must not migrate address the same layout it does; and `space rm`'s reap takes exactly one tenant's material, past the point of no return, without ever refusing",
   "command": "pnpm smoke:space-segmentation",
   "completionMarker": "SPACE-SEGMENTATION GATE",

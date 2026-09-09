@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/suite-ambient-env.smoke.ts",
+  "suite": [
+    "bin/smoke/suite-ambient-env.smoke.ts"
+  ],
   "guard": "no suite may spread the ambient environment into a child without first stripping the COTAL_ variables, and the frozen baseline of pre-existing spreads can only shrink",
   "command": "pnpm smoke:suite-ambient-env",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/suite-ambient-env.mutations.json",
