@@ -20,7 +20,7 @@
     {
       "name": "accept dispatcher-retirement without admissionClosed",
       "file": "packages/core/src/session-lifecycle-records.ts",
-      "find": "    if (value.admissionClosed !== true || value.dispatcherSettled !== true || value.retiredStatePersisted !== true)\n",
+      "find": "    if (value.admissionClosed !== true || value.dispatcherSettled !== true || value.retiredStatePersisted !== true)\n      return fail(label, \"does not prove admission closed, dispatcher settled, and retired state persisted\");\n",
       "replace": "",
       "expectRed": "dispatcher-retirement without admissionClosed is not proof",
       "cell": "dispatcher-retirement without admissionClosed is not proof"
