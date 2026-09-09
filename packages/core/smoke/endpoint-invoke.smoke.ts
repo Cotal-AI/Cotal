@@ -106,6 +106,24 @@ function fakeInvokeNc(onPublish: () => void) {
         data: enc.encode(JSON.stringify({ v: 1, id: body.id, ok: true, data: { ran: true } })),
       }));
     },
+    status() {
+      let release: (() => void) | undefined;
+      const stopped = new Promise<void>((r) => { release = r; });
+      return {
+        stop() { release?.(); },
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<{ type: string; error?: unknown }>> {
+              await stopped;
+              return { done: true, value: undefined };
+            },
+            async return(): Promise<IteratorResult<{ type: string; error?: unknown }>> {
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
+    },
   } as unknown as Parameters<typeof invokeCommand>[0];
 }
 
