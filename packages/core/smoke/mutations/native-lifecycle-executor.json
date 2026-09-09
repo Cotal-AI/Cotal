@@ -101,6 +101,14 @@
       "cell": "journal-receipt terminal-success release stays indeterminate"
     },
     {
+      "name": "skip native-effect record.action match",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    return (operation === \"adopt\" || operation === \"release\") && durable.record.action === operation;\n",
+      "replace": "    return operation === \"adopt\" || operation === \"release\";\n",
+      "expectRed": "native-effect cannot advance when record.action mismatches operation",
+      "cell": "native-effect cannot advance when record.action mismatches operation"
+    },
+    {
       "name": "treat cooperative-retirement as sufficient without preserved lifetime",
       "file": "packages/core/src/native-lifecycle-executor.ts",
       "find": "  if ((durable.proofOrigin?.proves as string | undefined) !== \"cooperative-retirement\") return false;\n  return nativeLifetimePreserved(durable.result);\n",
