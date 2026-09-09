@@ -3,6 +3,26 @@
 [CLAIMS.md](CLAIMS.md) labels every claim on this page as measured or asserted, and names the
 cell and mutation behind each measured one. Start there if you are reviewing.
 
+## Running these
+
+None of these suites are registered in `package.json`, so `pnpm smoke:ci` does not run any of
+them. That is deliberate while the contract is under review: the shard-stability suite treats a
+removed suite name as a resharding event, and these prototypes are expected to be deleted or
+replaced once the contract is settled. Run them by path, and prove each with its own config:
+
+```bash
+pnpm exec tsx packages/core/smoke/issued-subject-permissions.smoke.ts
+pnpm exec tsx implementations/auth/smoke/issued-authority-lifecycle.smoke.ts
+pnpm exec tsx implementations/auth/smoke/issued-static-binding.smoke.ts
+pnpm exec tsx implementations/auth/smoke/issued-callout-binding.smoke.ts
+pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts
+pnpm exec tsx implementations/auth/smoke/issued-ingress-origin.smoke.ts
+pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-profile-census-prototype.json
+```
+
+Each needs `nats-server` on `PATH`. They spawn their own broker on a free port and never touch a
+running mesh.
+
 This directory holds test-only proof development for the issued-authority contract.
 Nothing here is exported from core or attached to credential issuance, endpoint
 registration, or workflow admission.
