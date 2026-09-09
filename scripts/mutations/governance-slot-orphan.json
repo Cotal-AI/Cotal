@@ -33,11 +33,11 @@
       "file": "packages/core/src/endpoint-service.ts",
       "find": "  if (observed < slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}",
       "replace": "  if (observed <= slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}",
-      "expectRed": "...and the refusal says the gate is still at the slot's generation, naming WHY it refused",
-      "cell": "...and the refusal says the gate is still at the slot's generation, naming WHY it refused",
+      "expectRed": "B REFUSES while A's registration is genuinely in flight - a live slot is never stolen",
+      "cell": "B REFUSES while A's registration is genuinely in flight - a live slot is never stolen",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "note": "THE ROW THE WHOLE FIXTURE EXISTS FOR. This is the exact off-by-one section 4 of the suite models in-process, and it is the change that would trade an unrecoverable state for a stealable one. The FIRST red is the message cell rather than the bare refusal cell above it: the equal-generation case is still refused here, but by the AHEAD branch instead of the IN-FLIGHT branch, so the registration still fails and only the reason changes. That is precisely why the negative control asserts the refusal's WORDING and not just its code. A cell that checked only `code === conflict` would stay green through this mutant, and the fixture would have reported a survived mutation on the one property the change most needed to prove."
+      "note": "THE ROW THE WHOLE FIXTURE EXISTS FOR. This is the exact off-by-one section 4 of the suite models in-process, and it is the change that would trade an unrecoverable state for a stealable one. Measured first-hand rather than predicted: an earlier draft named the MESSAGE cell as the first red, on the reasoning that the equal-generation case would still refuse and only its wording would move. Running the mutant showed the refusal cell itself reds first, because it asserts `code === \"conflict\"` and the ahead-of-us arm answers `unavailable`. Both facts matter and both are asserted: the code changes AND the wording changes, so the negative control cannot be satisfied by an incidental refusal of the wrong kind. A cell testing only `didThrow` would stay green through this mutant, which is why the control asserts the code and the wording rather than the mere fact of a refusal."
     },
     {
       "name": "GUARD SEVERED: a throwing observation is treated as absence rather than a refusal",
