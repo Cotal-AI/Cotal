@@ -121,6 +121,27 @@ c("dispatcher-retirement with unproven requests persists as indeterminate", pars
 throws("dispatcher-retirement cannot prove terminal native success", () => parseSessionOperation(enc({
   ...opBase, inputDigest: opDigest, state: "terminal-success", result: { bindingState: "released" }, proofOrigin: dispatcherProof,
 }), opKey));
+const drainedProof = {
+  kind: "dispatcher-retirement" as const,
+  admissionClosed: true as const,
+  dispatcherSettled: true as const,
+  retiredStatePersisted: true as const,
+  liveRequestCollector: "complete" as const,
+  unprovenLiveRequestIds: [] as const,
+  proves: "cooperative-retirement" as const,
+};
+let coopSuccess = false;
+try {
+  const parsedCoop = parseSessionOperation(enc({
+    ...opBase, inputDigest: opDigest, state: "terminal-success",
+    result: { bindingState: "released", nativeState: "preserved" },
+    proofOrigin: drainedProof,
+  }), opKey);
+  coopSuccess = parsedCoop.state === "terminal-success" && parsedCoop.proofOrigin?.proves === "cooperative-retirement";
+} catch {
+  coopSuccess = false;
+}
+c("cooperative §121 drain can settle terminal-success without native-effect", coopSuccess);
 throws("dispatcher-retirement cannot sit on a prepared operation", () => parseSessionOperation(enc({
   ...opBase, inputDigest: opDigest, state: "prepared", proofOrigin: dispatcherProof,
 }), opKey));
