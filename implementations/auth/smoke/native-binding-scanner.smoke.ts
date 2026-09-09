@@ -32,12 +32,14 @@ writeFileSync(join(root, "server.conf"), [
   "authorization { users [",
   `  { user: "root", password: "pw" },`,
   `  { user: "scanner", password: "pw", permissions: { publish = ${JSON.stringify(grants.publish)}, subscribe = ${JSON.stringify(grants.subscribe)} } }`,
+  `  { user: "denied", password: "pw", permissions: { publish = ["$JS.API.INFO"], subscribe = ["_INBOX_deniedscan01.>"] } }`,
   "] }",
 ].join("\n"));
 const broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, root);
 let rootNc: Awaited<ReturnType<typeof connect>> | undefined;
 let scannerNc: Awaited<ReturnType<typeof connect>> | undefined;
+let deniedNc: Awaited<ReturnType<typeof connect>> | undefined;
 try {
   for (let i = 0; i < 50 && !(await isReachable(`nats://root:pw@127.0.0.1:${PORT}`)); i++) await wait(100);
   rootNc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "root", pass: "pw" });
@@ -51,6 +53,10 @@ try {
   console.log("A. real caller reaches the sealed scanner, with known-empty distinct from failure");
   const empty = await scanner.scanNativeBindings("u_alice.manager");
   c("real sealed native-binding query proves a legacy-empty inventory", empty.status === "known" && empty.bindings.length === 0, empty);
+  deniedNc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "denied", pass: "pw", inboxPrefix: "_INBOX_deniedscan01" });
+  const deniedScanner = makeRecordsScannerOverConnection(deniedNc, SPACE);
+  const denied = await deniedScanner.scanNativeBindings("u_alice.manager");
+  c("real broker permission failure is explicit unknown and distinct from known-empty", denied.status === "unknown" && /could not|unavailable|permission|timeout/i.test(denied.reason), denied);
 
   const resourceA: ResourceKey = { hostIdentity: "host-1", provider: "com.cotal.claude", nativeOwnerNamespace: "uid:1000", stableSessionId: "s-1", resourceGeneration: "g-1" };
   const resourceB: ResourceKey = { ...resourceA, stableSessionId: "s-2" };
@@ -81,6 +87,7 @@ try {
   c("scanner grants carry no records write or sessionop/sessiontrust/lifecycle enumeration", !grants.publish.some((row) => row.startsWith(`$KV.cotal_records_${SPACE}.`) || /sessionop|sessiontrust|lifecycle|uid/.test(row)), grants.publish);
   await scanner.close();
 } finally {
+  await deniedNc?.close().catch(() => {});
   await scannerNc?.close().catch(() => {});
   await rootNc?.close().catch(() => {});
   await releaseBroker();

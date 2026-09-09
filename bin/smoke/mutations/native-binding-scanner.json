@@ -40,6 +40,14 @@
       "replace": "  const scanner: RecordsScanner = ({",
       "expectRed": "sealed scanner handle is frozen against a silent-empty method swap",
       "cell": "sealed scanner handle is frozen against a silent-empty method swap"
+    },
+    {
+      "name": "permission failure is collapsed into known-empty",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "        return { status: \"unknown\", bindings: [], reason: (e as Error).message };",
+      "replace": "        return { status: \"known\", bindings: [] };",
+      "expectRed": "real broker permission failure is explicit unknown and distinct from known-empty",
+      "cell": "real broker permission failure is explicit unknown and distinct from known-empty"
     }
   ]
 }
