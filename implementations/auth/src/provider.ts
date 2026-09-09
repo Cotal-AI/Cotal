@@ -220,6 +220,15 @@ export const cotalAuthProvider: AuthProvider = {
   async nativeLifecycleBindings({ store, dir, space, server, managerPrincipal }): Promise<NativeLifecycleBindingLookup> {
     const info = loadAuthServiceInfo(dir);
     if (!info || !pidAlive(info.pid)) {
+      // A pinned IdP means this is a user-auth composition. Its resident authority plane owns the
+      // one records scanner for the space; never open a second static scanner merely because the
+      // discovery file is stale/missing. That would violate the cross-process one-plane assumption.
+      if (loadPinnedIdp(dir))
+        return {
+          status: "unknown",
+          bindings: [],
+          reason: `trusted native lifecycle lookup is unavailable because the auth service for user-auth space ${JSON.stringify(space)} is not running`,
+        };
       const auth = await getSpaceAuth(store, space).catch(() => undefined);
       if (auth)
         return queryNativeLifecycleBindingsWithAuthority({
