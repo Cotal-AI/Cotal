@@ -233,6 +233,18 @@ export async function executeNativeLifecycle(
   if (!MUTATING.has(request.operation))
     throw new EpEnvelopeError("internal", `native lifecycle ${request.operation} is not a known mutating operation`);
 
+  const existing = await readBinding(kv, resourceKey);
+  if (request.operation === "adopt" && existing !== undefined && existing.binding.state !== "released")
+    throw new EpEnvelopeError("conflict", `resource ${resourceKey.stableSessionId} is already bound as ${existing.binding.bindingId}; use transfer`);
+  if (request.operation !== "adopt" && existing === undefined)
+    throw new EpEnvelopeError("failed-precondition", `native lifecycle ${request.operation} requires an existing binding`);
+  if (existing !== undefined && existing.revision !== request.expectedBindingRevision)
+    throw new EpEnvelopeError("conflict", `native lifecycle ${request.operation} expected binding revision ${request.expectedBindingRevision} but store is at ${existing.revision}`);
+  if (existing !== undefined && existing.binding.state !== "released" && existing.binding.controllerEpoch !== request.expectedControllerEpoch)
+    throw new EpEnvelopeError("conflict", `native lifecycle ${request.operation} expected controller epoch ${request.expectedControllerEpoch} but binding is at ${existing.binding.controllerEpoch}`);
+  if (existing !== undefined && existing.binding.state !== "released" && existing.binding.bindingId !== request.bindingId)
+    throw new EpEnvelopeError("conflict", `native lifecycle ${request.operation} expected binding ${request.bindingId} but store holds ${existing.binding.bindingId}`);
+
   if (connection.capabilities.operations.includes("preflight") && typeof connection.preflight === "function") {
     const preflight = await requireNativeLifecycleOperation(connection, "preflight")(request.operation, resourceKey, request.signal);
     if (!preflight.ok) {
@@ -252,12 +264,6 @@ export async function executeNativeLifecycle(
     && classifyIncarnationProof(request.expectedIncarnation, observedProof) === "identity-unproven") {
     return { state: "identity-unproven", reason: "native inspect incarnation does not match the expected proof" };
   }
-
-  const existing = await readBinding(kv, resourceKey);
-  if (request.operation === "adopt" && existing !== undefined && existing.binding.state !== "released")
-    throw new EpEnvelopeError("conflict", `resource ${resourceKey.stableSessionId} is already bound as ${existing.binding.bindingId}; use transfer`);
-  if (request.operation !== "adopt" && existing === undefined)
-    throw new EpEnvelopeError("failed-precondition", `native lifecycle ${request.operation} requires an existing binding`);
 
   const trusted = await readSessionTrustedState(kv, resourceKey);
   if (trusted !== undefined) {

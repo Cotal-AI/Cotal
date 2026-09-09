@@ -75,6 +75,14 @@
       "replace": "",
       "expectRed": "adopt wrote a managed sessionbinding row",
       "cell": "adopt wrote a managed sessionbinding row"
+    },
+    {
+      "name": "skip expectedBindingRevision CAS",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (existing !== undefined && existing.revision !== request.expectedBindingRevision)\n    throw new EpEnvelopeError(\"conflict\", `native lifecycle ${request.operation} expected binding revision ${request.expectedBindingRevision} but store is at ${existing.revision}`);\n",
+      "replace": "",
+      "expectRed": "stale expectedBindingRevision is refused as conflict",
+      "cell": "stale expectedBindingRevision is refused as conflict"
     }
   ]
 }

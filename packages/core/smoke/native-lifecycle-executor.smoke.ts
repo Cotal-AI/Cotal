@@ -72,6 +72,11 @@ const requestBase = {
   expectedBindingRevision: 0, expectedControllerEpoch: 1, intendedResult: { nativeState: "preserved" },
 };
 
+function bindingRevision(kv: MemKv, key = sessionBindingKey(resource)): number {
+  const row = kv.rows.get(key);
+  if (!row) throw new Error(`missing binding ${key}`);
+  return row.revision;
+}
 function readBindingRow(kv: MemKv, key = sessionBindingKey(resource)): Binding | undefined {
   const row = kv.rows.get(key);
   if (!row) return undefined;
@@ -240,7 +245,7 @@ await executeNativeLifecycle(kvRelease, {
 });
 const lost = await executeNativeLifecycle(kvRelease, {
   ...requestBase, providerName: "executor-coop", operation: "release", operationId: "op-rel", bindingId: "binding-2",
-  expectedBindingRevision: 1, expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
+  expectedBindingRevision: bindingRevision(kvRelease as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
 });
 c("lost native release acknowledgement is indeterminate", lost.state === "indeterminate", lost);
 const releaseRow = await queryOperation(kvRelease, resource, "op-rel");
@@ -262,12 +267,24 @@ await executeNativeLifecycle(kvNativeRel, {
 });
 const released = await executeNativeLifecycle(kvNativeRel, {
   ...requestBase, providerName: "executor-native-release", operation: "release", operationId: "op-rel-ok", bindingId: "binding-3",
-  expectedBindingRevision: 1, expectedControllerEpoch: 1, intendedResult: { bindingState: "released", nativeState: "preserved" },
+  expectedBindingRevision: bindingRevision(kvNativeRel as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released", nativeState: "preserved" },
 });
 c("cooperative-exclusive release with native-effect is terminal-success", released.state === "recorded" && released.operation.state === "terminal-success" && released.operation.proofOrigin?.proves === "native-effect", released);
 const nativeRelRow = await queryOperation(kvNativeRel, resource, "op-rel-ok");
 c("native-effect release receipt is durable", nativeRelRow.state === "terminal-success" && nativeRelRow.proofOrigin?.proves === "native-effect", nativeRelRow);
 c("native-effect release marked the binding released", readBindingRow(kvNativeRel as unknown as MemKv)?.state === "released");
+
+effects.length = 0;
+const kvStale = new MemKv() as unknown as KV;
+await executeNativeLifecycle(kvStale, {
+  ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-stale", bindingId: "binding-stale",
+});
+const inspectBeforeStale = effects.filter((e) => e === "inspect").length;
+await rejects("stale expectedBindingRevision is refused as conflict", () => executeNativeLifecycle(kvStale, {
+  ...requestBase, providerName: "executor-native-release", operation: "release", operationId: "op-stale", bindingId: "binding-stale",
+  expectedBindingRevision: 0, expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
+}), "conflict");
+c("stale revision did not dispatch native preflight, inspect, or release", !effects.includes("release") && !effects.includes("preflight:release") && effects.filter((e) => e === "inspect").length === inspectBeforeStale, effects);
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);
