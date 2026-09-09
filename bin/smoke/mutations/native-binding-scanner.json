@@ -14,8 +14,8 @@
       "file": "implementations/auth/src/records-scanner.ts",
       "find": "const NATIVE_BINDING_FILTER = \"sessionbinding.*\";",
       "replace": "const NATIVE_BINDING_FILTER = \">\";",
-      "expectRed": "scanner grants enumerate only oblig and sessionbinding families",
-      "cell": "scanner grants enumerate only oblig and sessionbinding families"
+      "expectRed": "real sealed native-binding query proves a legacy-empty inventory",
+      "cell": "real sealed native-binding query proves a legacy-empty inventory"
     },
     {
       "name": "native query returns another manager's binding",
@@ -44,8 +44,8 @@
     {
       "name": "permission failure is collapsed into known-empty",
       "file": "implementations/auth/src/records-scanner.ts",
-      "find": "        return { status: \"unknown\", bindings: [], reason: (e as Error).message };",
-      "replace": "        return { status: \"known\", bindings: [] };",
+      "find": "        return { status: \"unknown\", bindings: [] as const, reason: (e as Error).message };",
+      "replace": "        return { status: \"known\", bindings: [] as const };",
       "expectRed": "real broker permission failure is explicit unknown and distinct from known-empty",
       "cell": "real broker permission failure is explicit unknown and distinct from known-empty"
     }
