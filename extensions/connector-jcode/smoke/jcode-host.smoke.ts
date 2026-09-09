@@ -809,6 +809,14 @@ try {
     !refusalErr.includes("was refused by provider"),
     refusalErr,
   );
+  // The host names the outcome before it throws; the fatal line is what the operator reads last.
+  // A fatal that collapses the refusal back to `startup failed (unknown)` is #828 as measured.
+  check(
+    "provider readiness refusal is the fatal line too, never collapsed to unknown",
+    /fatal: Jcode readiness turn refused model "rejected-model-id" \(model_not_found\)/.test(refusalErr) &&
+      !/startup failed \(unknown\)/.test(refusalErr),
+    refusalErr,
+  );
 
   // #1216: a long readiness turn used to keep the host alive with no mesh presence at all.
   // The persona is already in the transcript, the kickoff prompt is not, and cotal_dm fails
