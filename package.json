@@ -274,6 +274,7 @@
     "smoke:kv-scan": "tsx packages/core/smoke/kv-scan.smoke.ts",
     "smoke:kv-read-shape": "tsx packages/core/smoke/kv-read-shape.smoke.ts",
     "smoke:history-recent": "tsx packages/core/smoke/history-recent.smoke.ts",
+    "smoke:dm-history-subject": "tsx packages/core/smoke/dm-history-subject.smoke.ts",
     "smoke:history-cancellation": "tsx packages/core/smoke/history-cancellation.smoke.ts",
     "smoke:web-history-cancellation": "tsx implementations/web/smoke/history-cancellation.smoke.ts",
     "smoke:server-resolution:live": "tsx implementations/cli/smoke/server-resolution-live.smoke.ts",
