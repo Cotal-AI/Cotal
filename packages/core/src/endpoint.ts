@@ -5057,16 +5057,16 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   }
 }
 
-/** Routing fields and `from.id` in the envelope are advisory. The broker forge-locks sender (and
- *  for DMs, recipient) into the subject; surface those tokens, never the payload claims. Live tails
- *  still drop a mismatch before calling this. History cannot drop the subject: `dmHistory` returns
- *  payloads, so identity has to be rewritten here or every consumer renders a spoof (#388). */
+/** Routing fields in the envelope are advisory. The broker forge-locks sender (and for DMs,
+ *  recipient) into the subject. Callers MUST already have rejected a missing `from`, an
+ *  unparseable subject, or `from.id !== parsed.sender` (SPEC §5). This derives the remaining
+ *  routing tokens from the subject for rows that survived — it does not rewrite a mismatched
+ *  `from.id`. Live tails, channel backfill, and channel recall skip the mismatch; history
+ *  does the same (#388). */
 function authenticatedMessage(msg: CotalMessage, parsed: ParsedSubject): CotalMessage {
-  const from = msg.from.id === parsed.sender ? msg.from : { ...msg.from, id: parsed.sender };
-  const withFrom = from === msg.from ? msg : { ...msg, from };
-  if (parsed.kind === "chat") return authenticatedChannelMessage(withFrom, parsed.rest);
-  if (parsed.kind === "inst") return authenticatedDmMessage(withFrom, parsed.rest);
-  return withFrom;
+  if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
+  if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
+  return msg;
 }
 
 function authenticatedChannelMessage(msg: CotalMessage, channel: string): CotalMessage {
@@ -5081,20 +5081,23 @@ function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
   return { ...base, to } as CotalMessage;
 }
 
-/** History drain keeps `m.json()` and used to throw the subject away. Fail closed on an unparseable
- *  subject / missing from / unusable id, then rewrite identity from the subject. Do not echo-drop
- *  `from.id === this.card.id`: god-view history must include the viewer's own sends. */
+/** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
+ *  `from.id` equals the subject sender; on mismatch, a missing `from`, or an unparseable delivery
+ *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
+ *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
+ *  god-view history must include the viewer's own sends. */
 function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): CotalMessage | undefined {
-  let msg: CotalMessage;
+  let raw: unknown;
   try {
-    msg = m.json<CotalMessage>();
+    raw = m.json();
   } catch {
     return undefined;
   }
-  if (!isUsableMessageId(msg.id) || !msg.from) return undefined;
+  if (!isRecord(raw) || !isUsableMessageId(raw.id) || !isRecord(raw.from)) return undefined;
   const parsed = parseSubject(m.subject);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
-  return authenticatedMessage(msg, parsed);
+  if (raw.from.id !== parsed.sender) return undefined;
+  return authenticatedMessage(raw as CotalMessage, parsed);
 }
 
 function isPlane3DeliveryFrame(value: unknown): value is Plane3DeliveryFrame {
