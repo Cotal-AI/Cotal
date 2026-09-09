@@ -1,0 +1,42 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/agui-tool-result.smoke.ts"
+  ],
+  "guard": "a tool_result record is not republished onto the events plane; the matching tool_use still emits START/ARGS/END",
+  "command": "pnpm smoke:agui-tool-result",
+  "completionMarker": "agui-tool-result smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/agui-tool-result.json",
+  "why": [
+    "events.<owner>.<actor> carries a different read ACL from wherever a tool read. A tool_result",
+    "block at this mapper has no trusted provenance, so TOOL_CALL_RESULT is suppressed rather than",
+    "emitted with the body, an empty string, or a placeholder.",
+    "",
+    "The claim is joined, so it gets a mutation per fact. 'No tool-result body is emitted' is",
+    "satisfied completely by a mapper that emits nothing at all, which is why T2 exists: it drops",
+    "tool_use lifecycle and must redden the liveness arm while leaving the safety arm green.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the mapper by relative source path (../src/agui-map.js)",
+    "and calls it directly. Its only other import is connector-core's event constructors, which no",
+    "mutation below touches, so a kill comes from the mapper and not from the vocabulary."
+  ],
+  "mutations": [
+    {
+      "name": "T1 restore verbatim TOOL_CALL_RESULT content",
+      "file": "extensions/connector-claude-code/src/agui-map.ts",
+      "find": "        return null; // fail-closed: no TOOL_CALL_RESULT without trusted provenance",
+      "replace": "        for (const b of content as { type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[]) {\n          if (b.type !== \"tool_result\" || !b.tool_use_id) continue;\n          events.push({\n            type: \"TOOL_CALL_RESULT\",\n            messageId: `${uuid}#0`,\n            toolCallId: b.tool_use_id,\n            content: typeof b.content === \"string\" ? b.content : JSON.stringify(b.content ?? null),\n            timestamp: ts,\n          } as never);\n        }\n        return events.length > 0 && open !== null ? { runId: open, events } : null;",
+      "expectRed": "a tool_result placeholder does NOT appear anywhere on the wire",
+      "cell": "a tool_result placeholder does NOT appear anywhere on the wire",
+      "note": "This is the defect: the previous mapper published result content verbatim onto events.<owner>.<actor>. The named cell searches for the placeholder bytes, so an empty-string or placeholder-string mutant would also fail it."
+    },
+    {
+      "name": "T2 drop tool_use lifecycle as well as the result",
+      "file": "extensions/connector-claude-code/src/agui-map.ts",
+      "find": "      if (b.type === \"tool_use\" && b.id) {",
+      "replace": "      if (false && b.type === \"tool_use\" && b.id) {",
+      "expectRed": "DECOY/LIVENESS — tool_use still emits START/ARGS/END",
+      "cell": "DECOY/LIVENESS — tool_use still emits START/ARGS/END",
+      "note": "The over-broad filter, which passes every safety cell in the file. Without a liveness arm this mutant survives and the suite goes green against a mapper that publishes no tool activity at all."
+    }
+  ]
+}

@@ -201,6 +201,7 @@
     "smoke:claude-run-error": "tsx extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
     "smoke:claude-start-source": "tsx extensions/connector-claude-code/smoke/agui-start-source.smoke.ts",
     "smoke:agui-authorship": "tsx extensions/connector-claude-code/smoke/agui-authorship.smoke.ts",
+    "smoke:agui-tool-result": "tsx extensions/connector-claude-code/smoke/agui-tool-result.smoke.ts",
     "smoke:agui-map": "COTAL_AGUI_SESSION=extensions/connector-claude-code/smoke/fixtures/session-shape.jsonl tsx extensions/connector-claude-code/smoke/agui-map.smoke.ts",
     "smoke:agui-map:real": "tsx extensions/connector-claude-code/smoke/agui-map.smoke.ts",
     "smoke:agui-opencode-map": "tsx extensions/connector-opencode/smoke/agui-map.smoke.ts",

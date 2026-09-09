@@ -131,10 +131,9 @@ const mapAll = (entries: ClaudeEntry[]) => {
     events.filter((e) => e.type === "RUN_STARTED").length);
 }
 
-// ── ARM D: A TOOL RESULT CARRYING ANOTHER PRINCIPAL'S TEXT ────────────────────────────────────
-// Named separately because it arrives by a different route: not an `origin.kind`, but a peer's
-// words quoted inside this session's own tool output. Recorded as a KNOWN LIMIT rather than
-// asserted as safe — see the cell name.
+// ── ARM D: A TOOL RESULT, WHICH HAS NO PROVENANCE AT THIS LAYER ──────────────
+// Named separately because it arrives by a different route: not an `origin.kind`.
+// Fail-closed: TOOL_CALL_RESULT.content is mandatory, so the event is suppressed.
 {
   const toolResult = mk({
     uuid: "u8",
@@ -144,11 +143,8 @@ const mapAll = (entries: ClaudeEntry[]) => {
   } as never);
   const { events } = mapAll([human("u9", MINE), toolResult]);
   const wire = JSON.stringify(events);
-  // This is NOT a safety claim. A tool result is this session's own output and IS republished by
-  // design; if it quotes a peer, that text rides along. Stating it as a measured limit so nobody
-  // reads arm A as "no peer text can ever reach the wire".
-  c("KNOWN LIMIT: a tool result IS emitted, so peer text quoted inside one is not covered by this filter",
-    wire.includes(TOOL_SECRET));
+  c("FAIL-CLOSED: a tool_result body is withheld (no TOOL_CALL_RESULT, no placeholder bytes)",
+    !wire.includes(TOOL_SECRET) && !events.some((e) => e.type === "TOOL_CALL_RESULT"));
 }
 
 // A COUNT, because several cells above build their own inputs and a regression that DELETES one

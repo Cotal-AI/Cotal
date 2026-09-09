@@ -243,10 +243,10 @@ with the adapter:
 ## Event plane
 
 A session launched with `cotal spawn --events` publishes a **structured** account of what it
-did: run boundaries per turn, assistant text, reasoning, and each tool call with its arguments,
-its end, and its result. Not prose about the work, the work itself, in a vocabulary a program can
-read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
-with the plugin installed publishes nothing.
+did: run boundaries per turn, assistant text, reasoning, and each tool call with its arguments
+and its end. Tool **results are not published**. Not prose about the work, the work itself, in a
+vocabulary a program can read, minus the result body. Arming is `COTAL_EVENTS`, which the launcher
+sets for `--events` spawns; a personal session with the plugin installed publishes nothing.
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
@@ -268,9 +268,13 @@ new startup waits up to five seconds for that file with capped backoff, and the 
 one stalled file read; expiry fails loud instead of silently losing the first run. Retained-history
 starts and recovered cursors still require their existing source at once.
 
-Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
-make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
-or in the contents of a file, reaches every reader of the channel.
+Tool arguments still go on this channel, so withholding user-authored text and tool results does
+not make the stream safe to widen: anything a tool is *asked* to do, including a secret in a
+command line, reaches every reader of the channel. Tool **results** do not. A `tool_result` block
+has no trusted provenance at the mapper, and `TOOL_CALL_RESULT.content` is mandatory, so the
+result event is suppressed rather than emitted empty or with a placeholder. Observers lose that
+output on purpose: republishing it onto `events.<owner>.<actor>` would move text from a narrower
+reader set onto a broader one.
 
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh
@@ -279,7 +283,7 @@ do not share a stream; on a user-auth mesh it is the agent's own name, because t
 ledger row is keyed on. Spelled out again with both halves below. The launch grants publish rights
 on that channel alone. A spawn
 that asks for a *different* agent's event channel is refused at the door rather than granted, since
-that channel carries the session's tool inputs and outputs. The same rule runs on restart: a manager
+that channel carries the session's tool arguments and assistant text. The same rule runs on restart: a manager
 resume document that names another agent's event channel is refused rather than adopted, because the
 managed row is re-armed from that document and the credential is re-minted from the row.
 

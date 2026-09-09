@@ -86,10 +86,11 @@
  * because an enumeration over `origin.kind` cannot classify a record that has none. Every value
  * outside either table **fails loud** rather than being silently treated as not-a-turn.
  *
- * **(C) `TOOL_CALL_RESULT.messageId` is unstated in §3.1's table** (the row names only
- * `toolCallId`) while the real schema REQUIRES it. It is keyed the same way every other message
- * identity here is — entry `uuid` plus block index — so it is unique, stable, and derived rather
- * than invented at a call site. Raised as a gap in `connector-core`'s constructor doc as well.
+ * **(C) `TOOL_CALL_RESULT` is withheld.** The real schema REQUIRES `content` (and `messageId`,
+ * unstated in §3.1's table). A `tool_result` block at this layer has no trusted provenance and
+ * no evidence the destination audience may read it, so the event is suppressed rather than
+ * emitted empty or with a placeholder. Lifecycle for the call still arrives as
+ * `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` from the matching `tool_use` block.
  * ---------------------------------------------------------------------------------------------
  *
  * `messageId` is `${uuid}#${blockIndex}` and NOT `message.id`. `message.id` is a provider request
@@ -109,7 +110,6 @@ import {
   toolCallStart,
   toolCallArgs,
   toolCallEnd,
-  toolCallResult,
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
@@ -350,15 +350,6 @@ function stampOf(entry: ClaudeEntry, now: () => number): { ts: number; arrival: 
   return Number.isFinite(parsed) ? { ts: parsed, arrival: false } : { ts: now(), arrival: true };
 }
 
-/**
- * `tool_result.content` is a string on some entries and an array of blocks on others. AG-UI's
- * `content` is a string, so the array form is JSON-encoded rather than joined: joining would
- * silently drop every non-text member, which is `salient()`'s defect in a smaller costume.
- */
-function resultContent(raw: unknown): string {
-  return typeof raw === "string" ? raw : JSON.stringify(raw ?? null);
-}
-
 export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
   const now = opts.now ?? (() => Date.now());
   let open: string | null = null;
@@ -410,21 +401,25 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // The discriminator is the presence of a `tool_result` block, not the array-ness.
       const toolResults = Array.isArray(content) ? content.filter((b) => b.type === "tool_result" && b.tool_use_id) : [];
       if (toolResults.length > 0) {
-        (content as ClaudeBlock[]).forEach((b, i) => {
-          if (b.type !== "tool_result" || !b.tool_use_id) return;
-          events.push(
-            toolCallResult({
-              messageId: `${uuid}#${i}`,
-              toolCallId: b.tool_use_id,
-              content: resultContent(b.content),
-              timestamp: ts,
-              ...(b.is_error || arrivalMeta
-                ? { cotal: { ...(b.is_error ? { isError: true } : {}), ...arrivalMeta } }
-                : {}),
-            }),
-          );
-        });
-        return events.length > 0 && open !== null ? { runId: open, events } : null;
+        /**
+         * FAIL CLOSED ON TOOL-RESULT BODIES. `events.<owner>.<actor>` carries a DIFFERENT read ACL
+         * from wherever the tool read. A `tool_result` block at this layer has no trusted provenance
+         * and no evidence the destination audience may read it, so the body is not republished.
+         *
+         * `TOOL_CALL_RESULT.content` is mandatory in the real schema. An empty string or a fixed
+         * placeholder would invent vocabulary §3.1 does not define, and a placeholder string is one
+         * edit away from being a real delta again. So the event is suppressed, not redacted.
+         *
+         * Observers lose the tool output they see today. That is the point: the previous mapping
+         * published the block's `content` verbatim (string as-is, array JSON-encoded), which is the
+         * ACL-crossing this branch existed to prevent and then had nothing enforcing.
+         *
+         * Not a tool-name allowlist. Not a tool-supplied "this output is safe" flag. Either would
+         * authorize release from the same untrusted record. Lifecycle for the call itself still
+         * arrives as `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` from the matching
+         * `tool_use` block; those events do not carry the result body.
+         */
+        return null; // fail-closed: no TOOL_CALL_RESULT without trusted provenance
       }
 
       // The prompt body. A string entry is its own body; an array entry with no tool results is a

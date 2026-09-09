@@ -1,0 +1,2 @@
+# Claude Code mapper: withhold tool-result bodies on the events plane.
+smoke:agui-tool-result

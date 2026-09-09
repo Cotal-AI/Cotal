@@ -98,6 +98,8 @@
  *       to be doing work -> KILLED `real:every-tool_use-block-became-a-START-ARGS-END-triple`
  *   M7  [B] make the RESULT name an id no START opened
  *       -> KILLED `real:every-RESULT-names-a-toolCallId-that-a-START-opened`
+ *       **STALE: that cell no longer exists.** Tool-result bodies are withheld, so there is no
+ *       RESULT to join. Replaced by `real:no-RESULT-is-emitted-and-every-START-still-has-an-id`.
  *
  *   ⚠️ M8/M9 — **BOTH PREDICTIONS WERE WRONG, AND THE PAIR IS THE MOST INSTRUCTIVE ROW HERE.**
  *       M8 (drop the `promptSource` run-opening test) was predicted to KILL and **SURVIVED**. M9
@@ -952,9 +954,9 @@ c("real:every-tool_use-block-INSIDE-a-run-became-a-START-ARGS-END-triple", (() =
   return toolUse > 0 && typesOf("TOOL_CALL_START") === toolUse && typesOf("TOOL_CALL_ARGS") === toolUse && typesOf("TOOL_CALL_END") === toolUse;
 })(), { firstRunAt: FIRST_RUN_AT, start: typesOf("TOOL_CALL_START"), args: typesOf("TOOL_CALL_ARGS"), end: typesOf("TOOL_CALL_END") });
 
-c("real:every-tool_result-block-INSIDE-a-run-became-a-RESULT", (() => {
+c("real:every-tool_result-block-INSIDE-a-run-is-WITHHELD", (() => {
   const results = FIRST_RUN_AT < 0 ? 0 : blocksIn(FIRST_RUN_AT, "tool_result");
-  return results > 0 && typesOf("TOOL_CALL_RESULT") === results;
+  return results > 0 && typesOf("TOOL_CALL_RESULT") === 0;
 })(), { firstRunAt: FIRST_RUN_AT, results: typesOf("TOOL_CALL_RESULT") });
 
 // THE OTHER HALF OF THE PARTITION, asserted rather than absorbed. The cells above would also pass
@@ -987,10 +989,10 @@ if (HEAD.tool_use + HEAD.tool_result + HEAD.thinking > 0) {
   });
 }
 
-c("real:every-RESULT-names-a-toolCallId-that-a-START-opened", (() => {
-  const opened = new Set(events.filter((e) => e.type === "TOOL_CALL_START").map((e) => (e as { toolCallId: string }).toolCallId));
-  const results = events.filter((e) => e.type === "TOOL_CALL_RESULT") as { toolCallId: string }[];
-  return results.length > 0 && results.every((r) => opened.has(r.toolCallId));
+c("real:no-RESULT-is-emitted-and-every-START-still-has-an-id", (() => {
+  const opened = events.filter((e) => e.type === "TOOL_CALL_START") as { toolCallId: string }[];
+  const results = events.filter((e) => e.type === "TOOL_CALL_RESULT");
+  return results.length === 0 && opened.length > 0 && opened.every((s) => typeof s.toolCallId === "string" && s.toolCallId.length > 0);
 })());
 
 // IDENTITY. This is the `message.id` defect: a provider request id repeats across entries and
