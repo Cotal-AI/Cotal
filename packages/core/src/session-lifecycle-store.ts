@@ -216,6 +216,53 @@ export function sameSessionOperationInput(a: SessionOperationRecord, b: SessionO
   return canonicalJson(sessionOperationInput(a)) === canonicalJson(sessionOperationInput(b));
 }
 
+function nativeLifetimePreserved(result: unknown): boolean {
+  return result !== null && typeof result === "object" && !Array.isArray(result)
+    && (result as { nativeState?: unknown }).nativeState === "preserved";
+}
+
+/** A released binding is still live for shutdown unless its bound receipt is a matching
+ *  terminal-success release. Native-effect proof is sufficient. Cooperative-retirement is
+ *  sufficient only when resourceKey, bindingId and operationId all match the binding and the
+ *  result independently records preserved native lifetime. A proves value alone never clears. */
+export function releasedBindingStillLive(binding: Binding, release: QueryOperationResult): boolean {
+  if (release.state === "absent") return true;
+  if (release.state !== "terminal-success" || release.record.action !== "release") return true;
+  if (release.record.bindingId !== binding.bindingId) return true;
+  if (release.record.operationId !== binding.operationId) return true;
+  if (resourceKeyId(release.record.resourceKey) !== resourceKeyId(binding.resourceKey)) return true;
+  if (release.proofOrigin?.proves === "native-effect") return false;
+  if (release.proofOrigin?.proves !== "cooperative-retirement") return true;
+  if (!nativeLifetimePreserved(release.result)) return true;
+  return false;
+}
+
+/**
+ * Filter a manager-scoped binding scan through the shared release-proof predicate.
+ * The scan layer enumerates `sessionbinding.*`; this layer point-reads `sessionop`
+ * receipts. An unreadable or malformed receipt fails closed as `unknown`.
+ */
+export async function applyReleaseReceiptsToNativeLookup(
+  scanned: NativeLifecycleBindingLookup,
+  query: (resourceKey: ResourceKey, operationId: string) => Promise<QueryOperationResult>,
+): Promise<NativeLifecycleBindingLookup> {
+  if (scanned.status === "unknown") return scanned;
+  try {
+    const bindings: Binding[] = [];
+    for (const binding of scanned.bindings) {
+      if (binding.state !== "released") {
+        bindings.push(binding);
+        continue;
+      }
+      const release = await query(binding.resourceKey, binding.operationId);
+      if (releasedBindingStillLive(binding, release)) bindings.push(binding);
+    }
+    return { status: "known", bindings: Object.freeze(bindings) };
+  } catch (e) {
+    return { status: "unknown", bindings: [], reason: (e as Error).message };
+  }
+}
+
 /**
  * Complete durable lookup of native lifecycle bindings held by one manager. Only the registered
  * `sessionbinding.*` family is scanned, so legacy managed seats retain their existing shutdown
@@ -236,19 +283,14 @@ export async function lookupNativeLifecycleBindingsForManager(
         throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${entry.key} carries a ${entry.operation} marker`);
       const binding = parseBinding(entry.value, entry.key);
       if (binding.managerPrincipal !== managerPrincipal) continue;
-      if (binding.state !== "released") {
-        bindings.push(binding);
-        continue;
-      }
-      // A `released` label alone is not sufficient for the destructive-shutdown decision. The
-      // bound release operation must itself be terminal-success with native-effect proof; absent,
-      // pending, refusal or indeterminate records all mean this binding may still be live.
-      const release = await queryOperation(kv, binding.resourceKey, binding.operationId);
-      if (release.state !== "terminal-success" || release.record.action !== "release"
-        || release.record.bindingId !== binding.bindingId
-        || release.proofOrigin?.proves !== "native-effect") bindings.push(binding);
+      bindings.push(binding);
     }
-    return { status: "known", bindings: Object.freeze(bindings) };
+    // A `released` label alone is not sufficient for the destructive-shutdown decision.
+    // Receipt authority is a point-read of sessionop rows, not the sessionbinding scan.
+    return await applyReleaseReceiptsToNativeLookup(
+      { status: "known", bindings: Object.freeze(bindings) },
+      (resourceKey, operationId) => queryOperation(kv, resourceKey, operationId),
+    );
   } catch (e) {
     return { status: "unknown", bindings: [], reason: (e as Error).message };
   }

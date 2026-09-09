@@ -67,6 +67,30 @@
       "replace": "  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = async () => [],",
       "expectRed": "default binding lookup without an injected scanner fails closed as possibly live",
       "cell": "default binding lookup without an injected scanner fails closed as possibly live"
+    },
+    {
+      "name": "treat dispatcher-retirement as native-effect for released lookup",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "      if (releasedBindingStillLive(binding, release)) bindings.push(binding);\n",
+      "replace": "      if (release.proofOrigin?.kind !== \"dispatcher-retirement\" && releasedBindingStillLive(binding, release)) bindings.push(binding);\n",
+      "expectRed": "released lookup with dispatcher-retirement remains live without native-effect",
+      "cell": "released lookup with dispatcher-retirement remains live without native-effect"
+    },
+    {
+      "name": "treat cooperative-retirement proves alone as sufficient for released lookup",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  if (!nativeLifetimePreserved(release.result)) return true;\n",
+      "replace": "",
+      "expectRed": "cooperative-retirement without preserved native lifetime remains live",
+      "cell": "cooperative-retirement without preserved native lifetime remains live"
+    },
+    {
+      "name": "keep requiring native-effect for released lookup",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  if (release.proofOrigin?.proves !== \"cooperative-retirement\") return true;\n",
+      "replace": "  if (release.proofOrigin?.proves !== \"native-effect\") return true;\n",
+      "expectRed": "fully-validated cooperative release with preserved native lifetime does not block shutdown",
+      "cell": "fully-validated cooperative release with preserved native lifetime does not block shutdown"
     }
   ]
 }

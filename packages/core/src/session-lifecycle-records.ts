@@ -92,12 +92,36 @@ export type SessionOperationState =
   | "indeterminate";
 
 /** A journal receipt proves only that the transition was journalled. It is impossible to present
- *  one as native-effect proof because the distinction is a discriminated wire type. */
+ *  one as native-effect proof because the distinction is a discriminated wire type. Cooperative
+ *  dispatcher retirement is a third origin: an observed local fact (admission closed, dispatcher
+ *  settled, retired state persisted). It is strictly more than a journal write and strictly less
+ *  than a native receipt. It never proves a native effect. Any possibly-live old request with
+ *  unproven completion makes the operation indeterminate, never terminal-success. An empty
+ *  unproven set is not itself a drain: liveRequestCollector must be the literal "complete" or
+ *  the collector is unproven. Only then, and only for release, may proves be cooperative-retirement. */
 export type OperationProofOrigin =
   | { readonly kind: "journal-receipt"; readonly journalRevision: number; readonly proves: "journal-transition-only" }
   | { readonly kind: "receiver-receipt"; readonly receiver: string; readonly highestEpoch: number; readonly proves: "native-effect" }
   | { readonly kind: "native-readback"; readonly provider: string; readonly evidence: unknown; readonly proves: "native-effect" }
-  | { readonly kind: "provider-refusal"; readonly provider: string; readonly evidence: unknown; readonly proves: "no-native-effect" };
+  | { readonly kind: "provider-refusal"; readonly provider: string; readonly evidence: unknown; readonly proves: "no-native-effect" }
+  | {
+      readonly kind: "dispatcher-retirement";
+      readonly admissionClosed: true;
+      readonly dispatcherSettled: true;
+      readonly retiredStatePersisted: true;
+      readonly unprovenLiveRequestIds: readonly string[];
+      readonly liveRequestCollector: "complete" | "unproven";
+      readonly proves: "dispatcher-retirement-only";
+    }
+  | {
+      readonly kind: "dispatcher-retirement";
+      readonly admissionClosed: true;
+      readonly dispatcherSettled: true;
+      readonly retiredStatePersisted: true;
+      readonly unprovenLiveRequestIds: readonly [];
+      readonly liveRequestCollector: "complete";
+      readonly proves: "cooperative-retirement";
+    };
 
 /** Immutable operation input plus its recoverable state. `inputDigest` binds operation-id reuse. */
 export interface SessionOperationRecord {
@@ -318,6 +342,44 @@ function parseProofOrigin(value: unknown, label: string): OperationProofOrigin {
       ? { kind: "native-readback", provider: value.provider, evidence: value.evidence, proves: "native-effect" }
       : { kind: "provider-refusal", provider: value.provider, evidence: value.evidence, proves: "no-native-effect" };
   }
+  if (value.kind === "dispatcher-retirement") {
+    closed(value, new Set(["kind", "admissionClosed", "dispatcherSettled", "retiredStatePersisted", "unprovenLiveRequestIds", "liveRequestCollector", "proves"]), label);
+    if (value.admissionClosed !== true || value.dispatcherSettled !== true || value.retiredStatePersisted !== true)
+      return fail(label, "does not prove admission closed, dispatcher settled, and retired state persisted");
+    if (!Array.isArray(value.unprovenLiveRequestIds)
+      || value.unprovenLiveRequestIds.some((v) => typeof v !== "string")
+      || new Set(value.unprovenLiveRequestIds).size !== value.unprovenLiveRequestIds.length)
+      return fail(label, "does not validate as dispatcher-retirement proof");
+    if (value.liveRequestCollector !== "complete" && value.liveRequestCollector !== "unproven")
+      return fail(label, "does not prove the live-request collector ran");
+    const unprovenLiveRequestIds = Object.freeze(value.unprovenLiveRequestIds.map((v) => id(v, `${label}.unprovenLiveRequestIds`)));
+    if (value.proves === "cooperative-retirement") {
+      if (value.liveRequestCollector !== "complete")
+        return fail(label, "does not prove the live-request collector ran");
+      if (unprovenLiveRequestIds.length !== 0)
+        return fail(label, "cannot prove cooperative retirement while live requests remain unproven");
+      return {
+        kind: "dispatcher-retirement",
+        admissionClosed: true,
+        dispatcherSettled: true,
+        retiredStatePersisted: true,
+        unprovenLiveRequestIds: unprovenLiveRequestIds as readonly [],
+        liveRequestCollector: "complete",
+        proves: "cooperative-retirement",
+      };
+    }
+    if (value.proves !== "dispatcher-retirement-only")
+      return fail(label, "does not validate as dispatcher-retirement proof");
+    return {
+      kind: "dispatcher-retirement",
+      admissionClosed: true,
+      dispatcherSettled: true,
+      retiredStatePersisted: true,
+      unprovenLiveRequestIds,
+      liveRequestCollector: value.liveRequestCollector,
+      proves: "dispatcher-retirement-only",
+    };
+  }
   return fail(label, `carries unknown proof kind ${JSON.stringify(value.kind)}`);
 }
 
@@ -353,10 +415,14 @@ export function parseSessionOperation(raw: Uint8Array, key: string, expectedReso
   const proofOrigin = value.proofOrigin === undefined ? undefined : parseProofOrigin(value.proofOrigin, `session operation ${key}.proofOrigin`);
   if ((value.state === "terminal-success" || value.state === "terminal-refusal") && (value.result === undefined || proofOrigin === undefined))
     return fail(`session operation ${key}`, "is terminal without result and proof origin");
-  if (value.state === "terminal-success" && proofOrigin?.proves !== "native-effect")
-    return fail(`session operation ${key}`, "claims terminal success without native-effect proof");
+  if (value.state === "terminal-success" && proofOrigin?.proves !== "native-effect" && proofOrigin?.proves !== "cooperative-retirement")
+    return fail(`session operation ${key}`, "claims terminal success without native-effect or cooperative-retirement proof");
   if (value.state === "terminal-refusal" && proofOrigin?.proves !== "no-native-effect")
     return fail(`session operation ${key}`, "claims terminal refusal without no-native-effect proof");
+  if (proofOrigin?.proves === "cooperative-retirement" && (value.state !== "terminal-success" || value.action !== "release"))
+    return fail(`session operation ${key}`, "cooperative-retirement proof can settle only a release as terminal-success");
+  if (proofOrigin?.kind === "dispatcher-retirement" && proofOrigin.proves === "dispatcher-retirement-only" && value.state !== "indeterminate")
+    return fail(`session operation ${key}`, "dispatcher-retirement proof cannot settle an operation as anything except indeterminate");
   if (proofOrigin?.kind === "receiver-receipt" && proofOrigin.highestEpoch < value.expectedControllerEpoch)
     return fail(`session operation ${key}`, "carries a receiver receipt below its expected controller epoch");
   if ((proofOrigin?.kind === "native-readback" || proofOrigin?.kind === "provider-refusal")

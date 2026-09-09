@@ -1,0 +1,77 @@
+{
+  "suite": "packages/core/smoke/session-lifecycle-records.smoke.ts",
+  "guard": "cooperative dispatcher retirement can settle a release as terminal-success only with a completed collector and an empty unproven set",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/session-lifecycle-records.smoke.ts",
+  "completionMarker": "passed, ",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/session-lifecycle-records.json",
+  "why": [
+    "Dispatcher retirement is an observed local fact, not native-effect proof and not a journal receipt.",
+    "Non-empty unproven live requests remain indeterminate. An empty set without a completed collector is not a drain."
+  ],
+  "mutations": [
+    {
+      "name": "allow dispatcher-retirement on prepared",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "  if (proofOrigin?.kind === \"dispatcher-retirement\" && proofOrigin.proves === \"dispatcher-retirement-only\" && value.state !== \"indeterminate\")\n    return fail(`session operation ${key}`, \"dispatcher-retirement proof cannot settle an operation as anything except indeterminate\");\n",
+      "replace": "",
+      "expectRed": "dispatcher-retirement cannot sit on a prepared operation",
+      "cell": "dispatcher-retirement cannot sit on a prepared operation"
+    },
+    {
+      "name": "accept dispatcher-retirement without admissionClosed",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "    if (value.admissionClosed !== true || value.dispatcherSettled !== true || value.retiredStatePersisted !== true)\n      return fail(label, \"does not prove admission closed, dispatcher settled, and retired state persisted\");\n",
+      "replace": "",
+      "expectRed": "dispatcher-retirement without admissionClosed is not proof",
+      "cell": "dispatcher-retirement without admissionClosed is not proof"
+    },
+    {
+      "name": "skip id() on unproven live request ids",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "    const unprovenLiveRequestIds = Object.freeze(value.unprovenLiveRequestIds.map((v) => id(v, `${label}.unprovenLiveRequestIds`)));\n",
+      "replace": "    const unprovenLiveRequestIds = Object.freeze(value.unprovenLiveRequestIds as string[]);\n",
+      "expectRed": "unproven live request ids must be id tokens",
+      "cell": "unproven live request ids must be id tokens"
+    },
+    {
+      "name": "refuse cooperative-retirement as terminal-success proof",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "  if (value.state === \"terminal-success\" && proofOrigin?.proves !== \"native-effect\" && proofOrigin?.proves !== \"cooperative-retirement\")\n",
+      "replace": "  if (value.state === \"terminal-success\" && proofOrigin?.proves !== \"native-effect\")\n",
+      "expectRed": "cooperative §121 drain can settle terminal-success without native-effect",
+      "cell": "cooperative §121 drain can settle terminal-success without native-effect"
+    },
+    {
+      "name": "treat empty unproven ids as a completed collector",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "      if (value.liveRequestCollector !== \"complete\")\n        return fail(label, \"does not prove the live-request collector ran\");\n",
+      "replace": "",
+      "expectRed": "empty unproven ids without a completed collector is not a proven drain",
+      "cell": "empty unproven ids without a completed collector is not a proven drain"
+    },
+    {
+      "name": "accept omitted liveRequestCollector as a proven collector",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "    if (value.liveRequestCollector !== \"complete\" && value.liveRequestCollector !== \"unproven\")\n      return fail(label, \"does not prove the live-request collector ran\");\n",
+      "replace": "",
+      "expectRed": "omitted liveRequestCollector is not a proven drain",
+      "cell": "omitted liveRequestCollector is not a proven drain"
+    },
+    {
+      "name": "allow cooperative-retirement with unproven live requests",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "      if (unprovenLiveRequestIds.length !== 0)\n        return fail(label, \"cannot prove cooperative retirement while live requests remain unproven\");\n",
+      "replace": "",
+      "expectRed": "cooperative-retirement cannot claim success while live requests remain unproven",
+      "cell": "cooperative-retirement cannot claim success while live requests remain unproven"
+    },
+    {
+      "name": "allow cooperative-retirement on control",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "  if (proofOrigin?.proves === \"cooperative-retirement\" && (value.state !== \"terminal-success\" || value.action !== \"release\"))\n    return fail(`session operation ${key}`, \"cooperative-retirement proof can settle only a release as terminal-success\");\n",
+      "replace": "",
+      "expectRed": "control cannot settle success on cooperative-retirement",
+      "cell": "control cannot settle success on cooperative-retirement"
+    }
+  ]
+}
