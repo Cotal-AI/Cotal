@@ -61,6 +61,22 @@
       "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"run-mediator\"])",
       "expectRed": "no peer-held profile can both write and raw-read one stream",
       "cell": "no peer-held profile can both write and raw-read one stream"
+    },
+    {
+      "name": "the shipped-source scan skips a whole tier",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  for (const tier of [\"packages\", \"implementations\", \"extensions\"]) {",
+      "replace": "  for (const tier of [\"extensions\"]) {",
+      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
+      "cell": "no shipped source emits an issued-rail subject, under any option combination"
+    },
+    {
+      "name": "a shipped builder emits an issued-rail subject",
+      "file": "packages/core/src/endpoint-subjects.ts",
+      "find": "  const parts = [spacePrefix(space), \"ep\", req.route.mode, endpointToken(req.endpoint)];",
+      "replace": "  const parts = [spacePrefix(space), \"ep.v1\", req.route.mode, endpointToken(req.endpoint)];",
+      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
+      "cell": "no shipped source emits an issued-rail subject, under any option combination"
     }
   ]
 }

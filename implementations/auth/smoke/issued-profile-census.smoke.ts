@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
@@ -11,7 +12,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -116,6 +117,18 @@ try {
       assert.ok(native.every((r) => !r.publish && !r.subscribe));
     });
   }
+  await check("no shipped source emits an issued-rail subject, under any option combination", async () => {
+    // The per-variant checks above cover representative options only. This closes the rest: a
+    // namespace no shipped builder ever writes cannot be reached by any option combination.
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    const files = shippedSources(root);
+    const offenders = files.filter((file) => /ep\.v1/.test(readFileSync(file, "utf8")));
+    assert.deepEqual(offenders.map((f) => f.slice(root.length)), []);
+    // Positive control: the corpus really contains the endpoint subject builders it must cover.
+    assert.ok(files.some((file) => /function epRequestSubject/.test(readFileSync(file, "utf8"))), `scanned ${files.length} files without reaching the subject builders`);
+    observations.shippedSourcesScanned = files.length;
+  });
+
   await check("the write-plus-raw-read detector finds the known trusted overlaps", async () => {
     // Positive control: without it, a detector that silently found nothing would pass the
     // invariant below while measuring nothing at all.

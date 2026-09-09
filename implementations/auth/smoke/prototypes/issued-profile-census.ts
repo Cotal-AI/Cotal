@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
@@ -192,3 +194,24 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
 export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver"]);
+
+/** Every shipped `.ts` under the source trees a credential's grants can come from. */
+export function shippedSources(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== "dist" && entry.name !== "node_modules" && entry.name !== "smoke") walk(full); }
+      else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) found.push(full);
+    }
+  };
+  for (const tier of ["packages", "implementations", "extensions"]) {
+    const base = join(root, tier);
+    for (const pkg of readdirSync(base, { withFileTypes: true })) {
+      const src = join(base, pkg.name, "src");
+      if (pkg.isDirectory() && existsSync(src)) walk(src);
+    }
+  }
+  if (found.length === 0) throw new Error("the shipped-source scan found no files; the corpus is wrong");
+  return found;
+}
