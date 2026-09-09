@@ -125,7 +125,7 @@ const authority: ServiceNameAuthority = { authorize: (n, o) => ({ authorized: n 
 const specFor = (): ServiceSpec => ({ endpoint: ENDPOINT, owner: DEV_OWNER, clusterDigests: [CLOSURE], protocol: { v: 1 } });
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), SMOKE_BROKER_TOKEN));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, sd);
 
