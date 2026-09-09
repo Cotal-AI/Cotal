@@ -112,7 +112,7 @@ export {
   type ActorRow,
 } from "./ledger.js";
 export { runAuthService, openAuthAuthorityPlane, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, SESSION_RENEWAL_ROUTE, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
-export { SESSION_RENEWAL_PATH, handleSessionRenewal, renewSessionFromEnrollmentStore, liveSessionRenewalGrant } from "./session-renewal.js";
+export { SESSION_RENEWAL_PATH, handleSessionRenewal, renewSessionFromEnrollmentStore, liveSessionRenewalGrant, memoryRemintNonceBook, encodeRemintPossession } from "./session-renewal.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
 // shape-proved reader, and the pure connect-credential check the production composition runs.

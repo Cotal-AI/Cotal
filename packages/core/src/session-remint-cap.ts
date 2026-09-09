@@ -6,7 +6,8 @@
  * lifecycle / resource-bound capability. Presenting it authorizes a remint of that
  * enrollment only after the caller also proves possession of the enrolled nkey.
  *
- * Never signing-key transfer. Never `supervise`. Replay of a used nonce is refused.
+ * Never signing-key transfer. Never `supervise`. The cap is reusable until expiry.
+ * Replay of a used *request* nonce is refused.
  */
 import { randomBytes } from "node:crypto";
 import { fromPublic } from "@nats-io/nkeys";
@@ -43,6 +44,11 @@ export const SESSION_REMINT_CAP_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 export const SESSION_REMINT_CAP_MAX_BYTES = 16 * 1024;
 export const SESSION_REMINT_FAMILY = "session-remint" as const;
 
+/** Fresh CSPRNG request nonce for one remint. Signed under the enrolled nkey. */
+export function mintSessionRemintRequestNonce(): string {
+  return assertNonce(randomBytes(18).toString("base64url"));
+}
+
 export interface SessionRemintCap {
   readonly v: 1;
   readonly family: typeof SESSION_REMINT_FAMILY;
@@ -70,8 +76,8 @@ export interface MintSessionRemintCapArgs {
   id?: string;
 }
 
-export type SessionRemintNonceSeen = (nonce: string) => Promise<boolean> | boolean;
-export type SessionRemintNonceMark = (nonce: string) => Promise<void> | void;
+export type SessionRemintNonceSeen = (requestNonce: string) => Promise<boolean> | boolean;
+export type SessionRemintNonceMark = (requestNonce: string) => Promise<void> | void;
 
 function assertCapToken(v: unknown, what: string): string {
   if (typeof v !== "string" || !HANDLE_TOKEN.test(v)) refuse("contract-invalid", `${what} is not a bounded token`);
@@ -180,6 +186,8 @@ export interface VerifySessionRemintCapOpts {
   resourceKey: ResourceKey;
   holder: { owner: string; actor: string; lifecycleUid: string };
   enrolledPublicId: string;
+  /** Fresh CSPRNG nonce for this remint request. Signed under the enrolled nkey. */
+  requestNonce: string;
   possession: Uint8Array;
   nonceSeen: SessionRemintNonceSeen;
   markNonce: SessionRemintNonceMark;
@@ -187,8 +195,8 @@ export interface VerifySessionRemintCapOpts {
 
 /**
  * Verify a presented remint cap, then require possession of the enrolled nkey.
- * `possession` is the Ed25519 signature of the cap's nonce under that nkey.
- * A used nonce is refused rather than replayed.
+ * `possession` is the Ed25519 signature of `requestNonce` under that nkey.
+ * The cap itself is reusable until expiry. A used request nonce is refused.
  */
 export async function verifySessionRemintCap(raw: unknown, opts: VerifySessionRemintCapOpts): Promise<SessionRemintCap> {
   const now = opts.now ?? Date.now();
@@ -219,18 +227,21 @@ export async function verifySessionRemintCap(raw: unknown, opts: VerifySessionRe
     { now, ceilingMs: SESSION_REMINT_CAP_MAX_TTL_MS, what: "session remint capability", ceilingName: "live", refusals: "post-signature" },
   );
 
+  let requestNonce: string;
+  try { requestNonce = assertNonce(opts.requestNonce); }
+  catch { refuse("contract-invalid", "requestNonce is not a bounded CSPRNG token"); }
   if (!(opts.possession instanceof Uint8Array) || opts.possession.length !== 64)
     refuse("permission-denied", "key possession proof is not a 64-byte Ed25519 signature");
   let possessed = false;
   try {
-    possessed = fromPublic(cap.enrolledPublicId).verify(new TextEncoder().encode(cap.nonce), opts.possession);
+    possessed = fromPublic(cap.enrolledPublicId).verify(new TextEncoder().encode(requestNonce), opts.possession);
   } catch (e) {
     refuse("permission-denied", `key possession proof does not verify: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!possessed) refuse("permission-denied", "key possession proof does not match the enrolled nkey");
 
-  const seen = await opts.nonceSeen(cap.nonce);
-  if (seen === true) refuse("permission-denied", "nonce has already been used; replay is refused");
-  await opts.markNonce(cap.nonce);
+  const seen = await opts.nonceSeen(requestNonce);
+  if (seen === true) refuse("permission-denied", "request nonce has already been used; replay is refused");
+  await opts.markNonce(requestNonce);
   return cap as SessionRemintCap;
 }

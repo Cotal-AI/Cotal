@@ -14,9 +14,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fromSeed } from "@nats-io/nkeys";
 import {
   chatSubject,
   createSpaceAuth,
+  mintSessionRemintCap,
+  mintSessionRemintRequestNonce,
+  newArtifactSigner,
   newIdentity,
   putSessionEnrollment,
   taskDurable,
@@ -24,10 +28,11 @@ import {
   type MeshEnrolledSessionEnrollment,
   type NativeOnlySessionEnrollment,
   type ResourceKey,
+  type SignerAnchor,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 import { grantActor, grantManagedActor, newActorToken, revokeActor } from "../src/ledger.js";
-import { handleSessionRenewal, SESSION_RENEWAL_PATH } from "../src/session-renewal.js";
+import { encodeRemintPossession, handleSessionRenewal, memoryRemintNonceBook, SESSION_RENEWAL_PATH } from "../src/session-renewal.js";
 
 let ok = 0, fail = 0;
 const c = (name: string, value: boolean, extra?: unknown) => {
@@ -78,6 +83,18 @@ const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const actor = "native_session";
 const lifecycleUid = "0123456789abcdefghijklmnop";
 const identity = newIdentity();
+const issuer = newArtifactSigner();
+const issuerKeyId = "remint-1";
+const remintAnchor: SignerAnchor = {
+  keyId: issuerKeyId,
+  publicKey: issuer.publicKey,
+  owner: `${owner}.owner`,
+  roles: ["sessions"],
+  scope: { sessions: ["session-remint"] },
+  validFrom: 0,
+  validTo: Date.now() + 10_000_000_000,
+};
+const remintNonces = memoryRemintNonceBook();
 const resource: ResourceKey = {
   hostIdentity: "host-key-sha256:abc",
   provider: "com.cotal.opencode",
@@ -130,12 +147,30 @@ grantActor(dir, {
 });
 
 const auth = await createSpaceAuth(space);
+const remintCap = mintSessionRemintCap({
+  space,
+  resourceKey: resource,
+  holder: { owner, actor, lifecycleUid },
+  enrolledPublicId: identity.id,
+  ttlMs: 60_000,
+  issuerKeyId,
+}, issuer);
+const proof = () => {
+  const requestNonce = mintSessionRemintRequestNonce();
+  const possession = encodeRemintPossession(
+    fromSeed(new TextEncoder().encode(identity.seed)).sign(new TextEncoder().encode(requestNonce)),
+  );
+  return { resourceKey: resource, remintCap, requestNonce, possession };
+};
 const ctx = {
   cap,
   dir,
   space,
   records: kv,
   account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+  resolveAnchor: (keyId: string) => keyId === issuerKeyId ? remintAnchor : undefined,
+  nonceSeen: (nonce: string) => Promise.resolve(remintNonces.nonceSeen(nonce)),
+  markNonce: (nonce: string) => Promise.resolve(remintNonces.markNonce(nonce)),
 };
 const http = createServer((req, res) => {
   void handleSessionRenewal(req, res, ctx, send, readJsonBody);
@@ -151,7 +186,7 @@ const url = `http://127.0.0.1:${port}${SESSION_RENEWAL_PATH}`;
 const post = async (body: unknown, headers: Record<string, string> = {}) => {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cap}`, ...headers },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, json: await res.json() as Record<string, unknown> };
@@ -178,10 +213,10 @@ const serve = async (override: Partial<typeof ctx> = {}) => {
   });
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
-  const call = async (body: unknown = { resourceKey: resource }) => {
+  const call = async (body: unknown = proof()) => {
     const res = await fetch(`http://127.0.0.1:${port}${SESSION_RENEWAL_PATH}`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
     return { status: res.status, json: await res.json() as Record<string, unknown> };
@@ -194,16 +229,16 @@ try {
   {
     const get = await fetch(url);
     c("GET is refused", get.status === 405);
-    const browser = await fetch(url, { method: "POST", headers: { origin: "https://evil.test", "content-type": "application/json", authorization: `Bearer ${cap}` }, body: "{}" });
+    const browser = await fetch(url, { method: "POST", headers: { origin: "https://evil.test", "content-type": "application/json" }, body: JSON.stringify(proof()) });
     c("browser Origin is refused", browser.status === 403);
-    const noCap = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-    c("missing capability is refused", noCap.status === 401);
-    const extra = await post({ resourceKey: resource, profile: "agent" });
+    const operator = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${cap}` }, body: JSON.stringify(proof()) });
+    c("loopback operator bearer is refused as remint proof", operator.status === 401);
+    const extra = await post({ ...proof(), profile: "agent" });
     c("unknown body fields are refused", extra.status === 400);
   }
 
   console.log("B. production remint intersects every issued dimension");
-  const okRes = await post({ resourceKey: resource });
+  const okRes = await post(proof());
   const jwt = typeof okRes.json.jwt === "string" ? okRes.json.jwt : "";
   const claims = jwt ? decodeJwt(jwt) : {};
   const pub = claims.nats?.pub?.allow ?? [];
@@ -240,8 +275,8 @@ try {
   const nativeUrl = `http://127.0.0.1:${nativePort}${SESSION_RENEWAL_PATH}`;
   const nativeRes = await fetch(nativeUrl, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
-    body: JSON.stringify({ resourceKey: resource }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(proof()),
   });
   const nativeJson = await nativeRes.json() as { error?: string };
   c("native-only enrollment cannot renew over HTTP",
@@ -263,8 +298,8 @@ try {
   const expiredPort = typeof expiredAddr === "object" && expiredAddr ? expiredAddr.port : 0;
   const expiredRes = await fetch(`http://127.0.0.1:${expiredPort}${SESSION_RENEWAL_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
-    body: JSON.stringify({ resourceKey: resource }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(proof()),
   });
   const expiredJson = await expiredRes.json() as { error?: string };
   c("expired enrollment cannot renew over HTTP",
@@ -303,8 +338,8 @@ try {
   const parentPort = typeof parentAddr === "object" && parentAddr ? parentAddr.port : 0;
   const parentRes = await fetch(`http://127.0.0.1:${parentPort}${SESSION_RENEWAL_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
-    body: JSON.stringify({ resourceKey: resource }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(proof()),
   });
   const parentJson = await parentRes.json() as { error?: string };
   c("revoked parent chain cannot renew over HTTP",
@@ -338,8 +373,8 @@ try {
   const narrowPort = typeof narrowAddr === "object" && narrowAddr ? narrowAddr.port : 0;
   const narrowRes = await fetch(`http://127.0.0.1:${narrowPort}${SESSION_RENEWAL_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cap}` },
-    body: JSON.stringify({ resourceKey: resource }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(proof()),
   });
   const narrowJson = await narrowRes.json() as { authority?: { allowSubscribe?: string[] } };
   c("HTTP remint keeps a narrower ceiling under a broader live grant",
@@ -472,6 +507,21 @@ try {
       { status: okRes.status, missing: taskRows("reviewer").filter((row) => !okPub.includes(row)) });
     okServer.close();
     rmSync(parentDir, { recursive: true, force: true });
+  }
+  {
+    const first = await post(proof());
+    const second = await post(proof());
+    const used = proof();
+    const firstUse = await post(used);
+    c("PRODUCTION CALLER handleSessionRenewal remints twice with one remint cap",
+      first.status === 200 && second.status === 200
+      && typeof first.json.jwt === "string" && typeof second.json.jwt === "string",
+      { first: first.status, second: second.status });
+    const replayAgain = await post(used);
+    c("PRODUCTION CALLER handleSessionRenewal refuses a replayed request nonce",
+      replayAgain.status === 403 && typeof replayAgain.json.error === "string" && String(replayAgain.json.error).includes("already been used"),
+      replayAgain.json);
+    c("first request of a later-replayed nonce still reminted", firstUse.status === 200);
   }
 } finally {
   http.close();

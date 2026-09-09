@@ -70,7 +70,7 @@ import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, ope
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { handleSessionRenewal, SESSION_RENEWAL_PATH, type SessionRenewalCtx } from "./session-renewal.js";
+import { handleSessionRenewal, memoryRemintNonceBook, SESSION_RENEWAL_PATH, type SessionRenewalCtx } from "./session-renewal.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -727,6 +727,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
+  const remintNonces = memoryRemintNonceBook();
   const ctx: HandlerCtx = {
     issuer,
     bridge,
@@ -746,6 +747,9 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
       space,
       records: plane.records,
       account: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+      resolveAnchor: () => undefined,
+      nonceSeen: remintNonces.nonceSeen,
+      markNonce: remintNonces.markNonce,
     },
   };
   const http = createServer((req, res) => void handle(req, res, ctx));

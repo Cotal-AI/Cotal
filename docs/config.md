@@ -181,8 +181,9 @@ So a launcher-spawned seat does not get them in its environment. The launcher wr
 The session reads the launch-material file once at startup. An independent remint also needs an
 owner-authorized remint capability in that file, bound to the enrollment's actor, lifecycle, and
 resource. Presenting the capability is not enough: remint still requires possession of the enrolled
-nkey, and a used nonce is refused. The daemon's loopback operator bearer is not that capability and
-is never written here. For a managed creds path, it reads the
+nkey. The capability is reusable until expiry. Each remint signs a fresh request nonce under that
+nkey, and a used request nonce is refused. The daemon's loopback operator bearer is not that
+capability and is never written here. For a managed creds path, it reads the
 credential once to pin the seat's nkey, then keeps the path as a renewal source. A re-signed file is
 read by renewal and by reconnect after the cached credential expires, and a file for a different
 nkey is refused. An unbounded credential has no renewal point and remains a static boot-time value.

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import {
   EpEnvelopeError,
   mintSessionRemintCap,
+  mintSessionRemintRequestNonce,
   newArtifactSigner,
   newIdentity,
   parseSessionRemintCapShape,
@@ -68,7 +69,8 @@ const cap = mintSessionRemintCap({
   issuerKeyId,
   now: NOW,
 }, issuer);
-const possession = fromSeed(new TextEncoder().encode(identity.seed)).sign(new TextEncoder().encode(cap.nonce));
+const requestNonce = mintSessionRemintRequestNonce();
+const possession = fromSeed(new TextEncoder().encode(identity.seed)).sign(new TextEncoder().encode(requestNonce));
 const used = new Set<string>();
 const nonceSeen = (nonce: string) => used.has(nonce);
 const markNonce = (nonce: string) => { used.add(nonce); };
@@ -80,6 +82,7 @@ const verify = (raw: unknown, over: Partial<Parameters<typeof verifySessionRemin
     resourceKey: resource,
     holder,
     enrolledPublicId: identity.id,
+    requestNonce,
     possession,
     nonceSeen,
     markNonce,
@@ -102,11 +105,17 @@ await rejects("wrong lifecycle is refused", () => verify(cap, {
 }), "permission-denied");
 const otherId = newIdentity();
 await rejects("wrong nkey possession is refused", () => verify(cap, {
-  possession: fromSeed(new TextEncoder().encode(otherId.seed)).sign(new TextEncoder().encode(cap.nonce)),
+  possession: fromSeed(new TextEncoder().encode(otherId.seed)).sign(new TextEncoder().encode(requestNonce)),
   nonceSeen: () => false,
   markNonce: () => {},
 }), "permission-denied");
-await rejects("replay of a used nonce is refused", () => verify(cap), "permission-denied");
+await rejects("replay of a used request nonce is refused", () => verify(cap), "permission-denied");
+const secondNonce = mintSessionRemintRequestNonce();
+const second = await verify(cap, {
+  requestNonce: secondNonce,
+  possession: fromSeed(new TextEncoder().encode(identity.seed)).sign(new TextEncoder().encode(secondNonce)),
+});
+c("same remint cap remints a second time with a fresh request nonce", second.id === cap.id);
 
 const path = writeLaunchMaterial({ remintCap: cap, servers: "nats://127.0.0.1:4222" });
 const read = readLaunchMaterial(path);
