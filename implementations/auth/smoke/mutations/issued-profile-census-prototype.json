@@ -97,7 +97,7 @@
     {
       "name": "a raw stored read is classified as an API envelope",
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
-      "find": "  [/^\\\\$JS\\\\.API\\\\.DIRECT\\\\.GET\\\\./, \"stored-marked\"],",
+      "find": "  [/^\\$JS\\.API\\.DIRECT\\.GET\\./, \"stored-marked\"],",
       "replace": "",
       "expectRed": "every JetStream grant a peer can hold has a decided delivery class",
       "cell": "every JetStream grant a peer can hold has a decided delivery class"
