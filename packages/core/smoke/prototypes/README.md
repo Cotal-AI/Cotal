@@ -262,6 +262,14 @@ declared set. Peer-heldness is a deployment property, so no cell here can settle
 profile belongs on; what the closed union buys is that a new profile lands in neither list and
 fails, instead of drifting into the trusted half by default.
 
+Attacking the exhaustiveness of the delivery classes turned up two refinements. A
+`CONSUMER.CREATE` has two effects, an envelope response and a consumer that can carry a
+caller-chosen `deliver_subject`, so it now has its own class with the measured interest-gating as
+its ground rather than hiding inside the envelope class. And a stream create or update can carry
+`republish`, which configures the server to publish stored messages to a destination the holder
+names; no peer-held profile holds one, and the table refuses those verbs rather than folding them
+into an envelope class, so granting one forces a decision.
+
 The overlap check counts `$JS.API.DIRECT.GET` and `$JS.API.STREAM.MSG.GET` and no other
 read. A pull `CONSUMER.MSG.NEXT` also delivers to a caller-chosen reply subject, but the
 frame keeps its original captured subject, so it cannot place bytes on the rail; the
