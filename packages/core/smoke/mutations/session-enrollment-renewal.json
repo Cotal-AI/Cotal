@@ -1,12 +1,13 @@
 {
   "suite": "packages/core/smoke/session-enrollment-renewal.smoke.ts",
-  "guard": "independent remint intersects allowPublish, not only subscribe",
+  "guard": "independent remint intersects every issued dimension, including both channel directions, and refuses expired enrollment",
   "command": "./node_modules/.bin/tsx packages/core/smoke/session-enrollment-renewal.smoke.ts",
   "completionMarker": " failed",
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/session-enrollment-renewal.json",
   "why": [
     "aclForAlias is a subscribe-only replica. A remint that copies ceiling.allowPublish",
-    "reissues a revoked publish grant. The named cell is the production intersect."
+    "reissues a revoked publish grant. Filtering only live ⊆ ceiling drops a still-valid",
+    "narrower ceiling when the live grant is broader. Parse does not check present expiry."
   ],
   "mutations": [
     {
@@ -16,6 +17,22 @@
       "replace": "    allowPublish: Object.freeze([...ceiling.allowPublish]),",
       "expectRed": "revoked allowPublish does not survive a renewal",
       "cell": "revoked allowPublish does not survive a renewal"
+    },
+    {
+      "name": "intersect channels only as live ⊆ ceiling",
+      "file": "packages/core/src/session-enrollment-renewal.ts",
+      "find": "  const fromLive = live.filter((entry) => patternInAllow([...ceiling], entry));\n  const fromCeiling = ceiling.filter((entry) => patternInAllow([...live], entry));\n  return [...new Set([...fromLive, ...fromCeiling])];",
+      "replace": "  return live.filter((entry) => patternInAllow([...ceiling], entry));",
+      "expectRed": "a narrower ceiling survives a broader live grant",
+      "cell": "a narrower ceiling survives a broader live grant"
+    },
+    {
+      "name": "skip enrollment expiry before mint",
+      "file": "packages/core/src/session-enrollment-renewal.ts",
+      "find": "  refuseIfExpired(enrollment, args.now ?? Date.now());\n",
+      "replace": "",
+      "expectRed": "expired enrollment cannot renew a session credential",
+      "cell": "expired enrollment cannot renew a session credential"
     }
   ]
 }
