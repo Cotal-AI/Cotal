@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/provision-stream-info.smoke.ts",
+  "suite": [
+    "packages/core/smoke/provision-stream-info.smoke.ts"
+  ],
   "guard": "`$JS.API.STREAM.INFO.TASK` is granted by the `role` gate and by nothing else: a role-carrying agent reads task stream state, a role-less one does not, and neither reads DM, DLV or EPC.",
   "command": "pnpm smoke:provision-stream-info",
   "completionMarker": "PROVISION STREAM.INFO SMOKE",

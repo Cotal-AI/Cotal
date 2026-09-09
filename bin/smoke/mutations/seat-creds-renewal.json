@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/seat-creds-renewal.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/seat-creds-renewal.smoke.ts"
+  ],
   "guard": "a managed connector seat preserves its credential file as a standing-renewal source and reconnects on a same-identity re-sign after the boot credential expires",
   "command": "pnpm --filter @cotal-ai/connector-core build > /dev/null && pnpm smoke:seat-creds-renewal",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-creds-renewal.json",

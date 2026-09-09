@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/manager-split-auth.smoke.ts",
+  "suite": [
+    "packages/core/smoke/manager-split-auth.smoke.ts"
+  ],
   "guard": "a minted agent credential can delete only its client-managed ordered consumers on the public presence and channel-registry KV streams",
   "command": "pnpm smoke:manager-split",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/agent-watch-cleanup.json",

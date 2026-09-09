@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/recoverable-error-channel.smoke.ts",
+  "suite": [
+    "packages/core/smoke/recoverable-error-channel.smoke.ts"
+  ],
   "command": "pnpm smoke:recoverable-error-channel",
   "mutations": [
     {

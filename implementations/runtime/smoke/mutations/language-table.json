@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/run-driver.smoke.ts"
+  ],
   "guard": "The capability table: which language versions THIS BUILD's driver hosts. A fresh run is stamped with the version of the engine that will execute it, and a record whose version no engine here serves is released by name (L5023) with nothing appended, rather than walked by whichever engine happens to be present.",
   "command": "pnpm smoke:runtime-run-driver",
   "completionMarker": "run-driver.smoke:",

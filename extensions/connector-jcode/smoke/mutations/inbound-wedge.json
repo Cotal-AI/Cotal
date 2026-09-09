@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-inbound-wedge.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-inbound-wedge.smoke.ts"
+  ],
   "guard": "a directed DM reaching a busy Jcode session is accepted through soft_interrupt even when the host is not inside drive() or session_status pulses idle, and a growing automatic queue is published on presence activity",
   "command": "pnpm smoke:jcode-inbound-wedge",
   "progressPattern": "✓",

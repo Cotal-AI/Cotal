@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/spawn-lifecycle-state.smoke.ts",
+  "suite": [
+    "bin/smoke/spawn-lifecycle-state.smoke.ts"
+  ],
   "guard": "a spawn failure returns the lifecycle facts the manager already had (blockedOp, headState, opId, remedy) instead of a connector timeout or opaque string",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-core build && pnpm smoke:spawn-lifecycle-state",
   "completionMarker": "A. a failed goal terminal carries the lifecycle-blocked facts the manager already had",

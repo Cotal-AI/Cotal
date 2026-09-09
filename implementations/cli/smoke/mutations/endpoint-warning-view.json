@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/view.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/view.smoke.ts"
+  ],
   "guard": "MeshView's shipped warning registration reaches both the shared snapshot and stream event",
   "command": "pnpm smoke:view",
   "progressPattern": "✓",

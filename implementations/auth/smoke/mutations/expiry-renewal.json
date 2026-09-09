@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/expiry-renewal.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/expiry-renewal.smoke.ts"
+  ],
   "guard": "an expired user bearer is never presented to the broker, and a reconnect that keeps failing is paced instead of repeated at a fixed rate",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:expiry-renewal:auth",
   "completionMarker": "EXPIRY-RENEWAL SMOKE",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/views.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/views.smoke.ts"
+  ],
   "guard": "the elevated-view refusal only promises a line to run on the branch that was handed the row's real ACLs",
   "command": "pnpm smoke:views",
   "completionMarker": "views smoke:",

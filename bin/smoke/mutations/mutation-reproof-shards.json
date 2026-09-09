@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/mutation-reproof.smoke.ts",
+  "suite": [
+    "bin/smoke/mutation-reproof.smoke.ts"
+  ],
   "guard": "Every selected fixture executes on one configured shard; the aggregate changed check rejects failure, cancellation and skipping. Every child launched by the smoke excludes inherited COTAL_ variables, and an empty shard reports only its own assignment.",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",

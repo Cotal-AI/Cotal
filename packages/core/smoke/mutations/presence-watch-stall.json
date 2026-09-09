@@ -15,5 +15,8 @@
       "replace": "    if (this.presenceSnapshotPopulated) this.emitPresenceViewIfChanged();\n",
       "expectRed": "1.9 recovery does NOT emit per-peer offline verdicts"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/presence-watch-stall.smoke.ts"
   ]
 }

@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/reaper.smoke.ts",
+  "suite": [
+    "bin/smoke/reaper.smoke.ts"
+  ],
   "guard": "the reaper kills a smoke broker only when its recorded owner is dead, and leaves every other broker alone",
   "command": "pnpm smoke:reaper",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/fixtures/reaper.mutations.json",

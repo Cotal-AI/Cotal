@@ -21,6 +21,7 @@ import { type Node, parseModule, unbound } from "./_module-shape.js";
 import { run as walk, stripPositions } from "../src/interpret.js";
 import { digest } from "../src/keys.js";
 import { SimHandler } from "../src/sim.js";
+import { parseSuiteSources } from "../../../scripts/mutation-suite-metadata.mjs";
 
 let pass = 0;
 /** Every cell that has passed, in order. Section 23 audits this suite's mutation config against it. */
@@ -751,10 +752,15 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   });
 
   const cfg = JSON.parse(readFileSync(new URL("./mutations/transform-surface.json", import.meta.url), "utf8")) as {
-    suite: string;
+    suite: unknown;
     mutations: { name: string; expectRed: string; completionMarker?: string; note?: string }[];
   };
-  ok("the config audited here is the one that names this suite", cfg.suite.endsWith("transform.smoke.ts"), cfg.suite);
+  const suites = parseSuiteSources(
+    fileURLToPath(new URL("../../../", import.meta.url)),
+    "packages/lang/smoke/mutations/transform-surface.json",
+    cfg.suite,
+  );
+  ok("the config audited here is the one that names this suite", suites.includes("packages/lang/smoke/transform.smoke.ts"), suites);
   // THIS BLOCK'S OWN CELLS COUNT THEMSELVES, and they have to: a config aims mutants at both of
   // them, and neither name is in `CELLS` yet when the audit runs, since `ok` records after it
   // decides. Left out, an aim at either reads as a stale sentence and the audit reds over itself.

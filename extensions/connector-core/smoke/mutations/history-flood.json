@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/history-flood.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/history-flood.smoke.ts"
+  ],
   "guard": "historical channel ambient is buffered pull-only so a join backfill can never drive automatic turns, while directed traffic (mentions, DMs) and live ambient keep their automatic delivery",
   "command": "pnpm smoke:history-flood",
   "completionMarker": "history-flood smoke:",

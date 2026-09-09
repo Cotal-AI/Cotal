@@ -22,5 +22,8 @@
       "cell": "a killed mutation exits 0 and reports KILLED",
       "note": "With no marker declared this reads `includes(undefined)`, which is false, so EVERY suite starts grading INCONCLUSIVE and the self-test dies at its first cell. Re-aimed there from the opt-in control it was written for: the mutation is broader than that cell, and in a fail-fast file `no broader than the cell it names` is decided by ordering rather than by intent. The control cell still states which property is carrying the weight; this names where the harm actually lands first."
     }
+  ],
+  "suite": [
+    "scripts/mutation-proof.selftest.mjs"
   ]
 }

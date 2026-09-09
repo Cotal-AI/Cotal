@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/live-job-conclusion.smoke.ts",
+  "suite": [
+    "bin/smoke/live-job-conclusion.smoke.ts"
+  ],
   "guard": "a live job that reaches its own deadline becomes a named red check, while a newer run for the same PR remains an intentional supersession",
   "command": "pnpm smoke:live-job-conclusion",
   "completionMarker": "SUITE COMPLETE",

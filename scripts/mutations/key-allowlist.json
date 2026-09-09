@@ -22,5 +22,8 @@
       "expectRed": "...and a mis-spelled TOP-LEVEL key is refused, at the level the silent ignore actually lived at",
       "cell": "...and a mis-spelled TOP-LEVEL key is refused, at the level the silent ignore actually lived at"
     }
+  ],
+  "suite": [
+    "scripts/mutation-proof.selftest.mjs"
   ]
 }

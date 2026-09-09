@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/agents-provenance.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/agents-provenance.smoke.ts"
+  ],
   "guard": "default cotal ps treats the model and requested variant as seat identity while keeping an omitted request absent",
   "command": "pnpm smoke:ps-provenance",
   "completionMarker": "PS PROVENANCE SMOKE PASSED",

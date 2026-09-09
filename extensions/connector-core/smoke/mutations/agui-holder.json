@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/agui-holder.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/agui-holder.smoke.ts"
+  ],
   "guard": "the holder starts at most one emitter for the path it binds, and later callers get the one that already exists rather than a second start, and the first adopt carries its opaque start context to that one factory call",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",

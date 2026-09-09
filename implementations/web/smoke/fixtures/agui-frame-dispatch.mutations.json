@@ -29,5 +29,8 @@
       "replace": "  const KIND = \"agui.frame\";",
       "expectRed": "agui-frame.js registers a function under EXACTLY the frame kind"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/agui-frame-dispatch.smoke.ts"
   ]
 }

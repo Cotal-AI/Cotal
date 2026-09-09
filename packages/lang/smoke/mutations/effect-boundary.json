@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "Every argument of an effect primitive is checked for a canonical form before any journal entry is written: `undefined` and a non-finite number are L3041, a function is L3042. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/effect-boundary.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/agui-source.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/agui-source.smoke.ts"
+  ],
   "guard": "the source orders a session by the id PAIR, stops at the first part that is not settled, settles a part its turn has ended, never lets a user part gate the stream, and reports a vanished cursor once",
   "command": "pnpm smoke:agui-opencode-source",
   "completionMarker": "agui-opencode-source smoke:",

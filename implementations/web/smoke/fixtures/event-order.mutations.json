@@ -141,5 +141,8 @@
       "replace": "",
       "expectRed": "15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/event-order.smoke.ts"
   ]
 }

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/broker-teardown.smoke.ts",
+  "suite": [
+    "packages/core/smoke/broker-teardown.smoke.ts"
+  ],
   "guard": "a smoke broker owned through the helper dies when its suite is SIGNALLED, not only when the suite returns",
   "command": "pnpm smoke:broker-teardown",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/fixtures/broker-teardown.mutations.json",

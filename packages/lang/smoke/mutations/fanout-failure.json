@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/scopes.smoke.ts"
+  ],
   "guard": "A fanOut branch that rejects fails the scope with its own value, cancels its siblings, and the losers travel with the failure, exactly as a failed parallel. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-scopes",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/fanout-failure.json",

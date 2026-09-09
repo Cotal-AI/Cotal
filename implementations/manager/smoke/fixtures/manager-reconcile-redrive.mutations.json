@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/manager-reconcile-redrive.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/manager-reconcile-redrive.smoke.ts"
+  ],
   "guard": "startup static reconciliation reports a failed sweep and re-drives the same durable exact terminal in process",
   "command": "pnpm smoke:manager-reconcile-redrive",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/manager-reconcile-redrive.mutations.json",

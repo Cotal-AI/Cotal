@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/migrate.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/migrate.smoke.ts"
+  ],
   "guard": "a scope that settled FAILED still records its arm names, so a migration can walk it instead of hanging on it",
   "command": "pnpm smoke:lang-migrate",
   "completionMarker": "migrate.smoke:",

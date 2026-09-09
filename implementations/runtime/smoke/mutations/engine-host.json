@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/run-driver.smoke.ts"
+  ],
   "guard": "The version-2 entry's host seam: a failure that crosses the thread boundary is rehydrated into the class drive() grades (L5010 as JournalAppendRejected, L5012 as RunReleased), and the host's stop conditions reach the run at the walker's own granularity - before the first effect when the horizon predates the run, and at every effect boundary after, riding the append rather than a timer.",
   "command": "pnpm smoke:runtime-run-driver",
   "completionMarker": "run-driver.smoke:",
@@ -32,7 +34,6 @@
       "cell": "it stopped BETWEEN effects, not before the run and not after it: exactly one effects",
       "note": "Every effect is bracketed by durable appends, so the check riding the append is what gives the engine the walker's own between-effects granularity. Mutated, only the 100ms timer is left, a millisecond-scale run finishes before its first tick, and a driver past its horizon performs the second effect the walker would have refused."
     },
-
     {
       "name": "a throwing stop check crashes the host from the poll's timer stack",
       "file": "implementations/runtime/src/engine-host.ts",
@@ -52,7 +53,6 @@
       "note": "The timer's one load-bearing window, measured: a stop true only while an effect is parked in the host reaches the run through no other path, because the append boundaries on either side of the park see the flag lowered. Neutered, the run completes and performs the second effect the stop should have prevented. Every other suite stayed green under this mutant before the cell existed."
     }
   ],
-
   "unkillable": [
     {
       "name": "the worker entry's existence check reaches for a fallback path",

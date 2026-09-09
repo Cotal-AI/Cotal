@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/harness-boot.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/harness-boot.smoke.ts"
+  ],
   "guard": "the manager resolves connector harness binaries during boot, names unavailable connectors before any spawn, keeps unrelated connectors available, and records absolute resolved paths in status",
   "command": "pnpm smoke:manager-harness-boot",
   "progressPattern": "✓",

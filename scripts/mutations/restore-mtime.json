@@ -1,5 +1,7 @@
 {
-  "suite": "scripts/mutation-proof.selftest.mjs",
+  "suite": [
+    "scripts/mutation-proof.selftest.mjs"
+  ],
   "guard": "restore() puts the original mtime back, not the time of the restore",
   "command": "node scripts/mutation-proof.selftest.mjs",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/restore-mtime.json",

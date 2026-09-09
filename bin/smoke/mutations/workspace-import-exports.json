@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/workspace-import-exports.smoke.ts",
+  "suite": [
+    "bin/smoke/workspace-import-exports.smoke.ts"
+  ],
   "guard": "every named import from a workspace package resolves to a public export, including type-only imports in smoke trees outside package TypeScript projects",
   "command": "pnpm smoke:workspace-import-exports",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/workspace-import-exports.json",

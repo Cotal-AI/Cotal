@@ -1,5 +1,8 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts"
+  ],
   "guard": "a provider-induced Harness API close during a delivered mesh turn leaves the seat alive after a transient replacement failure only when that failed tree is proven stopped; unproven teardown is terminal before another launch, and a second disconnect remains terminal",
   "command": "pnpm smoke:jcode-provider-disconnect",
   "progressPattern": "✓",

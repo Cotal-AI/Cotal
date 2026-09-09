@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/attenuation.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/attenuation.smoke.ts"
+  ],
   "guard": "a delegation refusal with no row to copy from names the flags and their wide default in prose, and prints no pasteable grant line at all",
   "command": "pnpm smoke:auth-attenuation",
   "completionMarker": "ATTENUATION SMOKE",

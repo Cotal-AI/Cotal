@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-checkpoint.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-checkpoint.smoke.ts"
+  ],
   "guard": "An effect failure that crosses the version-2 entry's thread boundary keeps its whole domain: the driver rehydrates code+kind back into the EffectError the walker would have raised in-process, so failure handling downstream branches on the same fields either way.",
   "command": "pnpm smoke:runtime-mesh-checkpoint",
   "completionMarker": "mesh-checkpoint.smoke:",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/backup-kv-consumer.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/backup-kv-consumer.smoke.ts"
+  ],
   "guard": "backup accepts the exact stopped whole-KV scanner shape without accepting arbitrary ordered consumers",
   "command": "pnpm --filter @cotal-ai/cli... build && pnpm smoke:backup-kv-consumer",
   "completionMarker": "BACKUP KV CONSUMER SMOKE",

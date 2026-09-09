@@ -30,5 +30,8 @@
       "replace": "    throw new BadRequest(\n      `channel name ${JSON.stringify(name)} is not a channel: dotted segments of [A-Za-z0-9_-], ` +\n        `and a name the wire would rewrite would address a different channel than it names`,\n    );",
       "expectRed": "2.2 ...and that refusal carries no RAW class member, so an operator reading it sees which codepoint was in the name"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/channel-alias.smoke.ts"
   ]
 }

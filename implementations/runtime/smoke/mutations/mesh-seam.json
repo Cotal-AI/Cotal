@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-seam.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-seam.smoke.ts"
+  ],
   "guard": "The not-yet-durable seam stays gone: every effect the language defines has a performing method on the mesh handler, no runtime source raises L5016 or names NotYetDurable, the lang catalog keeps the L5016 row for hosts that still refuse, and the docs promise exactly that",
   "command": "pnpm smoke:runtime-mesh-seam",
   "completionMarker": "mesh-seam.smoke:",

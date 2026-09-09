@@ -1,6 +1,8 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-ask.smoke.ts",
-  "guard": "the mesh handler's durable ask enforces the \u00a76.5 contract and recovers by derivation: the shorthand is enforced (L4022), a non-conforming answer costs one attempt with its refusal bound for the answerer, attempts default to ONE and exhaust as the catchable L4006, the run driver's answer door reaches the CURRENT attempt's pause, and the discharge and adoption re-arm address the attempt actually armed, and the agent is told: each attempt is relayed to the seat as a turn under its own token (idempotent by goal id, carrying the schema and the previous refusal), an ask outside the roster refuses before an attempt opens, and a seat gone at the relay is L4002",
+  "suite": [
+    "implementations/runtime/smoke/mesh-ask.smoke.ts"
+  ],
+  "guard": "the mesh handler's durable ask enforces the §6.5 contract and recovers by derivation: the shorthand is enforced (L4022), a non-conforming answer costs one attempt with its refusal bound for the answerer, attempts default to ONE and exhaust as the catchable L4006, the run driver's answer door reaches the CURRENT attempt's pause, and the discharge and adoption re-arm address the attempt actually armed, and the agent is told: each attempt is relayed to the seat as a turn under its own token (idempotent by goal id, carrying the schema and the previous refusal), an ask outside the roster refuses before an attempt opens, and a seat gone at the relay is L4002",
   "command": "pnpm smoke:runtime-mesh-ask",
   "completionMarker": "mesh-ask.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-ask.json",
@@ -14,7 +16,7 @@
     "armed (MA8), and the adoption re-arm inventory reading it the same way (MA9).",
     "",
     "MA6 and MA7 mutate resolve-checkpoint.ts; the rest mutate mesh-handler.ts. Both are imported",
-    "by the suite through relative source paths \u2014 no build sits between the mutation and the run.",
+    "by the suite through relative source paths — no build sits between the mutation and the run.",
     "Batch B1 (2026-09-03) adds the relay: the seat is told over the same turn relay `turn` uses.",
     "Each obligation has a mutant: the relay itself, its idempotency on re-entry, the roster gate,",
     "the refusal carried on a re-ask, and the gone-seat classing.",
@@ -29,7 +31,7 @@
       "replace": "    const attempts = req.attempts ?? 3;",
       "expectRed": "the default is one attempt: no second pause was opened",
       "cell": "the default is one attempt: no second pause was opened",
-      "note": "Spec \u00a76.5 pins the default at one. Measured 2026-09-02: four reds \u2014 the exhaustion block's run parks on an attempt 2 nobody asked for, its journal shows attempt 2 opened, and the L4006 cells red with it (the suite drains the parked run so nothing floats); 21 passed, 4 failed."
+      "note": "Spec §6.5 pins the default at one. Measured 2026-09-02: four reds — the exhaustion block's run parks on an attempt 2 nobody asked for, its journal shows attempt 2 opened, and the L4006 cells red with it (the suite drains the parked run so nothing floats); 21 passed, 4 failed."
     },
     {
       "name": "an unreadable schema is silently accepted instead of refused",
@@ -38,7 +40,7 @@
       "replace": "    const shape = askSchemaShape(req.schema);\n    if (false) {",
       "expectRed": "the entry settles as L4022 before anything was bound or armed",
       "cell": "the entry settles as L4022 before anything was bound or armed",
-      "note": "The MUST of \u00a76.5: a handler enforcing the shorthand refuses a schema it cannot read rather than skip the check. Measured 2026-09-02: three reds \u2014 the unreadable-schema ask parks as an ordinary pause instead of refusing, so the run never completes and the L4022 cell reads an empty error; 22 passed, 3 failed."
+      "note": "The MUST of §6.5: a handler enforcing the shorthand refuses a schema it cannot read rather than skip the check. Measured 2026-09-02: three reds — the unreadable-schema ask parks as an ordinary pause instead of refusing, so the run never completes and the L4022 cell reads an empty error; 22 passed, 3 failed."
     },
     {
       "name": "every answer conforms",
@@ -65,7 +67,7 @@
       "replace": "          ...({}),",
       "expectRed": "the refusal names the field and the kind it wants, judged by the same check that refused it",
       "cell": "the refusal names the field and the kind it wants, judged by the same check that refused it",
-      "note": "Design \u00a75.4's 'refused with the validation error returned to the agent' dropped: the re-ask opens with nothing saying why the last answer was refused. Measured 2026-09-02: two reds \u2014 the driven re-ask's refusal cell and the resume re-judgment's; 22 passed."
+      "note": "Design §5.4's 'refused with the validation error returned to the agent' dropped: the re-ask opens with nothing saying why the last answer was refused. Measured 2026-09-02: two reds — the driven re-ask's refusal cell and the resume re-judgment's; 22 passed."
     },
     {
       "name": "the run driver's answer door refuses ask entries",
@@ -74,7 +76,7 @@
       "replace": "  if (entry.kind !== \"checkpoint\") throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
       "expectRed": "the run completes",
       "cell": "the run completes",
-      "note": "The one door an answer has, closed to ask: nothing on the mesh can ever answer one. Measured 2026-09-02: thirteen reds \u2014 every driven block's answer is refused and its run parks to the block deadline; 15 passed, 13 failed, the suite reaching its own exit."
+      "note": "The one door an answer has, closed to ask: nothing on the mesh can ever answer one. Measured 2026-09-02: thirteen reds — every driven block's answer is refused and its run parks to the block deadline; 15 passed, 13 failed, the suite reaching its own exit."
     },
     {
       "name": "the answer lands on attempt 1's token whatever attempt is open",
@@ -110,7 +112,7 @@
       "replace": "",
       "expectRed": "the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnation",
       "cell": "the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnation",
-      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE \u2014 ran 36 of 35 cells; a partial run is not a pass Named cell red: the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnat"
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 36 of 35 cells; a partial run is not a pass Named cell red: the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnat"
     },
     {
       "name": "a re-entered attempt relays again instead of finding its goal",
@@ -119,7 +121,7 @@
       "replace": "    const actx = await this.actionCtx();\n    let reply: EpAttributedReply;",
       "expectRed": "the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id",
       "cell": "the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id",
-      "note": "Measured 2026-09-03: KILLED, 35/39, five reds with the named cell among them and the suite completing to its summary line. The earlier note recorded a kill followed by a HANG: the named cell went red and the run then never finished. That hang was the suite's, not the mutant's \u2014 block 6 ended on a bare `await parked` whose pause only the re-judge's answer settles, so a broken re-judge left it waiting on a mediated hour nobody pumps. It is bounded now, and the proof grades this as a finished red rather than an unknown."
+      "note": "Measured 2026-09-03: KILLED, 35/39, five reds with the named cell among them and the suite completing to its summary line. The earlier note recorded a kill followed by a HANG: the named cell went red and the run then never finished. That hang was the suite's, not the mutant's — block 6 ended on a bare `await parked` whose pause only the re-judge's answer settles, so a broken re-judge left it waiting on a mediated hour nobody pumps. It is bounded now, and the proof grades this as a finished red rather than an unknown."
     },
     {
       "name": "an ask outside the roster is not refused up front",
@@ -191,7 +193,7 @@
       "replace": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) { /* relay anyway */ }",
       "expectRed": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
       "cell": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
-      "note": "`to` is a NAME, not a handle: the reference lets a program escalate to a person. With the guard gone the relay path reads coordinates off a roster entry that does not exist and THROWS, which also submits nothing \u2014 so the cell reads the pause's state at the one-second mark as well: the first spelling checked only the relay count and this mutant survived it, because a crash and a clean no-relay leave the same count."
+      "note": "`to` is a NAME, not a handle: the reference lets a program escalate to a person. With the guard gone the relay path reads coordinates off a roster entry that does not exist and THROWS, which also submits nothing — so the cell reads the pause's state at the one-second mark as well: the first spelling checked only the relay count and this mutant survived it, because a crash and a clean no-relay leave the same count."
     },
     {
       "name": "an escalation whose seat is gone fails the checkpoint L4002 again",

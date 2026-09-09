@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/standing-renewal-auth.smoke.ts",
+  "suite": [
+    "packages/core/smoke/standing-renewal-auth.smoke.ts"
+  ],
   "guard": "a creds-source endpoint never presents its cached credential after that credential has expired",
   "command": "pnpm smoke:standing-renewal",
   "completionMarker": "STANDING RENEWAL SMOKE",

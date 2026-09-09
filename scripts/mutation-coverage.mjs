@@ -19,6 +19,7 @@
  */
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 /**
  * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
@@ -30,7 +31,7 @@ import { execSync } from "node:child_process";
 const args = process.argv.slice(2);
 const configs = args.length
   ? args
-  : execSync("git ls-files '*mutations/*.json'", { encoding: "utf8" }).split("\n").filter(Boolean);
+  : execSync("git ls-files '*/mutations/*.json' '*.mutations.json'", { encoding: "utf8" }).split("\n").filter(Boolean);
 
 if (configs.length === 0) {
   console.error("no mutation configs found under any mutations/ directory");
@@ -55,9 +56,8 @@ const probes = [];
  * above: a self-test's cells and a smoke suite's cells are not the same unit, and averaging them
  * would move a coverage figure about shipped behaviour by changing a tool's test count.
  *
- * Such a config carries no `suite`, so it is exempt from the source-path check below for a reason
- * rather than by omission: its command runs the mutated file directly with node, and there is no
- * package name for a resolver to answer with `dist`.
+ * Tool configs remain separate from package coverage, but carry the same source metadata as every
+ * other repository fixture so corpus validation does not have a blind spot.
  */
 const tools = [];
 
@@ -82,10 +82,12 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
  * `../src`. It is here rather than in a note because a rule that depends on the next author
  * remembering it is the rule that just failed.
  */
-const assertGradable = (configPath, suite, m) => {
-  if (packageRoot(m.file) === packageRoot(suite) && readFileSync(suite, "utf8").includes("../src/")) return;
+const assertGradable = (configPath, suites, m) => {
+  const suite = suites.find((source) =>
+    packageRoot(m.file) === packageRoot(source) && readFileSync(source, "utf8").includes("../src/"));
+  if (suite) return;
   throw new Error(
-    `${configPath}: mutation "${m.name}" targets ${m.file}, which ${suite} does not import by source path — ` +
+    `${configPath}: mutation "${m.name}" targets ${m.file}, which none of [${suites.join(", ")}] imports by source path — ` +
     `it would resolve that package to dist and the mutation could not reach the running code. ` +
     `Grade it from a suite in ${packageRoot(m.file)}, or record it in this config's "unkillable" array with the reason.`,
   );
@@ -94,13 +96,7 @@ const assertGradable = (configPath, suite, m) => {
 for (const path of configs) {
   const cfg = JSON.parse(readFileSync(path, "utf8"));
   const gradesTool = cfg.grades === "tool";
-  if (!gradesTool && typeof cfg.suite !== "string") {
-    throw new Error(
-      `${path}: has no "suite", so this script cannot say which suite its cells belong to. `
-      + `Name the suite, or mark the config \`"grades": "tool"\` if it measures an instrument through `
-      + `its own self-test rather than a package's smoke suite.`,
-    );
-  }
+  const suites = parseSuiteSources(process.cwd(), path, cfg.suite);
   // A tool config predicts a named red and has no cell to attribute it to, because there is no
   // suite whose coverage it could be part of.
   const required = gradesTool ? REQUIRED.filter((k) => k !== "cell") : REQUIRED;
@@ -111,7 +107,7 @@ for (const path of configs) {
     for (const k of REQUIRED_MAY_BE_EMPTY) {
       if (typeof m[k] !== "string") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
     }
-    if (!gradesTool) assertGradable(path, cfg.suite, m);
+    if (!gradesTool) assertGradable(path, suites, m);
   }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
@@ -129,7 +125,7 @@ for (const path of configs) {
     continue;
   }
   if (cfg.kind === "unasserted-probe") {
-    probes.push([cfg.suite, cfg.mutations.length, executed]);
+    probes.push([suites.join(", "), cfg.mutations.length, executed]);
     continue;
   }
   const distinct = new Set(cfg.mutations.map((x) => x.cell));
@@ -142,7 +138,7 @@ for (const path of configs) {
   named += distinct.size;
   mutations += cfg.mutations.length;
   unkillable += (cfg.unkillable ?? []).length;
-  rows.push([cfg.suite, executed, distinct.size]);
+  rows.push([suites.join(", "), executed, distinct.size]);
 }
 
 const w = Math.max(...rows.map((r) => r[0].length));

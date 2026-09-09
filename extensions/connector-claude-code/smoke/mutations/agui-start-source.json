@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/agui-start-source.smoke.ts plus the real-broker hook/emitter arm in agui-run-error.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/agui-start-source.smoke.ts"
+  ],
   "guard": "only a genuinely new Claude startup reads from byte zero, waits boundedly for a transcript path that SessionStart can precede, never replays retained history, and honors a recovered cursor",
   "command": "pnpm smoke:claude-start-source",
   "completionMarker": "claude-start-source smoke:",

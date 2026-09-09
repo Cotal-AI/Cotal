@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/launch-env.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/launch-env.smoke.ts"
+  ],
   "guard": "a Claude seat must receive CLAUDE_CODE_OAUTH_TOKEN (the deploy-doc credential) and must not receive CLAUDE_CODE_CHILD_SESSION",
   "command": "pnpm smoke:claude-launch-env",
   "completionMarker": "SUITE COMPLETE:",

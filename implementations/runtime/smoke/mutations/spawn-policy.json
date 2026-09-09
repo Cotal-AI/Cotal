@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/spawn-policy.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/spawn-policy.smoke.ts"
+  ],
   "guard": "spawn's supervise policy is parsed as { restarts, window? }, defaults the window to 10m, refuses an unknown key or a malformed value, and travels on the manager spawn args as restarts plus windowMs",
   "command": "pnpm smoke:runtime-spawn-policy",
   "completionMarker": "spawn-policy.smoke:",

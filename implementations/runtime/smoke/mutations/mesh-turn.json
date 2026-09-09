@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-turn.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-turn.smoke.ts"
+  ],
   "guard": "The mesh handler's turn client is real: the submission rides the run roster and carries the rendered context, the bound external is what a resume re-enters, the client's own pause is the L4003 authority and its presence watch the L4002 authority, a deny's turn-deadline reason maps to L4003, notices are consumed by the carrying goal, and handoff honoring (memo spend, L4005/L4004 validation, the handoffFrom link, adoption seeding) actually happens, and the agent's permits are metered at the turn (turns spent per dispatch and read back from the journal at adoption, wall clock against the turn's deadline, unmeterable budgets refused at spawn)",
   "command": "pnpm smoke:runtime-mesh-turn",
   "completionMarker": "mesh-turn.smoke:",

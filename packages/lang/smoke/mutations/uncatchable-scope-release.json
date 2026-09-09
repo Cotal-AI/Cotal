@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/interpret.smoke.ts"
+  ],
   "guard": "A host stop is never recorded as a concurrency scope's outcome: the scope settles nothing, stays pending, and a healthy driver resumes past it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/uncatchable-scope-release.json",

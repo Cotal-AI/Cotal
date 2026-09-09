@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/persona-catalog-read.smoke.ts",
+  "suite": [
+    "packages/core/smoke/persona-catalog-read.smoke.ts"
+  ],
   "guard": "mesh-side persona catalog details ride owner-or-admin; a foreign card is name-only",
   "command": "./node_modules/.bin/tsx packages/core/smoke/persona-catalog-read.smoke.ts",
   "completionMarker": "ok    alice sees",

@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/agui-map.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/agui-map.smoke.ts"
+  ],
   "guard": "the committed session fixture carries no key outside the redactor's whitelist and no filesystem-path or project-name string, and the cells that say so would notice if it did",
   "command": "pnpm smoke:agui-map",
   "completionMarker": "agui-map smoke:",

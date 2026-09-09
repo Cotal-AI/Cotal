@@ -1,5 +1,10 @@
 {
-  "suite": "packages/workspace/smoke/segmented-runtime-namespace.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/segmented-runtime-namespace.smoke.ts",
+    "implementations/cli/smoke/segmented-runtime-records.smoke.ts",
+    "implementations/manager/smoke/record-manager-pid-per-space.smoke.ts",
+    "implementations/cli/smoke/up-manifest-live.smoke.ts"
+  ],
   "guard": "the runtime pid/log records are per-space, a pre-segmentation root-scoped record is still found and stopped across the upgrade, both spellings present fails loud, one space's stop leaves the other space's daemon running, and a folder whose space no account record names still finds and stops its own daemon",
   "command": "pnpm smoke:segmented-runtime-namespace",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/segmented-runtime-namespace.json",

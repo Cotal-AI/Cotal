@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/persona-root.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/persona-root.smoke.ts"
+  ],
   "guard": "persona catalog readers answer for the resolved mesh root rather than the cwd",
   "command": "pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:persona-root",
   "progressPattern": "✓",

@@ -22,5 +22,8 @@
       "replace": "          this.emit(\"split-recovered-MUTANT-NOT-ANNOUNCED\", {\n",
       "expectRed": "it was announced to anyone listening"
     }
+  ],
+  "suite": [
+    "implementations/manager/smoke/manager-restart-fence.smoke.ts"
   ]
 }

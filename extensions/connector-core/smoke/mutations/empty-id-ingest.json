@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/empty-id-ingest.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/empty-id-ingest.smoke.ts"
+  ],
   "guard": "an empty message id is never a dedup key and never a delivery address: two distinct id-less messages are both delivered, the framed race (later arrival after the snapshot, before the verdict) is neither drained nor acked, an id-less delivery commits by its receive key at the seam, eviction classification and in-flight holds do not bleed across id-less deliveries, and real-id coalescing is unchanged",
   "command": "pnpm smoke:empty-id-ingest",
   "completionMarker": "EMPTY-ID INGEST SMOKE",

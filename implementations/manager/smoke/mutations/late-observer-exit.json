@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/preserve-state.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/preserve-state.smoke.ts"
+  ],
   "guard": "Manager.awaitHandleExit still invokes AgentHandle.waitForExit when status is already exited, so runtime cleanup runs for a late observer on any runtime kind",
   "command": "pnpm smoke:preserve-state",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/late-observer-exit.json",

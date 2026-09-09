@@ -86,5 +86,8 @@
       "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\p{M}\\u007f-\\u009f\\u2028\\u2029]/gu;",
       "expectRed": "0.13 CONTROL: a COMBINING MARK is left RAW, so a refusal about a name written in NFD or in a script that writes with marks stays readable"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/echo-escaping.smoke.ts"
   ]
 }

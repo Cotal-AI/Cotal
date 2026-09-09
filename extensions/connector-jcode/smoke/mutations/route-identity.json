@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/route-identity.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/route-identity.smoke.ts"
+  ],
   "guard": "a seat names the provider actually serving its model, preferring the matching route over the session default, reports an unknown route rather than guessing or going quiet, and refuses a provider-prefixed model id at the boundary while naming the accepted bare form",
   "command": "pnpm smoke:jcode-route-identity",
   "completionMarker": "route identity:",

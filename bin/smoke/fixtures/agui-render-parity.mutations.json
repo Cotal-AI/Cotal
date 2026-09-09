@@ -22,5 +22,8 @@
       "replace": "const CONT = \"  > \";",
       "expectRed": "parity: reasoning, which uses a different continuation prefix from text"
     }
+  ],
+  "suite": [
+    "bin/smoke/agui-render-parity.smoke.ts"
   ]
 }

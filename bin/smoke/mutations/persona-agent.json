@@ -1,5 +1,9 @@
 {
-  "suite": "bin/smoke/persona-agent.smoke.ts",
+  "suite": [
+    "bin/smoke/persona-agent.smoke.ts",
+    "packages/core/smoke/agent-file.smoke.ts",
+    "implementations/manager/smoke/start-overrides.smoke.ts"
+  ],
   "guard": "a persona file's agent: pin picks the spawn harness on every launch path: flag > file > COTAL_DEFAULT_AGENT > default, and a pin naming an unregistered connector fails loud",
   "command": "pnpm build && pnpm smoke:persona-agent",
   "completionMarker": "persona-agent 869 reachability smoke:",

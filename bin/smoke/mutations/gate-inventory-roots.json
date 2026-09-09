@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/gate-inventory.smoke.ts",
+  "suite": [
+    "bin/smoke/gate-inventory.smoke.ts"
+  ],
   "guard": "gate-inventory roots are what CI actually runs, and a live suite dropped from that chain is named as ungated",
   "command": "pnpm smoke:gate-inventory",
   "completionMarker": "GATE INVENTORY",

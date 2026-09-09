@@ -36,5 +36,8 @@
       "replace": "export function eventChannel(principal: { owner: string; actor: string }): string {\n  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key.split(\".\").slice(1).join(\".\")}`;",
       "expectRed": "every constructed channel derives back to the principal that built it"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/event-channel-classify.smoke.ts"
   ]
 }

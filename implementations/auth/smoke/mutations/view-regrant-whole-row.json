@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "the re-grant an elevated-view refusal prints carries the row's REAL current values, so running it adds a scope and changes nothing else, rather than resetting the row to the wide default",
   "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
   "completionMarker": "USER-SPAWN",

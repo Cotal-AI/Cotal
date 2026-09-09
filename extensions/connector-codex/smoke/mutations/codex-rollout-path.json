@@ -57,5 +57,8 @@
       "replace": "    if (false) return undefined;",
       "expectRed": "a symlinked CODEX_HOME is refused outright"
     }
+  ],
+  "suite": [
+    "extensions/connector-codex/smoke/rollout-path.smoke.ts"
   ]
 }

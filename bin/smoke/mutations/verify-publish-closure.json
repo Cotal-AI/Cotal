@@ -1,5 +1,7 @@
 {
-  "suite": "smoke:verify-publish-closure",
+  "suite": [
+    "bin/smoke/verify-publish-closure.smoke.ts"
+  ],
   "guard": "pnpm smoke:verify-publish-closure",
   "command": "pnpm smoke:verify-publish-closure",
   "completionMarker": "SUITE COMPLETE",

@@ -36,5 +36,8 @@
       "replace": "    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error) && attributed.reply.error?.outcome === \"not-executed\") {",
       "expectRed": "a bind refusal that OMITS the outcome is still checked against its attribution"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/bind-fence.smoke.ts"
   ]
 }

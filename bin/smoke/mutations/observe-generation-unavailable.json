@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/endpoint-traits.smoke.ts",
+  "suite": [
+    "packages/core/smoke/endpoint-traits.smoke.ts"
+  ],
   "guard": "deregisterServiceInstance must translate a thrown observeGeneration into an unavailable envelope while the governance slot is held, and must not delete the spec",
   "command": "pnpm smoke:ep-traits",
   "completionMarker": "ENDPOINT TRAITS SMOKE",

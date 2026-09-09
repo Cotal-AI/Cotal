@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/turn-relay-auth.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/turn-relay-auth.smoke.ts"
+  ],
   "guard": "On an auth mesh the manager arms a turn's deadline hold over its serve connection (the timer row is the serving instance's), a spawned seat pulls and yields its turns under the baseline credential the manager minted for it, and an unyielded turn is denied at its deadline by the manager expiring the hold it owns.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:turn-relay-auth",
   "completionMarker": "TURN RELAY AUTH SMOKE",

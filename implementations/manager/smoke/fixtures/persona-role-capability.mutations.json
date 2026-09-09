@@ -34,5 +34,8 @@
       "expectRed": "the refusal tells a peer author to ask an operator (it cannot self-serve the grant)",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
+  ],
+  "suite": [
+    "implementations/manager/smoke/persona-role-capability.smoke.ts"
   ]
 }
