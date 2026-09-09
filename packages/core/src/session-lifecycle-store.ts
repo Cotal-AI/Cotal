@@ -225,7 +225,7 @@ function nativeLifetimePreserved(result: unknown): boolean {
  *  terminal-success release. Native-effect proof is sufficient. Cooperative-retirement is
  *  sufficient only when resourceKey, bindingId and operationId all match the binding and the
  *  result independently records preserved native lifetime. A proves value alone never clears. */
-function releasedBindingStillLive(binding: Binding, release: QueryOperationResult): boolean {
+export function releasedBindingStillLive(binding: Binding, release: QueryOperationResult): boolean {
   if (release.state === "absent") return true;
   if (release.state !== "terminal-success" || release.record.action !== "release") return true;
   if (release.record.bindingId !== binding.bindingId) return true;
@@ -235,6 +235,32 @@ function releasedBindingStillLive(binding: Binding, release: QueryOperationResul
   if (release.proofOrigin?.proves !== "cooperative-retirement") return true;
   if (!nativeLifetimePreserved(release.result)) return true;
   return false;
+}
+
+/**
+ * Filter a manager-scoped binding scan through the shared release-proof predicate.
+ * The scan layer enumerates `sessionbinding.*`; this layer point-reads `sessionop`
+ * receipts. An unreadable or malformed receipt fails closed as `unknown`.
+ */
+export async function applyReleaseReceiptsToNativeLookup(
+  scanned: NativeLifecycleBindingLookup,
+  query: (resourceKey: ResourceKey, operationId: string) => Promise<QueryOperationResult>,
+): Promise<NativeLifecycleBindingLookup> {
+  if (scanned.status === "unknown") return scanned;
+  try {
+    const bindings: Binding[] = [];
+    for (const binding of scanned.bindings) {
+      if (binding.state !== "released") {
+        bindings.push(binding);
+        continue;
+      }
+      const release = await query(binding.resourceKey, binding.operationId);
+      if (releasedBindingStillLive(binding, release)) bindings.push(binding);
+    }
+    return { status: "known", bindings: Object.freeze(bindings) };
+  } catch (e) {
+    return { status: "unknown", bindings: [], reason: (e as Error).message };
+  }
 }
 
 /**
@@ -257,18 +283,14 @@ export async function lookupNativeLifecycleBindingsForManager(
         throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${entry.key} carries a ${entry.operation} marker`);
       const binding = parseBinding(entry.value, entry.key);
       if (binding.managerPrincipal !== managerPrincipal) continue;
-      if (binding.state !== "released") {
-        bindings.push(binding);
-        continue;
-      }
-      // A `released` label alone is not sufficient for the destructive-shutdown decision.
-      // Native-effect proof remains sufficient. Cooperative-retirement is not: it must
-      // match this binding's resourceKey, bindingId and operationId, and independently
-      // record preserved native lifetime. A proves value alone never clears the guard.
-      const release = await queryOperation(kv, binding.resourceKey, binding.operationId);
-      if (releasedBindingStillLive(binding, release)) bindings.push(binding);
+      bindings.push(binding);
     }
-    return { status: "known", bindings: Object.freeze(bindings) };
+    // A `released` label alone is not sufficient for the destructive-shutdown decision.
+    // Receipt authority is a point-read of sessionop rows, not the sessionbinding scan.
+    return await applyReleaseReceiptsToNativeLookup(
+      { status: "known", bindings: Object.freeze(bindings) },
+      (resourceKey, operationId) => queryOperation(kv, resourceKey, operationId),
+    );
   } catch (e) {
     return { status: "unknown", bindings: [], reason: (e as Error).message };
   }
