@@ -15,16 +15,16 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "  let pendingKickoff = bootPrompt;",
       "replace": "  let pendingKickoff: string | undefined;",
-      "expectRed": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
-      "cell": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once"
+      "expectRed": "idle completion delivers the startup kickoff without any inbox wake",
+      "cell": "idle completion delivers the startup kickoff without any inbox wake"
     },
     {
       "name": "the first pre-send guard consumes the kickoff before returning",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;",
       "replace": "    if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) { pendingKickoff = undefined; return; }",
-      "expectRed": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
-      "cell": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once"
+      "expectRed": "idle completion delivers the startup kickoff without any inbox wake",
+      "cell": "idle completion delivers the startup kickoff without any inbox wake"
     },
     {
       "name": "the second pre-send guard consumes the kickoff after steering settles",
@@ -40,8 +40,8 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    if (!sessionBusy() && !reconnecting && hasDriveWork()) void drive();",
       "replace": "    if (!sessionBusy() && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();",
-      "expectRed": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once",
-      "cell": "the spawn kickoff prompt survives a refused post-join notice while the model is visibly busy exactly once"
+      "expectRed": "idle completion delivers the startup kickoff without any inbox wake",
+      "cell": "idle completion delivers the startup kickoff without any inbox wake"
     },
     {
       "name": "bridge recovery ignores the owned startup kickoff when no inbox wake exists",

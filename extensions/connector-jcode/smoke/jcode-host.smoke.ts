@@ -484,6 +484,44 @@ try {
   // and the server refuses the post-join notice's context_message while it is. That refusal used to
   // reach the startup catch and kill an already-joined seat, taking its accumulated session with
   // it. The notice is cosmetic; the seat is not.
+  const idleLog = join(root, "kickoff-without-inbox.jsonl");
+  const idleRelease = join(root, "release-kickoff-without-inbox");
+  const idleOnly = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: idleLog,
+      FAKE_JCODE_BUSY_MODEL: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
+      FAKE_JCODE_BUSY_RELEASE_FILE: idleRelease,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "idleonlypeer",
+      COTAL_ID: "idleonlypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_JCODE_PROMPT: "KICKOFF-WITHOUT-ANY-INBOX-WAKE",
+      COTAL_CONTROL_SOCKET: controlSock("idle-only-control.sock"),
+      COTAL_CONTROL_TOKEN: "idle-only-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  const idleEntries = () => readJsonLines<{ ev: string; status?: string; content?: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(idleLog);
+  await waitFor("the no-inbox startup observes native busy", () =>
+    idleEntries().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "working"));
+  writeFileSync(idleRelease, "idle");
+  const idleKickoff = await waitFor("startup kickoff after idle without inbox work", () =>
+    idleEntries().find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" &&
+      !entry.frame.no_reply && String(entry.frame.content).includes("KICKOFF-WITHOUT-ANY-INBOX-WAKE"))).catch(() => undefined);
+  check("idle completion delivers the startup kickoff without any inbox wake", Boolean(idleKickoff), idleEntries());
+  await stopHostTree(idleOnly, "SIGTERM");
+
   const busyLog = join(root, "join-notice-busy.jsonl");
   const busyRelease = join(root, "release-startup-busy");
   const busy = spawnHost({

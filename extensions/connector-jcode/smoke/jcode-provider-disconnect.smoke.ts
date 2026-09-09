@@ -62,6 +62,7 @@ const guardSteerIdle = join(root, "guard-steer-idle");
 const ambiguousLog = join(root, "ambiguous-kickoff.jsonl");
 const ambiguousSessionState = join(root, "ambiguous-session.json");
 const ambiguousRequestClosed = join(root, "ambiguous-request-closed");
+const ambiguousCloseRelease = join(root, "ambiguous-close-release");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
 let safetyChild: ChildProcess | undefined;
@@ -252,6 +253,7 @@ try {
       FAKE_JCODE_LOG: ambiguousLog,
       FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ON_CONTENT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
       FAKE_JCODE_ERROR_BEFORE_CLOSE: "1",
+      FAKE_JCODE_ERROR_CLOSE_RELEASE_FILE: ambiguousCloseRelease,
       FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ONCE_FILE: ambiguousRequestClosed,
       FAKE_JCODE_SESSION_STATE: ambiguousSessionState,
       JCODE_HOME: inheritedJcodeHome,
@@ -272,7 +274,10 @@ try {
   });
   let ambiguousStderr = "";
   ambiguousChild.stderr?.on("data", (chunk: Buffer) => (ambiguousStderr += chunk.toString()));
-  await waitFor("ambiguous kickoff request close", () => existsSync(ambiguousRequestClosed) ? true : undefined);
+  await waitFor("ambiguous kickoff request recorded", () => existsSync(ambiguousRequestClosed) ? true : undefined);
+  await waitFor("the host observes the post-dispatch error before close", () =>
+    ambiguousStderr.includes("turn failed (1 in a row):") && ambiguousStderr.includes("synthetic error after request dispatch") ? true : undefined);
+  writeFileSync(ambiguousCloseRelease, "close");
   await waitFor("ambiguous kickoff recovery reattachment", () => {
     const attaches = entriesOf(ambiguousLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
     return attaches.length ? attaches : undefined;

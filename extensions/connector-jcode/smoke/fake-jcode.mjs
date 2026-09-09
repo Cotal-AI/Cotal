@@ -419,8 +419,22 @@ const server = createServer((socket) => {
             if (closeBeforeAcceptFile) writeFileSync(closeBeforeAcceptFile, "closed");
             const close = () => { socket.destroy(); server.close(); };
             if (process.env.FAKE_JCODE_ERROR_BEFORE_CLOSE === "1") {
-              socket.write(JSON.stringify({ v: 1, ev: "error", session_id: frame.session_id,
-                code: "internal", message: "synthetic error after request dispatch" }) + "\n", close);
+              // Let run() subscribe to its event stream after acceptance. The close is held
+              // until the test observes the host handling this error, so the two paths differ.
+              event({ ev: "message_accepted", session_id: frame.session_id });
+              const sendError = setInterval(() => {
+                event({ ev: "error", session_id: frame.session_id,
+                  code: "internal", message: "synthetic error after request dispatch" });
+              }, 20);
+              const releaseFile = process.env.FAKE_JCODE_ERROR_CLOSE_RELEASE_FILE;
+              const release = setInterval(() => {
+                if (!releaseFile || !existsSync(releaseFile)) return;
+                clearInterval(sendError);
+                clearInterval(release);
+                close();
+              }, 10);
+              sendError.unref();
+              release.unref();
             } else {
               close();
             }
