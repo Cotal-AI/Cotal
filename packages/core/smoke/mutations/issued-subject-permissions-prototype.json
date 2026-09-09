@@ -1,5 +1,8 @@
 {
-  "suite": "packages/core/smoke/issued-subject-permissions.smoke.ts",
+  "suite": [
+    "packages/core/smoke/issued-subject-permissions.smoke.ts",
+    "packages/core/smoke/prototypes/issued-subject-permissions.ts"
+  ],
   "guard": "The test-only permission prototype preserves explicit application deny-all, native deny precedence, separate publish/read scopes and immutable input snapshots. It is not issuer provenance.",
   "command": "pnpm exec tsx packages/core/smoke/issued-subject-permissions.smoke.ts",
   "grades": "tool",

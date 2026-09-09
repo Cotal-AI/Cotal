@@ -1,5 +1,10 @@
 {
-  "suite": "implementations/auth/smoke/issued-callout-binding.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/issued-callout-binding.smoke.ts",
+    "implementations/auth/smoke/prototypes/issued-callout-gate.ts",
+    "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+    "packages/core/smoke/prototypes/issued-generation-discovery.ts"
+  ],
   "guard": "The test-only callout transport awaits issued release before forwarding a prepared native success, forwards signed denial on issuer failure and rejects unsupported proposed connection metadata. It reuses the unchanged callout handler and does not use onMint as authority. Production discovery and transparent reconnect are outside this proof.",
   "command": "pnpm exec tsx implementations/auth/smoke/issued-callout-binding.smoke.ts",
   "grades": "tool",

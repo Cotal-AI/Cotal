@@ -1,5 +1,10 @@
 {
-  "suite": "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+    "implementations/auth/smoke/prototypes/credential-release-fence.ts",
+    "implementations/auth/src/connect-reader.ts",
+    "packages/core/smoke/prototypes/issued-authority-lifecycle.ts"
+  ],
   "guard": "The test-only issued lifecycle stages source indexes before the existing agent-mint fence, activates only at the original prepared revision and refuses resolution after revocation. This is a localhost gate-composition proof, without production issuer or barrier attachment. Root-source resolution also uses the real credential reader with signature-validated bearer provenance and refuses revoked, expired or head-mismatched credentials. The isolated credential-row fence covers both explicit revoke/release orders; production issuer and revoker attachment remain unproved.",
   "command": "pnpm exec tsx implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
   "grades": "tool",

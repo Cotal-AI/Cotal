@@ -1,5 +1,10 @@
 {
-  "suite": "implementations/auth/smoke/issued-static-binding.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/issued-static-binding.smoke.ts",
+    "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+    "packages/core/smoke/prototypes/issued-request-admission.ts",
+    "packages/core/smoke/prototypes/issued-static-connection.ts"
+  ],
   "guard": "The test-only static connection binds accepted signed metadata and broker-pinned generation permissions to a copied credential snapshot. Reconnect cannot adopt caller-mutated bytes. Missing/duplicate/future metadata and legacy request fallback refuse. This does not establish shipped static or auth-callout integration.",
   "command": "pnpm exec tsx implementations/auth/smoke/issued-static-binding.smoke.ts",
   "grades": "tool",
