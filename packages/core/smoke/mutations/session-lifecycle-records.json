@@ -1,0 +1,37 @@
+{
+  "suite": "packages/core/smoke/session-lifecycle-records.smoke.ts",
+  "guard": "cooperative dispatcher retirement is a third proof origin that cannot settle native success",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/session-lifecycle-records.smoke.ts",
+  "completionMarker": "passed, ",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/session-lifecycle-records.json",
+  "why": [
+    "Dispatcher retirement is an observed local fact, not native-effect proof and not a journal receipt.",
+    "It may persist only as indeterminate. Missing §121 facts are not proof."
+  ],
+  "mutations": [
+    {
+      "name": "allow dispatcher-retirement on prepared",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "  if (proofOrigin?.kind === \"dispatcher-retirement\" && value.state !== \"indeterminate\")\n    return fail(`session operation ${key}`, \"dispatcher-retirement proof cannot settle an operation as anything except indeterminate\");\n",
+      "replace": "",
+      "expectRed": "dispatcher-retirement cannot sit on a prepared operation",
+      "cell": "dispatcher-retirement cannot sit on a prepared operation"
+    },
+    {
+      "name": "accept dispatcher-retirement without admissionClosed",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "    if (value.admissionClosed !== true || value.dispatcherSettled !== true || value.retiredStatePersisted !== true)\n",
+      "replace": "",
+      "expectRed": "dispatcher-retirement without admissionClosed is not proof",
+      "cell": "dispatcher-retirement without admissionClosed is not proof"
+    },
+    {
+      "name": "skip id() on unproven live request ids",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "    const unprovenLiveRequestIds = value.unprovenLiveRequestIds.map((v) => id(v, `${label}.unprovenLiveRequestIds`));\n",
+      "replace": "    const unprovenLiveRequestIds = value.unprovenLiveRequestIds as string[];\n",
+      "expectRed": "unproven live request ids must be id tokens",
+      "cell": "unproven live request ids must be id tokens"
+    }
+  ]
+}

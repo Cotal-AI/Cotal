@@ -20,6 +20,9 @@ import {
   parseResourceKey,
   parseIncarnationProof,
   classifyIncarnationProof,
+  parseSessionOperation,
+  sessionOperationInput,
+  sessionOperationInputDigest,
   type Binding,
   type ResourceKey,
 } from "../src/index.js";
@@ -95,6 +98,42 @@ throws("duplicate management rights are refused rather than normalized", () => p
 throws("unknown binding state cannot authorize", () => parseBinding(enc({ ...binding, state: "active" }), bindingKey));
 throws("manager principal is a canonical authenticated owner.actor", () => parseBinding(enc({ ...binding, managerPrincipal: "manager" }), bindingKey));
 throws("controller epoch is positive", () => parseBinding(enc({ ...binding, controllerEpoch: 0 }), bindingKey));
+
+console.log("D. dispatcher-retirement is not native-effect proof");
+const opBase = {
+  operationId: "op-disp", resourceKey: resource, incarnationProof: binding.incarnationProof,
+  bindingId: "binding-1", expectedBindingRevision: 4, expectedControllerEpoch: 7,
+  authenticatedActor: "u_alice.operator", action: "release" as const,
+  intendedResult: { bindingState: "released", nativeState: "preserved" },
+};
+const opDigest = sessionOperationInputDigest(sessionOperationInput(opBase));
+const opKey = sessionOperationKey(resource, "op-disp");
+const dispatcherProof = {
+  kind: "dispatcher-retirement" as const,
+  admissionClosed: true as const,
+  dispatcherSettled: true as const,
+  retiredStatePersisted: true as const,
+  unprovenLiveRequestIds: ["req-live-1"],
+  proves: "dispatcher-retirement-only" as const,
+};
+const parsedDisp = parseSessionOperation(enc({ ...opBase, inputDigest: opDigest, state: "indeterminate", proofOrigin: dispatcherProof }), opKey);
+c("dispatcher-retirement with unproven requests persists as indeterminate", parsedDisp.state === "indeterminate" && parsedDisp.proofOrigin?.proves === "dispatcher-retirement-only");
+throws("dispatcher-retirement cannot prove terminal native success", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "terminal-success", result: { bindingState: "released" }, proofOrigin: dispatcherProof,
+}), opKey));
+throws("dispatcher-retirement cannot sit on a prepared operation", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "prepared", proofOrigin: dispatcherProof,
+}), opKey));
+throws("dispatcher-retirement without admissionClosed is not proof", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "indeterminate", proofOrigin: { ...dispatcherProof, admissionClosed: false },
+}), opKey));
+throws("unproven live request ids must be id tokens", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "indeterminate", proofOrigin: { ...dispatcherProof, unprovenLiveRequestIds: ["not a token"] },
+}), opKey));
+throws("a journal receipt is still not native-effect proof", () => parseSessionOperation(enc({
+  ...opBase, inputDigest: opDigest, state: "terminal-success", result: { bindingState: "released" },
+  proofOrigin: { kind: "journal-receipt", journalRevision: 9, proves: "journal-transition-only" },
+}), opKey));
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);
