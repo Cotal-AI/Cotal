@@ -88,7 +88,7 @@ const effects: string[] = [];
 function connection(
   ops: readonly NativeLifecycleOperation[],
   mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
-  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" = "ok",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" = "ok",
 ): NativeLifecycleConnection {
   const inspect = async () => { effects.push("inspect"); return observation(); };
   const discover = async () => {
@@ -133,6 +133,17 @@ function connection(
     conn.release = async (_binding, operation) => {
       effects.push("release");
       if (kind === "lost-release") throw new Error("native acknowledgement lost");
+      if (kind === "journal-release") {
+        return {
+          state: "recorded",
+          operation: {
+            ...operation,
+            state: "terminal-success",
+            result: { bindingState: "released" },
+            proofOrigin: { kind: "journal-receipt", journalRevision: 1, proves: "journal-transition-only" },
+          },
+        };
+      }
       return {
         state: "recorded",
         operation: {
@@ -165,7 +176,7 @@ function register(
   name: string,
   ops: readonly NativeLifecycleOperation[],
   mode: NativeLifecycleConnection["capabilities"]["mode"] = "cooperative-exclusive",
-  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" = "ok",
+  kind: "ok" | "mismatch" | "lost-release" | "native-release" | "preflight-refuse" | "journal-release" = "ok",
 ): void {
   const provider: NativeLifecycleProvider = {
     kind: "native-lifecycle",
@@ -181,6 +192,7 @@ register("executor-observed", ["discover", "inspect", "preflight", "adopt", "que
 register("executor-missing-adopt", ["discover", "inspect"]);
 register("executor-mismatch", ["inspect", "preflight", "adopt"], "cooperative-exclusive", "mismatch");
 register("executor-native-release", mutatingOps, "cooperative-exclusive", "native-release");
+register("executor-journal-release", mutatingOps, "cooperative-exclusive", "journal-release");
 register("executor-preflight-refuse", ["preflight"], "cooperative-exclusive", "preflight-refuse");
 
 console.log("A. public entry refuses before any native effect");
@@ -288,6 +300,20 @@ c("cooperative-exclusive release with native-effect is terminal-success", releas
 const nativeRelRow = await queryOperation(kvNativeRel, resource, "op-rel-ok");
 c("native-effect release receipt is durable", nativeRelRow.state === "terminal-success" && nativeRelRow.proofOrigin?.proves === "native-effect", nativeRelRow);
 c("native-effect release marked the binding released", readBindingRow(kvNativeRel as unknown as MemKv)?.state === "released");
+
+effects.length = 0;
+const kvJournalRel = new MemKv() as unknown as KV;
+await executeNativeLifecycle(kvJournalRel, {
+  ...requestBase, providerName: "executor-journal-release", operation: "adopt", operationId: "op-adopt-journal", bindingId: "binding-journal",
+});
+const journalReleased = await executeNativeLifecycle(kvJournalRel, {
+  ...requestBase, providerName: "executor-journal-release", operation: "release", operationId: "op-rel-journal", bindingId: "binding-journal",
+  expectedBindingRevision: bindingRevision(kvJournalRel as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
+});
+c("journal-receipt terminal-success release stays indeterminate", journalReleased.state === "indeterminate", journalReleased);
+const journalRelRow = await queryOperation(kvJournalRel, resource, "op-rel-journal");
+c("journal-receipt release is not stored as terminal-success", journalRelRow.state === "indeterminate" && journalRelRow.proofOrigin === undefined, journalRelRow);
+c("journal-receipt release did not mark the binding released", readBindingRow(kvJournalRel as unknown as MemKv)?.state === "managed");
 
 effects.length = 0;
 const kvStale = new MemKv() as unknown as KV;

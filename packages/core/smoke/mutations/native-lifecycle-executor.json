@@ -93,6 +93,14 @@
       "cell": "transfer dispatches the transfer method through the public entry"
     },
     {
+      "name": "persist terminal-success without native-effect proof",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    if (native.operation.state === \"terminal-success\" && native.operation.proofOrigin?.proves !== \"native-effect\")\n      return persistIndeterminate(kv, prepared.record, \"provider returned terminal-success without native-effect proof\");\n",
+      "replace": "",
+      "expectRed": "journal-receipt terminal-success release stays indeterminate",
+      "cell": "journal-receipt terminal-success release stays indeterminate"
+    },
+    {
       "name": "treat cooperative-retirement as sufficient without preserved lifetime",
       "file": "packages/core/src/native-lifecycle-executor.ts",
       "find": "  if ((durable.proofOrigin?.proves as string | undefined) !== \"cooperative-retirement\") return false;\n  return nativeLifetimePreserved(durable.result);\n",
