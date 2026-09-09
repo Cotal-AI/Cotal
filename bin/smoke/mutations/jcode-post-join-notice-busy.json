@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+  ],
+  "guard": "a post-join notice refused because the resumed session is mid-turn is recorded and swallowed, so the seat that already joined survives it",
+  "command": "pnpm smoke:jcode-host",
+  "progressPattern": "^  ✓ ",
+  "minTicks": 2,
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-post-join-notice-busy.json",
+  "why": "The refusal used to reach the startup catch and kill an already-joined seat, discarding the session being recovered. Rethrowing from the notice's own catch restores exactly that path, so the cell that must notice is the one asserting the launch survives rather than the ones reading the fake's log, which the dying host still writes.",
+  "mutations": [
+    {
+      "name": "the refused post-join notice is fatal to the launch again",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n    }",
+      "replace": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n      throw notice;\n    }",
+      "expectRed": "the launch whose post-join notice was refused exits cleanly",
+      "cell": "the launch whose post-join notice was refused exits cleanly"
+    }
+  ]
+}
