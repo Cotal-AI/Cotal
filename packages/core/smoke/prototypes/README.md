@@ -166,6 +166,15 @@ subscribe permissions. The client then reads the generation out of its granted r
 The answer comes from the broker, never from the credential the client presented or the name
 it proposed.
 
+The grant this needs is itself a delivery path, and the ingress suite measures it. A
+`$SYS.REQ.USER.INFO` request whose reply names the rail is answered by the server onto that
+subject: it reaches the real wildcard queue serve shape, arrives under the rail subject with no
+headers, and its body carries the connection's own permission ceiling. So requiring that grant on
+every issued ceiling hands each credential one more way to place a server-authored document on a
+subject it cannot publish to. The document is fixed-shape and not caller-shapeable, which is the
+same ground the `api-envelope` class rests on, and the delivery-class table now covers `$SYS.`
+grants for exactly this reason.
+
 Measured limits. No current profile holds a grant that would let it request its own server view
 (a census cell, with a positive control), and a connection without that grant cannot discover its
 generation (a static cell), so production issuance would have to add `$SYS.REQ.USER.INFO` to each

@@ -121,7 +121,8 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | 64 | A `STREAM.MSG.GET` reply reaches it under the rail subject with no marker | M-nomut | same suite |
 | 65 | A `DIRECT.GET` reply reaches it under the rail subject with `Nats-` headers and raw stored bytes | M-nomut | same suite |
 | 66 | Therefore no granted path delivers attacker-chosen, request-shaped bytes under the rail without a marker | A | a conclusion over 62 to 65 and over 70. Still the load-bearing assertion |
-| 70 | Every `$JS.` grant a peer-held profile holds falls into one of four delivery classes, and an unknown verb refuses | M | census cell "every JetStream grant a peer can hold has a decided delivery class"; mutations "an unclassified JetStream grant is waved through", "a raw stored read is classified as an API envelope" |
+| 70 | Every `$JS.` or `$SYS.` grant a peer-held profile holds falls into one of four delivery classes, and an unknown verb refuses | M | census cell "every broker grant a peer can hold has a decided delivery class"; mutations "an unclassified JetStream grant is waved through", "a raw stored read is classified as an API envelope" |
+| 75 | The `$SYS.REQ.USER.INFO` grant the contract adds is itself an unmarked delivery path onto the rail | M-nomut | ingress cell "the discovery grant the contract adds is itself a delivery path onto the rail": it reaches the real serve shape, under the rail subject, with no headers, carrying the connection's own ceiling |
 | 67 | The condition that would break it is one credential holding a write and a raw read on one stream | A | reasoning, now guarded by 56 but not derived from a cell |
 | 68 | Marker-based refusal cannot cover the `STREAM.MSG.GET` path | M | follows directly from 64: there is no marker to refuse on |
 | 69 | The durable fix is the mediated-read rule scoped for v0.4 | A | design position |
