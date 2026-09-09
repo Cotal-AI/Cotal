@@ -159,7 +159,7 @@ export async function executeNativeLifecycle(
 
   const connection = resolveNativeLifecycleProvider(request.providerName).connect(request.connectOptions);
   // Capability refusal happens before inspect, prepare, or any other provider effect.
-  let dispatched: ReturnType<typeof requireNativeLifecycleOperation> | undefined;
+  let dispatched: ReturnType<typeof requireNativeLifecycleOperation>;
   try {
     dispatched = requireNativeLifecycleOperation(connection, request.operation);
   } catch (e) {
@@ -273,7 +273,18 @@ export async function executeNativeLifecycle(
   } catch (e) {
     return persistIndeterminate(kv, prepared.record, e instanceof Error ? e.message : "native provider threw");
   }
-  if (native.state === "recorded") return native;
+  if (native.state === "recorded") {
+    if (native.operation.state === "terminal-success" && native.operation.proofOrigin?.proves !== "native-effect")
+      return persistIndeterminate(kv, prepared.record, "provider returned terminal-success without native-effect proof");
+    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);
+    await updateSessionOperation(kv, {
+      ...prepared.record,
+      state: native.operation.state,
+      ...(native.operation.result !== undefined ? { result: native.operation.result } : {}),
+      ...(native.operation.proofOrigin !== undefined ? { proofOrigin: native.operation.proofOrigin } : {}),
+    }, revision);
+    return native;
+  }
   if (native.state === "absent") return native;
   return persistIndeterminate(kv, prepared.record, native.reason);
 }

@@ -3,6 +3,7 @@
   "guard": "unsupported native lifecycle operations refuse before inspect/adopt, and executeNativeLifecycle is the public registry entry",
   "command": "./node_modules/.bin/tsx packages/core/smoke/native-lifecycle-executor.smoke.ts",
   "completionMarker": "passed, ",
+  "progressPattern": "✓",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/native-lifecycle-executor.json",
   "why": [
     "Capability refusal must happen before inspect or prepare.",
@@ -24,6 +25,14 @@
       "replace": "",
       "expectRed": "observed-mode adopt is refused before inspect",
       "cell": "observed-mode adopt is refused before inspect"
+    },
+    {
+      "name": "return recorded native receipt without persisting it",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const revision = await operationRevision(kv, prepared.record.resourceKey, prepared.record.operationId);\n    await updateSessionOperation(kv, {\n      ...prepared.record,\n      state: native.operation.state,\n      ...(native.operation.result !== undefined ? { result: native.operation.result } : {}),\n      ...(native.operation.proofOrigin !== undefined ? { proofOrigin: native.operation.proofOrigin } : {}),\n    }, revision);\n    return native;\n",
+      "replace": "    return native;\n",
+      "expectRed": "adopt native-effect receipt is durable in the trusted store",
+      "cell": "adopt native-effect receipt is durable in the trusted store"
     }
   ]
 }

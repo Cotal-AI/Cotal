@@ -21,7 +21,7 @@ import {
 
 let ok = 0, fail = 0;
 const c = (name: string, value: boolean, extra?: unknown) => {
-  if (value) ok++;
+  if (value) { ok++; console.log("  ✓", name); }
   else { fail++; console.log("  ✗ FAIL:", name, extra ?? ""); }
 };
 const rejects = async (name: string, fn: () => Promise<unknown>, code: string) => {
@@ -161,19 +161,20 @@ const kv = new MemKv() as unknown as KV;
 const adopted = await executeNativeLifecycle(kv, {
   ...requestBase, providerName: "executor-coop", operation: "adopt", operationId: "op-adopt", bindingId: "binding-1",
 });
-c("adopt records a native-effect receipt through the public entry", adopted.state === "recorded" && adopted.operation.state === "terminal-success", adopted);
+c("adopt returns a native-effect receipt through the public entry", adopted.state === "recorded" && adopted.operation.state === "terminal-success", adopted);
 c("adopt journalled then dispatched inspect/preflight/adopt in order", effects.join(",") === "preflight:adopt,inspect,adopt", effects);
 const prepared = await queryOperation(kv, resource, "op-adopt");
-c("adopt prepare is durable in the trusted store", prepared.state === "prepared" || prepared.state === "terminal-success", prepared.state);
+c("adopt native-effect receipt is durable in the trusted store", prepared.state === "terminal-success" && prepared.proofOrigin?.proves === "native-effect", prepared);
 const bound = (kv as unknown as MemKv).rows.has(sessionBindingKey(resource));
 c("adopt wrote a sessionbinding row", bound);
 
 effects.length = 0;
-const discovered = await executeNativeLifecycle(new MemKv() as unknown as KV, {
+const kvDiscover = new MemKv();
+const discovered = await executeNativeLifecycle(kvDiscover as unknown as KV, {
   ...requestBase, providerName: "executor-coop", operation: "discover", operationId: "op-disc", bindingId: "binding-disc",
 });
 c("discover returns observations through the public entry", discovered.state === "observations" && discovered.observations.length === 1, discovered);
-c("discover did not write a binding", !(new MemKv() as unknown as MemKv).rows.has(sessionBindingKey(resource)));
+c("discover did not write a binding", !kvDiscover.rows.has(sessionBindingKey(resource)));
 
 console.log("C. lost native acknowledgement stays indeterminate");
 effects.length = 0;
