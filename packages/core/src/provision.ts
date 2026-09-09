@@ -77,9 +77,9 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedStoreStreamNames, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
@@ -2006,9 +2006,10 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
  *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
- *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY four streams and no others:
- *  the three TTL'd KV buckets (presence + the two leases, #286 — an existing bucket's `max_age` cannot be
- *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it) and the records store.
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY seven streams and no others:
+ *  the three TTL'd KV buckets (presence + the two leases, #286: an existing bucket's `max_age` cannot be
+ *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it) and the four hardened
+ *  authority stores (records, issued, accepted, admission), each updated once at creation.
  *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
  *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
  *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
@@ -2097,13 +2098,11 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         // reconciliation sweep enumerates the manager's slot rows (`keys()` → an ordered consumer)
         // then reads each slot BODY (phase/uid/actor) to plan resume — the reads ride the
         // stream-scoped MSG.GET residual named below (records lifecycle metadata, no secrets).
-        `$JS.API.STREAM.UPDATE.KV_${recordsBucket(space)}`,
         // The issued, accepted and admission stores (SPEC 13.15, 14.8) take the same one-time
-        // hardening UPDATE at fresh creation, for the same reason: their rows are create-only and
-        // their markers permanent, and a rollup header on a holder's own key row would replace
-        // them as a value write. Same create, update, verify discipline, same three flags.
-        ...issuedStoreStreamNames(space).map((s) => `$JS.API.STREAM.UPDATE.${s}`),
-        `$JS.API.STREAM.UPDATE.KV_${admissionBucket(space)}`,
+        // hardening UPDATE at fresh creation as the records store: their rows are create-only and
+        // their markers permanent, and a holder's own key row would otherwise replace them as a
+        // value write. One list in core names the hardened stores for every seam that creates them.
+        ...hardenedAuthorityStreamNames(space).map((s) => `$JS.API.STREAM.UPDATE.${s}`),
         `$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.>`,
         `$JS.API.CONSUMER.INFO.KV_${recordsBucket(space)}.>`,
         `$JS.API.CONSUMER.DELETE.KV_${recordsBucket(space)}.>`,

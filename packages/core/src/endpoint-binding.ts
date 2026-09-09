@@ -130,6 +130,15 @@ export function endpointPlaneStreamNames(space: string): string[] {
   ];
 }
 
+/** The stores {@link createEndpointStreams} HARDENS with a one-time `STREAM.UPDATE` right after
+ *  creation (the records store, the two issued-authority stores and the run admission store).
+ *  Every credential that runs the creation seam needs an UPDATE row on exactly these and no other
+ *  stream; the provisioner and the restore-side infrastructure login both read this list, so a
+ *  store added to the hardening step cannot leave one of them without the grant. */
+export function hardenedAuthorityStreamNames(space: string): string[] {
+  return [`KV_${recordsBucket(space)}`, ...issuedStoreStreamNames(space), `KV_${admissionBucket(space)}`];
+}
+
 // ---- §13.12 retention knobs (documented defaults, overridable per space policy) ----
 
 /** EPJ duplicate window: the server MINIMUM (100 ms), set explicitly. A `0` is not accepted
