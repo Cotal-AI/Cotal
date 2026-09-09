@@ -11,12 +11,14 @@ import { canonicalJson, isWellFormedUnicode } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import {
   SESSION_BINDING,
+  SESSION_ENROLLMENT,
   SESSION_OPERATION,
   SESSION_TRUST_STATE,
   recordAtomicKey,
 } from "./endpoint-records.js";
-import { assertIdToken, endpointToken } from "./endpoint-subjects.js";
-import { parsePrincipalKey } from "./subjects.js";
+import { assertIdToken, assertLifecycleToken, endpointToken } from "./endpoint-subjects.js";
+import type { RetainedAgentAuthority } from "./auth-provider.js";
+import { assertValidChannel, parsePrincipalKey } from "./subjects.js";
 
 const dec = new TextDecoder("utf-8", { fatal: true });
 const isRec = (v: unknown): v is Record<string, unknown> =>
@@ -58,6 +60,58 @@ export interface IncarnationProof {
   readonly sessionIncarnation: string;
   readonly evidence: unknown;
 }
+
+/** Authenticated audit context for the owner decision that created an enrollment. */
+export interface EnrollmentProvenance {
+  /** Canonical owner principal that authorized the enrollment. */
+  readonly authorizedBy: string;
+  /** Native evidence inspected when that authorization was made. */
+  readonly nativeEvidence: unknown;
+  /** Epoch milliseconds at which the evidence was authenticated. */
+  readonly authenticatedAt: number;
+}
+
+/** The retained identity and authority dimensions renewal may reproduce. This is a process
+ *  ceiling recorded beside enrollment, not a claim that credential bytes bind the ceiling. */
+export interface AuthorityCeiling extends Readonly<Pick<RetainedAgentAuthority,
+  "owner" | "actor" | "lifecycleUid">> {
+  readonly scope: readonly string[];
+  readonly allowSubscribe: readonly string[];
+  readonly allowPublish: readonly string[];
+}
+
+export interface EnrollmentCommon {
+  readonly resourceKey: ResourceKey;
+  /** Canonical `<owner>.<actor>` of the native session owner, never its manager. */
+  readonly ownerPrincipal: string;
+  readonly provenance: EnrollmentProvenance;
+  readonly incarnationProof: IncarnationProof;
+  readonly rights: readonly SessionManageAction[];
+  readonly expiry: number;
+}
+
+/** Native custody without a Cotal signing key or mesh lifecycle. The `never` fields preserve the
+ *  union boundary even when a value reaches TypeScript through a non-literal variable. */
+export type NativeOnlySessionEnrollment = EnrollmentCommon & {
+  readonly kind: "native-only";
+  readonly sessionActor?: never;
+  readonly enrolledPublicId?: never;
+  readonly meshLifecycle?: never;
+  readonly ceiling?: never;
+};
+
+/** An enrollment whose session already owns mesh identity and renewal-bound key material. */
+export type MeshEnrolledSessionEnrollment = EnrollmentCommon & {
+  readonly kind: "mesh-enrolled";
+  /** Canonical principal of the session actor, distinct from the authorizing owner actor. */
+  readonly sessionActor: string;
+  /** NATS user public nkey whose possession a renewal must prove. */
+  readonly enrolledPublicId: string;
+  readonly meshLifecycle: { readonly id: string; readonly lifecycleUid: string };
+  readonly ceiling: AuthorityCeiling;
+};
+
+export type SessionEnrollment = NativeOnlySessionEnrollment | MeshEnrolledSessionEnrollment;
 
 export type BindingState =
   | "adopt-prepared"
@@ -127,6 +181,17 @@ const RESOURCE_FIELDS = new Set([
   "hostIdentity", "provider", "nativeOwnerNamespace", "stableSessionId", "resourceGeneration",
 ]);
 const PROOF_FIELDS = new Set(["nativeHostIncarnation", "sessionIncarnation", "evidence"]);
+const PROVENANCE_FIELDS = new Set(["authorizedBy", "nativeEvidence", "authenticatedAt"]);
+const NATIVE_ENROLLMENT_FIELDS = new Set([
+  "kind", "resourceKey", "ownerPrincipal", "provenance", "incarnationProof", "rights", "expiry",
+]);
+const MESH_ENROLLMENT_FIELDS = new Set([
+  ...NATIVE_ENROLLMENT_FIELDS, "sessionActor", "enrolledPublicId", "meshLifecycle", "ceiling",
+]);
+const MESH_LIFECYCLE_FIELDS = new Set(["id", "lifecycleUid"]);
+const CEILING_FIELDS = new Set([
+  "owner", "actor", "lifecycleUid", "scope", "allowSubscribe", "allowPublish",
+]);
 const BINDING_FIELDS = new Set([
   "bindingId", "resourceKey", "incarnationProof", "controllerEpoch", "managerPrincipal", "mode",
   "rights", "state", "operationId", "desiredRevision",
@@ -172,6 +237,76 @@ function id(v: unknown, label: string): string {
 function principal(v: unknown, label: string): string {
   if (typeof v !== "string" || parsePrincipalKey(v) === null) return fail(label, "is not a canonical owner.actor principal");
   return v;
+}
+
+function stringList(
+  value: unknown,
+  label: string,
+  validate: (entry: string) => void,
+): readonly string[] {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")
+    || new Set(value).size !== value.length) return fail(label, "is not an array of unique strings");
+  for (const entry of value as string[]) {
+    try { validate(entry); }
+    catch { return fail(label, `carries the invalid entry ${JSON.stringify(entry)}`); }
+  }
+  return Object.freeze([...(value as string[])]);
+}
+
+function parseEnrollmentProvenance(value: unknown, ownerPrincipal: string, label: string): EnrollmentProvenance {
+  if (!isRec(value)) return fail(label, "is not an object");
+  closed(value, PROVENANCE_FIELDS, label);
+  const authorizedBy = principal(value.authorizedBy, `${label}.authorizedBy`);
+  if (authorizedBy !== ownerPrincipal) return fail(label, "was not authenticated as the enrollment owner principal");
+  if (!pos(value.authenticatedAt) || value.nativeEvidence === undefined)
+    return fail(label, "does not carry native evidence and a positive authentication time");
+  try { canonicalJson(value.nativeEvidence); }
+  catch { return fail(label, "carries native evidence that is not strict JSON data"); }
+  return Object.freeze({ authorizedBy, nativeEvidence: value.nativeEvidence, authenticatedAt: value.authenticatedAt });
+}
+
+function parseMeshLifecycle(
+  value: unknown,
+  sessionActor: string,
+  label: string,
+): { readonly id: string; readonly lifecycleUid: string } {
+  if (!isRec(value)) return fail(label, "is not an object");
+  closed(value, MESH_LIFECYCLE_FIELDS, label);
+  const id = principal(value.id, `${label}.id`);
+  if (id !== sessionActor) return fail(label, "does not name the enrolled session actor");
+  if (!nonEmpty(value.lifecycleUid)) return fail(label, "does not carry a nonempty lifecycleUid string");
+  return Object.freeze({ id, lifecycleUid: value.lifecycleUid });
+}
+
+function parseAuthorityCeiling(
+  value: unknown,
+  sessionActor: string,
+  lifecycleUid: string,
+  label: string,
+): AuthorityCeiling {
+  if (!isRec(value)) return fail(label, "is not an object");
+  closed(value, CEILING_FIELDS, label);
+  if (typeof value.owner !== "string" || typeof value.actor !== "string")
+    return fail(label, "does not carry owner and actor strings");
+  const ceilingPrincipal = principal(`${value.owner}.${value.actor}`, `${label}.owner/actor`);
+  if (ceilingPrincipal !== sessionActor) return fail(label, "does not name the enrolled session actor");
+  if (typeof value.lifecycleUid !== "string") return fail(label, "does not carry a lifecycleUid string");
+  try { assertLifecycleToken(value.lifecycleUid, `${label}.lifecycleUid`); }
+  catch { return fail(label, "carries an invalid lifecycleUid"); }
+  if (value.lifecycleUid !== lifecycleUid) return fail(label, "does not name the enrolled mesh lifecycle");
+  const scope = stringList(value.scope, `${label}.scope`, (entry) => {
+    if (!/^[A-Za-z0-9_:-]+$/.test(entry)) throw new Error("invalid scope token");
+  });
+  const allowSubscribe = stringList(value.allowSubscribe, `${label}.allowSubscribe`, (entry) => { assertValidChannel(entry); });
+  const allowPublish = stringList(value.allowPublish, `${label}.allowPublish`, (entry) => { assertValidChannel(entry); });
+  return Object.freeze({
+    owner: value.owner,
+    actor: value.actor,
+    lifecycleUid: value.lifecycleUid,
+    scope,
+    allowSubscribe,
+    allowPublish,
+  });
 }
 
 /** Validate a ResourceKey value. All fields are identity-bearing and the schema is closed. */
@@ -232,12 +367,73 @@ export function sessionBindingKey(resourceKey: ResourceKey): string {
   return recordAtomicKey(SESSION_BINDING, [resourceKeyId(resourceKey)]);
 }
 
+export function sessionEnrollmentKey(resourceKey: ResourceKey): string {
+  return recordAtomicKey(SESSION_ENROLLMENT, [resourceKeyId(resourceKey)]);
+}
+
 export function sessionOperationKey(resourceKey: ResourceKey, operationId: string): string {
   return recordAtomicKey(SESSION_OPERATION, [resourceKeyId(resourceKey), assertIdToken(operationId, "operationId")]);
 }
 
 export function sessionTrustStateKey(resourceKey: ResourceKey): string {
   return recordAtomicKey(SESSION_TRUST_STATE, [resourceKeyId(resourceKey)]);
+}
+
+/** Parse one owner-authorized enrollment CAS row, including its ResourceKey key binding. */
+export function parseSessionEnrollment(
+  raw: Uint8Array,
+  key: string,
+  expectedResourceKey?: ResourceKey,
+): SessionEnrollment {
+  const label = `session enrollment ${key}`;
+  const value = parseJson(raw, label);
+  if (!isRec(value)) return fail(label, "is not an object");
+  if (value.kind === "native-only") closed(value, NATIVE_ENROLLMENT_FIELDS, label);
+  else if (value.kind === "mesh-enrolled") closed(value, MESH_ENROLLMENT_FIELDS, label);
+  else return fail(label, "does not carry a known enrollment kind");
+
+  const resourceKey = parseResourceKey(value.resourceKey, `${label}.resourceKey`);
+  const ownerPrincipal = principal(value.ownerPrincipal, `${label}.ownerPrincipal`);
+  const provenance = parseEnrollmentProvenance(value.provenance, ownerPrincipal, `${label}.provenance`);
+  const incarnationProof = parseIncarnationProof(value.incarnationProof, `${label}.incarnationProof`);
+  const rights = stringList(value.rights, `${label}.rights`, (entry) => {
+    if (!ACTIONS.has(entry)) throw new Error("unknown session manage action");
+  }) as readonly SessionManageAction[];
+  if (rights.length === 0) return fail(`${label}.rights`, "must not be empty");
+  if (!pos(value.expiry) || value.expiry <= provenance.authenticatedAt)
+    return fail(`${label}.expiry`, "is not a positive time after provenance authentication");
+  const canonicalKey = sessionEnrollmentKey(resourceKey);
+  if (key !== canonicalKey) return fail(label, `does not match its embedded ResourceKey (canonical key ${canonicalKey})`);
+  if (expectedResourceKey !== undefined && resourceKeyId(expectedResourceKey) !== resourceKeyId(resourceKey))
+    return fail(label, "does not match the ResourceKey requested by the consumer");
+
+  const common: EnrollmentCommon = {
+    resourceKey,
+    ownerPrincipal,
+    provenance,
+    incarnationProof,
+    rights,
+    expiry: value.expiry,
+  };
+  if (value.kind === "native-only") return { ...common, kind: "native-only" };
+
+  const sessionActor = principal(value.sessionActor, `${label}.sessionActor`);
+  const owner = parsePrincipalKey(ownerPrincipal)!;
+  const actor = parsePrincipalKey(sessionActor)!;
+  if (owner.owner !== actor.owner || owner.actor === actor.actor)
+    return fail(label, "does not carry a distinct session actor under the enrollment owner");
+  if (typeof value.enrolledPublicId !== "string" || !/^U[A-Z2-7]{55}$/.test(value.enrolledPublicId))
+    return fail(`${label}.enrolledPublicId`, "is not a NATS user public nkey");
+  const meshLifecycle = parseMeshLifecycle(value.meshLifecycle, sessionActor, `${label}.meshLifecycle`);
+  const ceiling = parseAuthorityCeiling(value.ceiling, sessionActor, meshLifecycle.lifecycleUid, `${label}.ceiling`);
+  return {
+    ...common,
+    kind: "mesh-enrolled",
+    sessionActor,
+    enrolledPublicId: value.enrolledPublicId,
+    meshLifecycle,
+    ceiling,
+  };
 }
 
 /** Parse an authoritative Binding at its consuming boundary, including key/value identity binding. */
