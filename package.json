@@ -374,6 +374,7 @@
     "smoke:ep-receipt": "tsx packages/core/smoke/endpoint-receipt.smoke.ts",
     "smoke:ep-contract-store": "tsx packages/core/smoke/endpoint-contract-store.smoke.ts",
     "smoke:ep-invoke": "tsx packages/core/smoke/endpoint-invoke.smoke.ts",
+    "smoke:ep-publish-denial:auth": "tsx packages/core/smoke/endpoint-publish-denial.smoke.ts",
     "smoke:ep-serve": "tsx packages/core/smoke/endpoint-serve.smoke.ts",
     "smoke:broker-teardown": "tsx packages/core/smoke/broker-teardown.smoke.ts",
     "smoke:bind-fence": "tsx packages/core/smoke/bind-fence.smoke.ts",
