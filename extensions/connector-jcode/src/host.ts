@@ -919,11 +919,22 @@ export async function runJcodeHost(): Promise<void> {
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).
-    await client.sendMessage(
-      sessionId,
-      `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
-      { noReply: true },
-    );
+    // The seat has already joined by the time this runs, so the notice is the last cosmetic step of
+    // a launch that has otherwise succeeded. A resumed session whose saved transcript ends mid-turn
+    // is legitimately busy, the server refuses a context_message while it is, and the no-reply path
+    // reports that refusal by throwing — which killed the seat over one undelivered sentence, and
+    // took the session's accumulated memory with it. Record the refusal and carry on: no failure to
+    // deliver this notice is worth the seat it would otherwise cost. Any cause is tolerated here,
+    // not just a busy agent, because the thrown code is `internal` for every one of them.
+    try {
+      await client.sendMessage(
+        sessionId,
+        `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
+        { noReply: true },
+      );
+    } catch (notice) {
+      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+    }
     if (bootPrompt) await drive(bootPrompt);
   } catch (error) {
     // A shutdown requested mid-startup closes the client and rejects whatever startup step was in

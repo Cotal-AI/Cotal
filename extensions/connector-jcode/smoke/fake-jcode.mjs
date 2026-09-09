@@ -174,6 +174,16 @@ function runTurn(frame, socket) {
     busyOwner = undefined;
     const next = queuedTurns.shift();
     if (next) next();
+    // v8's measured boot, opt-in so no existing suite changes: its TUI submitted a recovered
+    // in-flight continuation that queued BEHIND the readiness turn and dequeued as that turn
+    // finished, so the agent was busy again at the moment the connector sent its post-join notice.
+    // busyOwner stays undefined because the turn belonged to the TUI's connection and not to the
+    // connector's, which is why all 81 of v8's rejections logged client_processing=false.
+    if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS === "1" && String(frame.content).includes("cotal_orientation")) {
+      turnBusy = true;
+      busyOwner = undefined;
+      setTimeout(() => { turnBusy = false; }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
+    }
   }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
 }
 

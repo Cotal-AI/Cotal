@@ -473,6 +473,48 @@ try {
   await stopHostTree(race, "SIGTERM");
   check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
 
+  // A seat resumed from a transcript that ends mid-turn is legitimately busy the moment it joins,
+  // and the server refuses the post-join notice's context_message while it is. That refusal used to
+  // reach the startup catch and kill an already-joined seat, taking its accumulated session with
+  // it. The notice is cosmetic; the seat is not.
+  const busyLog = join(root, "join-notice-busy.jsonl");
+  const busy = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: busyLog,
+      FAKE_JCODE_BUSY_MODEL: "1",
+      FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "busypeer",
+      COTAL_ID: "busypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: controlSock("busy-control.sock"),
+      COTAL_CONTROL_TOKEN: "busy-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let busyErr = "";
+  busy.stderr?.on("data", (chunk: Buffer) => (busyErr += chunk.toString()));
+  await Promise.race([once(busy, "exit"), sleep(20_000)]);
+  const busyEntries = readJsonLines<{ ev: string; client_processing?: boolean; reason?: string; request_kind?: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(busyLog);
+  // Without this the cell is vacuous: a fake that never refuses would pass every assertion below
+  // while the real server still rejects.
+  const busyRefusal = busyEntries.find((entry) => entry.ev === "busy_agent_rejected");
+  check("the post-join notice is actually refused as agent_busy, so this cell is not vacuous", busyRefusal?.reason === "agent_busy" && busyRefusal.request_kind === "context_message" && busyRefusal.client_processing === false, busyRefusal);
+  check("a seat whose post-join notice is refused still joins the mesh", announced.has("busypeer"), { announced: [...announced], stderr: busyErr });
+  const busyNotice = busyEntries.find((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame?.no_reply === true && String(entry.frame?.content).includes("earlier cotal_orientation result was captured before this join"));
+  check("the refused notice is still sent as a no-reply context message, not promoted to a turn", Boolean(busyNotice), busyNotice);
+  await stopHostTree(busy, "SIGTERM");
+  check("the launch whose post-join notice was refused exits cleanly", busy.exitCode === 0, { code: busy.exitCode, stderr: busyErr });
+
   // A bridge that never publishes the tool must still fail loud after the bounded retry and must
   // never advertise presence. This distinguishes the recovery from a false-online fallback.
   const absentLog = join(root, "readiness-absent.jsonl");
