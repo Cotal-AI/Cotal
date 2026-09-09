@@ -163,16 +163,24 @@ try {
       ...(opts?.seam === false ? {} : { observeHolderGeneration }),
     });
 
-  /** Fault ONE key's write at the store boundary. The governance slot-take (same KV, a different
-   *  key) commits for real, so the residue below is staged through the SHIPPED registration path
-   *  rather than hand-written into the head. */
-  const faulting = (kv: KV, faultKey: string): KV => new Proxy(kv, {
+  /** Fault ONE key's write at the store boundary. `mode` decides WHICH half of the boundary fails,
+   *  and the distinction is the whole point of section 6:
+   *    - "before": throw INSTEAD of writing. The write never commits. This is the process dying
+   *      before the store saw it.
+   *    - "after": perform the write, THEN throw. The write COMMITS and the ack is lost. This is the
+   *      committed-but-unacked case the shipped slot-take comment describes, and it is the only way
+   *      to produce a real orphan slot through the ambiguous path rather than by hand.
+   *  Either way the residue is staged through the SHIPPED registration path; nothing writes the
+   *  governance head or a gate row directly. */
+  const faulting = (kv: KV, faultKey: string, mode: "before" | "after" = "before"): KV => new Proxy(kv, {
     get(target, prop, recv) {
       const v = Reflect.get(target, prop, recv);
       if ((prop === "create" || prop === "update" || prop === "put") && typeof v === "function") {
         return async (key: string, ...rest: unknown[]) => {
-          if (key === faultKey) throw new Error("simulated store fault: the process died before this write committed");
-          return (v as (...a: unknown[]) => unknown).call(target, key, ...rest);
+          if (key !== faultKey) return (v as (...a: unknown[]) => unknown).call(target, key, ...rest);
+          if (mode === "before") throw new Error("simulated store fault: the process died before this write committed");
+          await (v as (...a: unknown[]) => unknown).call(target, key, ...rest);
+          throw new Error("simulated store fault: the write COMMITTED and its ack was lost");
         };
       }
       return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
@@ -267,38 +275,29 @@ try {
   c("B's spec is published, so the endpoint is actually serviceable again", specB?.operation === "PUT", specB?.operation);
 
   console.log("6. the residue `reconcile-gate` CANNOT reach: an AMBIGUOUS slot-take, holder gate left OPEN");
+  // ONE registration produces this whole residue, through the shipped path, with no hand-staging.
+  // The slot-take COMMITS and its ack is lost, so `registerServiceInstance` classifies it as the
+  // ambiguous slot-take, and its own outer catch abort-reopens C's gate at generation+1. What is
+  // left is exactly the state the shipped comment describes: a committed-but-unacked slot stamped
+  // at the generation the reopen advanced PAST. Nothing here writes the head or a gate row.
   await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_C, principal: principalKey(DEV_OWNER, "govslotcccc").key });
-  const stagedC = await errOf(() => register(faulting(recordsKv, govKey), IID_C));
-  c("C's slot-take is AMBIGUOUS, so the registration aborts and abort-reopens its own gate",
+  const stagedC = await errOf(() => register(faulting(recordsKv, govKey, "after"), IID_C));
+  c("C's slot-take COMMITS but its ack is lost, so the registration reports the ambiguous slot-take",
     stagedC.code === "unavailable" && /governance slot-take .* is ambiguous/.test(stagedC.message), stagedC);
-  // The abort-reopen advanced C's gate past the generation its slot-take was stamped with. Re-stage
-  // the committed-but-unacked slot the shipped comment describes: same coordinate, reached the way
-  // the ambiguity leaves it. The gate below is the fact under test, and it is real.
   const gateC = await readGate(IID_C);
-  c("C's gate is OPEN and has advanced past its frozen generation - nothing is frozen to reconcile",
+  const govC = await readGov();
+  c("the shipped abort-reopen left C's gate OPEN at generation 1 - nothing is frozen to reconcile",
     gateC?.state === "open" && gateC.generation === 1, gateC);
+  c("...and the committed slot survives, stamped at 0, behind the gate the reopen advanced",
+    govC?.provisional?.instanceId === IID_C && govC.provisional.generation === 0, govC);
   const refusedByReconciler = await errOf(() => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_C,
     probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
     evict: async () => true, log: () => {}, recordsKv,
   }));
-  c("`reconcile-gate` REFUSES this residue with `not-frozen` - correct, and no exit from it",
+  c("`reconcile-gate` REFUSES this residue `not-frozen`, so it has no repair-tool exit at all",
     /not "frozen"/.test(refusedByReconciler.message), refusedByReconciler.message);
 
-  // Now put a slot stamped at C's PRE-reopen generation into the head, through the shipped
-  // slot-take: C retries, and this time its spec publish is what faults.
-  const specKeyC = recordSpecKey(RECORD_KINDS.svc, [ENDPOINT, IID_C]);
-  await errOf(() => register(faulting(recordsKv, specKeyC), IID_C));
-  const govC = await readGov();
-  const gateCNow = await readGate(IID_C);
-  c("C holds the slot again, stamped at the generation its retry froze",
-    govC?.provisional?.instanceId === IID_C && govC.provisional!.generation === gateCNow!.generation, { slot: govC?.provisional?.generation, gate: gateCNow?.generation });
-  // Reopen C's gate the way its own retry or a reconciler would, leaving the slot behind it.
-  await stage("reopen C's gate, leaving its slot behind", () => reconcileEndpointGate({
-    kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_C,
-    probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
-    evict: async () => true, log: () => {}, recordsKv,
-  }));
   await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_D, principal: principalKey(DEV_OWNER, "govslotdddd").key });
   const dReg = await errOf(() => register(recordsKv, IID_D));
   c("a successor reclaims an orphan whose holder gate is OPEN - the residue with no repair-tool exit",
