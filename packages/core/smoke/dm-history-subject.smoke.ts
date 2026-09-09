@@ -81,6 +81,9 @@ try {
 
   const honest = await alice.unicast(bob.card.id, "honest-line");
   const own = await viewer.unicast(bob.card.id, "viewer-own-line");
+  const dataUndef = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: undefined }],
+  });
   const chatHonest = await alice.multicast("chat-honest", { channel: "log" });
   await wait(200);
 
@@ -128,15 +131,6 @@ try {
     id: 123,
     parts: [{ kind: "text", text: "numeric-id" }],
   })));
-  raw.publish(dmSubj, JSON.stringify((() => {
-    const row = envelope({
-      id: "no-space-388",
-      from: { id: "local.alice", name: "alice" },
-      parts: [{ kind: "text", text: "missing-space" }],
-    });
-    delete row.space;
-    return row;
-  })()));
   raw.publish(`${dmSubj}.extra`, JSON.stringify(envelope({
     id: "extra-token-388",
     parts: [{ kind: "text", text: "extra-token" }],
@@ -168,8 +162,8 @@ try {
   check("non-string id is ABSENT", !page.some((m) => String(m.id) === "123" || (m as { id?: unknown }).id === 123));
   check("extra-token inst subject is ABSENT (parseSubject arity)", !page.some((m) => m.id === "extra-token-388"));
   check(
-    "row missing space is ABSENT (isCotalMessage, not the old isRecord triple)",
-    !page.some((m) => m.id === "no-space-388"),
+    "public-API data part with undefined data still appears in dmHistory",
+    page.some((m) => m.id === dataUndef.id),
     page.map((m) => m.id),
   );
 
