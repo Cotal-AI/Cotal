@@ -128,6 +128,15 @@ try {
     id: 123,
     parts: [{ kind: "text", text: "numeric-id" }],
   })));
+  raw.publish(dmSubj, JSON.stringify((() => {
+    const row = envelope({
+      id: "no-space-388",
+      from: { id: "local.alice", name: "alice" },
+      parts: [{ kind: "text", text: "missing-space" }],
+    });
+    delete row.space;
+    return row;
+  })()));
   raw.publish(`${dmSubj}.extra`, JSON.stringify(envelope({
     id: "extra-token-388",
     parts: [{ kind: "text", text: "extra-token" }],
@@ -158,6 +167,11 @@ try {
   check("missing from is ABSENT", !page.some((m) => m.id === "missing-from-388"));
   check("non-string id is ABSENT", !page.some((m) => String(m.id) === "123" || (m as { id?: unknown }).id === 123));
   check("extra-token inst subject is ABSENT (parseSubject arity)", !page.some((m) => m.id === "extra-token-388"));
+  check(
+    "row missing space is ABSENT (isCotalMessage, not the old isRecord triple)",
+    !page.some((m) => m.id === "no-space-388"),
+    page.map((m) => m.id),
+  );
 
   const toSpoof = page.find((m) => m.id === "to-spoof-388");
   check(
