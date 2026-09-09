@@ -306,7 +306,11 @@ const SEAMS: Seam[] = [
   // 128/94 -> 133/98: #774 adds one typechecked provisioner re-read before each static reconcile
   // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
   // observer, caller, and exact terminal gate inspection). Every site states tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 133, untypecheckedSites: 98 },
+  // 133/98 -> 140/100: issued authority adds the issuer session's dial, the manager's admission
+  // reader, the local run mediator's two rail connections and the boot reconcile's own dial (all
+  // typechecked, inheriting the resolved TLS requirement), plus two run-host-live connections
+  // that prove a legacy-rail caller and a foreign admitter are refused (tls: false).
+  { fn: "standaloneConnectOpts", key: "tls", sites: 140, untypecheckedSites: 100 },
 ];
 
 /**
