@@ -273,6 +273,27 @@ try {
     assert.throws(() => classifyIssuedArrival("elsewhere", issuedRequestSubject(first.ref, request())), /not an endpoint subject/);
   });
 
+  await check("the generation sits at one offset from the tail for every rail mode", async () => {
+    // Discovery and admission both parse by tail offset. If any mode broke that, one of them would
+    // read a neighbouring token as the generation and still produce a well-formed reference.
+    const modes = [
+      { route: { mode: "one" as const } },
+      { route: { mode: "all" as const } },
+      { route: { mode: "inst" as const, instanceId: "i".repeat(26) } },
+    ];
+    for (const mode of modes) {
+      const subject = issuedRequestSubject(first.ref, { ...mode, ...capability, nonce: randomBytes(16).toString("hex") });
+      const arrival = classifyIssuedArrival(space, subject);
+      assert.equal(arrival.kind, "issued");
+      assert.deepEqual(arrival.kind === "issued" ? arrival.ref : undefined, first.ref);
+      const legacy = epRequestSubject(space, { ...mode, ...capability, caller: caller, nonce: "n".repeat(32) });
+      assert.equal(subject.split(".").length, legacy.split(".").length + 2, `${subject} vs ${legacy}`);
+    }
+    // The reply filter carries the same tail, which is what the discovery parser walks.
+    const filter = issuedReplyFilter(first.ref).split(".");
+    assert.equal(filter[filter.length - 2], first.ref.generation);
+  });
+
   await check("the prototype refuses journal capabilities instead of adding a partial rail", async () => {
     assert.throws(() => issuedRequestRows(first.ref, { ...capability, journal: true }), /journal/);
   });

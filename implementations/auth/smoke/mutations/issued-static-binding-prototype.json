@@ -117,6 +117,14 @@
       "replace": "parts[0] !== \"cotal\" || parts[2] !== \"ep\"",
       "expectRed": "a malformed binding on the versioned rail is refused rather than read as legacy",
       "cell": "a malformed binding on the versioned rail is refused rather than read as legacy"
+    },
+    {
+      "name": "the generation is placed at a mode-dependent offset",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "  parts.splice(parts.length - 1, 0, ref.generation);",
+      "replace": "  parts.splice(parts.length - (parts[4] === \"inst\" ? 2 : 1), 0, ref.generation);",
+      "expectRed": "the generation sits at one offset from the tail for every rail mode",
+      "cell": "the generation sits at one offset from the tail for every rail mode"
     }
   ]
 }
