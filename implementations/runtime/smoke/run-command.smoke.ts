@@ -17,42 +17,72 @@
  * Run: pnpm smoke:runtime-run-command   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, jetstream } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
-import { isReachable, createEndpointStreams, replayRunJournal, openRecordsBucket, readRunRecord } from "@cotal-ai/core";
+import {
+  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
+  replayRunJournal, openRecordsBucket, readRunRecord,
+} from "@cotal-ai/core";
+import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
+// The command resolves its mesh through the registry under COTAL_HOME. Pin that to scratch and drop
+// every ambient COTAL_* so the operator's own meshes never enter the suite.
+const home = mkdtempSync(join(tmpdir(), "cotal-wfjcmd-home-"));
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
+process.env.COTAL_HOME = home;
+
+// A static-auth broker: a local run is admitted under the ceiling the operator names, and the
+// admission store only exists on an auth mesh (SPEC 14.8), so an open broker hosts no run at all.
 const SPACE = "wfjcmd";
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-wfjcmd-"));
-const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const auth = await createSpaceAuth(SPACE);
+writeFileSync(join(sd, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(sd, "js") }));
+const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.error("  ✗ FAIL:", n, extra ?? ""); } };
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
-  rmSync(sd, { recursive: true, force: true });
+  for (const d of [sd, home, root]) rmSync(d, { recursive: true, force: true });
 };
 process.on("exit", done);
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let up = false;
-for (let i = 0; i < 60 && !up; i += 1) { up = await isReachable(servers); if (!up) await wait(100); }
+for (let i = 0; i < 60 && !up; i += 1) {
+  up = await isReachable(servers, { creds: await mintCreds(auth, newIdentity(), "probe") }).catch(() => false);
+  if (!up) await wait(100);
+}
 if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
-const nc = await connect({ servers });
-const jsm = await jetstreamManager(nc);
-const js = jetstream(nc);
-await createEndpointStreams(jsm, new Kvm(nc), SPACE);
-const kv = await openRecordsBucket(nc, SPACE);
+await setupSpaceStreams({ servers, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 const EP = "manager";
 let takeovers = 100;
+// The suite reads records and journals the way an operator does: a run-operator credential minted
+// per read, pinned to the one run and the one takeover it replays. An admin credential holds no
+// records read row on this mesh, so the suite cannot ride one; the command mints its own for every
+// verb.
+const asOperator = async <T>(runId: string, use: (planes: { nc: Awaited<ReturnType<typeof connect>>; runId: string; takeoverId: string }) => Promise<T>): Promise<T> => {
+  const takeoverId = `t${(takeovers += 1)}`;
+  const creds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, runId, takeoverId } });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try { return await use({ nc, runId, takeoverId }); } finally { await nc.drain().catch(() => {}); }
+};
+const record = (runId: string) => asOperator(runId, async ({ nc }) => readRunRecord(await openRecordsBucket(nc, SPACE), EP, runId));
+const journal = (runId: string) => asOperator(runId, async ({ nc, takeoverId }) =>
+  replayRunJournal(jetstream(nc), await jetstreamManager(nc), SPACE, runId, takeoverId));
+// The registered mesh the command resolves: this space's trust material under a scratch root.
+const root = mkdtempSync(join(tmpdir(), "cotal-wfjcmd-root-"));
+mkdirSync(join(root, ".cotal"), { recursive: true });
+saveSpaceAuth(authDir(root), auth);
+recordMesh({ space: SPACE, server: servers, root, mode: "auth", ts: new Date().toISOString() });
 
 // The command prints to console.log; the suite reads what an operator would read.
 const LOGS: string[] = [];
@@ -63,9 +93,10 @@ const reset = () => { LOGS.length = 0; process.exitCode = undefined; };
 /** The minted id, read from the `starting run <id>` line exactly as an operator would. */
 const startedId = () => /starting run (run-[0-9a-f]+) on endpoint/.exec(captured())?.[1];
 
-/** One command invocation, as the dispatcher would hand it over. */
+/** One command invocation, as the dispatcher would hand it over. A local start is admitted under
+ *  the ceiling the operator names (SPEC 14.8); these programs touch no channel, so it is `none`. */
 const wf = (positionals: string[], values: Record<string, string | boolean | undefined> = {}) =>
-  runWorkflow({ values: { server: servers, space: SPACE, local: true, ...values }, positionals, raw: [] });
+  runWorkflow({ values: { server: servers, space: SPACE, local: true, "admit-read": "none", "admit-publish": "none", ...values }, positionals, raw: [] });
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
@@ -83,7 +114,7 @@ let P = "";
   c("start mints and announces the run id", P !== "", captured());
   c("start drives a pure program to completion", captured().includes(`run ${P}: completed`), captured());
   c("a completing start leaves the exit code alone", process.exitCode === undefined, process.exitCode);
-  const rec = await readRunRecord(kv, EP, P);
+  const rec = await record(P);
   c("and the run record says completed", rec?.status?.value.state === "completed", rec?.status?.value.state);
 }
 
@@ -125,7 +156,7 @@ let P = "";
   let open = false;
   for (let i = 0; i < 100 && !open; i += 1) {
     await wait(200);
-    const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`).catch(() => undefined);
+    const back = await journal(cid).catch(() => undefined);
     for (const r of back?.records ?? []) {
       if (r.record.kind !== "step") continue;
       const e = r.record.entry as JournalEntry;
@@ -171,7 +202,7 @@ let P = "";
   const refused = await wf(["start"], { file: ASKING }).then(() => undefined, (e: Error) => e);
   const aid = startedId() ?? "";
   c("the asking run starts and is named", aid !== "", captured());
-  const rec = await readRunRecord(kv, EP, aid);
+  const rec = await record(aid);
   c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat",
     rec?.status?.value.state === "failed", rec?.status?.value.state);
   c("and the reason names the handle and the rule, so an operator knows what to write instead",
@@ -198,7 +229,7 @@ let P = "";
   let open = false;
   for (let i = 0; i < 100 && !open; i += 1) {
     await wait(200);
-    const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`).catch(() => undefined);
+    const back = await journal(cid).catch(() => undefined);
     for (const r of back?.records ?? []) {
       if (r.record.kind !== "step") continue;
       const e = r.record.entry as JournalEntry;
@@ -210,7 +241,7 @@ let P = "";
   // Give the attach time to reach the plane, then grade what it did NOT do: no step settled
   // failed, and the recorded pause still open under its original mint.
   await wait(1_500);
-  const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`);
+  const back = await journal(cid);
   const failedSteps = back.records.filter((r) => r.record.kind === "step"
     && (r.record.entry as JournalEntry).state !== "pending"
     && (r.record.entry as JournalEntry).status === "failed");
@@ -224,7 +255,7 @@ let P = "";
   // never resolves, and a suite that awaits it unconditionally HANGS on that defect. On the green
   // path it has already settled (its superseded append reports released).
   await Promise.race([orphan, wait(15_000)]);
-  const rec = await readRunRecord(kv, EP, cid);
+  const rec = await record(cid);
   c("the record ends completed, never failed", rec?.status?.value.state === "completed", rec?.status?.value.state);
 }
 
@@ -244,7 +275,7 @@ let P = "";
       wf(["resume", P], { file: PURE }).catch(() => undefined),
     ]);
   }
-  const back = await replayRunJournal(js, jsm, SPACE, P, `t${(takeovers += 1)}`);
+  const back = await journal(P);
   const tokens = back.records
     .filter((r) => r.record.kind === "activation")
     .map((r) => (r.record as { fencingToken: number }).fencingToken);
@@ -263,5 +294,4 @@ if (ok + fail !== DECLARED) {
 
 console.log = origLog;
 console.log(`run-command: ${ok} ok, ${fail} failed`);
-await nc.drain().catch(() => {});
 process.exit(fail === 0 ? 0 : 1);
