@@ -1,5 +1,8 @@
 # Issued permission prototype
 
+[CLAIMS.md](CLAIMS.md) labels every claim on this page as measured or asserted, and names the
+cell and mutation behind each measured one. Start there if you are reviewing.
+
 This directory holds test-only proof development for the issued-authority contract.
 Nothing here is exported from core or attached to credential issuance, endpoint
 registration, or workflow admission.

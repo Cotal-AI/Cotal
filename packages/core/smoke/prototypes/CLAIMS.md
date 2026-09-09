@@ -21,7 +21,7 @@ The **A** lines are where a review budget is best spent.
 | 4 | Publish and subscribe are independent | M | cell "publish and subscribe are independent"; mutation "publish policy is reused for reads" |
 | 5 | Caller input is snapshotted and deep-frozen | M | cell "normalization snapshots and deep-freezes caller input"; mutation "caller inputs are frozen instead of copied" |
 | 6 | Dynamic reply permissions and queue-qualified subscriptions refuse rather than flatten | M | refusal cells in the same suite |
-| 7 | Nothing here is exported from core or attached to issuance, registration or admission | A | structural. No cell asserts the absence of an import edge; `pnpm smoke:core-boundary` covers smoke-kit, not this directory |
+| 7 | Nothing here is exported from core or attached to issuance, registration or admission | M | census cell "no shipped source imports the prototypes"; mutation "the prototype-import scan looks for the wrong path". Was **A**; falsified by scan, found zero, then made a cell |
 | 8 | Constructing a permission value does not prove an issuer granted it | A | definitional |
 
 ## Lifecycle
@@ -115,20 +115,26 @@ The **A** lines are where a review budget is best spent.
 | 63 | A pull `MSG.NEXT` reply reaches it, retaining its original captured subject, with a `$JS.ACK.` reply | M-nomut | same suite |
 | 64 | A `STREAM.MSG.GET` reply reaches it under the rail subject with no marker | M-nomut | same suite |
 | 65 | A `DIRECT.GET` reply reaches it under the rail subject with `Nats-` headers and raw stored bytes | M-nomut | same suite |
-| 66 | Therefore no granted path delivers attacker-chosen, request-shaped bytes under the rail without a marker | A | a conclusion over 62 to 65, and over the assumption that those four are the only granted paths |
+| 66 | Therefore no granted path delivers attacker-chosen, request-shaped bytes under the rail without a marker | A | a conclusion over 62 to 65 and over 70. Still the load-bearing assertion |
+| 70 | Every `$JS.` grant a peer-held profile holds falls into one of four delivery classes, and an unknown verb refuses | M | census cell "every JetStream grant a peer can hold has a decided delivery class"; mutations "an unclassified JetStream grant is waved through", "a raw stored read is classified as an API envelope" |
 | 67 | The condition that would break it is one credential holding a write and a raw read on one stream | A | reasoning, now guarded by 56 but not derived from a cell |
 | 68 | Marker-based refusal cannot cover the `STREAM.MSG.GET` path | M | follows directly from 64: there is no marker to refuse on |
 | 69 | The durable fix is the mediated-read rule scoped for v0.4 | A | design position |
 
 ## Where I would attack this
 
-Claim 66 is the load-bearing one and it is an **A**. It quantifies over "granted paths" using a
-set I enumerated by hand. If a fifth delivery path exists that I did not test, the conclusion
-fails and nothing in the suite would notice. Claim 67 has the same shape: it names the breaking
+Claim 66 is the load-bearing one and it is still an **A**, but it is narrower than it was. It
+used to quantify over a set of four paths I picked by hand. Claim 70 now enumerates every `$JS.`
+grant a peer-held profile holds and forces each into a delivery class, so a new grant with an
+unclassified verb fails rather than silently widening the set. What remains asserted is that the
+four classes are exhaustive of how a grant can put bytes on a chosen subject, and that each class
+fails the forgery on the ground stated for it. Claim 67 has the same shape: it names the breaking
 condition from reasoning, and claim 56 then guards that condition, so a wrong 67 means the guard
 protects the wrong thing.
 
 Claim 58 decides which profiles count as peer-held, which is what makes 56 meaningful. It is a
 judgement with no cell behind it.
 
-Claim 7 would be cheap to falsify and I have not tried.
+Claim 7 was an **A** when this ledger was first written, with the note that it would be cheap
+to falsify and that I had not tried. I then tried: zero shipped files import the prototypes, and
+it is now a cell with a mutation. That is the only claim on this page whose label has moved.
