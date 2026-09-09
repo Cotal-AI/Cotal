@@ -1,0 +1,172 @@
+/**
+ * Independent session-credential remint against an owner-authorized enrollment.
+ *
+ * The ACL registry is a read-dimension store. A remint that intersects only
+ * `aclForAlias.allowSubscribe` reissues allowPublish and scope from the enrollment
+ * ceiling even after those grants were revoked. This module intersects a FRESH
+ * grant with the authenticated enrollment ceiling across every issued dimension.
+ *
+ * Every durable enrollment read and write is parsed by {@link parseSessionEnrollment}.
+ */
+import type { KV } from "@nats-io/kv";
+import type { RetainedAgentAuthority } from "./auth-provider.js";
+import { canonicalJson } from "./canonical.js";
+import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { createRecordEntry, updateRecordEntry } from "./endpoint-records.js";
+import { mintRenewableSessionAgentJwt, type SpaceAuth } from "./provision.js";
+import {
+  parseSessionEnrollment,
+  sessionEnrollmentKey,
+  type AuthorityCeiling,
+  type ResourceKey,
+  type SessionEnrollment,
+} from "./session-lifecycle-records.js";
+import { patternInAllow } from "./subjects.js";
+
+const enc = (v: unknown) => new TextEncoder().encode(canonicalJson(v));
+
+function refuse(code: "bad-request" | "permission-denied" | "failed-precondition", message: string): never {
+  throw new EpEnvelopeError(code, message);
+}
+
+function intersectChannels(ceiling: readonly string[], live: readonly string[]): string[] {
+  // Keep live entries covered by the ceiling, and ceiling entries covered by the live
+  // grant. Filtering only live ⊆ ceiling drops a still-valid narrower ceiling when the
+  // live grant is a broader pattern (review.> live vs review.pua ceiling).
+  const fromLive = live.filter((entry) => patternInAllow([...ceiling], entry));
+  const fromCeiling = ceiling.filter((entry) => patternInAllow([...live], entry));
+  return [...new Set([...fromLive, ...fromCeiling])];
+}
+
+function refuseIfExpired(enrollment: SessionEnrollment, now: number): void {
+  if (enrollment.expiry <= now)
+    refuse("failed-precondition", "session enrollment has expired and cannot renew a session credential");
+  if (enrollment.provenance.authenticatedAt > now)
+    refuse("failed-precondition", "session enrollment provenance is not yet authentic and cannot renew a session credential");
+}
+
+/** Enrollment role records WHICH role was authenticated. Roles are non-hierarchical
+ *  (each maps to its own `svc_<role>` TASK durable), so R ∩ S has no meet and refuses.
+ *  Absence cannot acquire a later live role. R ∩ none attenuates to role-less. */
+function issuedRole(
+  enrollment: Extract<SessionEnrollment, { kind: "mesh-enrolled" }>,
+  grant: SessionRenewalGrant,
+): string | undefined {
+  const enrolled = enrollment.ceiling.role;
+  const live = grant.role;
+  if (!enrolled) {
+    if (live)
+      refuse("permission-denied", "session renewal cannot acquire a role the enrollment did not authorize");
+    return undefined;
+  }
+  if (!live) return undefined;
+  if (live !== enrolled)
+    refuse("permission-denied", `session renewal cannot issue role ${live}; enrolled role ${enrolled} does not authorize a different role's TASK grants (re-enroll)`);
+  return live;
+}
+
+function intersectScope(ceiling: readonly string[], live: readonly string[]): string[] {
+  const allowed = new Set(ceiling);
+  return live.filter((entry) => allowed.has(entry));
+}
+
+/** Persist one enrollment row. The bytes are parsed before the CAS write. */
+export async function putSessionEnrollment(
+  kv: KV,
+  enrollment: SessionEnrollment,
+  expectedRevision?: number,
+): Promise<number> {
+  const key = sessionEnrollmentKey(enrollment.resourceKey);
+  parseSessionEnrollment(enc(enrollment), key);
+  return expectedRevision === undefined
+    ? createRecordEntry(kv, key, enrollment)
+    : updateRecordEntry(kv, key, enrollment, expectedRevision);
+}
+
+/** Load one enrollment row. Absence and non-PUT markers fail closed. */
+export async function getSessionEnrollment(kv: KV, resourceKey: ResourceKey): Promise<SessionEnrollment> {
+  const key = sessionEnrollmentKey(resourceKey);
+  const entry = await kv.get(key);
+  if (!entry) refuse("failed-precondition", `session enrollment ${key} is absent`);
+  if (entry.operation !== "PUT")
+    refuse("failed-precondition", `session enrollment ${key} carries a ${entry.operation} marker; enrollment rows are never garbage-collected automatically`);
+  return parseSessionEnrollment(entry.value, key, resourceKey);
+}
+
+export type SessionRenewalGrant = Pick<
+  RetainedAgentAuthority,
+  "owner" | "actor" | "lifecycleUid" | "scope" | "allowSubscribe" | "allowPublish" | "role"
+>;
+
+/**
+ * Bound a fresh grant by the authenticated enrollment ceiling.
+ * Identity (owner, actor, lifecycleUid) must match exactly. Channel lists use
+ * allow-pattern containment. Scope uses exact token membership. supervise is refused.
+ * ceiling.role records WHICH role was authenticated. The live ledger is a bound
+ * (revocation lands as role-less), not a source of a different role. Roles are
+ * non-hierarchical, so enrolled R and live S have no meet and refuse. A missing
+ * role is an explicit role-less remint.
+ */
+export function issuedSessionRenewalAuthority(args: {
+  enrollment: SessionEnrollment;
+  grant: SessionRenewalGrant;
+}): AuthorityCeiling {
+  const { enrollment, grant } = args;
+  if (enrollment.kind !== "mesh-enrolled")
+    refuse("failed-precondition", "native-only enrollment has no mesh identity and cannot renew a session credential");
+  const ceiling = enrollment.ceiling;
+  if (grant.owner !== ceiling.owner || grant.actor !== ceiling.actor || grant.lifecycleUid !== ceiling.lifecycleUid)
+    refuse("permission-denied", "session renewal grant is not bound to the enrolled owner, actor, and lifecycle");
+  if (ceiling.scope.includes("supervise") || grant.scope.includes("supervise"))
+    refuse("permission-denied", "session renewal authority must never include supervise; renewal is not management authority");
+  const role = issuedRole(enrollment, grant);
+  return Object.freeze({
+    owner: ceiling.owner,
+    actor: ceiling.actor,
+    lifecycleUid: ceiling.lifecycleUid,
+    scope: Object.freeze(intersectScope(ceiling.scope, grant.scope)),
+    allowSubscribe: Object.freeze(intersectChannels(ceiling.allowSubscribe, grant.allowSubscribe)),
+    allowPublish: Object.freeze(intersectChannels(ceiling.allowPublish, grant.allowPublish)),
+    ...(role ? { role } : {}),
+  });
+}
+
+export interface IssueSessionRenewalArgs {
+  kv: KV;
+  resourceKey: ResourceKey;
+  grant: SessionRenewalGrant;
+  auth: Pick<SpaceAuth, "space" | "account">;
+  /** Instant used for enrollment/provenance expiry. Production omits it and uses Date.now(). */
+  now?: number;
+}
+
+/**
+ * Production remint: parse the stored enrollment, intersect a FRESH grant on
+ * every issued dimension, and sign a bounded `session-agent` JWT for the
+ * enrolled public nkey. The connector keeps the matching seed. supervise is
+ * refused. Native-only enrollments cannot renew.
+ */
+export async function issueSessionRenewal(args: IssueSessionRenewalArgs): Promise<{
+  jwt: string;
+  exp: number;
+  authority: AuthorityCeiling;
+}> {
+  const enrollment = await getSessionEnrollment(args.kv, args.resourceKey);
+  refuseIfExpired(enrollment, args.now ?? Date.now());
+  if (enrollment.kind !== "mesh-enrolled")
+    refuse("failed-precondition", "native-only enrollment has no mesh identity and cannot renew a session credential");
+  if (args.grant.owner !== enrollment.ceiling.owner
+    || args.grant.actor !== enrollment.ceiling.actor
+    || args.grant.lifecycleUid !== enrollment.ceiling.lifecycleUid)
+    refuse("permission-denied", "session renewal grant is not bound to the enrolled owner, actor, and lifecycle");
+  const authority = issuedSessionRenewalAuthority({ enrollment, grant: args.grant });
+  const minted = await mintRenewableSessionAgentJwt(args.auth, enrollment.enrolledPublicId, {
+    principal: { owner: authority.owner, actor: authority.actor },
+    lifecycleUid: authority.lifecycleUid,
+    capabilities: [...authority.scope],
+    allowSubscribe: [...authority.allowSubscribe],
+    allowPublish: [...authority.allowPublish],
+    ...(authority.role ? { role: authority.role } : {}),
+  });
+  return { jwt: minted.jwt, exp: minted.exp, authority };
+}

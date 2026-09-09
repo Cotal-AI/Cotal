@@ -141,6 +141,16 @@ export const SESSION_BINDING: RecordKindDef = {
   mediation: "mediated",
 };
 
+/** Native session enrollment (§4): one owner-authorized CAS row per canonical ResourceKey.
+ *  The value discriminates native-only custody from a session carrying mesh credentials. */
+export const SESSION_ENROLLMENT: RecordKindDef = {
+  kind: "sessionenroll",
+  qualifiers: [qId("resourceId")],
+  split: false,
+  writers: { spec: "session-lifecycle-owner", status: "session-lifecycle-owner" },
+  mediation: "mediated",
+};
+
 /** One immutable/reconciled native lifecycle operation row per (ResourceKey, operationId). */
 export const SESSION_OPERATION: RecordKindDef = {
   kind: "sessionop",
@@ -482,7 +492,7 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
  *  record; the seam admits the detail but head-guards the atomic key. */
 export const AUTHORITY_KIND_DEFS: readonly RecordKindDef[] = [
   LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION, RETIREMENT_FRONTIER,
-  SESSION_BINDING, SESSION_OPERATION, SESSION_TRUST_STATE,
+  SESSION_BINDING, SESSION_ENROLLMENT, SESSION_OPERATION, SESSION_TRUST_STATE,
 ];
 
 /** RUNTIME-freeze a def: `readonly` is type-level only, and this module's collections are a

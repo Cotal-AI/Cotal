@@ -54,8 +54,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, applyReleaseReceiptsToNativeLookup, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, queryOperation, rawDigest, recordsBucket, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { Kvm, type KV } from "@nats-io/kv";
+import { admissionMediatorGrants, applyReleaseReceiptsToNativeLookup, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, openRecordsBucket, queryOperation, rawDigest, recordsBucket, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -70,6 +70,7 @@ import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, ope
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { handleSessionRenewal, memoryRemintNonceBook, SESSION_RENEWAL_PATH, type SessionRenewalCtx } from "./session-renewal.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -106,6 +107,9 @@ export const JWKS_MAX_AGE_SEC = 300;
 
 /** Loopback-only operator route used by `cotal actor grant/revoke` before rotating or deleting an interactive lifecycle. */
 export const INTERACTIVE_RETIRE_PATH = "/interactive-lifecycle/retire";
+
+/** Loopback-only independent session-credential remint. The public face never includes this path. */
+export const SESSION_RENEWAL_ROUTE = SESSION_RENEWAL_PATH;
 
 /** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
@@ -149,6 +153,8 @@ export interface AuthAuthorityPlane {
    *  kept minting would look healthy while a successor reclaims its scanners). Never resolves on a
    *  clean close. */
   fenced: Promise<string>;
+  /** Records KV on the mint writer. Independent session remint reads enrollment rows here. */
+  records: KV;
   close(): Promise<void>;
 }
 
@@ -187,9 +193,11 @@ export async function openAuthAuthorityPlane(opts: {
   const { server, space, dataAccount, log } = opts;
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
   let registry;
+  let recordsKv: KV;
   try {
     await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
     registry = await openLifecycleRegistry(writer.nc, space);
+    recordsKv = await openRecordsBucket(writer.nc, space);
   } catch (e) {
     await writer.close();
     throw e;
@@ -534,6 +542,7 @@ export async function openAuthAuthorityPlane(opts: {
       );
     },
     fenced,
+    records: recordsKv,
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
       // clients down, then `held → released` (never released while either scanner can still
@@ -734,6 +743,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
+  const remintNonces = memoryRemintNonceBook();
   const ctx: HandlerCtx = {
     issuer,
     bridge,
@@ -748,6 +758,16 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     space,
     dir,
     mintConnectCredential: plane.mintConnectCredential,
+    sessionRenewal: {
+      cap,
+      dir,
+      space,
+      records: plane.records,
+      account: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+      resolveAnchor: () => undefined,
+      nonceSeen: remintNonces.nonceSeen,
+      markNonce: remintNonces.markNonce,
+    },
   };
   const http = createServer((req, res) => void handle(req, res, ctx));
   await new Promise<void>((resolvePort, reject) => {
@@ -844,6 +864,7 @@ interface HandlerCtx {
   /** The authority plane's root-credential ensure — the agent-exchange arm stamps from it (the
    *  human arm stamps inside the bridge). */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  sessionRenewal: SessionRenewalCtx;
 }
 
 /** Per-listener policy for `POST /exchange` — how a caller is proven, attributed, and throttled on
@@ -965,13 +986,14 @@ const ROUTES = new Map<string, RouteHandler>([
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
   ["/native-lifecycle-bindings", handleNativeLifecycleBindings],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
+  [SESSION_RENEWAL_PATH, (req, res, ctx) => handleSessionRenewal(req, res, ctx.sessionRenewal, send, readJsonBody)],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /native-lifecycle-bindings, /interactive-lifecycle/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /native-lifecycle-bindings, /interactive-lifecycle/retire, /session-renewal" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);

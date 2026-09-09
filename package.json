@@ -370,6 +370,7 @@
     "smoke:ep-effects": "tsx packages/core/smoke/endpoint-effects.smoke.ts",
     "smoke:goal-epoch-fence": "tsx packages/core/smoke/goal-epoch-fence.smoke.ts",
     "smoke:ep-checkpoint": "tsx packages/core/smoke/endpoint-checkpoint.smoke.ts",
+    "smoke:session-remint-cap": "tsx packages/core/smoke/session-remint-cap.smoke.ts",
     "smoke:ep-handle": "tsx packages/core/smoke/endpoint-handle.smoke.ts",
     "smoke:ep-session": "tsx packages/core/smoke/endpoint-session.smoke.ts",
     "smoke:ep-guard": "tsx packages/core/smoke/endpoint-guard.smoke.ts",

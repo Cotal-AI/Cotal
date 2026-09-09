@@ -1,0 +1,21 @@
+{
+  "suite": "packages/core/smoke/session-enrollment.smoke.ts",
+  "guard": "native-only enrollment cannot carry credential renewal state",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/session-enrollment.smoke.ts",
+  "completionMarker": " failed",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/session-enrollment.json",
+  "why": [
+    "A native-only session has no signing key and no mesh lifecycle.",
+    "The discriminator must close the native-only arm against every renewal-only field."
+  ],
+  "mutations": [
+    {
+      "name": "let native-only carry the renewal public key",
+      "file": "packages/core/src/session-lifecycle-records.ts",
+      "find": "  if (value.kind === \"native-only\") closed(value, NATIVE_ENROLLMENT_FIELDS, label);",
+      "replace": "  if (value.kind === \"native-only\") closed(value, MESH_ENROLLMENT_FIELDS, label);",
+      "expectRed": "native-only cannot carry enrolledPublicId",
+      "cell": "native-only cannot carry enrolledPublicId"
+    }
+  ]
+}
