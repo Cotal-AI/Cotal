@@ -175,6 +175,24 @@ subject it cannot publish to. The document is fixed-shape and not caller-shapeab
 same ground the `api-envelope` class rests on, and the delivery-class table now covers `$SYS.`
 grants for exactly this reason.
 
+`issued-accepted-row.ts` prototypes the alternative, so the choice is between two measured
+mechanisms rather than one measured and one described. The issuer writes the accepted reference
+to one row keyed by a token the client chose, create-only, and the client reads that row itself
+with a grant naming exactly that key. Reading another client's row is refused by the broker.
+A second issuance cannot redeem the same token.
+
+Two design consequences fell out of building it. The rows need their own bucket with
+`allow_direct` on, because per-key scoping is only expressible on a `DIRECT.GET` grant and the
+evidence store deliberately has direct get off; a stream-wide `STREAM.MSG.GET` would let a client
+read every other client's row. And the key must be a value the client already knows before it
+connects, which rules out the lifecycle uid on the callout path and leaves the client-chosen
+token.
+
+The comparison that decides it: this read is a `DIRECT.GET`, which the ingress suite measured
+arriving with `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` and `Nats-Time-Stamp` headers, while
+the `$SYS.REQ.USER.INFO` response arrives with none. An endpoint can refuse a marked frame. It
+cannot refuse an unmarked one.
+
 Measured limits. No current profile holds a grant that would let it request its own server view
 (a census cell, with a positive control), and a connection without that grant cannot discover its
 generation (a static cell), so production issuance would have to add `$SYS.REQ.USER.INFO` to each
