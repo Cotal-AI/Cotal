@@ -172,15 +172,6 @@ try {
     observations.trustedOverlaps = overlaps;
   });
 
-  await check("every profile is classified peer-held or trusted", async () => {
-    // Peer-heldness is a deployment property, so nothing here can settle the partition. The closed
-    // union only makes a NEW profile fail rather than drift into "trusted" by default.
-    const all = [...new Set(fixtures.map((f) => f.profile))].sort();
-    const classified = [...PEER_HELD_PROFILES, ...TRUSTED_PROFILES].sort();
-    assert.deepEqual(classified, all);
-    assert.equal(new Set(classified).size, classified.length, "a profile is classified twice");
-  });
-
   await check("no peer-held profile can both write and raw-read one stream", async () => {
     // A credential holding both could place bytes of its own choosing under any subject, which is
     // the one condition that turns the measured deputy paths into a forged request on the rail.
@@ -189,6 +180,15 @@ try {
       const streams = writeAndRawReadStreams(fixture.permissions, space);
       assert.deepEqual(streams, [], `${fixture.profile}/${fixture.variant} pairs write and raw read on ${streams.join(", ")}`);
     }
+  });
+
+  await check("every profile is classified peer-held or trusted", async () => {
+    // Peer-heldness is a deployment property, so nothing here can settle the partition. The closed
+    // union only makes a NEW profile fail rather than drift into "trusted" by default.
+    const all = [...new Set(fixtures.map((f) => f.profile))].sort();
+    const classified = [...PEER_HELD_PROFILES, ...TRUSTED_PROFILES].sort();
+    assert.deepEqual(classified, all);
+    assert.equal(new Set(classified).size, classified.length, "a profile is classified twice");
   });
 
   const report = {
