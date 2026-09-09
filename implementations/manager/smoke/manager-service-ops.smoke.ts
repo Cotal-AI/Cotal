@@ -42,11 +42,11 @@ import {
   gateObserve, gateFreeze, gateRetire, headBeginRetirement, headCompleteRetirement,
   staticSlotKey,
   loadAgentFile, saveAgentFile,
-  epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
+  epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError, readAcceptedRow,
   contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
   resolveService, invokeCommand,
   registry,
-  type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
+  type Connector, type ControlReply, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
@@ -131,7 +131,7 @@ registry.register(cwdCon);
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
   managerInstanceId: string;
-  agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string } }>;
+  agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
   goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
     pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
@@ -485,7 +485,12 @@ try {
     check("w2's lifecycle-keyed creds file exists", existsSync(credsPath), credsPath);
     const w2Creds = readFileSync(credsPath, "utf8");
     const w2Nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: w2Creds, tls: false }), maxReconnectAttempts: 0 });
-    const selfCaller: EpCaller = { owner: DEV_OWNER, actor: w2.id, uid: w2.lifecycleUid };
+    // A spawned seat's credential is an issuance (SPEC 13.15): its request rows live on the
+    // versioned rail, so the caller carries the generation the seat discovers the way a real
+    // client does, by reading the accepted row under its own per-key grant.
+    const w2Ref = await readAcceptedRow(w2Nc, space, w2.issued!.acceptedToken);
+    check("w2's own credential reads its accepted row, and it names this incarnation", w2Ref.actor === w2.id && w2Ref.uid === w2.lifecycleUid && w2Ref.generation === w2.issued!.generation, w2Ref);
+    const selfCaller: EpCaller = { owner: DEV_OWNER, actor: w2.id, uid: w2.lifecycleUid, generation: w2Ref.generation } as IssuedCaller;
     const rSelf = await epCall(w2Nc, space, { mode: "one" }, {
       endpoint: MANAGER_ENDPOINT, command: "stop", contract: MANAGER_CONTRACTS.stop, caller: selfCaller,
       args: { graceful: true }, target: { mode: "self" },

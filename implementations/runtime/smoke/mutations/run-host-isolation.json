@@ -160,7 +160,7 @@
       "name": "a missing admission record reads as an unrestricted one",
       "file": "packages/core/src/run-admission.ts",
       "find": "  if (entry === undefined)\n    throw new EpEnvelopeError(\"permission-denied\", `run ${runId} has no admission record on endpoint ${endpoint}; a run with no admission runs no channel effect (SPEC 14.8)`);\n  let admission: RunAdmission;\n  try {\n    admission = admissionSnapshot(entry.value);",
-      "replace": "  let admission: RunAdmission;\n  try {\n    admission = admissionSnapshot(entry === undefined ? { version: 1, space, endpoint, runId, instanceId: \"i\".repeat(26), caller: { owner: \"local\", actor: \"x\", uid: \"u\".repeat(26) }, ceiling: { publish: { allow: { mode: \"all\" }, deny: [] }, subscribe: { allow: { mode: \"all\" }, deny: [] } }, provenance: { kind: \"operator\", by: \"x\", reason: \"x\" }, admittedAt: 0 } : entry.value);",
+      "replace": "  let admission: RunAdmission;\n  try {\n    admission = admissionSnapshot(entry === undefined ? { version: 1, space, endpoint, runId, instanceId: \"i\".repeat(26), caller: { owner: \"local\", actor: \"x\", uid: \"u\".repeat(26) }, ceiling: { publish: { allow: { mode: \"all\" }, deny: [] }, subscribe: { allow: { mode: \"all\" }, deny: [] } }, provenance: { kind: \"operator\", by: \"x\", reason: \"x\" }, admittedAt: 1 } : entry.value);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "a run with no admission record is refused at its first channel effect, never served under the host's scope",
