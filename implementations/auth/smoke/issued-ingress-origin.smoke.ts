@@ -12,6 +12,7 @@ import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, serverConfig, permissionsFor, isReachable, chatStream, chatSubject, channelBucket, epcStreamName } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { acceptedBucket, acceptedKey, acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
 
 /**
  * Origin binding for the candidate issued rail (SPEC 678-695, 3084-3094): a JetStream read
@@ -301,6 +302,35 @@ try {
       assert.equal(frame, undefined, `measured: push delivery did not reach the ${label} serve shape`);
       await jsm.consumers.delete(stream, name).catch(() => undefined);
     }
+  });
+
+
+  await check("the accepted-row read grant itself puts marked bytes on the rail", async () => {
+    // Review hole 2: section 5 recommends option 2, and its argument is about the path option 2
+    // ADDS. Until now that path was classified from the generic DIRECT.GET verb and from the
+    // channels-KV forgery cell rather than from the exact grant an issued ceiling would carry.
+    const token = "c".repeat(32);
+    const bucket = acceptedBucket(space);
+    const accepted = await new Kvm(operator).create(bucket, { allow_direct: true });
+    await accepted.put(acceptedKey(token), enc(JSON.stringify({ version: 1, ref: { space, owner: "local", actor: "victim", uid, generation } })));
+
+    const grant = acceptedReadGrant(space, token);
+    const holder = await open({ pub: { allow: [...(perms.pub.allow as string[]), grant] }, sub: { allow: [`_INBOX_holder0123456789abcdef.>`] } }, "_INBOX_holder0123456789abcdef");
+    // The holder cannot write the bucket, which is the second of section 5's three reasons and
+    // the thing that stops it choosing the bytes this path replays.
+    const canWrite = [...(perms.pub.allow as string[]), grant].some((row) => row.startsWith(`$KV.${bucket}.`));
+    assert.equal(canWrite, false, "an issued ceiling must not be able to write the accepted bucket");
+
+    const before = frames.length;
+    holder.publish(grant, new Uint8Array(0), { reply: rail });
+    await holder.flush();
+    let frame: Frame | undefined;
+    for (let i = 0; i < 60 && !frame; i++) { frame = frames.slice(before).find((f) => f.body.includes(generation)); if (!frame) await wait(20); }
+    observations.push({ vector: "accepted-row DIRECT.GET reply subject", reachedServeShape: !!frame, attackerControlsBytes: canWrite, frame: frame ?? null });
+    assert.ok(frame, "measured: option 2's own grant reaches the serve subscription");
+    assert.equal(frame.subject, rail, "measured: it arrives under the caller-chosen rail subject");
+    // The whole reason to prefer option 2: what it adds is MARKED, so ingress can refuse it.
+    assert.ok(frame.headerKeys.some((key) => key.toLowerCase().startsWith("nats-")), "measured: the accepted-row read arrives carrying Nats- markers");
   });
 
   console.log(`issued ingress origin: ${passed} passed`);
