@@ -501,6 +501,11 @@ export class CotalEndpoint extends EventEmitter {
   private lastPresenceWatchAt = 0;
   /** Last emitted presence-view state. Suppresses duplicate `presence-view` events. */
   private presenceViewState: PresenceView["state"] = "unpopulated";
+  /** A presence-watch rebind in flight (see {@link rebindStalePresenceWatch}); one at a time. */
+  private presenceRebind?: Promise<void>;
+  /** Wall-clock of the last rebind attempt, so a bucket that is silent because it is EMPTY (or a
+   *  broker that keeps refusing the consumer create) is retried once per TTL, not per sweep tick. */
+  private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
@@ -1167,6 +1172,7 @@ export class CotalEndpoint extends EventEmitter {
     this.confirmingChatSubs.clear();
     this.roster.clear();
     this.lastPresenceWatchAt = 0;
+    this.presenceRebindAt = 0;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
     this.joinSeq.clear();
@@ -4850,6 +4856,8 @@ export class CotalEndpoint extends EventEmitter {
     void (async () => {
       let ready = false;
       for await (const e of iter) {
+        // A rebind replaced this watch; its late entries belong to a dead epoch of the roster.
+        if (this.presenceWatchIter !== iter) break;
         this.handleKvEntry(e);
         // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
         if (!ready && e.isUpdate) {
@@ -4861,6 +4869,35 @@ export class CotalEndpoint extends EventEmitter {
       }
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
+  }
+
+  /**
+   * Replace a presence watch that has gone silent past TTL while the connection is up. The new
+   * ordered consumer starts from the bucket's current last-per-subject state, so a peer that is
+   * heartbeating is re-observed within one replay and a peer that is gone is aged out by the
+   * next sweep exactly as if the watch had never stalled. Rate-limited to one attempt per TTL
+   * per observer, never overlapping, never on a stopped or rebuilding endpoint (those own their
+   * watch through {@link connectAndBind}). A failed bind is reported and the view stays stale.
+   */
+  private rebindStalePresenceWatch(now: number): void {
+    if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
+    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;
+    this.presenceRebindAt = now;
+    const old = this.presenceWatchIter;
+    this.presenceRebind = (async () => {
+      try {
+        this.presenceWatchIter = undefined;
+        try { old?.stop(); } catch { /* already closed with its consumer */ }
+        await this.startPresenceWatch();
+        this.emit("warning", new Error(
+          `presence watch silent for ${now - this.lastPresenceWatchAt}ms with the connection up; rebound it from the bucket's current state`,
+        ));
+      } catch (e) {
+        this.emit("error", e as Error);
+      } finally {
+        this.presenceRebind = undefined;
+      }
+    })();
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
@@ -5011,11 +5048,29 @@ export class CotalEndpoint extends EventEmitter {
     // watch freshness; surface the view as stale instead.
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
       this.emitPresenceViewIfChanged();
+      // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
+      // the transport is up and the watch's own consumer is what died. Measured on netcup
+      // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
+      // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
+      // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client
+      // never reset again, the iterator never closed, and the manager's roster stayed frozen at
+      // the pre-recreation snapshot for hours: `cotal ps` read every older seat "mesh offline"
+      // and every newer seat "not in roster" while all of them were heartbeating. The same
+      // end state follows a plain consumer delete (an operator, or the 5-minute inactive
+      // threshold after a long stall). Rebind the watch from the bucket's CURRENT state; a held
+      // link's rebind fails or stays silent and the view simply stays stale, as before.
+      this.rebindStalePresenceWatch(now);
       return;
     }
     let changed = false;
     for (const [id, p] of this.roster) {
-      if (p.status !== "offline" && now - p.ts > this.ttlMs) {
+      // A peer's own `ts` always trails the observer's last delivery, so "older than TTL by the
+      // wall clock" alone ages peers out on the tick just before the whole-bucket gate above
+      // trips (#1311's flap; measured as 3 offline verdicts per silence in the rebind suite).
+      // Require that the watch itself delivered for a full TTL after this peer's last heartbeat:
+      // then other peers were heard and this one was not, which is the only silence that is the
+      // peer's rather than the observer's.
+      if (p.status !== "offline" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {
         const offline = this.toOffline(p);
         this.roster.set(id, offline);
         this.emit("presence", { type: "offline", presence: offline });

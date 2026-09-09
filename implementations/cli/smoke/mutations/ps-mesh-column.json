@@ -1,0 +1,22 @@
+{
+  "command": "pnpm smoke:ps-mesh-column",
+  "mutations": [
+    {
+      "name": "M1 a stale manager view still renders 'offline'/'not in roster' as if they were verdicts",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (r.meshView === \"stale\") return c.yellow(\"mesh unknown\") + c.dim(\" (manager's presence view is stale)\");\n",
+      "replace": "",
+      "expectRed": "stale view hides 'offline' behind mesh unknown"
+    },
+    {
+      "name": "M2 an unpopulated manager view still renders 'not in roster' as a verdict",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (r.meshView === \"unpopulated\") return c.yellow(\"mesh unknown\") + c.dim(\" (manager's presence view not yet populated)\");\n",
+      "replace": "",
+      "expectRed": "unpopulated view hides 'absent' behind mesh unknown"
+    }
+  ],
+  "suite": [
+    "implementations/cli/smoke/ps-mesh-column.smoke.ts"
+  ]
+}

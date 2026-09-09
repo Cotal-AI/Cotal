@@ -196,6 +196,11 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // The observing manager's presence-view state at the time of the read: `current` (the mesh
+    // column is a verdict), `stale` (its watch has been silent past TTL; `mesh` is last-known),
+    // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
+    // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
+    meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
     lifecycleUid: { type: "string" },
     authHealth: { type: "string" },
     authReason: { type: "string" },

@@ -1,0 +1,43 @@
+{
+  "command": "pnpm smoke:presence-watch-rebind",
+  "mutations": [
+    {
+      "name": "R1 the rebind call is dropped from sweep, so a dead consumer under a live connection leaves the view stale forever (netcup 2026-09-09)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.rebindStalePresenceWatch(now);\n      return;\n",
+      "replace": "      return;\n",
+      "expectRed": "2.2 the view returns to current without a reconnect (a NEW watch was bound under the live connection)"
+    },
+    {
+      "name": "R2 the rebind runs on a stopped or rebuilding endpoint too (guard dropped), so a rebuild's own watch is stomped; graded through the once-per-TTL control",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;\n",
+      "replace": "    if (this.presenceRebind) return;\n",
+      "expectRed": "4.3 CONTROL: no second rebind was attempted while the watch was delivering (one warning total)"
+    },
+    {
+      "name": "R3 the rebind is silent (warning dropped), so an operator cannot tell a rebound view from one that never stalled",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        this.emit(\"warning\", new Error(\n          `presence watch silent for ${now - this.lastPresenceWatchAt}ms with the connection up; rebound it from the bucket's current state`,\n        ));\n",
+      "replace": "",
+      "expectRed": "2.5 the rebind is REPORTED as a warning naming the silent window, not hidden and not an error"
+    },
+    {
+      "name": "R4 the per-peer age-out ignores whether the watch delivered after the peer's heartbeat, so the observer's own deafness emits one offline verdict per peer on the tick before the whole-bucket gate trips",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (p.status !== \"offline\" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {\n",
+      "replace": "      if (p.status !== \"offline\" && now - p.ts > this.ttlMs) {\n",
+      "expectRed": "2.6 no per-peer offline verdict was emitted for the observer's own deafness"
+    },
+    {
+      "name": "R5 late entries from the replaced watch are still applied, so a dead epoch's replay can overwrite the rebound roster",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (this.presenceWatchIter !== iter) break;\n",
+      "replace": "",
+      "expectRed": "2.7 the view went stale then current exactly once each (no flapping)"
+    }
+  ],
+  "suite": [
+    "packages/core/smoke/presence-watch-rebind.smoke.ts"
+  ]
+}
