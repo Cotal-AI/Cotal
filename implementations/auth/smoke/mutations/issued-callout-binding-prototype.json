@@ -45,6 +45,22 @@
       "replace": "      const digest = rawDigest(canonicalJson(evidence));\n      await kv.put(key, bytes(evidence));\n      const revision = await kv.put(`attempt.${key}`, bytes({ version: 1, state: \"prepared\", digest }));\n      for (const source of evidence.sources) {\n        await kv.put(sourceIndexKey(source, evidence.ref), bytes({ source, ref: evidence.ref }));\n      }",
       "expectRed": "callout generation reuse refuses instead of silently reminting",
       "cell": "callout generation reuse refuses instead of silently reminting"
+    },
+    {
+      "name": "a clean close is treated as an authority transition",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "  if (!error) throw new Error(\"the connection closed cleanly; there is no authority transition to rebind from\");",
+      "replace": "  if (!error) return open();",
+      "expectRed": "a client observes the closure and rebinds on a fresh generation",
+      "cell": "a client observes the closure and rebinds on a fresh generation"
+    },
+    {
+      "name": "any closure reason is rebound as a transition",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "  if (!/authoriz/i.test(String((error as Error).message)))",
+      "replace": "  if (false && !/authoriz/i.test(String((error as Error).message)))",
+      "expectRed": "a client observes the closure and rebinds on a fresh generation",
+      "cell": "a client observes the closure and rebinds on a fresh generation"
     }
   ]
 }

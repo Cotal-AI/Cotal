@@ -29,3 +29,20 @@ export async function discoverIssuedAuthority(nc: NatsConnection, space: string,
   if (found.size !== 1) throw new Error(`the accepted connection carries ${found.size} issued generations; exactly one is required`);
   return [...found.values()][0];
 }
+
+/**
+ * The client half of a permission transition. A callout connection that loses its authority
+ * closes with an authorization refusal rather than renewing in place, so the client observes
+ * that closure and rebinds on a fresh generation. A closure for any other reason is not a
+ * transition and refuses here instead of being retried as one.
+ */
+export async function rebindOnAuthorizationClosure<T extends { nc: NatsConnection }>(
+  binding: T,
+  open: () => Promise<T>,
+): Promise<T> {
+  const error = await binding.nc.closed();
+  if (!error) throw new Error("the connection closed cleanly; there is no authority transition to rebind from");
+  if (!/authoriz/i.test(String((error as Error).message)))
+    throw new Error(`closure was not an authorization refusal: ${(error as Error).message}`);
+  return open();
+}

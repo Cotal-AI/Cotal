@@ -26,7 +26,7 @@ import { importNativeSubjectPermissions } from "../../../packages/core/smoke/pro
 import { issuedRequestRows, issuedRequestSubject } from "../../../packages/core/smoke/prototypes/issued-static-connection.js";
 import { prepareCredentialReleaseFence } from "./prototypes/credential-release-fence.js";
 import { gateIssuedCallout, issuedCalloutName, readIssuedCalloutName } from "./prototypes/issued-callout-gate.js";
-import { discoverIssuedAuthority, ISSUED_DISCOVERY_GRANT } from "../../../packages/core/smoke/prototypes/issued-generation-discovery.js";
+import { discoverIssuedAuthority, rebindOnAuthorizationClosure, ISSUED_DISCOVERY_GRANT } from "../../../packages/core/smoke/prototypes/issued-generation-discovery.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -229,6 +229,25 @@ try {
     const state = JSON.parse(new TextDecoder().decode((await kv.get(`attempt.${evidenceKey(refFor(renewing))}`))!.value));
     assert.equal(state.state, "active");
     assert.equal(issued.size, new Set([...issued.keys()]).size);
+  });
+
+  await check("a client observes the closure and rebinds on a fresh generation", async () => {
+    // The other half of the transition: failing closed is only correct if a client can come back.
+    const first = random();
+    const client = await open(first, issuedCalloutName(first, random()), bearer, true);
+    await client.nc.reconnect().catch(() => {});
+    await until(() => client.nc.isClosed(), "authorization closure");
+    const second = random();
+    const next = await rebindOnAuthorizationClosure(client, () => open(second, issuedCalloutName(second, random())));
+    assert.deepEqual(await discoverIssuedAuthority(next.nc, space), refFor(second));
+    const id = random();
+    next.nc.publish(issuedRequestSubject(next.ref, request()), enc(id)); await next.nc.flush();
+    await until(() => seen.has(id), "rebound generation delivery");
+    await deniedPublish(next.nc, issuedRequestSubject(refFor(first), request()));
+    // A clean close is not a transition and must not be retried as one.
+    const clean = await open(random());
+    await clean.nc.close();
+    await assert.rejects(rebindOnAuthorizationClosure(clean, () => open(random())), /closed cleanly/);
   });
 
   await check("a callout client discovers the generation the issuer bound, not the one it proposed", async () => {
