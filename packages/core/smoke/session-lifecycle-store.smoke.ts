@@ -220,9 +220,33 @@ c("released lookup with cooperative-retirement remains live without native-effec
   operation: "PUT" as const,
 }] as never));
 const releasedCoopValid = { ...nativeBinding, resourceKey: coopValidRes, state: "released" as const, operationId: "op-coop-valid" };
-c("fully-validated cooperative release still blocks shutdown because the guard requires native-effect", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
+c("fully-validated cooperative release with preserved native lifetime does not block shutdown", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
   key: sessionBindingKey(coopValidRes),
   value: new TextEncoder().encode(JSON.stringify(releasedCoopValid)),
+  revision: 1,
+  operation: "PUT" as const,
+}] as never) === false);
+const coopNoLifeRes = { ...resource, stableSessionId: "coop-noleaf" };
+const coopNoLifePrepared = await prepareSessionOperation(kv, {
+  ...base, resourceKey: coopNoLifeRes, operationId: "op-coop-noleaf", bindingId: "binding-live", action: "release",
+});
+await updateSessionOperation(kv, {
+  ...coopNoLifePrepared.record,
+  state: "terminal-success",
+  result: { bindingState: "released" },
+  proofOrigin: coopProof,
+}, (kv as unknown as MemKv).rows.get(sessionOperationKey(coopNoLifeRes, "op-coop-noleaf"))!.revision);
+const releasedCoopNoLife = { ...nativeBinding, resourceKey: coopNoLifeRes, state: "released" as const, operationId: "op-coop-noleaf" };
+c("cooperative-retirement without preserved native lifetime remains live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
+  key: sessionBindingKey(coopNoLifeRes),
+  value: new TextEncoder().encode(JSON.stringify(releasedCoopNoLife)),
+  revision: 1,
+  operation: "PUT" as const,
+}] as never));
+const releasedNative = { ...nativeBinding, bindingId: "binding-1", state: "released" as const, operationId: "op-1" };
+c("released lookup with native-effect proof is not live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
+  key: sessionBindingKey(resource),
+  value: new TextEncoder().encode(JSON.stringify(releasedNative)),
   revision: 1,
   operation: "PUT" as const,
 }] as never) === false);

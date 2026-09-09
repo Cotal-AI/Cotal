@@ -71,18 +71,26 @@
     {
       "name": "treat dispatcher-retirement as native-effect for released lookup",
       "file": "packages/core/src/session-lifecycle-store.ts",
-      "find": "      if (release.state !== \"terminal-success\" || release.record.action !== \"release\"\n        || release.record.bindingId !== binding.bindingId\n        || release.proofOrigin?.proves !== \"native-effect\") bindings.push(binding);",
-      "replace": "      if (release.proofOrigin?.kind !== \"dispatcher-retirement\" && (release.state !== \"terminal-success\" || release.record.action !== \"release\"\n        || release.record.bindingId !== binding.bindingId\n        || release.proofOrigin?.proves !== \"native-effect\")) bindings.push(binding);",
+      "find": "  if (release.proofOrigin?.proves === \"dispatcher-retirement-only\") return true;\n",
+      "replace": "  if (release.proofOrigin?.proves === \"dispatcher-retirement-only\") return false;\n",
       "expectRed": "released lookup with dispatcher-retirement remains live without native-effect",
       "cell": "released lookup with dispatcher-retirement remains live without native-effect"
     },
     {
-      "name": "treat cooperative-retirement as native-effect for released lookup",
+      "name": "treat cooperative-retirement proves alone as sufficient for released lookup",
       "file": "packages/core/src/session-lifecycle-store.ts",
-      "find": "      if (release.state !== \"terminal-success\" || release.record.action !== \"release\"\n        || release.record.bindingId !== binding.bindingId\n        || release.proofOrigin?.proves !== \"native-effect\") bindings.push(binding);",
-      "replace": "      if (release.state !== \"terminal-success\" || release.record.action !== \"release\"\n        || release.record.bindingId !== binding.bindingId\n        || (release.proofOrigin?.proves !== \"native-effect\" && release.proofOrigin?.proves !== \"cooperative-retirement\")) bindings.push(binding);",
-      "expectRed": "released lookup with cooperative-retirement remains live without native-effect",
-      "cell": "released lookup with cooperative-retirement remains live without native-effect"
+      "find": "  if (!nativeLifetimePreserved(release.result)) return true;\n",
+      "replace": "",
+      "expectRed": "cooperative-retirement without preserved native lifetime remains live",
+      "cell": "cooperative-retirement without preserved native lifetime remains live"
+    },
+    {
+      "name": "keep requiring native-effect for released lookup",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  if (release.proofOrigin?.proves !== \"cooperative-retirement\") return true;\n",
+      "replace": "  if (release.proofOrigin?.proves !== \"native-effect\") return true;\n",
+      "expectRed": "fully-validated cooperative release with preserved native lifetime does not block shutdown",
+      "cell": "fully-validated cooperative release with preserved native lifetime does not block shutdown"
     }
   ]
 }

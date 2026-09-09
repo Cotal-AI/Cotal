@@ -216,6 +216,28 @@ export function sameSessionOperationInput(a: SessionOperationRecord, b: SessionO
   return canonicalJson(sessionOperationInput(a)) === canonicalJson(sessionOperationInput(b));
 }
 
+function nativeLifetimePreserved(result: unknown): boolean {
+  return result !== null && typeof result === "object" && !Array.isArray(result)
+    && (result as { nativeState?: unknown }).nativeState === "preserved";
+}
+
+/** A released binding is still live for shutdown unless its bound receipt is a matching
+ *  terminal-success release. Native-effect proof is sufficient. Cooperative-retirement is
+ *  sufficient only when resourceKey, bindingId and operationId all match the binding and the
+ *  result independently records preserved native lifetime. A proves value alone never clears. */
+function releasedBindingStillLive(binding: Binding, release: QueryOperationResult): boolean {
+  if (release.state === "absent") return true;
+  if (release.state !== "terminal-success" || release.record.action !== "release") return true;
+  if (release.record.bindingId !== binding.bindingId) return true;
+  if (release.record.operationId !== binding.operationId) return true;
+  if (resourceKeyId(release.record.resourceKey) !== resourceKeyId(binding.resourceKey)) return true;
+  if (release.proofOrigin?.proves === "native-effect") return false;
+  if (release.proofOrigin?.proves === "dispatcher-retirement-only") return true;
+  if (release.proofOrigin?.proves !== "cooperative-retirement") return true;
+  if (!nativeLifetimePreserved(release.result)) return true;
+  return false;
+}
+
 /**
  * Complete durable lookup of native lifecycle bindings held by one manager. Only the registered
  * `sessionbinding.*` family is scanned, so legacy managed seats retain their existing shutdown
@@ -240,13 +262,12 @@ export async function lookupNativeLifecycleBindingsForManager(
         bindings.push(binding);
         continue;
       }
-      // A `released` label alone is not sufficient for the destructive-shutdown decision. The
-      // bound release operation must itself be terminal-success with native-effect proof; absent,
-      // pending, refusal or indeterminate records all mean this binding may still be live.
+      // A `released` label alone is not sufficient for the destructive-shutdown decision.
+      // Native-effect proof remains sufficient. Cooperative-retirement is not: it must
+      // match this binding's resourceKey, bindingId and operationId, and independently
+      // record preserved native lifetime. A proves value alone never clears the guard.
       const release = await queryOperation(kv, binding.resourceKey, binding.operationId);
-      if (release.state !== "terminal-success" || release.record.action !== "release"
-        || release.record.bindingId !== binding.bindingId
-        || release.proofOrigin?.proves !== "native-effect") bindings.push(binding);
+      if (releasedBindingStillLive(binding, release)) bindings.push(binding);
     }
     return { status: "known", bindings: Object.freeze(bindings) };
   } catch (e) {
