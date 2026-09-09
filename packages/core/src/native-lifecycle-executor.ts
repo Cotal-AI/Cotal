@@ -313,7 +313,8 @@ export async function executeNativeLifecycle(
 
   let native: NativeLifecycleOperationResult;
   try {
-    native = await (method as NonNullable<NativeLifecycleConnection["adopt"]>)(nextBinding, prepared.record, request.signal);
+    const mutate = method as NonNullable<NativeLifecycleConnection["adopt" | "release" | "transfer" | "recover"]>;
+    native = await mutate(nextBinding, prepared.record, request.signal);
   } catch (e) {
     return persistIndeterminate(kv, prepared.record, e instanceof Error ? e.message : "native provider threw");
   }

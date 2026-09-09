@@ -83,6 +83,14 @@
       "replace": "",
       "expectRed": "stale expectedBindingRevision is refused as conflict",
       "cell": "stale expectedBindingRevision is refused as conflict"
+    },
+    {
+      "name": "always dispatch adopt",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "    const mutate = method as NonNullable<NativeLifecycleConnection[\"adopt\" | \"release\" | \"transfer\" | \"recover\"]>;\n    native = await mutate(nextBinding, prepared.record, request.signal);\n",
+      "replace": "    native = await connection.adopt!(nextBinding, prepared.record, request.signal);\n",
+      "expectRed": "transfer dispatches the transfer method through the public entry",
+      "cell": "transfer dispatches the transfer method through the public entry"
     }
   ]
 }

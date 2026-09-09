@@ -143,6 +143,20 @@ function connection(
       };
     };
   }
+  if (ops.includes("transfer")) {
+    conn.transfer = async (_binding, operation) => {
+      effects.push("transfer");
+      return {
+        state: "recorded",
+        operation: {
+          ...operation,
+          state: "terminal-success",
+          result: { transferred: true },
+          proofOrigin: { kind: "native-readback", provider: "com.cotal.test", evidence: { transferred: true }, proves: "native-effect" },
+        },
+      };
+    };
+  }
   return conn;
 }
 
@@ -160,7 +174,7 @@ function register(
   registry.register(provider);
 }
 
-const mutatingOps: readonly NativeLifecycleOperation[] = ["discover", "inspect", "preflight", "adopt", "release", "queryOperation", "openView"];
+const mutatingOps: readonly NativeLifecycleOperation[] = ["discover", "inspect", "preflight", "adopt", "release", "transfer", "queryOperation", "openView"];
 register("executor-coop", mutatingOps, "cooperative-exclusive", "lost-release");
 register("executor-observed", ["discover", "inspect", "preflight", "adopt", "queryOperation"], "observed");
 register("executor-missing-adopt", ["discover", "inspect"]);
@@ -285,6 +299,26 @@ await rejects("stale expectedBindingRevision is refused as conflict", () => exec
   expectedBindingRevision: 0, expectedControllerEpoch: 1, intendedResult: { bindingState: "released" },
 }), "conflict");
 c("stale revision did not dispatch native preflight, inspect, or release", !effects.includes("release") && !effects.includes("preflight:release") && effects.filter((e) => e === "inspect").length === inspectBeforeStale, effects);
+
+effects.length = 0;
+const kvTransfer = new MemKv() as unknown as KV;
+await executeNativeLifecycle(kvTransfer, {
+  ...requestBase, providerName: "executor-native-release", operation: "adopt", operationId: "op-adopt-xfer", bindingId: "binding-xfer",
+});
+effects.length = 0;
+const transferred = await executeNativeLifecycle(kvTransfer, {
+  ...requestBase, providerName: "executor-native-release", operation: "transfer", operationId: "op-xfer", bindingId: "binding-xfer",
+  expectedBindingRevision: bindingRevision(kvTransfer as unknown as MemKv), expectedControllerEpoch: 1, intendedResult: { transferred: true },
+});
+c("transfer dispatches the transfer method through the public entry", transferred.state === "recorded" && transferred.operation.state === "terminal-success" && effects.includes("transfer") && !effects.includes("adopt"), transferred);
+c("transfer did not rewrite the binding to released", readBindingRow(kvTransfer as unknown as MemKv)?.state === "managed");
+
+effects.length = 0;
+const queried = await executeNativeLifecycle(kvTransfer, {
+  ...requestBase, providerName: "executor-native-release", operation: "queryOperation", operationId: "op-xfer", bindingId: "binding-xfer",
+});
+c("queryOperation returns the provider result for a recorded row", queried.state === "indeterminate" && queried.reason === "native acknowledgement lost", queried);
+c("queryOperation reached the provider once", effects.join(",") === "queryOperation", effects);
 
 console.log(`\n${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);
