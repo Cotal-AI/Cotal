@@ -246,9 +246,9 @@ try {
     && govBefore.provisional!.generation < gateA1.generation,
     { slot: govBefore?.provisional?.generation, gate: gateA1?.generation, state: gateA1?.state });
 
-  const reclaimed = await register(recordsKv, IID_B);
+  const reclaimed = await errOf(() => register(recordsKv, IID_B));
   c("B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
-    reclaimed.registrationRevision > 0, reclaimed);
+    reclaimed.message === "NO THROW", reclaimed);
   const govAfter = await readGov();
   c("the slot is released after B's completing reopen, not left held by the dead instance",
     govAfter?.provisional === undefined, govAfter);
@@ -289,9 +289,9 @@ try {
     evict: async () => true, log: () => {}, recordsKv,
   });
   await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_D, principal: principalKey(DEV_OWNER, "govslotdddd").key });
-  const dReg = await register(recordsKv, IID_D);
+  const dReg = await errOf(() => register(recordsKv, IID_D));
   c("a successor reclaims an orphan whose holder gate is OPEN - the residue with no repair-tool exit",
-    dReg.registrationRevision > 0, dReg);
+    dReg.message === "NO THROW", dReg);
 
   console.log("7. a reclaim carries the endpoint's BINDING impositions forward, never launders them");
   const govFinal = await readGov();

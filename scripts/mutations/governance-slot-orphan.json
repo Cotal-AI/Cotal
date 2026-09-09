@@ -9,8 +9,8 @@
     {
       "name": "RECOVERY SEVERED: the predicate refuses unconditionally again, which is the defect verbatim",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
-      "replace": "  throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide (SPEC 13.7/13.8)`);\n  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
+      "find": "  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);\n  let observed: unknown;",
+      "replace": "  if (true)\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide (SPEC 13.7/13.8)`);\n  let observed: unknown;",
       "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
@@ -18,15 +18,15 @@
       "note": "This restores the pre-fix behaviour exactly: every foreign slot refuses, orphaned or not. It is the row that proves the suite is testing the fix rather than testing the shipped path around it. The FIRST red is the reclaim cell in section 5 rather than anything in section 3, because sections 1-4 are all refusals and a refusal is what this mutant produces everywhere; section 5 is the first cell that expects an admission."
     },
     {
-      "name": "RECOVERY SEVERED at the comparison: `>` becomes `>=`, so nothing is ever orphaned",
+      "name": "RECOVERY SEVERED at the comparison: the in-flight arm swallows the orphan case, so nothing is ever reclaimable",
       "file": "packages/core/src/endpoint-service.ts",
       "find": "  if (observed === slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
-      "replace": "  if (observed >= slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
+      "replace": "  if (observed <= slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
       "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "note": "The mirror of row 4, and the reason both exist. This one tightens the in-flight test until it swallows the orphan case, which fails SAFE and is therefore the easy one to ship by accident: nothing becomes stealable, the operator is simply stuck again. Row 4 loosens the same comparison in the other direction and is the dangerous one. A fixture that carried only one of the two would leave the opposite off-by-one ungraded."
+      "note": "The mirror of row 4, and the reason both exist. This one widens the in-flight test to `<=` so it swallows the orphan case, which fails SAFE and is therefore the easy one to ship by accident: nothing becomes stealable, the operator is simply stuck again. Row 4 widens the ahead-of-us test in the other direction and is the dangerous one. A fixture carrying only one of the two would leave the opposite off-by-one ungraded. Written as a widening of the equality arm rather than a narrowing of the `>` that follows it, because the permissive branch is a fallthrough with no comparison of its own to invert."
     },
     {
       "name": "RECOVERY SEVERED at the call site: the predicate is never consulted for a foreign slot",
@@ -65,7 +65,7 @@
       "name": "GUARD SEVERED: a garbled observation is coerced to a number instead of refused",
       "file": "packages/core/src/endpoint-service.ts",
       "find": "  if (!wireInt(observed))\n    throw new EpEnvelopeError(\"unavailable\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);",
-      "replace": "  observed = Number(observed);",
+      "replace": "  observed = Number(observed) as number;\n  if (!wireInt(observed)) void 0;",
       "expectRed": "a non-integer observation -> `unavailable`; a garbled generation is never coerced",
       "cell": "a non-integer observation -> `unavailable`; a garbled generation is never coerced",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
