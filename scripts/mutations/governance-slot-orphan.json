@@ -1,0 +1,101 @@
+{
+  "grades": "implementations/manager/smoke/governance-slot-orphan.smoke.ts",
+  "guard": "the foreign-slot orphan predicate reclaims ONLY a slot whose holder's gate has provably reopened past its stamp, and refuses every other observation",
+  "command": "pnpm smoke:governance-slot-orphan",
+  "progressPattern": "✓",
+  "completionMarker": "expected)",
+  "why": "The defect (#1393) was a branch that refused unconditionally where the same function's own-instance branch two lines below already reclaimed on identical evidence, so the fix is a predicate and the predicate is what has to be graded. The rows below split into two halves that must red on DIFFERENT cells, because a fixture that only proved the reclaim path would be graded half the change. Rows 1-3 sever the RECOVERY: the predicate stops admitting the orphan, and the operator's state is unrecoverable again. Rows 4-7 sever the GUARD in each of its four directions, and those are the rows that matter more: a fix for an unrecoverable state that quietly makes a live slot stealable would be a worse defect than the one it closed. Row 8 severs the seam's own optionality. Every row edits code, never a comment, and the completion marker is the suite's final banner, which it prints on either outcome, so a run that dies before the graded cell reports INCONCLUSIVE rather than passing as a kill. Each row carries a core build in its `command` and an `afterRestore` that rebuilds: the suite lives under implementations/ and imports @cotal-ai/core, which resolves to dist/, so a mutation to packages/core/src that did not rebuild would be read by nothing and report a false SURVIVED. dist/ is gitignored, so the rebuild after restore is the only thing that stops the tree keeping a build compiled from the mutant.",
+  "mutations": [
+    {
+      "name": "RECOVERY SEVERED: the predicate refuses unconditionally again, which is the defect verbatim",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
+      "replace": "  throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide (SPEC 13.7/13.8)`);\n  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
+      "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
+      "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "This restores the pre-fix behaviour exactly: every foreign slot refuses, orphaned or not. It is the row that proves the suite is testing the fix rather than testing the shipped path around it. The FIRST red is the reclaim cell in section 5 rather than anything in section 3, because sections 1-4 are all refusals and a refusal is what this mutant produces everywhere; section 5 is the first cell that expects an admission."
+    },
+    {
+      "name": "RECOVERY SEVERED at the comparison: `>` becomes `>=`, so nothing is ever orphaned",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (observed === slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
+      "replace": "  if (observed >= slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
+      "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
+      "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The mirror of row 4, and the reason both exist. This one tightens the in-flight test until it swallows the orphan case, which fails SAFE and is therefore the easy one to ship by accident: nothing becomes stealable, the operator is simply stuck again. Row 4 loosens the same comparison in the other direction and is the dangerous one. A fixture that carried only one of the two would leave the opposite off-by-one ungraded."
+    },
+    {
+      "name": "RECOVERY SEVERED at the call site: the predicate is never consulted for a foreign slot",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "      if (gov.provisional.instanceId !== args.instanceId)\n        await assertForeignSlotIsOrphaned(gov.provisional, spec.endpoint, args.observeHolderGeneration);",
+      "replace": "      if (gov.provisional.instanceId !== args.instanceId)\n        throw new EpEnvelopeError(\"conflict\", `a concurrent registration for endpoint \"${spec.endpoint}\" (instance \"${gov.provisional.instanceId}\") holds the governance slot through its spec publication; re-read and re-decide (SPEC 13.7/13.8)`);",
+      "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
+      "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Rows 1 and 2 sever the predicate's body; this severs the wiring that reaches it. A predicate that is correct and never called is the same defect with a better-looking diff, and the two are distinguishable only by mutating each separately."
+    },
+    {
+      "name": "GUARD SEVERED: `<` widened to `<=`, so a slot held by a LIVE in-flight registration is stealable",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (observed < slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}",
+      "replace": "  if (observed <= slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}",
+      "expectRed": "...and the refusal says the gate is still at the slot's generation, naming WHY it refused",
+      "cell": "...and the refusal says the gate is still at the slot's generation, naming WHY it refused",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "THE ROW THE WHOLE FIXTURE EXISTS FOR. This is the exact off-by-one section 4 of the suite models in-process, and it is the change that would trade an unrecoverable state for a stealable one. The FIRST red is the message cell rather than the bare refusal cell above it: the equal-generation case is still refused here, but by the AHEAD branch instead of the IN-FLIGHT branch, so the registration still fails and only the reason changes. That is precisely why the negative control asserts the refusal's WORDING and not just its code. A cell that checked only `code === conflict` would stay green through this mutant, and the fixture would have reported a survived mutation on the one property the change most needed to prove."
+    },
+    {
+      "name": "GUARD SEVERED: a throwing observation is treated as absence rather than a refusal",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "    observed = await observeHolderGeneration(slot.instanceId);\n  } catch (e) {\n    throw new EpEnvelopeError(\"unavailable\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);\n  }",
+      "replace": "    observed = await observeHolderGeneration(slot.instanceId);\n  } catch {\n    observed = Number.MAX_SAFE_INTEGER;\n  }",
+      "expectRed": "the observation THROWS -> `unavailable`; unreadable is not absent",
+      "cell": "the observation THROWS -> `unavailable`; unreadable is not absent",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "AGENTS.md forbids a fallback, and this is the fallback shape that looks most reasonable in a diff: an unreadable gate becomes `assume it is old`, which reclaims a slot whose holder may be mid-publish. It reds on its own cell rather than on the reclaim cells, because a mutant that admits MORE leaves every positive path green."
+    },
+    {
+      "name": "GUARD SEVERED: a garbled observation is coerced to a number instead of refused",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (!wireInt(observed))\n    throw new EpEnvelopeError(\"unavailable\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);",
+      "replace": "  observed = Number(observed);",
+      "expectRed": "a non-integer observation -> `unavailable`; a garbled generation is never coerced",
+      "cell": "a non-integer observation -> `unavailable`; a garbled generation is never coerced",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The seam is injected, so its return value is caller-supplied and is validated rather than trusted, exactly as `deregisterServiceInstance` validates its own `observeGeneration`. `Number(\"7\")` is 7, so this mutant makes a string observation decide an authority question."
+    },
+    {
+      "name": "GUARD SEVERED: the ahead-of-us refusal is dropped, so a stale read licenses a reclaim",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (observed < slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);\n",
+      "replace": "",
+      "expectRed": "an observation BEHIND the slot's stamp -> `unavailable`; ahead-or-garbled never licenses a reclaim",
+      "cell": "an observation BEHIND the slot's stamp -> `unavailable`; ahead-or-garbled never licenses a reclaim",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Deleting this arm does not make the slot reclaimable on its own (the equality arm below still refuses the equal case), so what it actually admits is the strictly-behind case: an observation that is stale or garbled in the one direction no shipped path can produce. `deregisterServiceInstance` refuses the same coordinate for the same reason, and this row is what keeps the two seams agreeing."
+    },
+    {
+      "name": "SEAM OPTIONALITY SEVERED: an absent seam silently reclaims instead of refusing",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
+      "replace": "  if (typeof observeHolderGeneration !== \"function\") return;",
+      "expectRed": "NO SEAM wired -> refuses exactly as today, so no caller silently gains a reclaim it never asked for",
+      "cell": "NO SEAM wired -> refuses exactly as today, so no caller silently gains a reclaim it never asked for",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The seam is OPTIONAL, so its absent case is a real branch with real callers: every registration path that has not wired it keeps today's refusal. This mutant turns absence into blanket permission, which would hand a reclaim to callers that never asked for one and can prove nothing about the holder. It is the row that makes the optionality safe rather than merely convenient."
+    }
+  ],
+  "suite": [
+    "implementations/manager/smoke/governance-slot-orphan.smoke.ts"
+  ]
+}
