@@ -246,13 +246,18 @@ export function holdsServerView(permissions: Record<string, unknown>): boolean {
  *  - `stored-captured-subject`: delivers stored bytes, under the message's own captured subject.
  *  - `stored-marked`: delivers raw stored bytes under the chosen subject, carrying `Nats-` headers.
  *  - `no-delivery`: publishes nothing back to a caller-chosen subject.
- *  Classes two and three are measured in `issued-ingress-origin.smoke.ts`. */
+ *  Classes two and three are measured in `issued-ingress-origin.smoke.ts`, and so is the
+ *  `$SYS.REQ.USER.INFO` response the issued contract's discovery rule would add. */
 export type DeliveryClass = "api-envelope" | "stored-captured-subject" | "stored-marked" | "no-delivery";
 const DELIVERY_CLASSES: readonly (readonly [RegExp, DeliveryClass])[] = Object.freeze([
   [/^\$JS\.API\.DIRECT\.GET\./, "stored-marked"],
   [/^\$JS\.API\.CONSUMER\.MSG\.NEXT\./, "stored-captured-subject"],
   [/^\$JS\.API\.(INFO$|STREAM\.(INFO|MSG\.GET)\.|CONSUMER\.(INFO|CREATE|DELETE)\.)/, "api-envelope"],
   [/^\$JS\.(ACK|FC)\./, "no-delivery"],
+  // The discovery grant the issued contract adds. Its response reaches a caller-chosen reply
+  // subject with no headers, measured in issued-ingress-origin.smoke.ts, so it belongs here rather
+  // than outside the table. Its body is a server-authored JSON document the caller cannot shape.
+  [/^\$SYS\.REQ\.USER\.INFO$/, "api-envelope"],
 ] as const);
 
 export function deliveryClassOf(row: string): DeliveryClass {
@@ -261,10 +266,10 @@ export function deliveryClassOf(row: string): DeliveryClass {
   throw new Error(`unclassified JetStream grant "${subject}"; decide which delivery class it is before the origin argument can quantify over it`);
 }
 
-/** Every `$JS.` publish grant in a permission set, with its delivery class. */
-export function jetStreamDeliveryPaths(permissions: Record<string, unknown>): { row: string; cls: DeliveryClass }[] {
+/** Every `$JS.` or `$SYS.` publish grant in a permission set, with its delivery class. */
+export function deliveryPaths(permissions: Record<string, unknown>): { row: string; cls: DeliveryClass }[] {
   return ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? [])
     .map((row) => row.split(" ")[0])
-    .filter((row) => row.startsWith("$JS."))
+    .filter((row) => row.startsWith("$JS.") || row.startsWith("$SYS."))
     .map((row) => ({ row, cls: deliveryClassOf(row) }));
 }

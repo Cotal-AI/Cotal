@@ -96,16 +96,16 @@
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "  throw new Error(`unclassified JetStream grant \"${subject}\"; decide which delivery class it is before the origin argument can quantify over it`);",
       "replace": "  return \"no-delivery\";",
-      "expectRed": "every JetStream grant a peer can hold has a decided delivery class",
-      "cell": "every JetStream grant a peer can hold has a decided delivery class"
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
     },
     {
       "name": "a raw stored read is classified as an API envelope",
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "  [/^\\$JS\\.API\\.DIRECT\\.GET\\./, \"stored-marked\"],",
       "replace": "",
-      "expectRed": "every JetStream grant a peer can hold has a decided delivery class",
-      "cell": "every JetStream grant a peer can hold has a decided delivery class"
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
     },
     {
       "name": "the prototype-import scan looks for the wrong path",

@@ -12,7 +12,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, TRUSTED_PROFILES, jetStreamDeliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -117,15 +117,17 @@ try {
       assert.ok(native.every((r) => !r.publish && !r.subscribe));
     });
   }
-  await check("every JetStream grant a peer can hold has a decided delivery class", async () => {
+  await check("every broker grant a peer can hold has a decided delivery class", async () => {
     // The origin argument quantifies over "granted delivery paths". Enumerating them by hand is
     // how that argument silently goes stale, so every $JS. grant is classified and an unknown
     // verb refuses.
     assert.throws(() => deliveryClassOf("$JS.API.STREAM.PURGE.CHAT_x"), /unclassified/);
+    assert.throws(() => deliveryClassOf("$SYS.REQ.ACCOUNT.x.CONNZ"), /unclassified/);
+    assert.equal(deliveryClassOf("$SYS.REQ.USER.INFO"), "api-envelope");
     const classified: Record<string, string[]> = {};
     for (const fixture of fixtures) {
       if (!PEER_HELD_PROFILES.includes(fixture.profile as never)) continue;
-      for (const { row, cls } of jetStreamDeliveryPaths(fixture.permissions)) (classified[cls] ??= []).push(row);
+      for (const { row, cls } of deliveryPaths(fixture.permissions)) (classified[cls] ??= []).push(row);
     }
     // Each class fails the forgery on its own ground, so none is absent by accident.
     assert.deepEqual(Object.keys(classified).sort(), ["api-envelope", "no-delivery", "stored-captured-subject", "stored-marked"]);

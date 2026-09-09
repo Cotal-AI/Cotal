@@ -101,6 +101,29 @@ try {
     assert.equal(await seen(frames, "direct-attempt", 200), undefined);
   });
 
+  await check("the discovery grant the contract adds is itself a delivery path onto the rail", async () => {
+    // Section 5 of the contract requires `$SYS.REQ.USER.INFO` in every issued ceiling. That request
+    // is answered to a caller-chosen reply subject, so it belongs in the delivery-class table with
+    // the JetStream reads, not outside it. Measure where its response lands.
+    const discoverer = await open({ ...perms, pub: { allow: [...perms.pub.allow, "$SYS.REQ.USER.INFO"] } }, `_INBOX_${principal.connId}`);
+    discoverer.publish("$SYS.REQ.USER.INFO", new Uint8Array(0), { reply: rail });
+    await discoverer.flush();
+    const onServe = await seen(frames, "account_name");
+    const onExact = await seen(exactFrames, "account_name", 200);
+    observations.push({
+      vector: "sys-user-info-reply", reachedServeShape: onServe !== undefined,
+      reachedExactSubject: onExact !== undefined, subject: onServe?.subject,
+      headerKeys: onServe?.headerKeys ?? [], reply: onServe?.reply,
+      leaksOwnPermissions: (onServe?.body ?? "").includes("permissions"),
+    });
+    // Measured on NATS 2.14.5: it reaches the serve shape, under the rail subject, with no
+    // headers. So the grant the contract adds is a fifth delivery path, and an unmarked one.
+    assert.ok(onServe, "the $SYS.REQ.USER.INFO response must be observed to classify it");
+    assert.equal(onServe.subject, rail);
+    assert.deepEqual(onServe.headerKeys, []);
+    assert.ok(onServe.body.includes("permissions"), "the response carries the connection's own ceiling");
+  });
+
   const stored = `stored-${randomBytes(6).toString("hex")}`;
   agent.publish(chatSubject(space, principal.owner, principal.actor, "public"), enc(stored));
   await agent.flush();
