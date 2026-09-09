@@ -77,6 +77,14 @@
       "replace": "  const parts = [spacePrefix(space), \"ep.v1\", req.route.mode, endpointToken(req.endpoint)];",
       "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
       "cell": "no shipped source emits an issued-rail subject, under any option combination"
+    },
+    {
+      "name": "the server-view detector stops matching",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  return pub.some((row) => row === \">\" || row === \"$SYS.>\" || row.startsWith(\"$SYS.REQ.USER\"));",
+      "replace": "  return pub.some((row) => row.startsWith(\"$SYS.REQ.USER.INFO.\"));",
+      "expectRed": "no current profile can request its own server view",
+      "cell": "no current profile can request its own server view"
     }
   ]
 }

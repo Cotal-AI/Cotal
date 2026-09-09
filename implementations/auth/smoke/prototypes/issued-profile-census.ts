@@ -215,3 +215,10 @@ export function shippedSources(root: string): string[] {
   if (found.length === 0) throw new Error("the shipped-source scan found no files; the corpus is wrong");
   return found;
 }
+
+/** Whether a permission set lets its holder request `$SYS.REQ.USER.INFO`, the server's own view
+ *  of the connection that accepted-generation discovery reads. */
+export function holdsServerView(permissions: Record<string, unknown>): boolean {
+  const pub = ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? []).map((row) => row.split(" ")[0]);
+  return pub.some((row) => row === ">" || row === "$SYS.>" || row.startsWith("$SYS.REQ.USER"));
+}

@@ -12,7 +12,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -117,6 +117,16 @@ try {
       assert.ok(native.every((r) => !r.publish && !r.subscribe));
     });
   }
+  await check("no current profile can request its own server view", async () => {
+    // Discovery needs `$SYS.REQ.USER.INFO`. If some profile already had it, adding it would not be
+    // part of the issuance change; this pins that it is.
+    // Positive control first: an emptiness result from a detector that finds nothing is worthless.
+    assert.equal(holdsServerView({ pub: { allow: ["$SYS.REQ.USER.INFO"] } }), true);
+    assert.equal(holdsServerView({ pub: { allow: [">"] } }), true);
+    assert.equal(holdsServerView({ pub: { allow: ["cotal.x.>"] } }), false);
+    assert.deepEqual(fixtures.filter((f) => holdsServerView(f.permissions)).map((f) => `${f.profile}/${f.variant}`), []);
+  });
+
   await check("no shipped source emits an issued-rail subject, under any option combination", async () => {
     // The per-variant checks above cover representative options only. This closes the rest: a
     // namespace no shipped builder ever writes cannot be reached by any option combination.
