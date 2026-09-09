@@ -21,10 +21,13 @@
  * with the connection up, rebind a watch from the bucket's current state, and report the
  * peers live again, without emitting a wholesale offline verdict and without a reconnect.
  *
- * WHAT THIS DOES NOT CLAIM. Not a stream recreation (the sequence-restart shape is the same
- * end state through the same code path: a consumer that will never deliver again), not a WAN,
- * not `cotal ps` pixels; the manager row and CLI rendering are graded in
- * implementations/manager/smoke/ps-mesh-view.smoke.ts.
+ * Section 5 then drives the incident's own shape: the presence STREAM is deleted and recreated
+ * under the same live connection. While it is gone the rebind is refused and must be retried
+ * at most once per TTL (not per sweep tick); once it is back the observer must rebind and see
+ * every heartbeating peer again.
+ *
+ * WHAT THIS DOES NOT CLAIM. Not a WAN, not `cotal ps` pixels; the CLI rendering of the
+ * manager's view state is graded in implementations/cli/smoke/ps-mesh-column.smoke.ts.
  *
  * Needs nats-server on PATH.
  * Run: pnpm smoke:presence-watch-rebind
@@ -189,6 +192,30 @@ try {
     warnings.filter((w) => /rebound/.test(w)).length === 1, warnings);
 
   await sleepy.stop();
+
+  // --- THE INCIDENT: the presence stream is deleted and recreated under a live connection. ---
+  const errorsBefore = errors.length;
+  const warningsBefore = warnings.filter((w) => /rebound/.test(w)).length;
+  await jsm.streams.delete(stream);
+  const staleAgain = await until(() => observer.presenceView().state === "stale", TTL_MS * 2 + 500);
+  ok("5.1 with the stream gone the view reads stale within ~TTL (silence noticed, transport still up)",
+    staleAgain === true, observer.presenceView());
+  await wait(TTL_MS * 3);
+  const refused = errors.length - errorsBefore;
+  ok("5.2 a refused rebind is retried at most once per TTL, not once per sweep tick",
+    refused >= 1 && refused <= 4, { refused, sample: errors.slice(errorsBefore, errorsBefore + 2) });
+  ok("5.3 each refusal is REPORTED as an error naming the missing stream",
+    errors.slice(errorsBefore).every((e) => /stream not found|not found/i.test(e)), errors.slice(errorsBefore, errorsBefore + 2));
+  await setupSpaceStreams({ servers: SERVERS, space });
+  const recreated = await until(() => observer.presenceView().state === "current", TTL_MS * 3);
+  ok("5.4 after the stream is recreated the observer rebinds and the view is current again, no reconnect",
+    recreated === true && connection.length === connectionsBefore, { view: observer.presenceView(), connectionEvents: connection.length - connectionsBefore });
+  const peersAfterRecreate = await until(() => live(observer).filter((p) => p.card.name.startsWith("peer")).length === PEERS, TTL_MS * 3);
+  ok("5.5 every heartbeating peer is live again in the roster (its heartbeats land on the new stream)",
+    peersAfterRecreate === true, statusOf(observer));
+  ok("5.6 exactly one more rebind was reported for the recreation",
+    warnings.filter((w) => /rebound/.test(w)).length === warningsBefore + 1, warnings);
+
   for (const p of peers) await p.stop();
   await observer.stop();
   await admin.drain();

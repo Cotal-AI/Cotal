@@ -4856,7 +4856,9 @@ export class CotalEndpoint extends EventEmitter {
     void (async () => {
       let ready = false;
       for await (const e of iter) {
-        // A rebind replaced this watch; its late entries belong to a dead epoch of the roster.
+        // Defensive, not graded: a rebind stops this iterator before replacing it, and a stopped
+        // iterator does not yield again on nats.js 3.4.0. Kept so a client that ever drained its
+        // buffer after stop() could not write a dead epoch's replay over the rebound roster.
         if (this.presenceWatchIter !== iter) break;
         this.handleKvEntry(e);
         // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
@@ -4888,9 +4890,17 @@ export class CotalEndpoint extends EventEmitter {
       try {
         this.presenceWatchIter = undefined;
         try { old?.stop(); } catch { /* already closed with its consumer */ }
+        const silentMs = now - this.lastPresenceWatchAt;
         await this.startPresenceWatch();
+        // A bucket with no keys replays nothing, so the new watch cannot refresh
+        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present, and the
+        // frozen roster ages out on the next sweep (each peer's ts is a full window behind). Read
+        // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
+        // from the same `info(true)` it used to place the isUpdate marker.
+        const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
+        if (pending === 0) this.lastPresenceWatchAt = Date.now();
         this.emit("warning", new Error(
-          `presence watch silent for ${now - this.lastPresenceWatchAt}ms with the connection up; rebound it from the bucket's current state`,
+          `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
         ));
       } catch (e) {
         this.emit("error", e as Error);
