@@ -219,7 +219,7 @@ export const cotalAuthProvider: AuthProvider = {
 
   async nativeLifecycleBindings({ store, dir, space, server, managerPrincipal }): Promise<NativeLifecycleBindingLookup> {
     const entry = findMesh(space);
-    if (entry?.mode === "user" && entry.userAuth.remote === true)
+    if (entry?.mode === "user" && entry.userAuth?.remote === true)
       return {
         status: "unknown",
         bindings: [],

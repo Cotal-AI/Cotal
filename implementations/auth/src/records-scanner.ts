@@ -398,23 +398,23 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
       await guard.assertHeld("after");
       return out;
     }),
-    scanNativeBindings: (managerPrincipal: string) => serializedForSpace(space, async () => {
+    scanNativeBindings: (managerPrincipal: string): Promise<NativeLifecycleBindingLookup> => serializedForSpace(space, async (): Promise<NativeLifecycleBindingLookup> => {
       if (parsePrincipalKey(managerPrincipal) === null)
-        return { status: "unknown", bindings: [], reason: `manager principal ${JSON.stringify(managerPrincipal)} is not canonical owner.actor identity` };
+        return { status: "unknown", bindings: [] as const, reason: `manager principal ${JSON.stringify(managerPrincipal)} is not canonical owner.actor identity` };
       try {
         if (guard !== undefined) await guard.assertHeld("before");
         const rows = await scanOnce(NATIVE_BINDING_FILTER, "sessionbinding");
         if (guard !== undefined) await guard.assertHeld("after");
-        const bindings = [];
+        const bindings: import("@cotal-ai/core").Binding[] = [];
         for (const row of rows) {
           if (row.op !== undefined)
             throw new EpEnvelopeError("failed-precondition", `native lifecycle binding ${row.key} carries a ${row.op} marker`);
           const binding = parseBinding(row.data, row.key);
           if (binding.managerPrincipal === managerPrincipal && binding.state !== "released") bindings.push(binding);
         }
-        return { status: "known", bindings: Object.freeze(bindings) } as NativeLifecycleBindingLookup;
+        return { status: "known", bindings: Object.freeze(bindings) };
       } catch (e) {
-        return { status: "unknown", bindings: [], reason: (e as Error).message };
+        return { status: "unknown", bindings: [] as const, reason: (e as Error).message };
       }
     }),
     close: onClose,
