@@ -14,7 +14,7 @@
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type NativeLifecycleBindingLookup, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
-import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, findMesh, getSpaceAuth, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
 import { resolve, sep } from "node:path";
@@ -22,6 +22,7 @@ import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
+import { queryNativeLifecycleBindingsWithAuthority } from "./records-scanner.js";
 import {
   AUTH_PROVIDER_NAME,
   authCalloutKey,
@@ -216,14 +217,24 @@ export const cotalAuthProvider: AuthProvider = {
     return body as RemoteManagerAuthorityMaterial;
   },
 
-  async nativeLifecycleBindings({ dir, space, managerPrincipal }): Promise<NativeLifecycleBindingLookup> {
+  async nativeLifecycleBindings({ store, dir, space, server, managerPrincipal }): Promise<NativeLifecycleBindingLookup> {
     const info = loadAuthServiceInfo(dir);
-    if (!info || !pidAlive(info.pid))
+    if (!info || !pidAlive(info.pid)) {
+      const auth = await getSpaceAuth(store, space).catch(() => undefined);
+      if (auth)
+        return queryNativeLifecycleBindingsWithAuthority({
+          server,
+          space,
+          dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+          managerPrincipal,
+          log: () => {},
+        });
       return {
         status: "unknown",
         bindings: [],
-        reason: `trusted native lifecycle lookup is unavailable because the auth service for space ${JSON.stringify(space)} is not running`,
+        reason: `trusted native lifecycle lookup is unavailable because space ${JSON.stringify(space)} has neither a running auth service nor local signing authority`,
       };
+    }
     try {
       const res = await fetch(`${info.url}/native-lifecycle-bindings`, {
         method: "POST",

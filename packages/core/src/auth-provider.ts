@@ -76,6 +76,7 @@ export interface AuthProvider extends Extension {
     store: SecretStore;
     dir: string;
     space: string;
+    server: string;
     managerPrincipal: string;
   }): Promise<NativeLifecycleBindingLookup>;
   /**
