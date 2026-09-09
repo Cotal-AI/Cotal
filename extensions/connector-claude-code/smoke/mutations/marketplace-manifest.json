@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/marketplace-manifest.smoke.ts"
+  ],
+  "guard": "the generated marketplace lists every present plugin as an object carrying the source Claude Code resolves against",
+  "command": "pnpm smoke:claude-marketplace",
+  "completionMarker": "marketplace-manifest smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/marketplace-manifest.json",
+  "why": [
+    "#1392: the manifest listed plugins as bare names. Claude Code VALIDATES that form, so",
+    "`plugin marketplace add` and `update` both report success, and resolution then fails with",
+    "`Plugin \"cotal\" not found in marketplace \"cotal-mesh\"` — a message about a stale local copy.",
+    "So the failure never names the manifest, and re-running setup regenerates it over a hand fix.",
+    "",
+    "The guard is joined, so it gets a mutation per fact. T1 is the reported defect. T2 is the",
+    "near-miss it invites: an object entry is not sufficient, it must carry `source`. T3 is the",
+    "liveness arm — every shape assertion is vacuously satisfied by a builder that emits no",
+    "entries at all, so without it a mutation that lists nothing would come back SURVIVED.",
+    "",
+    "BOUNDARY. The suite grades `marketplaceManifest`, the value `writeMarketplace` serializes, and",
+    "does not spawn `claude`. So a kill shows the manifest's shape is guarded, NOT that Claude Code",
+    "accepts it; that evidence is the reproduction recorded on the issue."
+  ],
+  "mutations": [
+    {
+      "name": "T1 restore the bare-name plugin entries",
+      "file": "extensions/connector-claude-code/src/setup.ts",
+      "find": "  return { name, source: `./${name}`, ...(description ? { description } : {}) };",
+      "replace": "  return name as unknown as { name: string; source: string; description?: string };",
+      "expectRed": "every plugin entry is an object, never a bare name",
+      "cell": "every plugin entry is an object, never a bare name",
+      "note": "Exactly the pre-fix output. The liveness cell above still passes because the count is unchanged, so this cell is the first red."
+    },
+    {
+      "name": "T2 emit an object entry with no source",
+      "file": "extensions/connector-claude-code/src/setup.ts",
+      "find": "  return { name, source: `./${name}`, ...(description ? { description } : {}) };",
+      "replace": "  return { name, ...(description ? { description } : {}) } as { name: string; source: string; description?: string };",
+      "expectRed": "every entry carries the source Claude Code resolves against",
+      "cell": "every entry carries the source Claude Code resolves against",
+      "note": "The near-miss fix. Count and objectness both still pass, so the source cell is the first red."
+    },
+    {
+      "name": "T3 list no plugins at all",
+      "file": "extensions/connector-claude-code/src/setup.ts",
+      "find": "    .filter((name) => existsSync(join(market, name, \".claude-plugin\", \"plugin.json\")))",
+      "replace": "    .filter(() => false)",
+      "expectRed": "LIVENESS — the manifest lists every planted plugin",
+      "cell": "LIVENESS — the manifest lists every planted plugin",
+      "note": "The vacuous-pass mutant. Every shape assertion iterates an empty array and passes; only the count cell reds, and it reds first."
+    }
+  ]
+}
