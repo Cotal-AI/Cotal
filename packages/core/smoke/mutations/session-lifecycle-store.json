@@ -1,0 +1,64 @@
+{
+  "suite": "packages/core/smoke/session-lifecycle-store.smoke.ts",
+  "guard": "session operation receipts stay monotonic, retired retries bind to that binding and operation, recovery-read-only refuses writes, and the default binding lookup is reached without an injected scanner",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/session-lifecycle-store.smoke.ts",
+  "completionMarker": "passed, ",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/session-lifecycle-store.json",
+  "why": [
+    "B: a settled terminal-success must not rewind to prepared.",
+    "D: a retired binding cannot be discharged by another binding's receipt.",
+    "D2: a retired binding cannot be discharged by another operation's receipt on the same binding.",
+    "E: recovery-read-only must refuse prepare and update, not only the fence.",
+    "Default scan: at least one cell calls lookup with no injected scanner."
+  ],
+  "mutations": [
+    {
+      "name": "B allow terminal-success to rewind",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  assertSessionOperationStateMonotonic(existing.record.state, parsed.state);\n",
+      "replace": "",
+      "expectRed": "terminal-success cannot rewind to prepared",
+      "cell": "terminal-success cannot rewind to prepared"
+    },
+    {
+      "name": "D accept any non-absent receipt for a retired binding",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "      && recordedReceipt.record.bindingId === bindingId\n",
+      "replace": "",
+      "expectRed": "a retired binding cannot be answered by another binding's receipt",
+      "cell": "a retired binding cannot be answered by another binding's receipt"
+    },
+    {
+      "name": "D2 accept a same-binding receipt for a different operation",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "      && recordedReceipt.record.operationId === operationId\n",
+      "replace": "",
+      "expectRed": "a retired binding cannot be answered by another operation's receipt",
+      "cell": "a retired binding cannot be answered by another operation's receipt"
+    },
+    {
+      "name": "E skip the prepare writable gate",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  await assertStoredSessionManagementWritable(kv, value.resourceKey);\n",
+      "replace": "",
+      "expectRed": "recovery-read-only refuses a new prepare",
+      "cell": "recovery-read-only refuses a new prepare"
+    },
+    {
+      "name": "E skip the update writable gate",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  await assertStoredSessionManagementWritable(kv, parsed.resourceKey);\n",
+      "replace": "",
+      "expectRed": "recovery-read-only refuses an operation update",
+      "cell": "recovery-read-only refuses an operation update"
+    },
+    {
+      "name": "default lookup scanner returns empty instead of latestKvEntries",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = latestKvEntries,",
+      "replace": "  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = async () => [],",
+      "expectRed": "default binding lookup without an injected scanner fails closed as possibly live",
+      "cell": "default binding lookup without an injected scanner fails closed as possibly live"
+    }
+  ]
+}
