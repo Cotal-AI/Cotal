@@ -1,6 +1,7 @@
 {
   "suite": [
     "implementations/auth/smoke/issued-static-binding.smoke.ts",
+    "packages/core/smoke/prototypes/issued-accepted-row.ts",
     "packages/core/smoke/prototypes/issued-generation-discovery.ts",
     "packages/core/smoke/prototypes/issued-request-admission.ts",
     "packages/core/smoke/prototypes/issued-static-connection.ts"
@@ -130,6 +131,22 @@
       "replace": "  parts.splice(parts.length - (parts[4] === \"inst\" ? 2 : 1), 0, ref.generation);",
       "expectRed": "the generation sits at one offset from the tail for every rail mode",
       "cell": "the generation sits at one offset from the tail for every rail mode"
+    },
+    {
+      "name": "the accepted read grant covers every client's row",
+      "file": "packages/core/smoke/prototypes/issued-accepted-row.ts",
+      "find": "  return `$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.${acceptedKey(token)}`;",
+      "replace": "  acceptedKey(token);\n  return `$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.accepted.v1.*`;",
+      "expectRed": "a client can read its accepted generation from its own row instead of the server view",
+      "cell": "a client can read its accepted generation from its own row instead of the server view"
+    },
+    {
+      "name": "an accepted-row token can be redeemed twice",
+      "file": "packages/core/smoke/prototypes/issued-accepted-row.ts",
+      "find": "  await kv.create(acceptedKey(token), new TextEncoder().encode(canonicalJson({ version: 1, ref })));",
+      "replace": "  await kv.put(acceptedKey(token), new TextEncoder().encode(canonicalJson({ version: 1, ref })));",
+      "expectRed": "a client can read its accepted generation from its own row instead of the server view",
+      "cell": "a client can read its accepted generation from its own row instead of the server view"
     }
   ]
 }

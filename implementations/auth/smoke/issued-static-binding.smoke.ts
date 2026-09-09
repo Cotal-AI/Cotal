@@ -21,6 +21,7 @@ import { importNativeSubjectPermissions, permitsSubject } from "../../../package
 import { connectIssuedStatic, issuedStaticTag, issuedRequestRows, issuedReplyFilter, issuedRequestSubject } from "../../../packages/core/smoke/prototypes/issued-static-connection.js";
 import { discoverIssuedAuthority, ISSUED_DISCOVERY_GRANT } from "../../../packages/core/smoke/prototypes/issued-generation-discovery.js";
 import { classifyIssuedArrival, UNBOUND_REFUSAL } from "../../../packages/core/smoke/prototypes/issued-request-admission.js";
+import { acceptedBucket, acceptedKey, acceptedReadGrant, writeAccepted, readAccepted } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
 
 let passed = 0;
 async function check(name: string, run: () => Promise<void>) {
@@ -65,6 +66,7 @@ try {
   const authKv = await kvm.open(epAuthBucket(space));
   const kv = await kvm.create(`cotal_issued_${space}`, { storage: "file", allow_direct: false });
   const lifecycle = await openIssuedLifecycle(kv, space);
+  const accepted = await kvm.create(acceptedBucket(space), { storage: "file", allow_direct: true });
   const capability = { endpoint: "proof.bound", command: "inspect" };
   const request = () => ({ route: { mode: "one" as const }, endpoint: capability.endpoint, command: capability.command, nonce: randomBytes(16).toString("hex") });
   const received = new Set<string>();
@@ -271,6 +273,25 @@ try {
     assert.throws(() => classifyIssuedArrival(space, parts.join(".")), /invalid issued generation/);
     assert.throws(() => classifyIssuedArrival(space, `cotal.${space}.ep.v1.bogus.x.y.local.a.${caller.uid}.${"a".repeat(32)}.n`), /unsupported endpoint rail/);
     assert.throws(() => classifyIssuedArrival("elsewhere", issuedRequestSubject(first.ref, request())), /not an endpoint subject/);
+  });
+
+  await check("a client can read its accepted generation from its own row instead of the server view", async () => {
+    // The alternative to $SYS.REQ.USER.INFO. The client performs the read, so it adds no path by
+    // which the server places bytes on a subject the client names.
+    const token = randomBytes(16).toString("hex");
+    const mine = await mint([acceptedReadGrant(space, token)], false, { discoverable: true });
+    await writeAccepted(accepted, token, mine.ref);
+    const client = await open(mine.material);
+    assert.deepEqual(await readAccepted(client.nc, space, token), mine.ref);
+    // The grant names one key, so another caller's row is refused by the broker, not by the reader.
+    const other = randomBytes(16).toString("hex");
+    await writeAccepted(accepted, other, (await mint([])).ref);
+    await assert.rejects(readAccepted(client.nc, space, other));
+    // A token with no row refuses rather than resolving to something.
+    await assert.rejects(readAccepted(client.nc, space, randomBytes(16).toString("hex")));
+    // Redemption is once: the issuer cannot overwrite a token with a second issuance.
+    await assert.rejects(writeAccepted(accepted, token, (await mint([])).ref));
+    assert.equal(acceptedKey(token), `accepted.v1.${token}`);
   });
 
   await check("the generation sits at one offset from the tail for every rail mode", async () => {
