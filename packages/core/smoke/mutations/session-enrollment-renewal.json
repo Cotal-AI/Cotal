@@ -1,0 +1,21 @@
+{
+  "suite": "packages/core/smoke/session-enrollment-renewal.smoke.ts",
+  "guard": "independent remint intersects allowPublish, not only subscribe",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/session-enrollment-renewal.smoke.ts",
+  "completionMarker": " failed",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/session-enrollment-renewal.json",
+  "why": [
+    "aclForAlias is a subscribe-only replica. A remint that copies ceiling.allowPublish",
+    "reissues a revoked publish grant. The named cell is the production intersect."
+  ],
+  "mutations": [
+    {
+      "name": "copy enrollment allowPublish instead of intersecting the live grant",
+      "file": "packages/core/src/session-enrollment-renewal.ts",
+      "find": "    allowPublish: Object.freeze(intersectChannels(ceiling.allowPublish, grant.allowPublish)),",
+      "replace": "    allowPublish: Object.freeze([...ceiling.allowPublish]),",
+      "expectRed": "revoked allowPublish does not survive a renewal",
+      "cell": "revoked allowPublish does not survive a renewal"
+    }
+  ]
+}
