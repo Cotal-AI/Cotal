@@ -1,0 +1,29 @@
+{
+  "suite": "packages/core/smoke/native-lifecycle-executor.smoke.ts",
+  "guard": "unsupported native lifecycle operations refuse before inspect/adopt, and executeNativeLifecycle is the public registry entry",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/native-lifecycle-executor.smoke.ts",
+  "completionMarker": "passed, ",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/native-lifecycle-executor.json",
+  "why": [
+    "Capability refusal must happen before inspect or prepare.",
+    "At least one cell drives executeNativeLifecycle with a real registry provider and nothing injected."
+  ],
+  "mutations": [
+    {
+      "name": "skip capability require before mutating dispatch",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  try {\n    method = requireNativeLifecycleOperation(connection, request.operation);\n  } catch (e) {\n    if (e instanceof NativeLifecycleUnsupported) return { state: \"unsupported\", operation: request.operation };\n    throw e;\n  }\n",
+      "replace": "  const method = connection[request.operation];\n",
+      "expectRed": "unsupported adopt is refused before inspect",
+      "cell": "unsupported adopt is refused before inspect"
+    },
+    {
+      "name": "allow observed-mode mutation",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (MUTATING.has(request.operation) && connection.capabilities.mode === \"observed\")\n    return { state: \"unsupported\", operation: request.operation };\n",
+      "replace": "",
+      "expectRed": "observed-mode adopt is refused before inspect",
+      "cell": "observed-mode adopt is refused before inspect"
+    }
+  ]
+}

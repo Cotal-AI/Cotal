@@ -66,6 +66,7 @@ export * from "./runtime.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./native-lifecycle-provider.js";
+export * from "./native-lifecycle-executor.js";
 export * from "./auth-provider.js";
 export * from "./remote-manager-authority.js";
 export * from "./canonical.js";
