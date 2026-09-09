@@ -123,6 +123,16 @@ await updateSessionOperation(kv, {
 }, (kv as unknown as MemKv).rows.get(sessionOperationKey(coopRes, "op-coop-release"))!.revision);
 const coopStored = await queryOperation(kv, coopRes, "op-coop-release");
 c("store update accepts cooperative-retirement as terminal-success", coopStored.state === "terminal-success" && coopStored.proofOrigin?.proves === "cooperative-retirement");
+const coopValidRes = { ...resource, stableSessionId: "coop-valid" };
+const coopValidPrepared = await prepareSessionOperation(kv, {
+  ...base, resourceKey: coopValidRes, operationId: "op-coop-valid", bindingId: "binding-live", action: "release",
+});
+await updateSessionOperation(kv, {
+  ...coopValidPrepared.record,
+  state: "terminal-success",
+  result: { bindingState: "released", nativeState: "preserved" },
+  proofOrigin: coopProof,
+}, (kv as unknown as MemKv).rows.get(sessionOperationKey(coopValidRes, "op-coop-valid"))!.revision);
 
 console.log("B. monotonic trusted state, rollback read-only, and retired fences");
 const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, retireBindingIds: ["binding-old"], observedNativeEpochFloor: 7 });
@@ -209,9 +219,10 @@ c("released lookup with cooperative-retirement remains live without native-effec
   revision: 1,
   operation: "PUT" as const,
 }] as never));
+const releasedCoopValid = { ...nativeBinding, resourceKey: coopValidRes, state: "released" as const, operationId: "op-coop-valid" };
 c("fully-validated cooperative release still blocks shutdown because the guard requires native-effect", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
-  key: sessionBindingKey(coopRes),
-  value: new TextEncoder().encode(JSON.stringify(releasedCoop)),
+  key: sessionBindingKey(coopValidRes),
+  value: new TextEncoder().encode(JSON.stringify(releasedCoopValid)),
   revision: 1,
   operation: "PUT" as const,
 }] as never) === false);
