@@ -10,8 +10,12 @@
     "The endpoint's pre-connect refresh is deliberately best-effort after the first connection. If",
     "the source is down when the cached cred expires, removing this guard restores the reported",
     "behavior exactly: connectAndBind presents credential material it has already decoded as expired.",
-    "The live smoke captures the disposable broker's authentication-expired denial, so the named",
-    "cell proves the real dial path reached the broker rather than only exercising a local parser."
+    "The named cell asserts the refusal is raised, so it goes red on the deleted block itself.",
+    "The sibling cell counting broker denials cannot grade this mutation. It can read zero denials",
+    "while the guard is absent in two ways: a rebuild that dials before exp presents a cred the",
+    "broker still accepts, and a denial that does land can fall outside the slice the cell inspects,",
+    "because failedRebuildLogStart only records that the marker fired. Under the mutation that cell",
+    "was observed both red and green on the same machine, and green in CI."
   ],
   "mutations": [
     {
@@ -19,9 +23,9 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;\n    if (typeof credsExp === \"number\" && credsExp * 1000 <= Date.now())\n      throw new Error(\n        this.credsSource\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
       "replace": "",
-      "expectRed": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
-      "cell": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
-      "note": "Deleting the block is the issue's pre-fix behavior and leaves the tree compiling. The source fails twice, so the first reconnect dials the cached expired cred and the broker logs the denial before the source recovers."
+      "expectRed": "the pre-dial refusal is loud and names the failing renewal path",
+      "cell": "the pre-dial refusal is loud and names the failing renewal path",
+      "note": "Deleting the block is the issue's pre-fix behavior and leaves the tree compiling. The refusal text the named cell matches exists only inside the deleted block, so removing it is what makes the cell red. The suite's own recovery path is unaffected: the source fails twice and then returns."
     }
   ]
 }
