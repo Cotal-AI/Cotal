@@ -10,8 +10,10 @@
     "The endpoint's pre-connect refresh is deliberately best-effort after the first connection. If",
     "the source is down when the cached cred expires, removing this guard restores the reported",
     "behavior exactly: connectAndBind presents credential material it has already decoded as expired.",
-    "The live smoke captures the disposable broker's authentication-expired denial, so the named",
-    "cell proves the real dial path reached the broker rather than only exercising a local parser."
+    "The named cell asserts the refusal is raised. The sibling cell counting broker denials cannot",
+    "grade this mutation: credsRenewalDelayMs reports creds stale at 75% of lifetime while the guard",
+    "refuses only at exp, so between those points the cached cred is still valid, the broker accepts",
+    "it, and no denial is logged whether or not the guard is present."
   ],
   "mutations": [
     {
@@ -19,8 +21,8 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;\n    if (typeof credsExp === \"number\" && credsExp * 1000 <= Date.now())\n      throw new Error(\n        this.credsSource\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
       "replace": "",
-      "expectRed": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
-      "cell": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+      "expectRed": "the pre-dial refusal is loud and names the failing renewal path",
+      "cell": "the pre-dial refusal is loud and names the failing renewal path",
       "note": "Deleting the block is the issue's pre-fix behavior and leaves the tree compiling. The source fails twice, so the first reconnect dials the cached expired cred and the broker logs the denial before the source recovers."
     }
   ]
