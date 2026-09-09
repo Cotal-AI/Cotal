@@ -25,7 +25,7 @@ import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { deliveryLiveness, deliveryUp, stopDelivery } from "../src/lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
+import { assertNativeLifecycleShutdownStatus, managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
 
 const ALPHA = "segrec-alpha", BETA = "segrec-beta", GAMMA = "segrec-gamma";
 const root = mkdtempSync(join(tmpdir(), "cotal-segrec-"));
@@ -41,6 +41,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const allowLegacyStop = async () => {};
 
 const children: ChildProcess[] = [];
 /** A real, signalable process whose argv carries the `supervise` token the manager attributes on. */
@@ -62,6 +63,39 @@ async function waitDead(pid: number): Promise<void> {
 }
 
 try {
+  console.log("0) operator-visible native lifecycle outcomes are distinct");
+  let missingAuthority = "", liveBinding = "";
+  try {
+    assertNativeLifecycleShutdownStatus(
+      { status: "unknown", liveBindings: 0, liveBindingIds: [], reason: "missing trusted session lifecycle lookup authority" },
+      "cotal down manager", ALPHA,
+    );
+  } catch (e) { missingAuthority = (e as Error).message; }
+  try {
+    assertNativeLifecycleShutdownStatus(
+      { status: "known", liveBindings: 1, liveBindingIds: ["binding-live-17"] },
+      "cotal down manager", ALPHA,
+    );
+  } catch (e) { liveBinding = (e as Error).message; }
+  check("authorized empty native inventory permits legacy shutdown unchanged", (() => {
+    try { assertNativeLifecycleShutdownStatus({ status: "known", liveBindings: 0, liveBindingIds: [] }, "cotal down manager", ALPHA); return true; }
+    catch { return false; }
+  })());
+  check("missing reader authority is an explicit authorization result",
+    /missing trusted session lifecycle lookup authority/.test(missingAuthority) && !/binding-live-17/.test(missingAuthority), missingAuthority);
+  check("authorized live binding refusal names the exact binding and release remedy",
+    /binding-live-17/.test(liveBinding) && /Release or explicitly stop/.test(liveBinding), liveBinding);
+  check("missing authority and live binding have different operator messages", missingAuthority !== liveBinding);
+  let inconsistentInventory = "";
+  try {
+    assertNativeLifecycleShutdownStatus(
+      { status: "known", liveBindings: 1, liveBindingIds: [] },
+      "cotal down manager", ALPHA,
+    );
+  } catch (e) { inconsistentInventory = (e as Error).message; }
+  check("a live count without exact binding IDs is inconsistent, not an unnamed live refusal",
+    /inconsistent/.test(inconsistentInventory) && !/Release or explicitly stop each binding/.test(inconsistentInventory), inconsistentInventory);
+
   console.log("1) two managers, one root: each space reads its own process");
   const a = daemon(), b = daemon();
   const aPid = a.pid!, bPid = b.pid!;
@@ -88,13 +122,31 @@ try {
   check("a marker holding ANOTHER space's pid does not make this space delivery-aware", !managerHasDeliveryMarker(BETA));
 
   console.log("\n3) stopping one space's manager leaves the other's running and recorded");
-  const stopped = await stopManager(undefined, undefined, undefined, ALPHA);
+  const stopped = await stopManager(undefined, undefined, undefined, ALPHA, allowLegacyStop);
   await waitDead(aPid);
   check("stopManager(alpha) reports a stop", stopped === "stopped", stopped);
   check("...and alpha's process is dead", !alive(aPid));
   check("...and beta's manager is UNTOUCHED — the defect this change fixes", alive(bPid) && managerUp(BETA));
   check("...and alpha's records are gone", !existsSync(record(MANAGER_PIDFILE, ALPHA)) && !existsSync(record(MANAGER_DELIVERY_AWARE_MARKER, ALPHA)));
   check("...and beta's record is still on disk", existsSync(record(MANAGER_PIDFILE, BETA)));
+
+  console.log("\n3b) native lifecycle guard refuses before the first manager signal");
+  const guarded = daemon();
+  const guardedPid = guarded.pid!;
+  place(MANAGER_PIDFILE, ALPHA, guardedPid);
+  let signals = 0;
+  let refused = false;
+  try {
+    await stopManager(undefined, () => { signals++; }, undefined, ALPHA, async () => {
+      throw new Error("live native lifecycle binding binding-live");
+    });
+  } catch (e) {
+    refused = /native lifecycle binding/.test((e as Error).message);
+  }
+  check("live native binding refusal occurs before signalling", refused && signals === 0 && alive(guardedPid), { refused, signals });
+  await stopManager(undefined, undefined, undefined, ALPHA, async () => {});
+  await waitDead(guardedPid);
+  check("legacy manager with no native bindings keeps destructive stop behavior", !alive(guardedPid));
 
   console.log("\n4) the same holds for the delivery daemon");
   const d1 = daemon(), d2 = daemon();
@@ -114,7 +166,7 @@ try {
   const legacyPid = legacy.pid!;
   writeFileSync(join(root, ".cotal", "manager.pid"), String(legacyPid));
   check("the CLI still FINDS the pre-upgrade manager", managerUp(ALPHA), managerLiveness(undefined, undefined, ALPHA));
-  const legacyStop = await stopManager(undefined, undefined, undefined, ALPHA);
+  const legacyStop = await stopManager(undefined, undefined, undefined, ALPHA, allowLegacyStop);
   await waitDead(legacyPid);
   check("...and still STOPS it, rather than leaving it orphaned", legacyStop === "stopped" && !alive(legacyPid), legacyStop);
   check("...and removes the pre-upgrade record it acted on", !existsSync(join(root, ".cotal", "manager.pid")));
@@ -142,7 +194,7 @@ try {
   rmSync(join(root, ".cotal", "manager.pid"), { force: true });
   rmSync(record(MANAGER_PIDFILE, ALPHA), { force: true });
   process.kill(twin.pid!, "SIGKILL");
-  await stopManager(undefined, undefined, undefined, BETA);
+  await stopManager(undefined, undefined, undefined, BETA, allowLegacyStop);
   await stopDelivery(undefined, undefined, BETA);
   await waitDead(bPid);
   await waitDead(d2Pid);
@@ -152,7 +204,7 @@ try {
   check("the folder-default read FINDS it, with no auth material to name the space", managerUp(),
     { liveness: managerLiveness(), children: readdirSync(join(root, ".cotal")) });
   check("...and it is the recorded process, not a coincidence", managerLiveness() === "alive");
-  const soloStop = await stopManager();
+  const soloStop = await stopManager(undefined, undefined, undefined, undefined, allowLegacyStop);
   await waitDead(soloPid);
   check("...and a bare stop REAPS it rather than orphaning it", soloStop === "stopped" && !alive(soloPid), soloStop);
   check("...and the record it acted on is gone", !existsSync(record(MANAGER_PIDFILE, GAMMA)));

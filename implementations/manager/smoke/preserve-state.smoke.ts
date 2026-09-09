@@ -15,9 +15,11 @@ import {
   type Connector,
   type LaunchOpts,
   type LaunchSpec,
+  type NativeLifecycleBindingLookup,
 } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
+import { nativeLifecycleLookupForSupervisor } from "../src/commands.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
 let failures = 0;
@@ -131,13 +133,22 @@ const inventoryOf = (...agents: ManagerResumeAgent[]): ManagerResumeInventory =>
 
 function managerWith(
   runtimeSpawn: (name: string, spec: LaunchSpec, cwd: string) => AgentHandle,
-  opts: { resumeAttemptId?: string; resumeDurableCommitToken?: string } = {},
+  opts: {
+    resumeAttemptId?: string;
+    resumeDurableCommitToken?: string;
+    commandDrainTimeoutMs?: number;
+    nativeLifecycleLookup?: (managerPrincipal: string) => Promise<NativeLifecycleBindingLookup>;
+    nativeMaintenanceBarrier?: () => Promise<{ status: "settled" } | { status: "recovery-required"; reason: string; requestIds?: readonly string[] }>;
+  } = {},
 ): Manager {
   const manager = new Manager({
     space: "preserve-smoke",
     runtime: "pty",
     workspaceRoot: root,
     preserveStopTimeoutMs: 50,
+    commandDrainTimeoutMs: opts.commandDrainTimeoutMs,
+    nativeLifecycleLookup: opts.nativeLifecycleLookup,
+    nativeMaintenanceBarrier: opts.nativeMaintenanceBarrier,
     resumeAttemptId: opts.resumeAttemptId,
     resumeDurableCommitToken: opts.resumeDurableCommitToken,
   });
@@ -267,7 +278,7 @@ let retainedAuthority = {
 // A cast AFTER the literal gives its members no contextual type, which is why the validator's
 // parameter was implicitly `any`; annotating the subset types the callback from the contract, and
 // the widening happens once, at the register call.
-const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | "validateRetainedAgent" | "grantAgent"> = {
+const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | "validateRetainedAgent" | "grantAgent" | "nativeLifecycleBindings"> = {
   kind: "auth-provider",
   name: "preserve-auth",
   agentBearerCommand: "agent-bearer",
@@ -282,8 +293,215 @@ const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | 
     retainedGrantCalls++;
     throw new Error("grantAgent must not run during resume");
   },
+  nativeLifecycleBindings: async () => ({ status: "unknown", bindings: [], reason: "test lookup not configured" }),
 };
 registry.register(preserveAuth as unknown as AuthProvider);
+
+// PRODUCTION CALLER: this is the exact commands.ts composition passed by `cotal supervise` into
+// Manager. Nothing is injected into Manager. The registered provider is reached through the shipped
+// resolveAuthProvider path and receives the complete closed-query coordinates.
+{
+  let providerInput: Parameters<NonNullable<AuthProvider["nativeLifecycleBindings"]>>[0] | undefined;
+  const original = preserveAuth.nativeLifecycleBindings;
+  preserveAuth.nativeLifecycleBindings = async (input) => {
+    providerInput = input;
+    return { status: "known", bindings: [] };
+  };
+  try {
+    const lookup = nativeLifecycleLookupForSupervisor(root, "preserve-smoke", "nats://scanner.invalid:4222");
+    const result = await lookup("owner.manager");
+    check("shipped supervisor entry point reaches the auth provider closed lookup without Manager injection",
+      result.status === "known" && providerInput?.space === "preserve-smoke"
+        && providerInput.server === "nats://scanner.invalid:4222"
+        && providerInput.managerPrincipal === "owner.manager"
+        && providerInput.dir.includes(".cotal"), providerInput);
+  } finally {
+    preserveAuth.nativeLifecycleBindings = original;
+  }
+}
+
+// Missing scan authority and a live binding are distinct durable answers. Both block destructive
+// shutdown, but the former names the reader grant remedy rather than pretending a binding exists.
+{
+  const missing = managerWith((name) => fakeHandle(name));
+  const missingResult = await missing.nativeLifecycleBindings();
+  check("missing trusted lookup authority is explicit, not reported as a live binding",
+    missingResult.status === "unknown" && /missing trusted session lifecycle lookup authority/.test(missingResult.reason), missingResult);
+  const known = managerWith((name) => fakeHandle(name), {
+    nativeLifecycleLookup: async () => ({ status: "known", bindings: [] }),
+  });
+  const knownResult = await known.nativeLifecycleBindings();
+  check("an authorized proven-empty native binding lookup permits the legacy path",
+    knownResult.status === "known" && knownResult.bindings.length === 0);
+}
+
+// A caught direct SIGTERM dispatches by the authoritative binding lookup. The native arm must never
+// fall through to legacy stop, while a proven-empty lookup keeps the old destructive path. Before
+// this change commands.ts called stop() unconditionally, so the first cell selects the wrong method.
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const m = manager as unknown as {
+    nativeLifecycleBindings(): Promise<NativeLifecycleBindingLookup>;
+    stopPreservingNative(): Promise<void>;
+    stop(): Promise<void>;
+  };
+  let native = 0, legacy = 0;
+  m.nativeLifecycleBindings = async () => ({ status: "known", bindings: [{} as never] });
+  m.stopPreservingNative = async () => { native++; };
+  m.stop = async () => { legacy++; };
+  await manager.stopForSignal();
+  check("caught SIGTERM selects preserve-native cleanup for a native binding", native === 1 && legacy === 0, { native, legacy });
+
+  m.nativeLifecycleBindings = async () => ({ status: "known", bindings: [] });
+  await manager.stopForSignal();
+  check("caught SIGTERM keeps legacy destructive cleanup for a proven-empty binding lookup", native === 1 && legacy === 1, { native, legacy });
+
+  m.nativeLifecycleBindings = async () => ({ status: "unknown", bindings: [], reason: "missing trusted session lifecycle lookup authority" });
+  let missing = "";
+  try { await manager.stopForSignal(); } catch (e) { missing = (e as Error).message; }
+  check("caught SIGTERM names missing reader authority instead of claiming a live binding",
+    /missing trusted session lifecycle lookup authority/.test(missing) && native === 1 && legacy === 1, missing);
+}
+
+// Manager replacement may report a clean drain only after every request that crossed admission has
+// a conclusive disposition. This request deliberately never releases its admission. Before the fix
+// there was no request ledger and the lifecycle wait could only hang forever or be treated as a
+// generic timeout, losing the exact accepted request that requires recovery.
+{
+  const manager = managerWith((name) => fakeHandle(name), {
+    commandDrainTimeoutMs: 5,
+    nativeMaintenanceBarrier: async () => ({ status: "settled" }),
+  });
+  const m = manager as unknown as {
+    admitControl(caller: string, accepted: { requestId: string; command: string }): { refusal?: string; release?: () => void };
+    drainAcceptedCommands(): Promise<{
+      status: "drained" | "recovery-required";
+      accepted: number;
+      settled: number;
+      unaccounted: Array<{ requestId: string; command: string }>;
+    }>;
+  };
+  const accepted = m.admitControl("local.operator", { requestId: "accepted-unknown", command: "stop" });
+  const drain = await m.drainAcceptedCommands();
+  check("an unaccounted accepted request reports recovery-required rather than drain success",
+    accepted.refusal === undefined && drain.status === "recovery-required"
+      && drain.accepted === 1 && drain.settled === 0
+      && drain.unaccounted[0]?.requestId === "accepted-unknown"
+      && drain.unaccounted[0]?.command === "stop",
+    drain);
+  accepted.release?.();
+}
+
+// Positive control through the same ledger: a conclusively settled request is absent from the drain
+// report. A broken counter that always returns zero cannot satisfy both this and the cell above.
+{
+  const manager = managerWith((name) => fakeHandle(name), {
+    commandDrainTimeoutMs: 5,
+    nativeMaintenanceBarrier: async () => ({ status: "settled" }),
+  });
+  const m = manager as unknown as {
+    admitControl(caller: string, accepted: { requestId: string; command: string }): { refusal?: string; release?: () => void };
+    drainAcceptedCommands(): Promise<{
+      status: "drained" | "recovery-required";
+      accepted: number;
+      settled: number;
+      unaccounted: Array<{ requestId: string }>;
+    }>;
+  };
+  const accepted = m.admitControl("local.operator", { requestId: "accepted-settled", command: "models" });
+  accepted.release?.();
+  const drain = await m.drainAcceptedCommands();
+  check("a conclusively settled accepted request drains cleanly",
+    accepted.refusal === undefined && drain.status === "drained"
+      && drain.accepted === 1 && drain.settled === 1 && drain.unaccounted.length === 0,
+    drain);
+}
+
+// The distinct maintenance path fences and drains commands before retiring manager authority, and
+// retires that authority before old attach/session-serving rails. This manager has no legacy seats,
+// which models a live independently-owned native binding: no AgentHandle.stop can be reached.
+{
+  const order: string[] = [];
+  const manager = managerWith((name) => fakeHandle(name), {
+    commandDrainTimeoutMs: 5,
+    nativeMaintenanceBarrier: async () => { order.push("effect-fence"); return { status: "settled" }; },
+  });
+  const m = manager as unknown as {
+    managerInstanceId: string;
+    leaseRevision?: number;
+    serviceServe?: unknown;
+    runHosting?: unknown;
+    ep: { releaseManagerLease(): Promise<void>; stop(): Promise<void> };
+    attach: { stop(): Promise<void> };
+    stopServiceServe(): Promise<void>;
+    deregisterServiceOnStop(): Promise<void>;
+    stopGoalWriter(): Promise<void>;
+    stopSessionPlane(): Promise<void>;
+  };
+  m.managerInstanceId = "maintenanceinstance000000000";
+  m.serviceServe = {};
+  m.ep = { releaseManagerLease: async () => { order.push("lease"); }, stop: async () => { order.push("endpoint"); } };
+  m.attach = { stop: async () => { order.push("attach"); } };
+  m.stopServiceServe = async () => { order.push("serve-drain"); };
+  m.deregisterServiceOnStop = async () => { order.push("deregister"); };
+  m.stopGoalWriter = async () => { order.push("goal-writer"); };
+  m.stopSessionPlane = async () => { order.push("session-rails"); };
+  await manager.stopPreservingNative();
+  check("preserve-native exit turns over lease and session rails only after the canonical barrier settled",
+    order.indexOf("effect-fence") < order.indexOf("serve-drain")
+      && order.indexOf("serve-drain") < order.indexOf("lease")
+      && order.indexOf("lease") < order.indexOf("session-rails"),
+    order);
+}
+
+// A broker/credential barrier is not proof that an already-dispatched native request settled. The
+// canonical barrier reports that exact request as unknown, and maintenance refuses recovery-required
+// BEFORE destructive legacy teardown or manager lease turnover.
+{
+  let brokerRetired = false;
+  const manager = managerWith((name) => fakeHandle(name), {
+    commandDrainTimeoutMs: 5,
+    nativeMaintenanceBarrier: async () => {
+      // The canonical retirement gate has already retired the broker rail, but that event cannot
+      // conclude the provider effect dispatched under this request ID.
+      brokerRetired = true;
+      return {
+        status: "recovery-required",
+        reason: "native provider outcome is unknown after broker retirement",
+        requestIds: ["native-http-17"],
+      };
+    },
+  });
+  const handle = fakeHandle("legacy-survivor");
+  (manager as unknown as { agents: Map<string, unknown> }).agents.set(
+    "legacy-survivor",
+    managed("legacy-survivor", "legacy_survivor", handle, "persona"),
+  );
+  const forbidden: string[] = [];
+  const m = manager as unknown as {
+    managerInstanceId: string;
+    leaseRevision?: number;
+    ep: { releaseManagerLease(): Promise<void>; stop(): Promise<void> };
+    attach: { stop(): Promise<void> };
+    stopServiceServe(): Promise<void>;
+    stopSessionPlane(): Promise<void>;
+  };
+  m.managerInstanceId = "unknownoutcome0000000000000";
+  m.ep = {
+    releaseManagerLease: async () => { forbidden.push("lease-turnover"); },
+    stop: async () => { forbidden.push("endpoint-stop"); },
+  };
+  m.attach = { stop: async () => { forbidden.push("attach-stop"); } };
+  m.stopServiceServe = async () => { forbidden.push("serve-drain"); };
+  m.stopSessionPlane = async () => { forbidden.push("session-rails"); };
+  let error = "";
+  try { await manager.stopPreservingNative(); } catch (e) { error = (e as Error).message; }
+  check("fixture reaches broker retirement with the native request still outcome-unknown", brokerRetired, brokerRetired);
+  check("unknown accepted native request stays recovery-required rather than maintenance success",
+    /requires recovery/.test(error) && /native-http-17/.test(error) && /broker rail retirement is not native effect proof/.test(error), error);
+  check("unknown native outcome refuses before destructive teardown", handle.stops === 0, handle.stops);
+  check("unknown native outcome refuses before lease transfer or serving-rail teardown", forbidden.length === 0, forbidden);
+}
 
 // Fence and drain: an accepted async control request completes before children stop, while later
 // lifecycle work is rejected immediately. The exit watcher fires from stop() but must not clean up.

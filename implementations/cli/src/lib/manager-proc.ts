@@ -5,12 +5,14 @@ import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
+import { askManager } from "./control.js";
 import {
   canonicalLocalProcessPath, commandIsCotalSupervisor, localProcessPath, parsePid, probeLiveness,
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
   identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
+  resolveControlTarget,
 } from "@cotal-ai/workspace";
 
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
@@ -21,6 +23,47 @@ import {
  *  space-less read reports "absent" over a live manager. */
 const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
+
+/** Refuse a legacy manager signal unless the live manager proves there are no native lifecycle
+ * bindings. The status request consumes core's sessionbinding-only lookup, so legacy managed seats
+ * do not enter this guard. An unanswered, unknown, malformed, or mixed-version result is not proof
+ * of absence and therefore refuses before signalling. */
+export async function assertManagerShutdownAdmitted(
+  space: string = folderSpace(),
+  operation = "legacy manager shutdown",
+): Promise<void> {
+  let target: Awaited<ReturnType<typeof resolveControlTarget>>;
+  try {
+    target = await resolveControlTarget({ space }, "control-caller-privileged", undefined, { onRefusal: "throw" });
+  } catch (e) {
+    throw new Error(`${operation} refused before signalling: native lifecycle state could not be read (${(e as Error).message}). Release or explicitly stop native bindings through their authorized binding operation, then retry.`);
+  }
+  const reply = await askManager(target.space, target.server, "managerStatus", undefined, target.auth, "owner", 10_000);
+  if (!reply.ok)
+    throw new Error(`${operation} refused before signalling: the manager could not prove native lifecycle state (${reply.error ?? "status failed"}). Release or explicitly stop native bindings through their authorized binding operation, then retry.`);
+  const native = (reply.data as { nativeLifecycle?: { status?: string; liveBindings?: number; liveBindingIds?: string[]; reason?: string } } | undefined)?.nativeLifecycle;
+  assertNativeLifecycleShutdownStatus(native, operation, target.space);
+}
+
+/** Decide from the manager's authenticated native lifecycle status. Kept pure so the three required
+ * operator outcomes are graded separately from transport setup: known-empty proceeds, missing read
+ * authority says authorization, and known-live names the bindings and release remedy. */
+export function assertNativeLifecycleShutdownStatus(
+  native: { status?: string; liveBindings?: number; liveBindingIds?: string[]; reason?: string } | undefined,
+  operation: string,
+  space: string,
+): void {
+  if (!native || native.status !== "known" || !Number.isSafeInteger(native.liveBindings) || native.liveBindings! < 0)
+    throw new Error(`${operation} refused before signalling: native lifecycle state is ${native?.status ?? "unreported"}${native?.reason ? ` (${native.reason})` : ""}. Unknown is not safe-to-stop.`);
+  const ids = native.liveBindingIds;
+  if (!Array.isArray(ids)
+      || ids.some((id) => typeof id !== "string" || id.trim().length === 0)
+      || new Set(ids).size !== ids.length
+      || native.liveBindings !== ids.length)
+    throw new Error(`${operation} refused before signalling: native lifecycle state is inconsistent (reported ${native.liveBindings} live binding${native.liveBindings === 1 ? "" : "s"} but supplied ${ids?.length ?? 0} distinct valid binding IDs). Inconsistent is not safe-to-stop.`);
+  if (native.liveBindings! > 0)
+    throw new Error(`${operation} refused before signalling: manager in space "${space}" holds ${native.liveBindings} live native lifecycle binding${native.liveBindings === 1 ? "" : "s"} (${ids.join(", ")}). Legacy down is not a hot update. Release or explicitly stop each binding through its authorized operation. The only planned running-update entrypoint is \`cotal manager replace --apply <plan-digest>\`.`);
+}
 
 /** The exact logfile the detached-manager writer opens. Exported so operator guidance names the
  *  writer-owned path instead of copying its filename template into command output. */
@@ -293,6 +336,7 @@ export async function stopManager(
   signal: SignalFn | undefined = undefined,
   readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
+  admit: (space: string) => Promise<void> = assertManagerShutdownAdmitted,
 ): Promise<StopVerdict> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH(space);
@@ -360,6 +404,7 @@ export async function stopManager(
   if (identity.kind === "mismatch") throw identityRefusal("the manager", p, identity.record, identity.liveToken);
   if (identity.kind === "legacy") console.error(identityLegacyWarning("the manager", p));
   else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the manager", p, identity);
+  await admit(space); // MUST complete before the first signal
   try {
     send(pid, "SIGTERM");
   } catch (e) {

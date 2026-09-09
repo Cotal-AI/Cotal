@@ -35,6 +35,7 @@ let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
+let runGuardedSupervisorStop!: typeof import("../src/commands/up.js").runGuardedSupervisorStop;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 try {
   home = mkdtempSync(join(scratch, "home-"));
@@ -42,6 +43,7 @@ try {
   ({ registry } = await import("@cotal-ai/core"));
   ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down } = await import("../src/commands/down.js"));
+  ({ runGuardedSupervisorStop } = await import("../src/commands/up.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -83,8 +85,8 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
   return { root, child, pidPath };
 }
 
-const run = (positionals: string[], values: Record<string, string | boolean> = {}) =>
-  down({ values, positionals, raw: [] });
+const run = (positionals: string[], values: Record<string, string | boolean> = {}, runtime?: Parameters<typeof down>[1]) =>
+  down({ values, positionals, raw: [] }, runtime);
 
 const entry = (space: string, root: string) =>
   ({ space, server: "nats://127.0.0.1:4222", root, mode: "open" as const, ts: "2026-07-27T00:00:00.000Z" });
@@ -118,6 +120,9 @@ try {
   const fixtured: LocalProcess = { kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" };
   registry.register(fixtured);
 
+  const managerProcess: LocalProcess = { kind: "local-process", name: "manager", label: "manager", pidFile: "manager.pid" };
+  registry.register(managerProcess);
+
   process.chdir(neutral);
 
   // No meshes recorded anywhere → a target-addressed stop fails loud, it does not probe the cwd.
@@ -128,6 +133,29 @@ try {
   recordMesh(entry("teamA", meshA.root));
   recordMesh(entry("teamB", meshB.root));
   setCurrent("teamA");
+  const managerChild = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);", "supervise"], { stdio: "ignore" });
+  spawnedChildren.push(managerChild);
+  writeFileSync(join(meshA.root, ".cotal", "manager.pid"), String(managerChild.pid));
+  const refusedBeforeSignal = {
+    assertManagerShutdownAdmitted: async () => { throw new Error("live native lifecycle binding"); },
+  };
+  process.chdir(meshA.root);
+  await assert.rejects(run(["manager"], {}, refusedBeforeSignal), /live native lifecycle binding/);
+  check("down manager refuses before signalling with a live native binding", alive(managerChild.pid!));
+  await assert.rejects(run([], {}, refusedBeforeSignal), /live native lifecycle binding/);
+  check("bare down refuses before signalling with a live native binding", alive(managerChild.pid!));
+  const supervisorSignals: string[] = [];
+  const supervisorStopped = await runGuardedSupervisorStop({
+    admit: async () => { throw new Error("live native lifecycle binding"); },
+    stopDelivery: async () => { supervisorSignals.push("delivery"); },
+    stopManager: async () => { supervisorSignals.push("manager"); },
+    stopAuth: async () => { supervisorSignals.push("auth"); },
+    signalBroker: () => { supervisorSignals.push("broker"); },
+    log: () => {},
+  });
+  check("supervisor SIGTERM / OS service stop refuses before signalling any component",
+    !supervisorStopped && supervisorSignals.length === 0, supervisorSignals);
+  process.chdir(neutral);
   await run(["web"]);
   for (let i = 0; i < 100 && alive(meshA.child.pid!); i++) await sleep(50);
   check("current mesh: `down web` from elsewhere stops the dashboard", !alive(meshA.child.pid!));

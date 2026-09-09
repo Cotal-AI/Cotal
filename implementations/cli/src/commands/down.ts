@@ -60,6 +60,7 @@ import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identi
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
+import { assertManagerShutdownAdmitted } from "../lib/manager-proc.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 
@@ -75,9 +76,15 @@ export function downComplete(argv: string[]): CompletionResult {
   };
 }
 
+export interface DownRuntime {
+  assertManagerShutdownAdmitted(space: string, operation: string): Promise<void>;
+}
+
+const defaultDownRuntime: DownRuntime = { assertManagerShutdownAdmitted };
+
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
-export async function down(args: ParsedArgs): Promise<void> {
+export async function down(args: ParsedArgs, runtime: DownRuntime = defaultDownRuntime): Promise<void> {
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string; space?: string };
   const requested = [...new Set(args.positionals)];
   if (values["preserve-state"]) {
@@ -133,6 +140,13 @@ export async function down(args: ParsedArgs): Promise<void> {
     }
     return targetContext;
   };
+
+  if (!values["dry-run"] && selected.some((component) => component.name === "manager")) {
+    const managerComponent = selected.find((component) => component.name === "manager")!;
+    const managerContext = contextFor(managerComponent);
+    if (mayBeRunning(managerComponent, managerContext))
+      await runtime.assertManagerShutdownAdmitted(managerContext.space, requested.length ? "cotal down manager" : "cotal down");
+  }
 
   if (selected.some((component) => component.stopLast)) {
     const selectedNames = new Set(selected.map((component) => component.name));

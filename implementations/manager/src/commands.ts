@@ -21,9 +21,10 @@ import {
   type Command,
   type EpCaller,
   type ParsedArgs,
+  type NativeLifecycleBindingLookup,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
+  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -150,6 +151,28 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
   }
 }
 
+/** The shipped supervisor's trusted native lifecycle lookup composition. This is exported only so
+ * fixture tests can exercise the production entry point with no Manager dependency injection. */
+export function nativeLifecycleLookupForSupervisor(
+  root: string,
+  space: string,
+  server: string,
+): (managerPrincipal: string) => Promise<NativeLifecycleBindingLookup> {
+  const provider = resolveAuthProvider();
+  const store = workspaceSecretStore(root);
+  return async (managerPrincipal) => {
+    if (!provider.nativeLifecycleBindings)
+      return { status: "unknown", bindings: [], reason: `the registered auth provider "${provider.name}" does not implement trusted native lifecycle lookup` };
+    return provider.nativeLifecycleBindings({
+      store,
+      dir: userAuthStateDir(root, space),
+      space,
+      server,
+      managerPrincipal,
+    });
+  };
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -174,17 +197,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
     process.exit(1);
   }
   const { space, server } = target;
+  const root = findCotalRoot();
+  const secretStore = workspaceSecretStore(root);
   let remoteAuthority: NonNullable<ConstructorParameters<typeof Manager>[0]["remoteAuthority"]> | undefined;
   if (target.remoteUser) {
     try {
-      const state = loadOrCreateRemoteManagerIdentity(findCotalRoot(), space);
+      const state = loadOrCreateRemoteManagerIdentity(root, space);
       const provider = resolveAuthProvider();
       if (!provider.managerServiceAuthority)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
       const material = await provider.managerServiceAuthority({
-        store: workspaceSecretStore(findCotalRoot()),
-        dir: join(findCotalRoot(), ".cotal", "auth", space),
+        store: secretStore,
+        dir: join(root, ".cotal", "auth", space),
         request,
       });
       const actors = remoteManagerActors(state.instanceId);
@@ -217,8 +242,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
       }));
       const activate = await provider.managerServiceAuthority({
-        store: workspaceSecretStore(findCotalRoot()),
-        dir: join(findCotalRoot(), ".cotal", "auth", space),
+        store: secretStore,
+        dir: join(root, ".cotal", "auth", space),
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
       remoteAuthority = {
@@ -235,8 +260,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         serveGrant: registered.serveGrant,
         mintSessionServing: async (session) => {
           const sessionMaterial = await provider.managerServiceAuthority!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            store: secretStore,
+            dir: join(root, ".cotal", "auth", space),
             request: remoteManagerAuthorityRequest(state, "cli", "session", rawDigest(JSON.stringify({
               v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
               actors, identities: request.identities, artifactDigests: [],
@@ -283,6 +308,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // machine-local console. `cotal up` passes the address it bound the broker to when the operator
   // asked for an exposed console; the terminal itself rides the mesh either way.
   const attachHost = v["console-host"];
+  // PRODUCTION CALLER: caught SIGINT/SIGTERM -> Manager.stopForSignal() -> nativeLifecycleBindings()
+  // reaches this provider-owned closed query. Remote participant supervision has neither a resident
+  // local auth service nor local signing authority, so the provider returns explicit unknown and the
+  // signal remains refused. No raw scanner authority crosses this composition root.
+  const nativeLifecycleLookup = nativeLifecycleLookupForSupervisor(root, space, server);
   // Construction resolves the runtime (createRuntime) — which fails loud on an unusable env, e.g. the
   // pty runtime under Bun. Render that as one actionable line, not a raw stack (this also lands in
   // `.cotal/manager.log` for a detached `cotal up` daemon).
@@ -302,6 +332,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
       remoteAuthority,
+      nativeLifecycleLookup,
     });
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
@@ -319,7 +350,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   );
   // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
   // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
-  const shutdown = () => void mgr.stop()
+  const shutdown = () => void mgr.stopForSignal()
     .then(() => {
       releasePidRecord();
       process.exit(0);

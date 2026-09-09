@@ -49,7 +49,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, NativeLifecycleBindingLookup, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   requireRuntimeAdopt,
@@ -308,6 +308,18 @@ export interface ManagerOptions {
   attachHost?: string;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
+  /** Internal/test override for the manager-command drain deadline. A maintenance exit must not
+   * wait forever and then call an unaccounted request "drained". */
+  commandDrainTimeoutMs?: number;
+  /** Narrow read-only native lifecycle lookup supplied by an authorized trusted provider.
+   * Absent is an explicit missing-authority result, never a raw KV scan under a serving credential. */
+  nativeLifecycleLookup?: (managerPrincipal: string) => Promise<NativeLifecycleBindingLookup>;
+  /** Canonical §13.8/§13.9 session transfer/retirement barrier. It may report success only after
+   * every accepted native request has a conclusive disposition and old effect authority is fenced. */
+  nativeMaintenanceBarrier?: () => Promise<
+    | { status: "settled" }
+    | { status: "recovery-required"; reason: string; requestIds?: readonly string[] }
+  >;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
   resumeAttemptId?: string;
   /** Fsynced coordinator evidence recovered after commit but before finalize. */
@@ -357,6 +369,13 @@ export interface ManagerOptions {
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
+
+export interface ManagerCommandDrainResult {
+  status: "drained" | "recovery-required";
+  accepted: number;
+  settled: number;
+  unaccounted: ReadonlyArray<{ caller: string; requestId: string; command: string; acceptedAt: number }>;
+}
 
 
 /** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
@@ -607,11 +626,10 @@ interface ManagedAgent {
   authorityParent?: string;
   startedAt: number;
   handle: AgentHandle;
-  /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
-   *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
-   *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
-   *  kill that would deny the agent its clean mesh-leave. */
-  control?: { path: string; token: string };
+  /** This agent's complete connector-defined local control endpoint. Kept in memory only (never
+   *  persisted — token hygiene), including any separately fenced manager credential carried by a
+   *  native-lifecycle launch. Legacy launches retain only path + hook token. */
+  control?: LaunchSpec["control"];
   launch: ManagedLaunch;
   /** In-memory process-recovery input. It is never persisted with secret values: preservation
    * reconstructs it from the validated inventory and current config. Continuation-capable
@@ -844,6 +862,9 @@ export class Manager {
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
+  private readonly commandDrainTimeoutMs: number;
+  private readonly nativeLifecycleLookup?: NonNullable<ManagerOptions["nativeLifecycleLookup"]>;
+  private readonly nativeMaintenanceBarrier?: NonNullable<ManagerOptions["nativeMaintenanceBarrier"]>;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
@@ -1033,6 +1054,12 @@ export class Manager {
   private maintenanceState: ManagerMaintenanceState = "active";
   private lifecycleInFlight = 0;
   private lifecycleDrainWaiters: Array<() => void> = [];
+  /** Every manager command that crossed the shared admission fence but has not yet reached a
+   * conclusive success/refusal. Request id is the wire id, not a generated counter: a drain can name
+   * the exact accepted request whose outcome needs recovery. */
+  private readonly acceptedCommands = new Map<string, { caller: string; requestId: string; command: string; acceptedAt: number }>();
+  private acceptedCommandCount = 0;
+  private settledCommandCount = 0;
   private preservationTask?: Promise<ManagerPreserveResult>;
   private preparationTask?: Promise<ManagerPreservationPlan>;
   private preservationGeneration = 0;
@@ -1079,6 +1106,9 @@ export class Manager {
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
+    this.commandDrainTimeoutMs = opts.commandDrainTimeoutMs ?? 30_000;
+    this.nativeLifecycleLookup = opts.nativeLifecycleLookup;
+    this.nativeMaintenanceBarrier = opts.nativeMaintenanceBarrier;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
       throw new Error("resumeAttemptId must be a safe token (letters, digits, _, -; max 128)");
     if (opts.resumeDurableCommitToken && !/^[a-f0-9]{64}$/.test(opts.resumeDurableCommitToken))
@@ -1593,6 +1623,25 @@ export class Manager {
     return `manager is in ${this.maintenanceState} mode; new lifecycle/control work is fenced`;
   }
 
+  /** Complete durable native-binding lookup for THIS authenticated manager principal. The injected
+   * trusted provider must return only native session bindings in that authority scope, so legacy
+   * managed seats remain outside this decision. Any absent, unreadable, or malformed answer is
+   * returned as unknown and therefore blocks destructive shutdown. */
+  async nativeLifecycleBindings(): Promise<NativeLifecycleBindingLookup> {
+    const managerPrincipal = this.ep.ref().id;
+    if (!this.nativeLifecycleLookup)
+      return {
+        status: "unknown",
+        bindings: [],
+        reason: "missing trusted session lifecycle lookup authority: this manager was not composed with an authorized native lifecycle lookup provider",
+      };
+    try {
+      return await this.nativeLifecycleLookup(managerPrincipal);
+    } catch (e) {
+      return { status: "unknown", bindings: [], reason: (e as Error).message };
+    }
+  }
+
   /** Fence and build the inventory without stopping a child. The coordinator must durably persist
    * this exact plan before calling commitPreservation with the same attempt id. */
   preparePreservation(attemptId: string): Promise<ManagerPreservationPlan> {
@@ -1965,6 +2014,61 @@ export class Manager {
       throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
   }
 
+  async stopForSignal(): Promise<void> {
+    const native = await this.nativeLifecycleBindings();
+    if (native.status === "unknown")
+      throw new Error(`manager signal shutdown refused before cleanup: ${native.reason}`);
+    if (native.bindings.length > 0) await this.stopPreservingNative();
+    else await this.stop();
+  }
+
+  /** Manager maintenance exit. It is deliberately separate from legacy stop/down: native binding
+   * records and independently renewed native/mesh state are untouched. Legacy managed seats retain
+   * their existing destructive cleanup. */
+  async stopPreservingNative(): Promise<void> {
+    this.staticReconcileStopping = true;
+    const starting = this.startTask;
+    for (const item of this.staticReconcileItems.values()) {
+      if (item.timer) clearTimeout(item.timer);
+      item.timer = undefined;
+      item.nextRetryAt = undefined;
+    }
+    await this.awaitStaticReconcileDrain();
+    await starting?.catch(() => {});
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    if (this.credRenewTimer) clearInterval(this.credRenewTimer);
+    if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
+
+    const drain = await this.drainAcceptedCommands();
+    if (drain.status !== "drained")
+      throw new Error(`manager maintenance exit requires recovery: ${drain.unaccounted.map((r) => `${r.command}/${r.requestId}`).join(", ")} remain accepted without a conclusive disposition`);
+    if ((this.runHosting?.liveCount ?? 0) > 0)
+      throw new Error(`manager maintenance exit blocked: ${this.runHosting!.liveCount} hosted run(s) have no transfer/disown receipt`);
+
+    const nativeBarrier = this.nativeMaintenanceBarrier
+      ? await this.nativeMaintenanceBarrier()
+      : { status: "recovery-required" as const, reason: "the canonical session transfer/retirement barrier is not composed" };
+    if (nativeBarrier.status !== "settled")
+      throw new Error(
+        `manager maintenance exit requires recovery: ${nativeBarrier.reason}; ` +
+        `${nativeBarrier.requestIds?.length ? `unsettled native requests: ${nativeBarrier.requestIds.join(", ")}; ` : ""}` +
+        "broker rail retirement is not native effect proof",
+      );
+
+    // Legacy manager-owned seats are not native lifecycle bindings and keep their existing teardown.
+    await this.teardownManagedAgents();
+    await this.stopServiceServe(); // no new manager command can enter; all accepted handlers drained above
+    await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);
+    await this.deregisterServiceOnStop();
+    await this.runHosting?.stop();
+    this.runHosting = undefined;
+    await this.stopGoalWriter();
+    // Old attach/session-serving rails are collected only after the native effect fence.
+    await this.stopSessionPlane();
+    await this.ep.stop();
+    await this.attach.stop();
+  }
+
   async stop(): Promise<void> {
     this.staticReconcileStopping = true;
     const starting = this.startTask;
@@ -2305,7 +2409,7 @@ export class Manager {
    *  AUTHENTICATED principal holds no control authority even with a valid JWT). Refusal carries
    *  WHICH fence refused so the ep door can map onto the §13.3 catalog; admission returns the
    *  accepted-work release. Never re-implemented per door — a fence on one door is a bypass. */
-  private admitControl(caller: string):
+  private admitControl(caller: string, accepted?: { requestId: string; command: string }):
     | { refusal: string; fence: "maintenance" | "membership"; release?: undefined }
     | { refusal?: undefined; release: () => void } {
     const release = this.beginLifecycle();
@@ -2315,7 +2419,53 @@ export class Manager {
       release();
       return { refusal: membership, fence: "membership" };
     }
-    return { release };
+    if (!accepted) return { release };
+    const acceptedKey = JSON.stringify([caller, accepted.requestId]);
+    if (this.acceptedCommands.has(acceptedKey)) {
+      release();
+      return {
+        refusal: `manager request ${accepted.requestId} is already accepted and has not reached a conclusive disposition`,
+        fence: "maintenance",
+      };
+    }
+    this.acceptedCommands.set(acceptedKey, { caller, requestId: accepted.requestId, command: accepted.command, acceptedAt: Date.now() });
+    this.acceptedCommandCount++;
+    let settled = false;
+    return { release: () => {
+      if (settled) return;
+      settled = true;
+      this.acceptedCommands.delete(acceptedKey);
+      this.settledCommandCount++;
+      release();
+    } };
+  }
+
+  /** Close admission synchronously, then account for every accepted manager request. A timed-out
+   * request is not silently dropped from the set: its exact id remains in the recovery-required
+   * result so the manager replacement operation can reconcile it. */
+  async drainAcceptedCommands(): Promise<ManagerCommandDrainResult> {
+    if (this.maintenanceState === "active") this.maintenanceState = "preserving";
+    const drained = this.awaitLifecycleDrain();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        drained,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => { timedOut = true; resolve(); }, this.commandDrainTimeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const unaccounted = [...this.acceptedCommands.values()].map((value) => ({ ...value }));
+    return {
+      status: timedOut || unaccounted.length > 0 ? "recovery-required" : "drained",
+      accepted: this.acceptedCommandCount,
+      settled: this.settledCommandCount,
+      unaccounted,
+    };
   }
 
   /** Run one v0.4 service-command handler through the SHARED admission chokepoint
@@ -2324,7 +2474,7 @@ export class Manager {
    *  `permission-denied`. The serve boundary publishes the structured error reply. */
   private async serveGated<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
     const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
-    const admission = this.admitControl(caller);
+    const admission = this.admitControl(caller, { requestId: ctx.request.id, command: ctx.subject.command });
     if (admission.refusal !== undefined)
       throw new EpEnvelopeError(admission.fence === "membership" ? "permission-denied" : "unavailable", admission.refusal);
     try {
@@ -3317,7 +3467,7 @@ export class Manager {
     a: ManagedAgent,
     expected: string,
     handle: AgentHandle = a.handle,
-    control: { path: string; token: string } | undefined = a.control,
+    control: LaunchSpec["control"] = a.control,
   ): Promise<void> {
     const deadline = Date.now() + 15_000;
     let last = "control endpoint not ready";
@@ -5205,12 +5355,16 @@ export class Manager {
   }
 
   /** The served manager-level health summary (1a's one read-only command). */
-  private managerStatusData(): ManagerStatus {
+  private async managerStatusData(): Promise<ManagerStatus> {
+    const native = await this.nativeLifecycleBindings();
     return {
       instanceId: this.managerInstanceId,
       runtime: this.runtime.kind,
       custody: process.platform === "linux" && this.runtime.kind === "pty" ? "custodied" : "legacy",
       agentCount: this.agents.size,
+      nativeLifecycle: native.status === "known"
+        ? { status: "known", liveBindings: native.bindings.length, liveBindingIds: native.bindings.map((binding) => binding.bindingId) }
+        : { status: "unknown", liveBindings: 0, liveBindingIds: [], reason: native.reason },
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
       staticReconciliation: this.staticReconciliationStatus(),

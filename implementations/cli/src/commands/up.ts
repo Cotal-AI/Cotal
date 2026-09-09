@@ -111,7 +111,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLogDisplayPath, managerUp, stopManager } from "../lib/manager-proc.js";
+import { assertManagerShutdownAdmitted, managerHasDeliveryMarker, managerLogDisplayPath, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -194,6 +194,30 @@ export function upComplete(argv: string[]): CompletionResult {
   if (flag?.name === "restore") return { items: [], directive: "default" };
   const items = upFlags.map((f) => ({ value: `--${f.name}`, description: f.description }));
   return { items, directive: items.length ? "nofiles" : "default" };
+}
+
+export interface SupervisorShutdownRuntime {
+  admit(): Promise<void>;
+  stopDelivery(): Promise<void>;
+  stopManager(): Promise<void>;
+  stopAuth(): Promise<void>;
+  signalBroker(): void;
+  log(line: string): void;
+}
+
+/** One caught foreground-supervisor/OS-service stop. The admission decision is the first await and
+ * a refusal returns before any component signal. */
+export async function runGuardedSupervisorStop(runtime: SupervisorShutdownRuntime): Promise<boolean> {
+  try {
+    await runtime.admit();
+  } catch (e) {
+    runtime.log(`! shutdown refused before signalling: ${(e as Error).message}`);
+    return false;
+  }
+  await runtime.stopDelivery().catch((e: Error) => runtime.log(`! delivery teardown: ${e.message}`));
+  void runtime.stopManager().then(() => runtime.stopAuth()).catch((e: Error) => runtime.log(`! teardown: ${e.message}`));
+  runtime.signalBroker();
+  return true;
 }
 
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
@@ -1032,14 +1056,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
   // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
   const stop = () => {
-    void stopDelivery(undefined, undefined, space)
-      .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
-      .then(() => {
-        void stopManager(undefined, undefined, undefined, space)
-          .then(() => stopAuthService(space))
-          .catch((e: Error) => console.error(`! teardown: ${e.message}`));
-        child.kill("SIGTERM");
-      });
+    void runGuardedSupervisorStop({
+      admit: () => assertManagerShutdownAdmitted(space, "supervisor SIGTERM / OS service stop"),
+      stopDelivery: () => stopDelivery(undefined, undefined, space),
+      stopManager: async () => { await stopManager(undefined, undefined, undefined, space, async () => {}); },
+      stopAuth: () => stopAuthService(space),
+      signalBroker: () => { child.kill("SIGTERM"); },
+      log: (line) => console.error(line),
+    });
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
