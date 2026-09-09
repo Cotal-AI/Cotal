@@ -230,6 +230,10 @@ export function shippedSources(root: string): string[] {
       if (pkg.isDirectory() && existsSync(src)) walk(src);
     }
   }
+  // `bin/` is the published composition root of the `cotal-ai` package. Scanning only the tiers'
+  // `src` trees would leave it out, and a negative claim about shipped code that skips shipped
+  // code is worth nothing. Its own `smoke/` subtree is excluded by the walk.
+  walk(join(root, "bin"));
   if (found.length === 0) throw new Error("the shipped-source scan found no files; the corpus is wrong");
   return found;
 }

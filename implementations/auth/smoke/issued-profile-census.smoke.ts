@@ -234,6 +234,9 @@ try {
     assert.deepEqual(offenders.map((f) => f.slice(root.length)), []);
     // Positive control: the corpus really contains the endpoint subject builders it must cover.
     assert.ok(files.some((file) => /function epRequestSubject/.test(readFileSync(file, "utf8"))), `scanned ${files.length} files without reaching the subject builders`);
+    // The published composition root is shipped code. A negative claim about shipped code that
+    // silently stops covering it would still pass the control above, which lives in core.
+    assert.ok(files.some((file) => file.endsWith("/bin/cotal.ts")), "the corpus no longer reaches the published composition root");
     observations.shippedSourcesScanned = files.length;
   });
 

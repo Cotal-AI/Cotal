@@ -198,6 +198,14 @@
       "replace": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\"), `$JS.API.CONSUMER.CREATE.KV_cotal_presence_${space}.>`] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
       "expectRed": "peers hold the push-consumer door and none of the republish doors",
       "cell": "peers hold the push-consumer door and none of the republish doors"
+    },
+    {
+      "name": "the shipped-source corpus stops covering the published composition root",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  walk(join(root, \"bin\"));",
+      "replace": "",
+      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
+      "cell": "no shipped source emits an issued-rail subject, under any option combination"
     }
   ]
 }
