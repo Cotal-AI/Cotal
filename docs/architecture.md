@@ -70,8 +70,10 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
 ```
 
 - **`@cotal-ai/core`**, the protocol: subjects, schemas, the NATS client layer, and the
-  extension contracts (`Connector`, `Command`, `Runtime`) with the `Registry` they
-  self-register into. Depends on nothing else in the repo.
+  extension contracts (`Connector`, `Command`, `Runtime`, `NativeLifecycleProvider`) with
+  the `Registry` they self-register into. `executeNativeLifecycle` is the public native
+  lifecycle entry: it authorizes, journals, and dispatches a named provider. A provider
+  never grants ownership by discovery. Depends on nothing else in the repo.
 - **`@cotal-ai/workspace`**, the machine-local operator layer over `~/.cotal`: mesh
   registry, target resolution, auth-path helpers. Not part of the wire standard, so a
   third party can embed core without inheriting workstation plumbing.
@@ -158,7 +160,10 @@ laterally; the manager only births and configures them.
 - **Off the message hot path.** Each agent self-connects to the mesh through its own
   connector. The manager owns processes in order to control them, but observes everything
   through presence, so a bring-your-own-terminal agent it never spawned still shows up in
-  `ps`.
+  `ps`. Native adopt, release, and transfer of an existing host session go through
+  `executeNativeLifecycle` in core. Binding advance to `released` requires a matching
+  terminal-success receipt: native-effect, or cooperative-retirement with preserved
+  native lifetime. A journal receipt is not enough.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
   docker for agent TUIs): **`pty`** ships built-in (a detached per-seat custodian owns the
   pseudo-terminal on Linux; watch or type via `cotal attach`; other platforms still spawn
