@@ -9,7 +9,8 @@ those claims, so treat the labels themselves as claims.
   first-party logic to mutate. Its negatives rest on a positive control in the same cell.
 - **A** — asserted. Reasoning from reading source, or a design or policy statement. No cell.
 
-The **A** lines are where a review budget is best spent.
+The **A** lines are where a review budget is best spent. Five started as **A** and became
+cells while this page was being written: 7, 22, 23, 46 and 51. Each row that moved says so.
 
 ## Subject permissions
 
@@ -41,8 +42,8 @@ The **A** lines are where a review budget is best spent.
 | 19 | A revocation that wins before the fence prevents release | M | cell "individual revocation between validation and finalization prevents release"; mutations "credential source touch is omitted", "credential source touch refreshes a revoked revision" |
 | 20 | Released material is a synthetic marker, never a signed credential | M | visible in the fixture |
 | 21 | The lost-ack cell injects an error after a real committed KV write, and does not partition a network | M | cell "lost activation acknowledgement releases nothing and retires committed state" |
-| 22 | Reopening proves object-restart survival, not broker-crash survival | A | statement of a limit, not a measurement |
-| 23 | Production revokers have no attachment to this fence | A | statement of absence |
+| 22 | State survives a broker process kill and restart on the same file store | M | cell "issued state survives a broker process kill and restart"; mutation "activation is written to memory instead of the store". Was **A** and narrower ("object restart only"). A crash mid-write with unflushed data is still uncovered |
+| 23 | Production revokers have no attachment to this fence | M | covered by the same scan as claim 7: `credential-release-fence.ts` lives under `smoke/prototypes`, and no shipped source imports that path |
 
 ## Static binding
 
@@ -80,7 +81,7 @@ The **A** lines are where a review budget is best spent.
 | 43 | An auto-reconnecting callout client fails closed rather than renewing in place | M | cell of that name |
 | 44 | The refusal comes from the fresh-generation-only rule | M | mutation "issuance staging allows a generation to be re-prepared", which reddens the reuse cell that names that rule |
 | 45 | A non-CAS staging write alone does not change the outcome, because an explicit read-then-throw refuses first | M | measured while retargeting mutation 44; the read-then-throw is visible in `stage` |
-| 46 | The client side of a transition is uncovered | A | statement of absence |
+| 46 | A client observes the closure and rebinds on a fresh generation | M | cell of that name; mutations "a clean close is treated as an authority transition", "any closure reason is rebound as a transition". Was **A**. The transport-failure branch uses a hand-built closure result and says so in the cell |
 
 ## Migration
 
@@ -90,7 +91,7 @@ The **A** lines are where a review budget is best spent.
 | 48 | A malformed generation on the versioned rail throws, never demoted to legacy | M | cell "a malformed binding on the versioned rail is refused rather than read as legacy"; mutation "a malformed binding falls through to the legacy refusal" |
 | 49 | Foreign-space subjects throw | M | same cell; mutation "arrivals from another space are admitted" |
 | 50 | Both shapes are the ones the broker actually delivers | M | the cell waits for each subject to arrive on a live subscription before classifying |
-| 51 | The versioned mode token is the only thing separating the rails | A | read of the subject grammar |
+| 51 | The generation sits one token from the tail for every rail mode | M | cell "the generation sits at one offset from the tail for every rail mode"; mutation "the generation is placed at a mode-dependent offset". Was the weaker **A** claim that the mode token is the only difference |
 
 ## Census
 

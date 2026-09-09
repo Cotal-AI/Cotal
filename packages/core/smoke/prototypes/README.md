@@ -41,8 +41,10 @@ The auth smoke supplies pins and finalization from the real
 the prototype index explicitly. No production barrier has that attachment.
 Released material is a synthetic marker, never a signed credential. The lost-ack
 cell injects an error after a real committed KV write; it does not partition a
-network. Reopening the prototype proves state survives an object restart, not a
-broker crash.
+network. Reopening the prototype proves state survives an object restart. A separate cell kills the
+broker process with SIGKILL and brings it back on the same file store, then resolves and
+retires the issuance through a fresh connection, so process death is covered too. Neither
+covers a crash mid-write with unflushed data.
 
 The index walk is measured on a least-privilege principal rather than the operator
 connection: a user granted the issued bucket and nothing else runs `retireSource` to
@@ -183,8 +185,12 @@ mutation for it is attached to that cell.
 Discovery establishes what the broker enforces for this connection. It does not establish that
 a durable issuance record exists; that remains the issuer-side lifecycle evidence. The static
 discovery mints grant `_INBOX.>`, wider than the production per-connection inbox confinement,
-because inbox scoping is not what these cells measure. What stays uncovered is the client side
-of a transition: nothing here shows an application observing the closure and rebinding.
+because inbox scoping is not what these cells measure. The client side of that transition is covered: a client observes the closure, rebinds on a
+fresh generation, delivers a request on the new rail, and is natively denied on the old one.
+`rebindOnAuthorizationClosure` refuses a clean close and refuses a transport failure, so a
+closure for any other reason is not retried as an authority transition. The transport-failure
+branch uses a hand-built closure result, since a live broker does not produce one on demand;
+the authorization branch is the live path.
 
 ## Dual-rail migration refusal
 
@@ -198,7 +204,9 @@ throw.
 
 The static smoke publishes both a real legacy subject and a real bound subject and waits for
 each to arrive on a live subscription before classifying, so the shapes are the ones the broker
-actually delivers. This is classification only: no endpoint handler, admission record or run
+actually delivers. The generation's position is pinned across every rail mode: `one`, `all` and
+`inst` all place it one token from the tail, which is the offset both the admission classifier
+and the discovery parser walk. This is classification only: no endpoint handler, admission record or run
 policy is attached, and the versioned mode token is the only thing separating the two rails.
 
 ## Current profile census
