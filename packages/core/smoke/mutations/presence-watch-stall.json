@@ -4,8 +4,8 @@
     {
       "name": "S1 the freshness gate is dropped, so a silent watch still ages every peer out: the observer reports 3 offline verdicts and the online list empties",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {\n      this.emitPresenceViewIfChanged();\n      return;\n    }\n",
-      "replace": "",
+      "find": "    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {\n      this.emitPresenceViewIfChanged();\n",
+      "replace": "    if (false) {\n      this.emitPresenceViewIfChanged();\n",
       "expectRed": "1.4 sweep did NOT emit a wholesale offline verdict"
     },
     {
