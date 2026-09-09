@@ -142,14 +142,14 @@ pairing really does put caller-chosen bytes on the rail. That makes the census i
 56 a guard on a shown failure rather than a suspected one, and it makes the marker set the whole
 remaining margin.
 
-Claim 66 is the load-bearing one and it is still an **A**, but it is narrower than it was. It
-used to quantify over a set of four paths I picked by hand. Claim 70 now enumerates every `$JS.`
-grant a peer-held profile holds and forces each into a delivery class, so a new grant with an
-unclassified verb fails rather than silently widening the set. What remains asserted is that the
-four classes are exhaustive of how a grant can put bytes on a chosen subject, and that each class
-fails the forgery on the ground stated for it. Claim 67 has the same shape: it names the breaking
-condition from reasoning, and claim 56 then guards that condition, so a wrong 67 means the guard
-protects the wrong thing.
+Claim 66 is the load-bearing one and it is still an **A**, though it has narrowed twice. It began
+as a quantifier over four paths picked by hand. Claim 70 then enumerated every `$JS.` grant a
+peer-held profile actually holds. Claim 82 now reads the 19 stream, consumer and direct verbs out
+of the installed client library's own source and forces each to classify or refuse, so the
+quantifier no longer stops at what profiles happen to hold today. What remains asserted is that
+the five classes are the right cut, and that each fails the forgery on the ground stated for it.
+Claim 67 has the same shape: it names the breaking condition from reasoning, and claim 56 then
+guards that condition, so a wrong 67 means the guard protects the wrong thing.
 
 Claim 58 decides which profiles count as peer-held, which is what makes 56 meaningful. It is
 still a judgement with no cell behind it, and it cannot have one: whether a credential reaches an
@@ -157,10 +157,11 @@ untrusted holder depends on how a space is deployed, not on this repo. Claim 71 
 partition from drifting silently. If you think one of the twenty-eight trusted profiles can reach
 a peer, say which, because that is the shape of a real finding here.
 
-Claim 74 is the newest **A** and the least comfortable: it is my own audit of my own cells for the
-shape that claim 72 turned out to have. Two instances found, both fixed. A third would not
-surprise me.
+Claim 74 is the least comfortable: it is my own audit of my own cells for the shape claim 72
+turned out to have. Claim 83 now catches that shape mechanically, but only that shape, a hold
+assertion on a settling flag outside every sampling loop. A race with no such flag would pass the
+scan and the audit both, so a third instance would still not surprise me.
 
-Claim 7 was an **A** when this ledger was first written, with the note that it would be cheap
-to falsify and that I had not tried. I then tried: zero shipped files import the prototypes, and
-it is now a cell with a mutation. That is the only claim on this page whose label has moved.
+Five claims have moved off **A** since this page was written: 7, 22, 23, 46 and 51. Claim 7 is
+the clearest case of the ledger doing its job. It was asserted with a note that it would be cheap
+to falsify and that I had not tried. Writing that sentence down is what made me try.
