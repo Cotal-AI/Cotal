@@ -205,7 +205,12 @@ the data-account matrix. Endpoint-serve appears twice: the raw row builder, and 
 wider shape a fenced mint composes on top of it (journal effects bind, one owned pool
 bind, `$JS.API.INFO`, and the connection inbox). The fence that releases those rows is
 covered by `endpoint-serve-auth.smoke.ts`, not here. These limits remain open for full
-migration acceptance.
+migration acceptance, except the option-combination one: the per-variant checks cover
+representative options, and a scan of every shipped `.ts` under `packages/*/src`,
+`implementations/*/src` and `extensions/*/src` shows no builder emits an `ep.v1` subject at
+all, so no option combination can reach that namespace. The scan carries a positive control
+requiring it to have reached the endpoint subject builders, and two named mutations: skipping
+a source tier, and making a real builder emit the issued rail.
 
 The overlap check counts `$JS.API.DIRECT.GET` and `$JS.API.STREAM.MSG.GET` and no other
 read. A pull `CONSUMER.MSG.NEXT` also delivers to a caller-chosen reply subject, but the
