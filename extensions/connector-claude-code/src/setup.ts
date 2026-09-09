@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type ConnectorSetupProvider } from "@cotal-ai/core";
 
@@ -100,13 +100,21 @@ export function marketplaceManifest(market: string): {
   return { name: MARKETPLACE, description: "Cotal for Claude Code", owner: { name: "Cotal" }, plugins };
 }
 
+/**
+ * The write half of `writeMarketplace`, split out from the `plugin marketplace add` that follows it
+ * so a suite can grade the bytes that reach disk without spawning `claude`. Returns the path so a
+ * caller reads back the file this wrote rather than one it rebuilt from the same inputs.
+ */
+export function writeMarketplaceManifest(market: string): string {
+  const path = join(market, ".claude-plugin", "marketplace.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(marketplaceManifest(market), null, 2) + "\n");
+  return path;
+}
+
 function writeMarketplace(): void {
   const market = marketplaceDir();
-  mkdirSync(join(market, ".claude-plugin"), { recursive: true });
-  writeFileSync(
-    join(market, ".claude-plugin", "marketplace.json"),
-    JSON.stringify(marketplaceManifest(market), null, 2) + "\n",
-  );
+  writeMarketplaceManifest(market);
   const add = command("plugin", "marketplace", "add", market);
   if (add.status !== 0 && !/already (?:exists|added)/i.test(add.output)) throw new Error(`plugin marketplace add failed:\n${add.output}`);
   if (/already (?:exists|added)/i.test(add.output)) {

@@ -5,16 +5,18 @@
  * "cotal-mesh"`. The message names a stale local copy, so the obvious remedy changes nothing, and
  * re-running setup regenerates the same broken file over a hand repair.
  *
- * The suite grades `marketplaceManifest`, which is the value `writeMarketplace` serializes — not a
- * restatement of it. It does not spawn `claude`: the `plugin marketplace add` call in
- * `writeMarketplace` is the shipped side effect and is out of scope here, so this proves the
- * manifest's SHAPE and not that Claude Code accepts it. The acceptance evidence is on the issue.
+ * The suite grades `marketplaceManifest`, which is the value the writer serializes, and separately
+ * reads back the file `writeMarketplaceManifest` puts on disk. Both halves are needed: the builder
+ * cells cannot see a writer that serializes a different array, and the writer cell cannot say which
+ * field was wrong. It does not spawn `claude` — the `plugin marketplace add` that follows the write
+ * is the shipped side effect and stays out of scope — so this proves the manifest's SHAPE and the
+ * bytes written, not that Claude Code accepts them. The acceptance evidence is on the issue.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { marketplaceManifest } from "../src/setup.js";
+import { marketplaceManifest, writeMarketplaceManifest } from "../src/setup.js";
 
 let passed = 0;
 let failed = 0;
@@ -45,8 +47,11 @@ try {
   plant(market, "cotal-skills", "Cotal-authored skills.");
   const manifest = marketplaceManifest(market);
 
-  // LIVENESS. Kept first and kept separate so that a builder emitting nothing reddens HERE, and the
-  // shape cells below stay honest about what they grade rather than doubling as a count check.
+  // LIVENESS. Kept first and kept separate so a builder emitting nothing reddens HERE, on a cell
+  // that says so, rather than somewhere downstream that reads as a shape failure. Only the
+  // objectness loop below is genuinely vacuous on an empty array; the source, description and
+  // omission cells all compare against expected entries and would redden too. This cell earns its
+  // place by being the FIRST red and by naming the actual fault, not by being the only one.
   ok("LIVENESS — the manifest lists every planted plugin", () => {
     assert.equal(manifest.plugins.length, 2, "both planted plugins are listed");
   });
@@ -76,6 +81,24 @@ try {
     assert.equal(entry.name, "cotal");
     assert.equal(entry.source, "./cotal");
     assert.equal(entry.description, undefined, "absent rather than an empty string");
+  });
+
+  // WRITER BOUNDARY. Everything above grades the builder's return value. `writeMarketplace` is what
+  // setup actually calls, and it serializes that value itself, so a regression between the builder
+  // and the bytes on disk is invisible to every cell above. Read the file back rather than the
+  // object that produced it.
+  ok("the file the writer puts on disk carries the entries the builder produced", () => {
+    const written = join(root, "written");
+    plant(written, "cotal", "Join the Cotal mesh over NATS.");
+    plant(written, "cotal-skills", "Cotal-authored skills.");
+    const path = writeMarketplaceManifest(written);
+    assert.equal(path, join(written, ".claude-plugin", "marketplace.json"), "the path Claude is pointed at");
+    const onDisk = JSON.parse(readFileSync(path, "utf8")) as { plugins: { name: string; source: string }[] };
+    assert.deepEqual(onDisk.plugins, marketplaceManifest(written).plugins, "the bytes match the builder");
+    for (const entry of onDisk.plugins) {
+      assert.equal(typeof entry, "object", `written entry is an object, got ${typeof entry}`);
+      assert.equal(entry.source, `./${entry.name}`, "written entry carries its resolvable source");
+    }
   });
 
   ok("an absent plugin directory is omitted rather than listed unresolvably", () => {

@@ -9,17 +9,24 @@
   "why": [
     "#1392: the manifest listed plugins as bare names. Claude Code VALIDATES that form, so",
     "`plugin marketplace add` and `update` both report success, and resolution then fails with",
-    "`Plugin \"cotal\" not found in marketplace \"cotal-mesh\"` — a message about a stale local copy.",
+    "`Plugin \"cotal\" not found in marketplace \"cotal-mesh\"` \u2014 a message about a stale local copy.",
     "So the failure never names the manifest, and re-running setup regenerates it over a hand fix.",
     "",
     "The guard is joined, so it gets a mutation per fact. T1 is the reported defect. T2 is the",
     "near-miss it invites: an object entry is not sufficient, it must carry `source`. T3 is the",
-    "liveness arm — every shape assertion is vacuously satisfied by a builder that emits no",
-    "entries at all, so without it a mutation that lists nothing would come back SURVIVED.",
+    "liveness arm. T4 is the writer boundary.",
     "",
-    "BOUNDARY. The suite grades `marketplaceManifest`, the value `writeMarketplace` serializes, and",
-    "does not spawn `claude`. So a kill shows the manifest's shape is guarded, NOT that Claude Code",
-    "accepts it; that evidence is the reproduction recorded on the issue."
+    "CORRECTED. An earlier revision of this block said every shape assertion is vacuously satisfied",
+    "by a builder emitting no entries. That is wrong, and two reviewers caught it independently.",
+    "Only the objectness loop is vacuous on an empty array; the source, description and omission",
+    "cells compare against expected entries and redden too. T3's real claim is the narrower one that",
+    "the dedicated count cell is the FIRST red, so a builder that lists nothing is reported as a",
+    "count failure rather than as a shape failure somewhere downstream.",
+    "",
+    "BOUNDARY. T1-T3 mutate the builder; T4 mutates the write that follows it, because the builder",
+    "cells read a return value and cannot see a writer that serializes something else. None of the",
+    "four spawns `claude`. So a kill shows the manifest's shape and its bytes are guarded, NOT that",
+    "Claude Code accepts them; that evidence is the reproduction recorded on the issue."
   ],
   "mutations": [
     {
@@ -45,9 +52,18 @@
       "file": "extensions/connector-claude-code/src/setup.ts",
       "find": "    .filter((name) => existsSync(join(market, name, \".claude-plugin\", \"plugin.json\")))",
       "replace": "    .filter(() => false)",
-      "expectRed": "LIVENESS — the manifest lists every planted plugin",
-      "cell": "LIVENESS — the manifest lists every planted plugin",
-      "note": "The vacuous-pass mutant. Every shape assertion iterates an empty array and passes; only the count cell reds, and it reds first."
+      "expectRed": "LIVENESS \u2014 the manifest lists every planted plugin",
+      "cell": "LIVENESS \u2014 the manifest lists every planted plugin",
+      "note": "The vacuous-pass mutant. Several cells redden on an empty array, so this fixture's claim is specifically that the dedicated count cell is FIRST \u2014 the failure is reported as 'nothing was listed' rather than as a malformed entry."
+    },
+    {
+      "name": "T4 the writer serializes bare names while the builder stays correct",
+      "file": "extensions/connector-claude-code/src/setup.ts",
+      "find": "  writeFileSync(path, JSON.stringify(marketplaceManifest(market), null, 2) + \"\\n\");",
+      "replace": "  writeFileSync(path, JSON.stringify({ ...marketplaceManifest(market), plugins: marketplaceManifest(market).plugins.map((entry) => entry.name) }, null, 2) + \"\\n\");",
+      "expectRed": "the file the writer puts on disk carries the entries the builder produced",
+      "cell": "the file the writer puts on disk carries the entries the builder produced",
+      "note": "The regression the builder cells are blind to by construction: marketplaceManifest keeps returning correct objects, so T1-T3's cells all stay green, and only the cell that reads the file back can see it. This is the gap the review panel named on PR #1416."
     }
   ]
 }
