@@ -209,6 +209,12 @@ c("released lookup with cooperative-retirement remains live without native-effec
   revision: 1,
   operation: "PUT" as const,
 }] as never));
+c("fully-validated cooperative release still blocks shutdown because the guard requires native-effect", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
+  key: sessionBindingKey(coopRes),
+  value: new TextEncoder().encode(JSON.stringify(releasedCoop)),
+  revision: 1,
+  operation: "PUT" as const,
+}] as never) === false);
 c("default binding lookup without an injected scanner fails closed as possibly live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager"));
 
 console.log(`\n${ok} passed, ${fail} failed`);
