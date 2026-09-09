@@ -11,7 +11,9 @@
     "Capability refusal must happen before inspect or prepare.",
     "At least one cell drives executeNativeLifecycle with a real registry provider and nothing injected.",
     "Recorded receipts must match prepared resourceKey/bindingId/operationId before persist.",
-    "openView and preflight return typed provider results; discover authorizes each observation."
+    "openView and preflight return typed provider results; discover authorizes each observation.",
+    "Acquiring management is authorized against the durable enrollment, not against a value the requester supplies or omits.",
+    "A mutating operation is refused when the native session under the binding has been replaced."
   ],
   "mutations": [
     {
@@ -117,6 +119,54 @@
       "replace": "  if (operation !== \"release\") return false;\n  return true;\n",
       "expectRed": "cooperative-retirement without preserved lifetime did not mark the binding released",
       "cell": "cooperative-retirement without preserved lifetime did not mark the binding released"
+    },
+    {
+      "name": "restore the hardcoded rights and never read the enrollment",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  let enrolledRights: readonly SessionManageAction[] | undefined;\n  if (ENROLLMENT_GOVERNED.has(request.operation)) {\n    const enrolled = await authorizeAgainstEnrollment(kv, request, resourceKey, observedProof, mutatingAction(request.operation));\n    if (\"state\" in enrolled) return enrolled;\n    enrolledRights = enrolled.rights;\n  }\n",
+      "replace": "  const enrolledRights: readonly SessionManageAction[] | undefined = [\"discover\", \"adopt\", \"control\", \"release\", \"transfer\"];\n",
+      "expectRed": "adopt against a store with no enrollment is refused",
+      "cell": "adopt against a store with no enrollment is refused"
+    },
+    {
+      "name": "ignore the enrollment expiry at the moment management is acquired",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (enrollment.expiry <= request.now)\n    throw new EpEnvelopeError(\"failed-precondition\", `session enrollment for ${resourceKey.stableSessionId} expired at ${enrollment.expiry}; re-enroll before ${request.operation}`);\n",
+      "replace": "",
+      "expectRed": "adopt on an expired enrollment is refused",
+      "cell": "adopt on an expired enrollment is refused"
+    },
+    {
+      "name": "accept an enrollment that grants the action to nobody",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (!enrollment.rights.includes(action))\n    throw new EpEnvelopeError(\"permission-denied\", `session enrollment does not authorize ${action} on ${resourceKey.stableSessionId}`);\n",
+      "replace": "",
+      "expectRed": "adopt the enrollment does not grant is refused",
+      "cell": "adopt the enrollment does not grant is refused"
+    },
+    {
+      "name": "adopt a session whose incarnation left the enrolled proof",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (classifyIncarnationProof(enrollment.incarnationProof, observedProof) === \"identity-unproven\")\n    return { state: \"identity-unproven\", reason: \"native incarnation differs from the enrolled proof; re-enrollment must renew the proof before management is acquired\" };\n",
+      "replace": "",
+      "expectRed": "adopt of a session whose incarnation left the enrolled proof is identity-unproven",
+      "cell": "adopt of a session whose incarnation left the enrolled proof is identity-unproven"
+    },
+    {
+      "name": "make expectedIncarnation optional on adopt again",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (request.operation === \"adopt\" && request.expectedIncarnation === undefined)\n    throw new EpEnvelopeError(\"internal\", \"native lifecycle adopt requires request.expectedIncarnation\");\n",
+      "replace": "",
+      "expectRed": "adopt with no expected incarnation is refused, not silently uncompared",
+      "cell": "adopt with no expected incarnation is refused, not silently uncompared"
+    },
+    {
+      "name": "let a mutating operation land on a session that replaced the bound one",
+      "file": "packages/core/src/native-lifecycle-executor.ts",
+      "find": "  if (existing !== undefined && existing.binding.state !== \"released\"\n    && classifyIncarnationProof(existing.binding.incarnationProof, observedProof) === \"identity-unproven\")\n    return { state: \"identity-unproven\", reason: `native incarnation differs from the one bound as ${existing.binding.bindingId}; the managed session has been replaced` };\n",
+      "replace": "",
+      "expectRed": "release against a session replaced since it was bound is identity-unproven",
+      "cell": "release against a session replaced since it was bound is identity-unproven"
     }
   ]
 }
