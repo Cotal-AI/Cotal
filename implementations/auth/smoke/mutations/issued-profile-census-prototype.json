@@ -182,6 +182,14 @@
       "replace": "      assert.equal(await state(a.ref), \"prepared\");\n      assert.equal(settled, false);",
       "expectRed": "no cell asserts a concurrent operation has not settled from one sample",
       "cell": "no cell asserts a concurrent operation has not settled from one sample"
+    },
+    {
+      "name": "a peer-held profile is granted a stream-update door",
+      "file": "packages/core/src/provision.ts",
+      "find": "      `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)",
+      "replace": "      `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)\n      `$JS.API.STREAM.UPDATE.${KV}`,",
+      "expectRed": "peers hold the push-consumer door and none of the republish doors",
+      "cell": "peers hold the push-consumer door and none of the republish doors"
     }
   ]
 }

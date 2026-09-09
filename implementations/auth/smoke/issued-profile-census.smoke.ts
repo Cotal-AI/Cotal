@@ -141,6 +141,35 @@ try {
     observations.peerDeliveryClasses = Object.fromEntries(Object.entries(classified).map(([k, v]) => [k, [...new Set(v)].length]));
   });
 
+  await check("peers hold the push-consumer door and none of the republish doors", async () => {
+    const peers = new Set<string>(PEER_HELD_PROFILES as readonly string[]);
+    const held = new Map<string, Set<string>>(DELIVERY_CONFIGURING_VERBS.map((v) => [v, new Set<string>()]));
+    let seen = 0;
+    for (const fixture of fixtures) {
+      if (!peers.has(fixture.profile as string)) continue;
+      for (const { row } of deliveryPaths(fixture.permissions)) {
+        // longest verb first, or DURABLE.CREATE reads as CREATE
+        const verb = [...DELIVERY_CONFIGURING_VERBS].sort((a, b) => b.length - a.length)
+          .find((v) => row.startsWith(`$JS.API.${v}.`));
+        if (verb) held.get(verb)!.add(fixture.profile as string);
+        seen++;
+      }
+    }
+    // Without a control, a scan that reads nothing looks exactly like a clean result.
+    assert.ok(seen > 50, `only ${seen} peer-held broker rows scanned; the scan is not reading the fixtures`);
+    // A stream create or update can carry `republish`, which would let the server publish stored
+    // messages to a destination the holder names. No peer may hold either.
+    assert.deepEqual([...held.get("STREAM.CREATE")!], []);
+    assert.deepEqual([...held.get("STREAM.UPDATE")!], []);
+    // The legacy consumer-create spelling is not granted anywhere, so the modern subject is the
+    // only push-consumer door a peer has.
+    assert.deepEqual([...held.get("CONSUMER.DURABLE.CREATE")!], []);
+    // This one IS held, and the origin argument does not rest on its absence. It rests on push
+    // delivery being interest-gated, which is measured separately.
+    assert.deepEqual([...held.get("CONSUMER.CREATE")!].sort(), ["agent", "observer", "run-driver"]);
+    observations.pushConsumerHolders = [...held.get("CONSUMER.CREATE")!].sort();
+  });
+
   await check("every API verb the client library can call is classified or refused", async () => {
     const { createRequire } = await import("node:module");
     const lib = dirname(createRequire(import.meta.url).resolve("@nats-io/jetstream"));
