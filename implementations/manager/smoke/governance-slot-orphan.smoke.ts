@@ -89,6 +89,15 @@ const errOf = async (fn: () => Promise<unknown>): Promise<{ code?: string; messa
   catch (e) { return { code: (e as EpEnvelopeError).code, message: (e as Error).message }; }
 };
 
+/** Every staging step runs through this. A suite whose SETUP throws dies before it prints the cell
+ *  that names the property, and `mutation-proof` then reports INCONCLUSIVE instead of a kill: a
+ *  broken implementation is indistinguishable from a broken fixture. Staging failures are recorded
+ *  and surfaced by the cells that depend on them, never by a stack trace. */
+const stage = async (what: string, fn: () => Promise<unknown>): Promise<void> => {
+  try { await fn(); }
+  catch (e) { console.log(`  · staging "${what}" did not complete: ${(e as Error)?.message?.slice(0, 160)}`); }
+};
+
 const SPACE = "govslotsmoke";
 const ENDPOINT = "manager";
 const IID_A = "a".repeat(26); // the instance that dies between its slot-take and its spec publish
@@ -231,19 +240,21 @@ try {
   }
 
   console.log("5. THE FIX: reconciliation reopens the holder's gate, and B's own start reclaims the slot");
-  const report = await reconcileEndpointGate({
+  const reconcileA = await errOf(() => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_A,
     probeHolder: async () => ({ state: "gone", detail: "smoke: CONNZ sweep proves the holder absent" }),
     evict: async () => true,
     log: () => {},
     recordsKv,
-  });
-  c("reconciliation reopens A's gate at the successor generation", report.reopenedAtGeneration === gateA0!.generation + 1, report.reopenedAtGeneration);
+  }) as Promise<{ reopenedAtGeneration: number }>);
+  c("reconciliation reopens A's gate at the successor generation",
+    reconcileA.message === "NO THROW", reconcileA);
   const gateA1 = await readGate(IID_A);
   const govBefore = await readGov();
   c("the slot is NOW provably orphaned: still stamped 0 while its holder's gate is OPEN at 1",
-    gateA1?.state === "open" && govBefore?.provisional?.generation !== undefined && gateA1 !== null
-    && govBefore.provisional!.generation < gateA1.generation,
+    gateA1?.state === "open" && gateA1.generation === gateA0!.generation + 1
+    && govBefore?.provisional?.generation !== undefined
+    && govBefore.provisional.generation < gateA1.generation,
     { slot: govBefore?.provisional?.generation, gate: gateA1?.generation, state: gateA1?.state });
 
   const reclaimed = await errOf(() => register(recordsKv, IID_B));
@@ -283,11 +294,11 @@ try {
   c("C holds the slot again, stamped at the generation its retry froze",
     govC?.provisional?.instanceId === IID_C && govC.provisional!.generation === gateCNow!.generation, { slot: govC?.provisional?.generation, gate: gateCNow?.generation });
   // Reopen C's gate the way its own retry or a reconciler would, leaving the slot behind it.
-  await reconcileEndpointGate({
+  await stage("reopen C's gate, leaving its slot behind", () => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_C,
     probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
     evict: async () => true, log: () => {}, recordsKv,
-  });
+  }));
   await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_D, principal: principalKey(DEV_OWNER, "govslotdddd").key });
   const dReg = await errOf(() => register(recordsKv, IID_D));
   c("a successor reclaims an orphan whose holder gate is OPEN - the residue with no repair-tool exit",
@@ -304,11 +315,11 @@ try {
   // on a good observation, so a green cell here is the refusal and never an incidental block.
   await provisionEndpointGateOpen(epKv, { endpoint: ENDPOINT, instanceId: IID_E, principal: principalKey(DEV_OWNER, "govsloteeee").key });
   const specKeyE = recordSpecKey(RECORD_KINDS.svc, [ENDPOINT, IID_E]);
-  const healE = () => reconcileEndpointGate({
+  const healE = () => stage("reopen E's gate", () => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_E,
     probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
     evict: async () => true, log: () => {}, recordsKv,
-  });
+  }));
   // Staged TWICE on purpose, so the orphan's stamp lands at generation 1 rather than 0. A stamp of
   // 0 has nothing below it, so the `behind the stamp` case could not be expressed against it and
   // that fail-closed branch would go ungraded while its cell still read green.
