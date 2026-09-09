@@ -12,6 +12,7 @@ import {
   hasLiveNativeLifecycleBindingsForManager,
   lookupNativeLifecycleBindingsForManager,
   sessionBindingKey,
+  sessionOperationKey,
   type ResourceKey,
   type SessionOperationRecord,
 } from "../src/index.js";
@@ -91,6 +92,17 @@ await rejects("receiver receipt must persist at least the operation's expected e
 await rejects("native proof must come from the ResourceKey provider", () => updateSessionOperation(kv, {
   ...terminal, proofOrigin: { kind: "native-readback", provider: "com.cotal.opencode", evidence: { operation: "op-1" }, proves: "native-effect" },
 }, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
+const dispatcherProof = {
+  kind: "dispatcher-retirement" as const,
+  admissionClosed: true as const,
+  dispatcherSettled: true as const,
+  retiredStatePersisted: true as const,
+  unprovenLiveRequestIds: ["req-live-1"],
+  proves: "dispatcher-retirement-only" as const,
+};
+await rejects("dispatcher-retirement cannot prove terminal native success", () => updateSessionOperation(kv, {
+  ...terminal, proofOrigin: dispatcherProof,
+}, (kv as unknown as MemKv).rows.values().next().value!.revision), "internal");
 
 console.log("B. monotonic trusted state, rollback read-only, and retired fences");
 const state1 = await advanceSessionTrustedState(kv, resource, { epochFloor: 7, retireBindingIds: ["binding-old"], observedNativeEpochFloor: 7 });
@@ -156,6 +168,20 @@ c("a deleted authority binding is corruption and fails closed, never proven abse
 const releasedBinding = { ...nativeBinding, state: "released" as const, operationId: "release-final" };
 const releasedEntry = { ...bindingEntry, value: new TextEncoder().encode(JSON.stringify(releasedBinding)) };
 c("a released label without its terminal release receipt still blocks shutdown", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [releasedEntry] as never));
+const dispRes = { ...resource, stableSessionId: "disp-lookup" };
+const dispPrepared = await prepareSessionOperation(kv, { ...base, resourceKey: dispRes, operationId: "op-disp-lookup", bindingId: "binding-live" });
+await updateSessionOperation(kv, {
+  ...dispPrepared.record,
+  state: "indeterminate",
+  proofOrigin: dispatcherProof,
+}, (kv as unknown as MemKv).rows.get(sessionOperationKey(dispRes, "op-disp-lookup"))!.revision);
+const releasedDisp = { ...nativeBinding, resourceKey: dispRes, state: "released" as const, operationId: "op-disp-lookup" };
+c("released lookup with dispatcher-retirement remains live without native-effect", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager", async () => [{
+  key: sessionBindingKey(dispRes),
+  value: new TextEncoder().encode(JSON.stringify(releasedDisp)),
+  revision: 1,
+  operation: "PUT" as const,
+}] as never));
 c("default binding lookup without an injected scanner fails closed as possibly live", await hasLiveNativeLifecycleBindingsForManager(kv, "u_alice.manager"));
 
 console.log(`\n${ok} passed, ${fail} failed`);

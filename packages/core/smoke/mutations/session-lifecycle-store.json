@@ -67,6 +67,14 @@
       "replace": "  scan: (kv: KV, filter?: string | string[]) => Promise<KvEntry[]> = async () => [],",
       "expectRed": "default binding lookup without an injected scanner fails closed as possibly live",
       "cell": "default binding lookup without an injected scanner fails closed as possibly live"
+    },
+    {
+      "name": "treat dispatcher-retirement as native-effect for released lookup",
+      "file": "packages/core/src/session-lifecycle-store.ts",
+      "find": "      if (release.state !== \"terminal-success\" || release.record.action !== \"release\"\n        || release.record.bindingId !== binding.bindingId\n        || release.proofOrigin?.proves !== \"native-effect\") bindings.push(binding);",
+      "replace": "      if (release.proofOrigin?.kind !== \"dispatcher-retirement\" && (release.state !== \"terminal-success\" || release.record.action !== \"release\"\n        || release.record.bindingId !== binding.bindingId\n        || release.proofOrigin?.proves !== \"native-effect\")) bindings.push(binding);",
+      "expectRed": "released lookup with dispatcher-retirement remains live without native-effect",
+      "cell": "released lookup with dispatcher-retirement remains live without native-effect"
     }
   ]
 }
