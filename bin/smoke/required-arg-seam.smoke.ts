@@ -310,7 +310,10 @@ const SEAMS: Seam[] = [
   // reader, the local run mediator's two rail connections and the boot reconcile's own dial (all
   // typechecked, inheriting the resolved TLS requirement), plus two run-host-live connections
   // that prove a legacy-rail caller and a foreign admitter are refused (tls: false).
-  { fn: "standaloneConnectOpts", key: "tls", sites: 140, untypecheckedSites: 100 },
+  // 140/100 -> 141/101: the run-command smoke moves onto a static-auth broker and reads records
+  // and journals through a per-run run-operator credential of its own (one smoke-side call,
+  // tls: false); an admin credential holds no records read row on that mesh.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 141, untypecheckedSites: 101 },
 ];
 
 /**
