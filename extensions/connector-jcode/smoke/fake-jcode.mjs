@@ -106,6 +106,16 @@ let attachedExisting;
 let createdFresh = false;
 let sessionWorkingDir;
 let orientationTurns = 0;
+// Busy model, opt-in via FAKE_JCODE_BUSY_MODEL=1 so every existing suite keeps its exact
+// behaviour. What it encodes was MEASURED against real jcode 0.81.5 (R1, 2026-09-09), not invented:
+// a plain send against a busy agent is accepted and QUEUED and still gets `message_accepted`
+// immediately (~1ms, request_kind=message), while a no_reply send is REJECTED with an error frame
+// whose code is `internal`. Without this the fake answers every no_reply frame `ok`, so a
+// regression test written against it is green in both directions over a server that still rejects.
+const busyModel = process.env.FAKE_JCODE_BUSY_MODEL === "1";
+let turnBusy = false;
+let busyOwner;
+const queuedTurns = [];
 let sessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4-pro";
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
 const journalPath = process.env.FAKE_JCODE_JOURNAL;
@@ -124,6 +134,48 @@ const storedSession = () => {
 const saveSession = (session) => {
   if (sessionStatePath) writeFileSync(sessionStatePath, JSON.stringify(session));
 };
+
+// One model turn. Lifted out of the send_message handler so a turn that arrives while the agent is
+// busy can be QUEUED and replayed later against its own connection, which is what the real server
+// does. Writes its events to the socket that submitted it rather than to whichever connection
+// happens to be current.
+function runTurn(frame, socket) {
+  const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
+  const closeOnContent = process.env.FAKE_JCODE_CLOSE_ON_CONTENT;
+  const closeOnceFile = process.env.FAKE_JCODE_CLOSE_ONCE_FILE;
+  const shouldClose =
+    closeOnContent &&
+    String(frame.content).includes(closeOnContent) &&
+    (!closeOnceFile || !existsSync(closeOnceFile));
+  if (shouldClose) {
+    if (closeOnceFile) writeFileSync(closeOnceFile, "closed");
+    socket.destroy();
+    // Model the bridge process going away rather than only one TCP/Unix connection. The
+    // recovery path must be able to launch a replacement bridge at the same private path.
+    setImmediate(() => server.close());
+    return;
+  }
+  turnBusy = true;
+  busyOwner = socket;
+  // The delay knob keeps a failure-path test observable: a host that tears down on the
+  // refusal is faster than a 100ms poll, so the turn must outlast the observer's window.
+  setTimeout(() => {
+    if (String(frame.content).includes("cotal_orientation") && process.env.FAKE_JCODE_FAIL_READINESS !== "1") {
+      const readyAfter = Number(process.env.FAKE_JCODE_ORIENTATION_DELAY_TURNS ?? "0");
+      orientationTurns++;
+      if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
+        log({ ev: "orientation_done", turn: orientationTurns });
+        event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+      }
+    }
+    event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
+    event({ ev: "turn_done", session_id: frame.session_id });
+    turnBusy = false;
+    busyOwner = undefined;
+    const next = queuedTurns.shift();
+    if (next) next();
+  }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
+}
 
 const server = createServer((socket) => {
   let buffered = "";
@@ -222,7 +274,7 @@ const server = createServer((socket) => {
         case "get_runtime_info":
           reply({ ev: "runtime_info", session_id: frame.session_id, model: process.env.FAKE_JCODE_RUNTIME_MODEL ?? "fake-model", routes: [] });
           break;
-        case "send_message":
+        case "send_message": {
           if (process.env.FAKE_JCODE_READINESS_REFUSAL === "1" && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {
             event({
               ev: "error",
@@ -231,65 +283,42 @@ const server = createServer((socket) => {
               code: "invalid_request",
               message: JSON.stringify({ error: { code: "model_not_found", message: "model parameter rejected-model-id was refused by provider" } }),
             });
-          } else if (frame.no_reply) {
-            reply({ ev: "ok" });
-          } else {
-            event({ ev: "message_accepted", session_id: frame.session_id });
-            // A real Harness reports idle between tool rounds while the host's run() is still
-            // awaiting turn_done. That is the #1075 idle-during-drive wedge: the connector used
-            // that advisory status to refuse soft_interrupt even though the Cotal-owned turn was live.
-            if (process.env.FAKE_JCODE_IDLE_DURING_TURN === "1") {
-              log({ ev: "idle_during_turn", session_id: frame.session_id });
-              event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
-            }
-            const closeOnContent = process.env.FAKE_JCODE_CLOSE_ON_CONTENT;
-            const closeAlwaysOnContent = process.env.FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT;
-            const closeOnceFile = process.env.FAKE_JCODE_CLOSE_ONCE_FILE;
-            const shouldClose =
-              (closeOnContent &&
-                String(frame.content).includes(closeOnContent) &&
-                (!closeOnceFile || !existsSync(closeOnceFile))) ||
-              (closeAlwaysOnContent && String(frame.content).includes(closeAlwaysOnContent));
-            if (shouldClose) {
-              if (closeOnceFile) writeFileSync(closeOnceFile, "closed");
-              socket.destroy();
-              // Model the bridge process going away rather than only one TCP/Unix connection. The
-              // recovery path must be able to launch a replacement bridge at the same private path.
-              setImmediate(() => server.close());
-              return;
-            }
-            // The delay knob keeps a failure-path test observable: a host that tears down on the
-            // refusal is faster than a 100ms poll, so the turn must outlast the observer's window.
-            setTimeout(() => {
-              if (String(frame.content).includes("cotal_orientation") && process.env.FAKE_JCODE_FAIL_READINESS !== "1") {
-                const readyAfter = Number(process.env.FAKE_JCODE_ORIENTATION_DELAY_TURNS ?? "0");
-                orientationTurns++;
-                if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
-                  log({ ev: "orientation_done", turn: orientationTurns });
-                  event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
-                  const externalMs = Number(process.env.FAKE_JCODE_EXTERNAL_TURN_MS ?? "0");
-                  if (externalMs > 0) {
-                    // A TUI-owned turn: the session is busy without a host send_message. The host
-                    // only learns this from session_status. Delay past mesh join so the incoming
-                    // handler is armed before the seat looks busy.
-                    setTimeout(() => {
-                      log({ ev: "external_turn", status: "working", session_id: frame.session_id });
-                      event({ ev: "session_status", session_id: frame.session_id, status: "working" });
-                      setTimeout(() => {
-                        log({ ev: "external_turn", status: "idle", session_id: frame.session_id });
-                        event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
-                        event({ ev: "turn_done", session_id: frame.session_id });
-                      }, externalMs);
-                    }, 400);
-                  }
-                }
-              }
-              event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
-              log({ ev: "turn_done_emitted", content: frame.content });
-              event({ ev: "turn_done", session_id: frame.session_id });
-            }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
+            break;
           }
+          if (busyModel && turnBusy) {
+            if (frame.no_reply) {
+              // client_processing distinguishes the two topologies R1 measured: true when the busy
+              // turn belongs to this same connection, false when it belongs to another (v8's shape
+              // across all 81 of its events, where the TUI owns the turn and the connector sends).
+              log({
+                ev: "busy_agent_rejected",
+                client_processing: busyOwner === socket,
+                reason: "agent_busy",
+                request_kind: "context_message",
+                session_id: frame.session_id,
+              });
+              reply({
+                ev: "error",
+                code: "internal",
+                message:
+                  "internal: Cannot handle context_message while the session is busy. Try again after the current turn finishes.",
+              });
+              break;
+            }
+            // Accepted and queued. The acknowledgement is immediate even though the turn is not:
+            // that is what keeps the SDK's plain path from stalling on its 10s accept wait.
+            event({ ev: "message_accepted", session_id: frame.session_id });
+            queuedTurns.push(() => runTurn(frame, socket));
+            break;
+          }
+          if (frame.no_reply) {
+            reply({ ev: "ok" });
+            break;
+          }
+          event({ ev: "message_accepted", session_id: frame.session_id });
+          runTurn(frame, socket);
           break;
+        }
         default:
           reply({ ev: "ok" });
       }
