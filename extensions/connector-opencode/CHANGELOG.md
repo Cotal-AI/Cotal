@@ -1,5 +1,7 @@
 # @cotal-ai/connector-opencode
 
+## 0.48.2
+
 ## 0.48.1
 
 ## 0.48.0

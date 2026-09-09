@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+  ],
+  "guard": "a post-join notice refused because the resumed session is mid-turn is recorded and swallowed, so the seat that already joined survives it",
+  "command": "pnpm smoke:jcode-host",
+  "progressPattern": "^  \u2713 ",
+  "minTicks": 2,
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-post-join-notice-busy.json",
+  "why": "Rethrowing from the post-join notice catch ends the already-joined host. The first no-inbox startup scenario now runs before the later mesh-work scenario, so its kickoff-delivery assertion is the first failure. The mutation retains the original rethrow and names that observed assertion. This fail-fast mutation stops at the startup assertion and does not independently mutation-grade the later mesh-work assertion; that behavior remains covered by the unmutated host smoke.",
+  "mutations": [
+    {
+      "name": "the refused post-join notice is fatal to the launch again",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n    }",
+      "replace": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n      throw notice;\n    }",
+      "expectRed": "idle completion delivers the startup kickoff without any inbox wake",
+      "cell": "idle completion delivers the startup kickoff without any inbox wake"
+    }
+  ]
+}
