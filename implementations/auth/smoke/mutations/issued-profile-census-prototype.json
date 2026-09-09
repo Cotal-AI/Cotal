@@ -186,8 +186,8 @@
     {
       "name": "a peer-held profile is granted a stream-update door",
       "file": "packages/core/src/provision.ts",
-      "find": "      `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)",
-      "replace": "      `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)\n      `$JS.API.STREAM.UPDATE.${KV}`,",
+      "find": "      `$JS.ACK.${CHAT}.>`,\n      `$JS.API.CONSUMER.CREATE.${KV}.>`,",
+      "replace": "      `$JS.ACK.${CHAT}.>`,\n      `$JS.API.STREAM.UPDATE.${KV}`,\n      `$JS.API.CONSUMER.CREATE.${KV}.>`,",
       "expectRed": "every broker grant a peer can hold has a decided delivery class",
       "cell": "every broker grant a peer can hold has a decided delivery class"
     },

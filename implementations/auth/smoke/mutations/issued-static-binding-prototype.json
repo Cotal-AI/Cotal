@@ -111,8 +111,8 @@
     {
       "name": "a malformed binding falls through to the legacy refusal",
       "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
-      "find": "  evidenceKey(ref); // a malformed binding on the versioned rail is a refusal, never a legacy arrival",
-      "replace": "  if (!/^[a-f0-9]{32}$/.test(generation)) return Object.freeze({ kind: \"legacy\" as const, reason: UNBOUND_REFUSAL });",
+      "find": "  const ref = Object.freeze({ space, owner, actor, uid, generation });\n  evidenceKey(ref);",
+      "replace": "  const ref = Object.freeze({ space, owner, actor, uid, generation });\n  if (!/^[a-f0-9]{32}$/.test(generation)) return Object.freeze({ kind: \"legacy\" as const, reason: UNBOUND_REFUSAL });",
       "expectRed": "a malformed binding on the versioned rail is refused rather than read as legacy",
       "cell": "a malformed binding on the versioned rail is refused rather than read as legacy"
     },
