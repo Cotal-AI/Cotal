@@ -12,7 +12,7 @@ import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, jetStreamDeliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -117,6 +117,29 @@ try {
       assert.ok(native.every((r) => !r.publish && !r.subscribe));
     });
   }
+  await check("every JetStream grant a peer can hold has a decided delivery class", async () => {
+    // The origin argument quantifies over "granted delivery paths". Enumerating them by hand is
+    // how that argument silently goes stale, so every $JS. grant is classified and an unknown
+    // verb refuses.
+    assert.throws(() => deliveryClassOf("$JS.API.STREAM.PURGE.CHAT_x"), /unclassified/);
+    const classified: Record<string, string[]> = {};
+    for (const fixture of fixtures) {
+      if (!PEER_HELD_PROFILES.includes(fixture.profile as never)) continue;
+      for (const { row, cls } of jetStreamDeliveryPaths(fixture.permissions)) (classified[cls] ??= []).push(row);
+    }
+    // Each class fails the forgery on its own ground, so none is absent by accident.
+    assert.deepEqual(Object.keys(classified).sort(), ["api-envelope", "no-delivery", "stored-captured-subject", "stored-marked"]);
+    observations.peerDeliveryClasses = Object.fromEntries(Object.entries(classified).map(([k, v]) => [k, [...new Set(v)].length]));
+  });
+
+  await check("no shipped source imports the prototypes", async () => {
+    // The README says these files are attached to nothing shipped. That is cheap to falsify, so
+    // it should be a cell rather than a promise.
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    const importers = shippedSources(root).filter((file) => /smoke\/prototypes/.test(readFileSync(file, "utf8")));
+    assert.deepEqual(importers.map((f) => f.slice(root.length)), []);
+  });
+
   await check("no current profile can request its own server view", async () => {
     // Discovery needs `$SYS.REQ.USER.INFO`. If some profile already had it, adding it would not be
     // part of the issuance change; this pins that it is.

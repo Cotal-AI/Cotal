@@ -85,6 +85,30 @@
       "replace": "  return pub.some((row) => row.startsWith(\"$SYS.REQ.USER.INFO.\"));",
       "expectRed": "no current profile can request its own server view",
       "cell": "no current profile can request its own server view"
+    },
+    {
+      "name": "an unclassified JetStream grant is waved through",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  throw new Error(`unclassified JetStream grant \"${subject}\"; decide which delivery class it is before the origin argument can quantify over it`);",
+      "replace": "  return \"no-delivery\";",
+      "expectRed": "every JetStream grant a peer can hold has a decided delivery class",
+      "cell": "every JetStream grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "a raw stored read is classified as an API envelope",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  [/^\\\\$JS\\\\.API\\\\.DIRECT\\\\.GET\\\\./, \"stored-marked\"],",
+      "replace": "",
+      "expectRed": "every JetStream grant a peer can hold has a decided delivery class",
+      "cell": "every JetStream grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "the prototype-import scan looks for the wrong path",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "      else if (entry.name.endsWith(\".ts\") && !entry.name.endsWith(\".d.ts\")) found.push(full);",
+      "replace": "      else if (entry.name.endsWith(\".tsx\")) found.push(full);",
+      "expectRed": "no shipped source emits an issued-rail subject, under any option combination",
+      "cell": "no shipped source emits an issued-rail subject, under any option combination"
     }
   ]
 }

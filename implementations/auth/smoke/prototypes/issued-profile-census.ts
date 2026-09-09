@@ -222,3 +222,35 @@ export function holdsServerView(permissions: Record<string, unknown>): boolean {
   const pub = ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? []).map((row) => row.split(" ")[0]);
   return pub.some((row) => row === ">" || row === "$SYS.>" || row.startsWith("$SYS.REQ.USER"));
 }
+
+/** How a JetStream grant can put bytes on a subject the requester chooses. Every `$JS.` grant a
+ *  profile holds must fall in exactly one class, so a new grant forces a decision rather than
+ *  silently widening the set of delivery paths the origin argument quantifies over.
+ *  - `api-envelope`: the response is a JetStream API JSON envelope. It reaches the chosen reply
+ *    subject, but its wrapper is not caller-shapeable, and a stored payload inside it needs a
+ *    write on the same stream, which `writeAndRawReadStreams` forbids for peer-held profiles.
+ *  - `stored-captured-subject`: delivers stored bytes, under the message's own captured subject.
+ *  - `stored-marked`: delivers raw stored bytes under the chosen subject, carrying `Nats-` headers.
+ *  - `no-delivery`: publishes nothing back to a caller-chosen subject.
+ *  Classes two and three are measured in `issued-ingress-origin.smoke.ts`. */
+export type DeliveryClass = "api-envelope" | "stored-captured-subject" | "stored-marked" | "no-delivery";
+const DELIVERY_CLASSES: readonly (readonly [RegExp, DeliveryClass])[] = Object.freeze([
+  [/^\$JS\.API\.DIRECT\.GET\./, "stored-marked"],
+  [/^\$JS\.API\.CONSUMER\.MSG\.NEXT\./, "stored-captured-subject"],
+  [/^\$JS\.API\.(INFO$|STREAM\.(INFO|MSG\.GET)\.|CONSUMER\.(INFO|CREATE|DELETE)\.)/, "api-envelope"],
+  [/^\$JS\.(ACK|FC)\./, "no-delivery"],
+] as const);
+
+export function deliveryClassOf(row: string): DeliveryClass {
+  const subject = row.split(" ")[0];
+  for (const [pattern, cls] of DELIVERY_CLASSES) if (pattern.test(subject)) return cls;
+  throw new Error(`unclassified JetStream grant "${subject}"; decide which delivery class it is before the origin argument can quantify over it`);
+}
+
+/** Every `$JS.` publish grant in a permission set, with its delivery class. */
+export function jetStreamDeliveryPaths(permissions: Record<string, unknown>): { row: string; cls: DeliveryClass }[] {
+  return ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? [])
+    .map((row) => row.split(" ")[0])
+    .filter((row) => row.startsWith("$JS."))
+    .map((row) => ({ row, cls: deliveryClassOf(row) }));
+}
