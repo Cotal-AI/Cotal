@@ -119,8 +119,14 @@ try {
     void result.then(() => { settled = true; }, () => { settled = true; });
     try {
       assert.equal(entered, true);
-      assert.equal(await state(a.ref), "prepared");
-      assert.equal(settled, false);
+      // Activation and this read are both round trips, so a single sample races the writer and can
+      // pass while the attempt is already active. Watch a bounded window: a release that does not
+      // await its finalizer flips the state inside it.
+      for (let i = 0; i < 15; i++) {
+        assert.equal(await state(a.ref), "prepared", `activated at sample ${i} while the finalizer was blocked`);
+        assert.equal(settled, false);
+        await wait(20);
+      }
     } finally {
       unblock();
       await result.catch(() => undefined);
