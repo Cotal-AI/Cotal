@@ -39,7 +39,18 @@ the prototype index explicitly. No production barrier has that attachment.
 Released material is a synthetic marker, never a signed credential. The lost-ack
 cell injects an error after a real committed KV write; it does not partition a
 network. Reopening the prototype proves state survives an object restart, not a
-broker crash. Its operator-only index scanner is unsuitable for delegated use.
+broker crash.
+
+The index walk is measured on a least-privilege principal rather than the operator
+connection: a user granted the issued bucket and nothing else runs `retireSource` to
+completion, and the same credential is refused a read of the auth bucket in the same
+space. That principal necessarily holds a write and a raw read on one stream, the pairing
+the census forbids for peer-held profiles; a revoker is trusted infrastructure, which is
+where the census already places every such overlap. This is a grant measurement, so it
+carries no mutation of its own; the walk's own logic is covered by the retirement and
+source-index cells. It is still not the production sealed-scanner discipline, which binds
+a dedicated plane-owned connection and a claim guard to the auth stream, and would need
+its own scanner over this bucket.
 
 ```sh
 pnpm exec tsx implementations/auth/smoke/issued-authority-lifecycle.smoke.ts
