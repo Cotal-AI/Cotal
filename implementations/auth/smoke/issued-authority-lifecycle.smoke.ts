@@ -45,9 +45,12 @@ const port = await pickFreePort();
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const revokerPerms = { publish: { allow: REVOKER_ROWS(space) }, subscribe: { allow: ["_INBOX_issuedrevoker.>"] } };
 writeFileSync(join(dir, "server.conf"), `listen: 127.0.0.1:${port}\njetstream { store_dir: ${JSON.stringify(dir)} }\nauthorization { users: [{user: "issuer", password: "synthetic-proof"}, {user: "revoker", password: "synthetic-revoker", permissions: ${JSON.stringify(revokerPerms)}}] }\n`);
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-const exited = new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
-const releaseBroker = teardownOnSignal(broker, dir);
+const spawnBroker = () => {
+  const child = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  return { child, exited: new Promise<void>((resolve) => { child.once("exit", () => resolve()); child.once("error", () => resolve()); }) };
+};
+let { child: broker, exited } = spawnBroker();
+let releaseBroker = teardownOnSignal(broker, dir);
 let nc: NatsConnection | undefined;
 try {
   const server = `nats://issuer:synthetic-proof@127.0.0.1:${port}`;
@@ -476,6 +479,28 @@ try {
       },
     }), isCasLoss);
     assert.equal(walked, true);
+  });
+
+  await check("issued state survives a broker process kill and restart", async () => {
+    // The reopen cell above proves object-restart survival. This one kills the server process and
+    // brings it back on the same file store, which is a different claim.
+    const f = await fixture();
+    const a = await f.next();
+    await lifecycle.release(a.prepared, a.finalize);
+    releaseBroker();
+    broker.kill("SIGKILL");
+    await exited;
+    ({ child: broker, exited } = spawnBroker());
+    releaseBroker = teardownOnSignal(broker, dir);
+    let back = false;
+    for (let i = 0; i < 100 && !back; i++) { back = await isReachable(server); if (!back) await wait(50); }
+    assert.ok(back, "the broker must come back on the same store");
+    const revived = await connect({ servers: `nats://127.0.0.1:${port}`, user: "issuer", pass: "synthetic-proof", maxReconnectAttempts: 0 });
+    try {
+      const reopened = await openIssuedLifecycle(await new Kvm(revived).open(`cotal_issued_${space}`), space);
+      assert.deepEqual(await reopened.resolve(a.ref, async () => true), permissions);
+      assert.equal(await reopened.retire(a.ref), "revoked");
+    } finally { await revived.close(); }
   });
 
   console.log(`issued authority lifecycle prototype: ${passed} passed`);

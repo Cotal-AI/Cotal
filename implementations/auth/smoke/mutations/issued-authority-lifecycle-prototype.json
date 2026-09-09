@@ -117,6 +117,14 @@
       "replace": "  async function readAttempt(ref: IssuedRef, digest: string) {\n    const entry = await read(`attempt.${own(ref)}`).catch(() => ({ value: { version: 1, state: \"active\", digest }, revision: 1 }));",
       "expectRed": "an unreadable attempt row refuses instead of resolving",
       "cell": "an unreadable attempt row refuses instead of resolving"
+    },
+    {
+      "name": "activation is written to memory instead of the store",
+      "file": "packages/core/smoke/prototypes/issued-authority-lifecycle.ts",
+      "find": "        await kv.update(`attempt.${handle.key}`, bytes({ version: 1, state: \"active\", digest: snap.digest }), snap.revision);",
+      "replace": "        if (snap.revision > 0) { /* activation left unwritten */ }",
+      "expectRed": "release runs the existing finalizer after durable evidence and indexes",
+      "cell": "release runs the existing finalizer after durable evidence and indexes"
     }
   ]
 }
