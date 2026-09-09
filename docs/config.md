@@ -117,7 +117,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
-| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, and the control token. A PATH, never a secret |
+| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, the control token, and optionally the owner-authorized remint capability. A PATH, never a secret |
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
@@ -178,7 +178,11 @@ asked for any of it.
 
 So a launcher-spawned seat does not get them in its environment. The launcher writes them to a single
 **0600 file inside a 0700 private directory** and exports only its path, as `COTAL_LAUNCH_MATERIAL`.
-The session reads the launch-material file once at startup. For a managed creds path, it reads the
+The session reads the launch-material file once at startup. An independent remint also needs an
+owner-authorized remint capability in that file, bound to the enrollment's actor, lifecycle, and
+resource. Presenting the capability is not enough: remint still requires possession of the enrolled
+nkey, and a used nonce is refused. The daemon's loopback operator bearer is not that capability and
+is never written here. For a managed creds path, it reads the
 credential once to pin the seat's nkey, then keeps the path as a renewal source. A re-signed file is
 read by renewal and by reconnect after the cached credential expires, and a file for a different
 nkey is refused. An unbounded credential has no renewal point and remains a static boot-time value.

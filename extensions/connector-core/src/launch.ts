@@ -241,6 +241,7 @@ export function materialEnv(opts: {
   token?: string;
   controlToken?: string;
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  remintCap?: LaunchMaterial["remintCap"];
 }): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
@@ -250,6 +251,7 @@ export function materialEnv(opts: {
   if (opts.token) material.token = opts.token;
   if (opts.controlToken) material.controlToken = opts.controlToken;
   if (opts.userAuth) material.userAuth = opts.userAuth;
+  if (opts.remintCap) material.remintCap = opts.remintCap;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;
   // this is the caller-side half of the same rule.

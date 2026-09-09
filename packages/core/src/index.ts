@@ -9,6 +9,7 @@ export * from "./lifecycle-saga.js";
 export * from "./session-lifecycle-records.js";
 export * from "./session-lifecycle-store.js";
 export * from "./session-enrollment-renewal.js";
+export * from "./session-remint-cap.js";
 export * from "./session-manage-authority.js";
 export * from "./endpoint-cluster.js";
 export * from "./endpoint-journal.js";

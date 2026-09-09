@@ -40,6 +40,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
+import { parseSessionRemintCapShape, type SessionRemintCap } from "./session-remint-cap.js";
 
 /** The prefix {@link writeLaunchMaterial} gives its private directory, and the single filename it
  *  puts inside. Named constants because {@link discardLaunchMaterial} has to recognise this module's
@@ -66,6 +67,12 @@ export type LaunchMaterial = {
   controlToken?: string;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  /**
+   * Owner-authorized remint capability for this enrollment. Optional. Presenting
+   * it is not enough: remint still requires possession of the enrolled nkey.
+   * Never the loopback operator bearer.
+   */
+  remintCap?: SessionRemintCap;
 };
 
 /**
@@ -173,6 +180,13 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
       sentinelCredsPath: sentinelCredsPath as string,
       bearerCmd: bearerCmd as string[],
     };
+  }
+  if (raw.remintCap !== undefined) {
+    try {
+      material.remintCap = parseSessionRemintCapShape(raw.remintCap);
+    } catch (e) {
+      throw new Error(`launch material: ${path} has a remintCap that does not parse (${e instanceof Error ? e.message : String(e)})`);
+    }
   }
   if (Object.keys(material).length === 0)
     throw new Error(
