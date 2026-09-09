@@ -36,6 +36,11 @@ Each source index ends in the permission generation; a reused bearer credential
 ID cannot merge different issuances. The final activation uses the original
 prepared revision. An abort that wins that CAS prevents release.
 
+The cell that holds a finalizer blocked watches the attempt state across a bounded window rather
+than sampling it once. Activation and the test's read are both round trips, so one sample races
+the writer: it passed under the unawaited-finalizer mutation on current main while failing on the
+older base, which means the single sample had been proving nothing about ordering all along.
+
 The auth smoke supplies pins and finalization from the real
 `stageAgentMint`/`finalizeAgentMint` path. It freezes real source gates and walks
 the prototype index explicitly. No production barrier has that attachment.

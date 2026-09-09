@@ -29,6 +29,7 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 
 | # | Claim | | Backing |
 |---|---|---|---|
+| 72 | Release does not activate until the existing finalizer resolves | M | cell "release waits for the pending existing finalizer before activation"; mutation "existing finalizer is not awaited". The cell watches a bounded window; a single sample raced the writer and stopped discriminating when the branch was merged onto current main |
 | 9 | Activation uses the revision the prepare observed, not a re-read | M | cell "activation before the source walk is irreversibly revoked"; mutation "activation takes a fresh revision after abort" |
 | 10 | An abort that wins the activation CAS prevents release | M | cells "source freeze before finalization releases nothing", "a winning source fence followed by prepared retirement loses activation" |
 | 11 | Each source index ends in the generation, so a reused credential id cannot merge issuances | M | cell "two issuances of one root credential retain distinct generation indexes" |
