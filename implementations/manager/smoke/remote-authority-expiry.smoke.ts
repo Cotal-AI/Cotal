@@ -21,25 +21,22 @@ const material = (credentials: RemoteManagerAuthorityMaterial["credentials"], ex
   }, credentials,
 });
 
-// A successful return is the strongest positive result. If the synthetic JWT reaches a formatting
-// error on another runtime, it must still have passed the expiry validation first.
-const acceptsExpiry = (fn: () => unknown) => {
-  try { fn(); } catch (error) {
-    assert.ok(error instanceof Error);
-    assert.doesNotMatch(error.message, /expiry does not match the material envelope/);
-  }
-};
-
 const supervisor = newIdentity();
 const executor = newIdentity();
 const sup = credential(supervisor, 200);
 const exec = credential(executor, 150);
 
 cell("a longer-lived supervisor is valid inside an envelope whose earliest member is the executor", () => {
-  acceptsExpiry(() => materialCredential(material({ supervisor: sup, executor: exec }, 150_000), "supervisor", supervisor));
+  assert.equal(
+    materialCredential(material({ supervisor: sup, executor: exec }, 150_000), "supervisor", supervisor),
+    credsFromJwt(sup.jwt, supervisor),
+  );
 });
 cell("the shortest-lived executor remains valid at the envelope expiry", () => {
-  acceptsExpiry(() => materialCredential(material({ supervisor: sup, executor: exec }, 150_000), "executor", executor));
+  assert.equal(
+    materialCredential(material({ supervisor: sup, executor: exec }, 150_000), "executor", executor),
+    credsFromJwt(exec.jwt, executor),
+  );
 });
 cell("a forged envelope expiry is refused", () => {
   assert.throws(() => materialCredential(material({ supervisor: sup, executor: exec }, 200_000), "supervisor", supervisor), /expiry does not match/);
@@ -49,5 +46,4 @@ cell("a credential entry that disagrees with its JWT expiry is refused", () => {
   assert.throws(() => materialCredential(material({ supervisor: bad, executor: exec }, 150_000), "supervisor", supervisor), /expiry does not match/);
 });
 
-void credsFromJwt;
 console.log(`\nremote-authority-expiry: ${pass} passed`);
