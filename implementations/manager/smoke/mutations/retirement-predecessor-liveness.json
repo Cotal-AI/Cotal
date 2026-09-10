@@ -4,7 +4,6 @@
   ],
   "guard": "resume holds an unresolved retirement before retained-principal liveness and bypasses presence only for an exact terminal-confirmed predecessor when adopting a different lifecycle",
   "command": "pnpm smoke:preserve-state",
-  "completionMarker": "PRESERVE-STATE SMOKE OK",
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/retirement-predecessor-liveness.json",
   "why": [
     "The regression enters Manager.resumePreserved through its public method and drives terminal classification through Manager.confirmRetirement, the helper called only from a successful retirement rail reply.",
@@ -18,6 +17,14 @@
       "replace": "        const held = undefined;",
       "expectRed": "resume refuses an unresolved retirement hold before launch",
       "cell": "resume refuses an unresolved retirement hold before launch"
+    },
+    {
+      "name": "an unresolved retirement hold refuses without re-driving its teardown",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          void this.deprovision({\n            id: held.agentId,\n            name: entry.name,\n            lifecycleUid: held.lifecycleUid,\n            userOwner: held.userOwner,\n            secretPaths: held.secretPaths,\n          }).catch(() => {});",
+      "replace": "          void held;",
+      "expectRed": "resume re-drives the exact held lifecycle teardown",
+      "cell": "resume re-drives the exact held lifecycle teardown"
     },
     {
       "name": "terminal confirmation does not record the predecessor coordinate",
