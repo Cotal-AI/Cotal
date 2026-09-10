@@ -354,7 +354,7 @@ export async function revokeStaticCredentialRows(
  *  managed row owns the slot. */
 export async function activateStaticLifecycle(
   t: LifecycleStateTransport,
-  args: { owner: string; alias: string; actor: string; lifecycleUid: string; managerInstance: string; ownerInstanceId: string },
+  args: { owner: string; alias: string; actor: string; lifecycleUid: string; managerInstance: string; ownerInstanceId: string; runtime?: StaticManagedSlotRow["runtime"] },
 ): Promise<{ slotRevision: number }> {
   const { revision } = await writeStaticSlotIntent(t, {
     owner: args.owner,
@@ -363,6 +363,11 @@ export async function activateStaticLifecycle(
     lifecycleUid: args.lifecycleUid,
     managerInstance: args.managerInstance,
     ownerInstanceId: args.ownerInstanceId,
+    // The custody reference is RESERVED before the seat processes exist, so it rides the very
+    // first durable row this spawn writes. A crash between the launch and the activation CAS then
+    // leaves a provisioning row that still addresses the live seat, and the successor's terminal
+    // reaps it instead of retiring over a process nobody can name.
+    ...(args.runtime ? { runtime: args.runtime } : {}),
   });
   await runActivationSagaAtUid(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, managerInstance: args.managerInstance });
   return { slotRevision: revision };

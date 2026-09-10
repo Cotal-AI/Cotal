@@ -3535,7 +3535,11 @@ export class Manager {
         const joinedAfter = this.ep.getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)
           .reduce((max, p) => Math.max(max, p.ts), 0) + 1;
-        const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
+        // Same ordering as the spawn path: the replacement seat's reference is recorded on the
+        // still-active slot before its processes exist, so a crash here never strands it.
+        const custody = this.reserveCustody();
+        if (custody) await this.recordSlotCustody(a, custody);
+        const handle = this.spawnCustodied(a.name, spec, a.launch.cwd, custody);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
         if (continueSession !== undefined)
@@ -4246,6 +4250,11 @@ export class Manager {
       // broker resource (dm_/dlv_/chathist_ durables, ACL row, memberships) and the teardown
       // credential carry it, so a same-name successor's footprint is name-disjoint by construction.
       const lifecycleUid = mintLifecycleUid();
+      // Reserve the seat's custody reference NOW, before any durable row and long before the
+      // launch. Minting it inside `runtime.spawn` (as it used to be) put the processes on disk
+      // before anything recorded how to address them, so a crash in that window left a live seat
+      // outside every manager and the successor retired the slot over it.
+      const custody = this.reserveCustody();
       // ACCEPT SEAM (P2 item 2 spawn-as-action): the incarnation identity is minted and NOTHING has
       // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
@@ -4338,7 +4347,7 @@ export class Manager {
         // LAST) over the key-pinned executor. The wire AUTHORITY principal is the incarnation-
         // unique nkey (F5-bind); the alias is protected by the name-keyed slot + freeSlot hold.
         await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, (t) =>
-          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid, ownerInstanceId: this.managerInstanceId }),
+          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid, ownerInstanceId: this.managerInstanceId, runtime: custody }),
         );
         // From here the DURABLE registration exists: arm the rollback BEFORE minting, so a throw
         // between activation and provisioning still drives the exact-op static terminal (the
@@ -4443,7 +4452,7 @@ export class Manager {
         workspaceRoot: this.workspaceRoot,
       };
       const spec = connector.buildLaunch(launchOpts);
-      const handle = this.runtime.spawn(name, spec, cwd);
+      const handle = this.spawnCustodied(name, spec, cwd, custody);
       hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
@@ -5028,12 +5037,15 @@ export class Manager {
       const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
       if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
         return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
-      const handle = this.runtime.spawn(entry.name, prepared.spec, entry.launch.cwd);
+      const resumeId = entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id;
+      const custody = this.reserveCustody();
+      if (custody) await this.recordSlotCustody({ name: entry.name, id: resumeId, lifecycleUid: entry.identity.lifecycleUid }, custody);
+      const handle = this.spawnCustodied(entry.name, prepared.spec, entry.launch.cwd, custody);
       const managed: ManagedAgent = {
         name: entry.name,
         role: entry.role,
         agent: entry.launch.connector,
-        id: entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id,
+        id: resumeId,
         seed: adoptedSeed,
         ...(entry.identity.mode === "static" && entry.identity.issued ? { issued: entry.identity.issued } : {}),
         // Recover the ORIGINAL incarnation uid the durables are keyed by (never a fresh mint on resume).
@@ -6964,8 +6976,15 @@ export class Manager {
    *  nothing (there is nothing to reap by reference). Loud on failure, never fatal to the bind: the
    *  handle is already live and a stale reference is refused by identity at reap time. */
   private async recordSlotRuntime(a: ManagedAgent): Promise<void> {
-    if (!this.auth || this.userMode || a.handle.reference === undefined) return;
-    const runtime = a.handle.reference;
+    if (a.handle.reference === undefined) return;
+    await this.recordSlotCustody(a, a.handle.reference);
+  }
+
+  /** Record one custody reference on an agent's ACTIVE slot. Split from {@link recordSlotRuntime}
+   *  so a restart or a resume can record the reference it RESERVED before spawning, while no
+   *  handle exists yet. Static auth only; a runtime without durable custody reserves nothing. */
+  private async recordSlotCustody(a: { name: string; id: string; lifecycleUid: string }, runtime: RuntimeReference): Promise<void> {
+    if (!this.auth || this.userMode) return;
     try {
       await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
         const slot = await readStaticSlot(t, DEV_OWNER, a.name);
@@ -6978,6 +6997,28 @@ export class Manager {
     }
   }
 
+  /** Mint the custody reference for a seat this manager is about to spawn, BEFORE the processes
+   *  exist. Absent for a runtime with no durable custody (there is nothing a successor could reap
+   *  by reference), which is the only case that still spawns unreserved. */
+  private reserveCustody(): RuntimeReference | undefined {
+    return this.runtime.reserve?.();
+  }
+
+  /** Spawn under a reserved reference and prove the runtime honoured it. A runtime that minted its
+   *  own id instead would leave every durable record addressing a seat that does not exist, so the
+   *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
+  private spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): AgentHandle {
+    const handle = this.runtime.spawn(name, spec, cwd, reserved);
+    if (reserved === undefined) return handle;
+    const got = handle.reference;
+    if (got?.kind === reserved.kind && got.id === reserved.id) return handle;
+    try { handle.stop({ graceful: false }); } catch { /* the throw below is the report */ }
+    throw new Error(
+      `runtime "${this.runtime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
+        `${got ? `${got.kind}:${got.id}` : "a handle with no reference"}; the recorded reference would address no seat`,
+    );
+  }
+
   /** The terminal's process step: an orphan (no live handle in THIS process) is reaped by the custody
    *  reference the slot recorded, before its footprint goes. A successor must never retire a
    *  lifecycle and free its alias while the predecessor's seat process is still running outside
@@ -6985,7 +7026,14 @@ export class Manager {
    *  exit; a runtime that cannot reap refuses by name and the lifecycle stays terminalizing. A row
    *  with no recorded reference has nothing this manager can address. */
   private async reapOrphanSeat(a: { name: string; runtime?: RuntimeReference }): Promise<void> {
-    if (a.runtime === undefined) return;
+    if (a.runtime === undefined) {
+      // Since spawn reserves its custody reference before the seat processes exist, a row with no
+      // reference under a custodying runtime can only be one this manager did not write (an older
+      // manager, before the reservation). Say so: silence here reads as "nothing was running".
+      if (typeof this.runtime.reap === "function")
+        console.error(`static retirement ${a.name}: the slot row carries no custody reference, though runtime "${this.runtime.kind}" custodies its seats; a seat launched before this manager reserved its reference is not addressable here`);
+      return;
+    }
     const evidence = await requireRuntimeReap(this.runtime, a.runtime);
     console.error(`static retirement ${a.name}: orphan seat process ${evidence.outcome === "absent" ? `already forgotten by runtime "${a.runtime.kind}" (${a.runtime.id})` : evidence.detail}`);
   }
