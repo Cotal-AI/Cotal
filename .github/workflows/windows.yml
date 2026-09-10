@@ -189,7 +189,7 @@ jobs:
     # dependency here — listing it would keep gating on it even while it is continue-on-error.
     if: always()
     needs: [required]
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - name: Gate
         run: |

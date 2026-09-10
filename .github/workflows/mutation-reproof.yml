@@ -15,7 +15,7 @@ jobs:
     # checkouts because mutation-proof temporarily changes source and compiled artifacts.
     if: github.event_name != 'schedule'
     timeout-minutes: 150
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     strategy:
       fail-fast: false
       matrix:
@@ -77,7 +77,7 @@ jobs:
   changed:
     if: github.event_name != 'schedule' && always()
     needs: [changed_shard]
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - name: Gate
         env:
@@ -91,7 +91,7 @@ jobs:
     # request pay for all 1,714 mutations. It is manually runnable after an infrastructure repair.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     permissions:
       contents: read
       issues: write
