@@ -245,6 +245,7 @@ class ChildHandle implements AgentHandle {
       resolve();
     }));
   }
+  get pid(): number | undefined { return this.child.pid; }
   status(): "running" | "exited" { return this.exited ? "exited" : "running"; }
   stop(): void { if (!this.exited) this.child.kill("SIGTERM"); }
   waitForExit(): Promise<void> { return this.closed; }
@@ -845,6 +846,36 @@ try {
   const inventoryOf = (agent: ManagerResumeAgent): ManagerResumeInventory => ({
     version: "cotal-manager-resume/v1", space, createdAt: new Date().toISOString(), agents: [agent],
   });
+  const livenessDiagnostic = (actor: string, handle: ChildHandle) => {
+    const principal = `${owner}.${actor}`;
+    const roster = (manager as unknown as { ep: { getRoster(): Array<{
+      card: { id: string; name: string };
+      lifecycleUid?: string;
+      status: string;
+      ts: number;
+    }> } }).ep.getRoster()
+      .filter((presence) => presence.card.id === principal)
+      .map((presence) => ({
+        name: presence.card.name,
+        lifecycleUid: presence.lifecycleUid,
+        status: presence.status,
+        ts: presence.ts,
+      }));
+    return { principal, process: { pid: handle.pid, status: handle.status(), exit: handle.exitInfo() }, roster };
+  };
+  const awaitOwnedExit = async (actor: string, handle: ChildHandle): Promise<void> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        handle.waitForExit(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`owned ${actor} process did not exit within 10 seconds`)), 10_000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
 
   console.log("\ncell 3/7: managed grant and lifecycle-keyed durables");
   const blockedUid = mintLifecycleUid();
@@ -866,10 +897,17 @@ try {
   });
   check("public targeted despawn accepts the blocked lifecycle", blockedStop.reply.ok, blockedStop.reply);
   if (!blockedStop.reply.ok) throw new Error("blocked lifecycle despawn was refused before release-failure coverage armed");
-  await wait(300);
+  const blockedHandle = childHandles.get("blocked");
+  if (!blockedHandle) throw new Error("blocked lifecycle child handle disappeared before exit proof");
+  await awaitOwnedExit("blocked", blockedHandle);
+  check("the failed-release retry observes the old blocked process exited first", blockedHandle.status() === "exited",
+    livenessDiagnostic("blocked", blockedHandle));
   check("release failure prevents terminal requester issuance", retirementMints === beforeBlockedMints, retirementMints);
   const blockedRetry = await manager.resumePreserved(inventoryOf(blockedEntry));
-  check("release failure keeps the alias held", !blockedRetry.ok && /retir/.test(blockedRetry.error ?? ""), blockedRetry.error);
+  check("release failure keeps the alias held", !blockedRetry.ok && /retir/.test(blockedRetry.error ?? ""), {
+    error: blockedRetry.error,
+    liveness: livenessDiagnostic("blocked", blockedHandle),
+  });
 
   console.log("\ncell 6/7: durable prepare, HTTP requester issuance, and terminal rail");
   const retiredUid = mintLifecycleUid();
@@ -888,6 +926,8 @@ try {
   });
   check("public targeted despawn accepts the terminal lifecycle", retiredStop.reply.ok, retiredStop.reply);
   if (!retiredStop.reply.ok) throw new Error("terminal lifecycle despawn was refused before release-success coverage armed");
+  const retiredHandle = childHandles.get("retired");
+  if (!retiredHandle) throw new Error("terminal lifecycle child handle disappeared before exit proof");
   observerNc = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
   const lifecycle = await openLifecycleRegistry(observerNc, space);
   let retiredHead: Awaited<ReturnType<typeof readLifecycleHeadForOperation>>;
@@ -898,10 +938,18 @@ try {
   }
   check("host release resolves before one real requester is issued", retirementMints === beforeRetiredMints + 1, retirementMints);
   check("real auth barrier retires the exact lifecycle", retiredHead?.mapping.state === "retired" && retiredHead.mapping.lifecycleUid === retiredUid, retiredHead?.mapping);
+  await awaitOwnedExit("retired", retiredHandle);
+  check("the fresh-lifecycle probe observes the retired process exited first", retiredHandle.status() === "exited",
+    livenessDiagnostic("retired", retiredHandle));
   const replacementUid = mintLifecycleUid();
   const replacementEntry = await provisionRetained("retired", replacementUid);
   const aliasProbe = await manager.resumePreserved(inventoryOf(replacementEntry));
-  check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, aliasProbe);
+  check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, {
+    reply: aliasProbe,
+    predecessorUid: retiredUid,
+    replacementUid,
+    liveness: livenessDiagnostic("retired", retiredHandle),
+  });
 
   console.log("\nremaining native cells 3-7: OUT OF SCOPE for this incremental two-cell gate");
 
