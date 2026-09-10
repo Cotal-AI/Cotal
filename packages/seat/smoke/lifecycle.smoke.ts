@@ -2,11 +2,12 @@
  * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, reapSeat, SeatClient } from "../src/index.js";
+import { EXIT_LINGER_MAX_MS, EXIT_LINGER_MS } from "../src/protocol.js";
 
 if (process.platform !== "linux") {
   console.log(`SEAT LIFECYCLE COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -341,6 +342,119 @@ await h.waitForExit();
     } finally {
       rmSync(leakRoot, { recursive: true, force: true });
     }
+  }
+
+  {
+    // A custodian whose child has exited is not custody of anything. With no controller connected it
+    // exits after the linger and forgets its record; before this policy it lived forever, one idle
+    // node process per seat the manager ever ran.
+    const rec = launchSeat({
+      root,
+      name: "linger-unadopted",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    check("record pins both start identities", typeof rec.custodianStart === "string" && typeof rec.childStart === "string", rec);
+    check(
+      "unadopted custodian exits after its child exits",
+      await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", EXIT_LINGER_MS + 5_000),
+      state(rec.custodianPid),
+    );
+    check("its socket and record are gone with it", !existsSync(rec.socket) && !existsSync(join(root, rec.id, "record.json")), rec.socket);
+  }
+
+  {
+    // A connected controller holds the custodian open past the linger (a late backlog read must
+    // still work), but never past the hard bound: a manager that forgets to close its handle is
+    // not a reason to keep a childless custodian alive forever.
+    const rec = launchSeat({
+      root,
+      name: "linger-held",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('held\\n'); process.exit(0)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    const h = adoptSeatSync(rec);
+    await h.waitForExit().catch(() => undefined);
+    const held = adoptSeatSync(rec);
+    await held.attach().backlog();
+    await wait(EXIT_LINGER_MS + 1_000);
+    check("a connected controller holds the exited custodian past the linger", state(rec.custodianPid) !== "gone", state(rec.custodianPid));
+    held.close();
+    check(
+      "the custodian exits once the last controller drops",
+      await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", EXIT_LINGER_MS + 5_000),
+      state(rec.custodianPid),
+    );
+    check("the hard bound is wider than the linger", EXIT_LINGER_MAX_MS > EXIT_LINGER_MS);
+  }
+
+  {
+    // reapSeat: a live custodied seat nobody adopted is signalled by identity, its process group is
+    // proved empty, and the record is forgotten. A record without start identities refuses.
+    const rec = launchSeat({
+      root,
+      name: "reap-live",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "require('child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' }); setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    await wait(500);
+    const before = readdirSync("/proc").filter((e) => /^\d+$/.test(e)).filter((e) => {
+      try {
+        const stat = readFileSync(`/proc/${e}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2] === String(rec.childPid);
+      } catch {
+        return false;
+      }
+    });
+    check("instrument: the seat child leads a group with a grandchild", before.length >= 2, before);
+    const evidence = await reapSeat(root, rec.id);
+    check("reapSeat signals a live seat by identity and proves it gone", evidence.outcome === "reaped" && state(rec.childPid) === "gone" && state(rec.custodianPid) === "gone", evidence);
+    const after = before.filter((e) => state(Number(e)) !== "gone");
+    check("the child's whole process group is gone", after.length === 0, after);
+    check("the custody record is forgotten", !existsSync(join(root, rec.id)), rec.id);
+    check("a second reap of the same id reports absent", (await reapSeat(root, rec.id)).outcome === "absent");
+  }
+
+  {
+    // Identity refusal: a record naming a pid whose start token differs is never signalled.
+    const rec = launchSeat({
+      root,
+      name: "reap-foreign",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    handles.push(adoptSeatSync(rec));
+    const forged = { ...rec, custodianStart: "1", childStart: "1" };
+    writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(forged)}\n`);
+    const evidence = await reapSeat(root, rec.id);
+    check("a pid whose start identity differs from the record is treated as gone, never signalled", evidence.outcome === "reaped" && state(rec.childPid) !== "gone" && state(rec.custodianPid) !== "gone", { evidence, child: state(rec.childPid) });
+    const bare = { ...rec };
+    delete (bare as Partial<typeof rec>).custodianStart;
+    delete (bare as Partial<typeof rec>).childStart;
+    writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(bare)}\n`);
+    let refused = "";
+    try {
+      await reapSeat(root, rec.id);
+    } catch (e) {
+      refused = (e as Error).message;
+    }
+    check("a record with no start identity refuses to signal", /no process start identity/.test(refused) && state(rec.childPid) !== "gone", refused);
   }
 
   {

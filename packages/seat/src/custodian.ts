@@ -18,7 +18,7 @@ import {
   type ClientRequest,
   type ServerMessage,
 } from "./protocol.js";
-import { RECORD_VERSION, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, processStartToken, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -59,6 +59,14 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     cwd: launch.cwd,
     env: launch.env,
   });
+  // Pin both start identities NOW, before the child can exit and be reaped: a successor that finds
+  // these pids later must be able to tell this custodian and this child from an unrelated process
+  // that inherited the pid. A zombie still reports its start token, a reaped pid does not: a child
+  // whose exec failed can be gone already, and then the record carries no child identity, which a
+  // reader takes as "exited before custody began" (its exit is observed below like any other).
+  const custodianStart = processStartToken(process.pid);
+  if (custodianStart === undefined) throw new Error(`cannot read the process start identity of custodian ${process.pid} from /proc`);
+  const childStart = processStartToken(proc.pid);
 
   const term = new Headless.Terminal({
     cols: DEFAULT_COLS,
@@ -257,6 +265,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     token: launch.token,
     custodianPid: process.pid,
     childPid: proc.pid,
+    custodianStart,
+    ...(childStart === undefined ? {} : { childStart }),
   };
 
   server = createServer((sock) => {

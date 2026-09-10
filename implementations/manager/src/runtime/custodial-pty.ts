@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReference } from "@cotal-ai/core";
-import { adoptSeatSync, launchSeat, loadSeat, unsupportedTransport } from "@cotal-ai/seat";
+import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReapEvidence, RuntimeReference } from "@cotal-ai/core";
+import { adoptSeatSync, launchSeat, loadSeat, reapSeat, unsupportedTransport } from "@cotal-ai/seat";
 
 function defaultCustodyRoot(): string {
   return join(homedir(), ".cotal", "seats");
@@ -39,6 +39,13 @@ export class CustodialPtyRuntime implements Runtime {
     if (reference.kind !== "pty") throw new Error(`cannot adopt runtime kind "${reference.kind}" with pty`);
     const seat = adoptSeatSync(loadSeat(this.root, reference.id));
     return { ...seat, release: () => seat.close() } as AgentHandle;
+  }
+
+  async reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> {
+    if (process.platform !== "linux") throw unsupportedTransport();
+    if (reference.kind !== "pty") throw new Error(`cannot reap runtime kind "${reference.kind}" with pty`);
+    const evidence = await reapSeat(this.root, reference.id);
+    return evidence.outcome === "absent" ? { outcome: "absent" } : { outcome: "reaped", detail: evidence.detail };
   }
 }
 

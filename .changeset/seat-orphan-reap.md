@@ -1,0 +1,7 @@
+---
+"@cotal-ai/seat": minor
+"@cotal-ai/core": minor
+"@cotal-ai/manager": minor
+---
+
+A seat custodian now exits once its child has exited, after a short linger for a late adopter, and forgets its record; before, every custodian outlived its child forever. The seat record pins the custodian's and the child's process start identity, and a new `reapSeat` signals only a process whose identity matches. The manager records each seat's custody reference on its static slot and, when a successor terminalizes a crashed manager's lifecycle, reaps the orphaned seat process through the runtime's new `reap` before retiring the lifecycle. A runtime without `reap` refuses by name and the lifecycle stays held.
