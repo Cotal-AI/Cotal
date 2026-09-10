@@ -144,6 +144,11 @@ try {
   result = run("unrelated-spawn");
   check("an unrelated spawn near a quoted path is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
+  const skippedBuild = `false && pnpm --filter @cotal-ai/seat build || ${tally}`;
+  config("skipped-build", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: skippedBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("skipped-build");
+  check("a package build that never runs is accepted today because buildsPackage is the fourth witness of the class tracked in #1434, alongside ../src/, referencesRoot, and invokesFile (see #1434, #1465)", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");
   check("a spawned repo entrypoint plus target-package build is gradable", result.status === 0 && /graded=1 refused-with-reason=0 unparsed=0/.test(result.stdout), report(result));
@@ -276,6 +281,31 @@ try {
     result = run(name);
     check(`${name} is not a terminal completion witness`, result.status !== 0 && new RegExp(`UNPARSED ${name}`).test(result.stderr), report(result));
   }
+
+  const ticksNot = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nNOT FIXTURE PASSED')")}`;
+  config("progress-not-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksNot, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-not-marker");
+  check("a terminal line that contains and negates the marker is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksPrefixed = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED')")}`;
+  config("progress-prefixed-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixed, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-prefixed-marker");
+  check("a prefixed completion marker still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksChecks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n  42 checks passed')")}`;
+  config("midline-checks", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksChecks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "checks passed", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("midline-checks");
+  check("a mid-line checks-passed marker still grades", result.status === 0 && /graded=1/.test(result.stdout), report(result));
+
+  const ticksAnsi = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED\\u001b[0m')")}`;
+  config("progress-ansi-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsi, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-ansi-marker");
+  check("an ANSI-coloured completion banner still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksTrail = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED but cleanup failed')")}`;
+  config("progress-trailing-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrail, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-trailing-marker");
+  check("trailing text after the marker is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("invalid-regex", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, progressPattern: "[", minTicks: 1, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("invalid-regex", "fraction");

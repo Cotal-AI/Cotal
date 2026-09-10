@@ -258,6 +258,10 @@ const parseSummary = (cfg, output) => {
   if (typeof cfg.progressPattern === "string" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {
     const lines = output.trimEnd().split(/\r?\n/);
     const terminal = lines.at(-1) ?? "";
+    // includes() on the terminal line. A local structural test cannot refuse
+    // "NOT <marker>" without also refusing real banners such as
+    // "ALL MEMBERSHIP TESTS PASSED" (marker "MEMBERSHIP TESTS"). Trailing text
+    // is required by 90 of 191 declared markers. See #1464.
     const completed = typeof cfg.completionMarker === "string" && terminal.includes(cfg.completionMarker);
     const executed = progressCount(output, cfg.progressPattern);
     if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };
