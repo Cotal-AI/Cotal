@@ -913,9 +913,67 @@ try {
         drift.map(([name, d, s]) => `${name}: dist=${d} src=${s}`),
       );
     }
+
+    // STATEFUL ACCESSOR CLASS. Four regressions of one family reached this fence before any cell
+    // existed that could catch one, and every one was found by a person running a probe. The family
+    // is: policy meaning is attached to the first read while later reads are consumed as structure.
+    // `events` is the only property read twice - once by the scan, once inside `parseAguiFrame` - so
+    // a getter can be scanned clean and validated forbidden, and the frame publishes.
+    {
+      const CLEAN_EVENTS = [{ type: "RUN_STARTED", threadId: THREAD, runId: "envelope-run" }];
+      const FORBIDDEN_EVENTS = [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }];
+      /** A frame whose `events` turns forbidden after `flipAfter` reads. */
+      const flipping = (flipAfter: number): unknown => {
+        const f: Record<string, unknown> = { ...envelope({}) };
+        let reads = 0;
+        delete f.events;
+        Object.defineProperty(f, "events", {
+          get() {
+            reads += 1;
+            return reads > flipAfter ? FORBIDDEN_EVENTS : CLEAN_EVENTS;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        return f;
+      };
+      // NOT `forbidden-kind`. The accessor is refused before its first read, so the forbidden
+      // event is never observed and claiming that diagnosis would assert something unmeasured.
+      // `unreadable` and `forbidden-kind` both halt the publish; only the halt reason differs.
+      c(
+        "accessor:a getter already forbidden on its first read is unreadable, not forbidden-kind",
+        verdict([flipping(0)]) === "unreadable",
+        verdict([flipping(0)]),
+      );
+      for (const flipAfter of [1, 2, 3]) {
+        // The regression itself: scanned clean, validated as structurally valid, published.
+        const name =
+          flipAfter === 1
+            ? "accessor:a getter that turns forbidden after 1 read is unreadable, not clean"
+            : flipAfter === 2
+              ? "accessor:a getter that turns forbidden after 2 reads is unreadable, not clean"
+              : "accessor:a getter that turns forbidden after 3 reads is unreadable, not clean";
+        c(name, verdict([flipping(flipAfter)]) === "unreadable", verdict([flipping(flipAfter)]));
+      }
+      // STRICTER THAN THE PREDECESSOR, and named so a reader meets it here rather than in the wild.
+      // The predecessor read four times, saw only clean events, and ALLOWed this. It cannot be
+      // matched: this getter and the one above are byte-identical on read 1, and no single-read
+      // implementation can answer them differently. Fail-closed is the only sound side.
+      c(
+        "accessor:STRICTER a getter that only ever yields clean events is withheld, not published",
+        verdict([flipping(4)]) === "unreadable",
+        verdict([flipping(4)]),
+      );
+      // Without this, every cell above passes on a policy that refuses each and every frame.
+      c(
+        "accessor:CONTROL a plain data-property events list is still clean",
+        verdict([envelope({})]) === "clean",
+        verdict([envelope({})]),
+      );
+    }
   }
 
-  const EXPECTED = 49;
+  const EXPECTED = 55;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });

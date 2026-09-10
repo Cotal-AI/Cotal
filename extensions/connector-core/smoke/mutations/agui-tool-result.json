@@ -67,6 +67,14 @@
       "replace": "      try {\n        void part;\n      } catch {\n        unreadable = true;\n      }",
       "expectRed": "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-ACCESSOR the events accessor check is removed, so a getter scanned clean and validated forbidden publishes again",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "        const eventsDescriptor = Object.getOwnPropertyDescriptor(part as object, \"events\");\n        if (eventsDescriptor !== undefined && typeof eventsDescriptor.get === \"function\") {\n          unreadable = true;\n          continue;\n        }",
+      "replace": "        const eventsDescriptor = Object.getOwnPropertyDescriptor(part as object, \"events\");\n        void eventsDescriptor;",
+      "expectRed": "accessor:a getter already forbidden on its first read is unreadable, not forbidden-kind",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     }
   ]
 }

@@ -1322,6 +1322,28 @@ export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgr
       // throw from the `for..of` over `events` itself; the innermost `try` wraps only the `.type`
       // read and never covered that.
       try {
+        // A frozen body is DATA, and `events` is the one property this function reads TWICE: once
+        // for the scan below and once inside `parseAguiFrame` further down. An accessor can answer
+        // differently on each, so policy meaning is attached to the first read while later reads are
+        // consumed as structure, and a frame whose events turn forbidden after the scan parses as
+        // valid and returns `clean`. The strict read this replaced refused such a frame, having seen
+        // the later value.
+        //
+        // No single-read implementation can be equivalent to that predecessor here. A getter that
+        // turns forbidden on read 2 and one that turns forbidden on read 5 are BYTE-IDENTICAL on
+        // read 1, and the predecessor answers REFUSE for the first and ALLOW for the second; it
+        // separates them only by reading four times. So this is not a choice to be stricter, it is
+        // the only sound answer: an object that will not hold still cannot be classified, and
+        // `unreadable` fails closed where `clean` publishes.
+        //
+        // STRICTER THAN THE PREDECESSOR, deliberately and only here: an accessor that would only
+        // ever have yielded clean events was allowed before and is withheld now. Nothing shipped is
+        // affected — a WAL body is JSON, where `events` is a data property.
+        const eventsDescriptor = Object.getOwnPropertyDescriptor(part as object, "events");
+        if (eventsDescriptor !== undefined && typeof eventsDescriptor.get === "function") {
+          unreadable = true;
+          continue;
+        }
         const events: unknown = (part as { events?: unknown }).events;
         // Emptiness is checked alongside arrayness because `aguiFrame()` refuses an empty list at
         // construction (`!Array.isArray(opts.events) || opts.events.length === 0`) and
