@@ -17,7 +17,7 @@ if (subcommand === "") {
     throw new Error("hosted retirement native acceptance is owner-only; set COTAL_OWNER_NATIVE_ACCEPTANCE=1 on the isolated native host");
   if (process.platform !== "linux") throw new Error("hosted retirement native acceptance requires Linux");
   if (!process.env.COTAL_NATIVE_HTTPS_CA) {
-    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { spawnSync } = await import("node:child_process");
@@ -35,17 +35,23 @@ if (subcommand === "") {
     openssl(["x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"),
       "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"),
       "-days", "2", "-extfile", join(pki, "leaf.ext")]);
-    const child = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...process.argv.slice(2)], {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        COTAL_NATIVE_HTTPS_CA: join(pki, "ca.pem"),
-        COTAL_NATIVE_HTTPS_CERT: join(pki, "leaf.pem"),
-        COTAL_NATIVE_HTTPS_KEY: join(pki, "leaf.key"),
-        NODE_EXTRA_CA_CERTS: join(pki, "ca.pem"),
-      },
-    });
-    process.exit(child.status ?? 1);
+    let childStatus = 1;
+    try {
+      const child = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...process.argv.slice(2)], {
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          COTAL_NATIVE_HTTPS_CA: join(pki, "ca.pem"),
+          COTAL_NATIVE_HTTPS_CERT: join(pki, "leaf.pem"),
+          COTAL_NATIVE_HTTPS_KEY: join(pki, "leaf.key"),
+          NODE_EXTRA_CA_CERTS: join(pki, "ca.pem"),
+        },
+      });
+      childStatus = child.status ?? 1;
+    } finally {
+      rmSync(pki, { recursive: true, force: true });
+    }
+    process.exit(childStatus);
   }
 }
 
