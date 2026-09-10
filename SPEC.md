@@ -1121,7 +1121,10 @@ whose `uid.` reservation already exists); `open → frozen` belongs to `takeover
 reopens); `frozen → retired` belongs to `activation` (a head-CAS loser terminalizing its
 own orphan gate) and `retirement`, NEVER `takeover` or `registration` (those abort by
 reopening). An implementation MUST refuse a transition whose gate op kind is outside these
-sets, before any CAS is attempted. The `opId` is an identifier, never a
+sets, before any CAS is attempted. For `retirement`, the operation identity is canonical rather
+than caller-selected: `opId` MUST equal the first 26 lowercase hexadecimal characters of the SHA-256
+digest of the UTF-8 string `retire:<lifecycleUid>`. The requester, terminal rail, retry, and boot
+resumer therefore converge on one operation for that lifecycle. The `opId` is an identifier, never a
 bearer capability: a resumer re-authenticates as the operation's executor, and possession
 of the id alone grants nothing. `retired` is terminal, a retired
 lifecycle never mints again. `frozen` is **not** terminal, because a supervised restart

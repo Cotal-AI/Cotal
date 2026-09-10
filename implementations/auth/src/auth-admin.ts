@@ -159,10 +159,8 @@ function parseRetireArgs(raw: unknown): RetireArgs {
       typeof a.serveEpoch !== "number" || !Number.isInteger(a.serveEpoch) || a.serveEpoch < 0)
     throw new EpEnvelopeError("failed-precondition", `retireLifecycle requires args ${shape} (serveEpoch a non-negative integer)`);
   return {
-    // opId is OPERATION IDENTITY, not an authz input: it is the stable per-lifecycle id that makes
-    // a retry, a same-name-spawn nudge, and a boot resume converge on ONE operation. It has no
-    // subject counterpart to be cross-checked against (the subject's nonce varies per request,
-    // which is the opposite property), and it authorizes nothing.
+    // opId is OPERATION IDENTITY, not an authz input: the terminal rail independently derives it
+    // from the broker-pinned lifecycle target below. This parse only enforces the token grammar.
     opId: assertLifecycleToken(a.opId, "opId"),
     // LOOKUP COORDINATES, not authz inputs: they select WHICH gate row to read. The row they
     // select must then survive the principal cross-check below, so naming a foreign row buys a
