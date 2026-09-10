@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReference } from "@cotal-ai/core";
+import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReapEvidence, type RuntimeReference } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
@@ -11,6 +11,13 @@ export function requireRuntimeAdopt(runtime: Runtime, reference: RuntimeReferenc
   if (typeof runtime.adopt !== "function")
     throw new Error(`runtime "${runtime.kind}" does not support adopt`);
   return runtime.adopt(reference);
+}
+
+/** Reap an orphaned custody by reference, or refuse by name when this runtime has no reap method. */
+export function requireRuntimeReap(runtime: Runtime, reference: RuntimeReference): Promise<RuntimeReapEvidence> {
+  if (typeof runtime.reap !== "function")
+    throw new Error(`runtime "${runtime.kind}" does not support reap; the orphaned process for ${reference.kind}:${reference.id} cannot be proved gone`);
+  return runtime.reap(reference);
 }
 
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External
