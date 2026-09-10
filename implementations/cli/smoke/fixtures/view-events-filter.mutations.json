@@ -11,15 +11,15 @@
     {
       "name": "V2 the tab filter is dropped, so the strip carries one row per agent that has ever run and buries the channels a human talks on",
       "file": "implementations/cli/src/view/mesh-view.ts",
-      "find": "      if (!isEventChannel(channel)) this.channelCounts.set(channel, messages);",
-      "replace": "      this.channelCounts.set(channel, messages);",
+      "find": "      if (!isEventChannel(channel)) next.set(channel, messages);",
+      "replace": "      next.set(channel, messages);",
       "expectRed": "event channels are not tabs"
     },
     {
       "name": "V3 the live-arrival filter is dropped, so an event channel appears as a tab the moment a frame lands and vanishes at the next poll, which reads as a flickering bug rather than a filter",
       "file": "implementations/cli/src/view/mesh-view.ts",
-      "find": "    if (e.delivery === \"multicast\" && e.channel && !e.events && !this.channelCounts.has(e.channel))",
-      "replace": "    if (e.delivery === \"multicast\" && e.channel && !this.channelCounts.has(e.channel))",
+      "find": "    if (e.delivery === \"multicast\" && e.channel && !e.events) {",
+      "replace": "    if (e.delivery === \"multicast\" && e.channel) {",
       "expectRed": "a live frame on an event channel does not add a tab"
     },
     {

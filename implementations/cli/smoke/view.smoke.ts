@@ -101,6 +101,7 @@ check("feed has exactly 3 entries (control dropped, burst coalesced)", s.feed.le
 check("multicast classified with channel", chat?.delivery === "multicast" && chat?.channel === "general");
 check("anycast classified with service", any?.delivery === "anycast" && any?.toService === "reviewer");
 check("unicast burst coalesced to one entry, count 3", uni?.count === 3);
+check("unicast targets retain authoritative ids", uni?.toIds?.join(",") === [ids.bob, ids.carol, ids.bob].join(","));
 check("unicast targets resolved to names", !!uni?.toNames?.includes("bob") && !!uni?.toNames?.includes("carol"));
 
 check("roster split: 3 agents, 1 endpoint", s.agents.length === 3 && s.endpoints.length === 1);

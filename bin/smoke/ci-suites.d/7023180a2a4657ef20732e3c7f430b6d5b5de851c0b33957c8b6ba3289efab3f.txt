@@ -1,0 +1,2 @@
+# The operator becoming a roster peer on its first send, driven through the console itself. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-participant

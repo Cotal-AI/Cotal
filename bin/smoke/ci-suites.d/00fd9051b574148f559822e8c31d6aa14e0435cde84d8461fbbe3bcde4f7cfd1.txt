@@ -1,0 +1,2 @@
+# The console's channel delete, unread badges, harness tag and skills detail. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-gaps

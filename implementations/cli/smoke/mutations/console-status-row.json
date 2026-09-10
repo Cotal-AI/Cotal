@@ -1,0 +1,39 @@
+{
+  "suite": ["implementations/cli/smoke/console-status-row.smoke.ts"],
+  "guard": "the managed row keeps the process fact and the mesh fact separate, never prints `working` as a bare word, parenthesises the role, and reports uptime in minutes",
+  "command": "pnpm smoke:console-status-row",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-status-row.json",
+  "why": [
+    "The suite imports formatManagedRow from src through tsx, so a mutation is seen without a build and needs no rebuild after the restore.",
+    "Each mutation is compile-clean and its anchor occurs exactly once in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "S1 presence `working` reaches the operator as a bare word",
+      "file": "implementations/cli/src/console/commands.ts",
+      "find": "  const mesh = a.mesh === \"working\" ? \"working · progress unknown\" : a.mesh;",
+      "replace": "  const mesh = a.mesh;",
+      "expectRed": "a working seat renders `mesh working · progress unknown`",
+      "cell": "a working seat renders `mesh working · progress unknown`",
+      "note": "`working` alone claims progress the manager never reported; the qualifier is the whole point of the row."
+    },
+    {
+      "name": "S2 the role loses its parentheses",
+      "file": "implementations/cli/src/console/commands.ts",
+      "find": "  const role = a.role ? ` (${a.role})` : \"\";",
+      "replace": "  const role = a.role ? ` ${a.role}` : \"\";",
+      "expectRed": "the role is parenthesised after the name",
+      "cell": "the role is parenthesised after the name",
+      "note": "Without the parentheses a role is indistinguishable from a second name field."
+    },
+    {
+      "name": "S3 uptime is divided by the wrong unit",
+      "file": "implementations/cli/src/console/commands.ts",
+      "find": "up ${Math.round(a.uptimeMs / 60000)}m`;",
+      "replace": "up ${Math.round(a.uptimeMs / 30000)}m`;",
+      "expectRed": "uptime is rounded to whole minutes",
+      "cell": "uptime is rounded to whole minutes",
+      "note": "The cell's only fixture is an exact 5 minutes, so it cannot separate round from floor or truncation; a wrong divisor is what it does catch. The boundary case is unproven and is recorded as a follow-up."
+    }
+  ]
+}
