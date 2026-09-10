@@ -36,6 +36,7 @@ if (subcommand === "" && !process.env.COTAL_STOCK_HTTPS_CA) {
     const env: NodeJS.ProcessEnv = {};
     for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("COTAL_")) env[key] = value;
     Object.assign(env, {
+      COTAL_OWNER_NATIVE_ACCEPTANCE: "1",
       COTAL_STOCK_HTTPS_CA: join(pki, "ca.pem"),
       COTAL_STOCK_HTTPS_CERT: join(pki, "leaf.pem"),
       COTAL_STOCK_HTTPS_KEY: join(pki, "leaf.key"),
