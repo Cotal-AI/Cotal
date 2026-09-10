@@ -442,7 +442,6 @@ await h.waitForExit();
     handles.push(adoptSeatSync(rec));
     const bare = { ...rec };
     delete (bare as Partial<typeof rec>).custodianStart;
-    delete (bare as Partial<typeof rec>).childStart;
     writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(bare)}\n`);
     let refused = "";
     try {

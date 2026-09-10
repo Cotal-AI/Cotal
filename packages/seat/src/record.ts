@@ -16,7 +16,8 @@ export interface SeatRecord {
    *  tell this custodian from an unrelated process that inherited its pid. Absent on a record a
    *  custodian wrote before identity pinning; such a record is never signalled. */
   custodianStart?: string;
-  /** The child's process start identity, same rule. */
+  /** The child's process start identity, same rule. Absent on a pinned record when the child had
+   *  already exited before the custodian could read it (a failed exec); a reader takes that as gone. */
   childStart?: string;
 }
 
