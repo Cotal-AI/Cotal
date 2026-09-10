@@ -69,6 +69,16 @@ writeFileSync(
   join(root, "bin/smoke/mentions-script.smoke.ts"),
   'const note = "scripts/direct.mjs";\n',
 );
+writeFileSync(
+  join(root, "bin/smoke/unused-root.smoke.ts"),
+  'import { x } from "@cotal-ai/seat";\n' +
+  'const unused = join(ROOT, "packages", "seat");\n',
+);
+writeFileSync(
+  join(root, "bin/smoke/unrelated-spawn.smoke.ts"),
+  'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+  'const unused = join(ROOT, "scripts", "direct.mjs");\n',
+);
 
 // A "suite" the script can tally: its terminal line is the only thing the coverage report parses.
 const TALLY = `${process.execPath} -e "console.log('FIXTURE: 3 passed, 0 failed')"`;
@@ -176,6 +186,33 @@ check(
   'a non-array "assembles" is refused',
   r.status !== 0 && /"assembles" must be an array/.test(r.stderr),
   r.stderr.slice(-300),
+);
+
+// 9 and 10. PRESENCE-BUT-UNUSED. Cells 5 and 6 above pin the ABSENCE of a witness token, so
+// neither can see a suite that CONTAINS the right characters without running or copying anything.
+// Both witnesses accept that today, and so does the `../src/` substring they sit beside, on main and
+// independently of this file. These two cells pin what the tool actually does, so #1434 has a cell
+// to flip when it tightens all three witnesses together rather than a cell to invent.
+writeConfig("unused-root.json", {
+  suite: ["bin/smoke/unused-root.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
+  mutations: [mutation("packages/seat/src/impl.ts")],
+});
+r = runTool("unused-root.json");
+check(
+  "an unused root spelling beside a by-name import is accepted today (see #1434)",
+  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
+  (r.stderr || r.stdout).slice(-300),
+);
+
+writeConfig("unrelated-spawn.json", {
+  suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: TALLY,
+  mutations: [mutation("scripts/direct.mjs")],
+});
+r = runTool("unrelated-spawn.json");
+check(
+  "an unrelated spawn near a quoted path is accepted today (see #1434)",
+  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
+  (r.stderr || r.stdout).slice(-300),
 );
 
 rmSync(root, { recursive: true, force: true });
