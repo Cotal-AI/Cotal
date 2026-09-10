@@ -1470,8 +1470,8 @@ function remoteManagerPermissions(
   // Only the five-minute EXECUTOR, never the standing supervisor, may enumerate the records store.
   // A remote manager needs this at boot to preserve the normative goalidx orphan sweep. The three
   // consumer-lifecycle rows are the same read-only enumeration residual as the local provisioner's:
-  // they expose records metadata, no message bodies or secrets, and confer no record write beyond
-  // this instance's already exact recordKeys above.
+  // for five minutes they can deliver records-KV row bodies (the store contains coordination state,
+  // not secrets) and confer no record write beyond this instance's already exact recordKeys above.
   const recordsEnumeration = pin.actor === `manager_exec_${iid}` ? [
     `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,
     `$JS.API.CONSUMER.INFO.KV_${REC}.>`,
