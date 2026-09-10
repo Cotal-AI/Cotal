@@ -276,6 +276,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           // than letting consumer deprovision masquerade as terminal retirement.
           throw new Error("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition");
         },
+        validateRetainedAgent: async () => {
+          // The stock remote participant has no host continuity RPC yet. A hosted composition supplies
+          // this beside its release callback; never copy issuer/callout private records client-side.
+          throw new Error("remote participant supervision cannot resume a hosted managed agent without a host retained-authority validation composition");
+        },
       };
     } catch (e) {
       console.error(c.red(

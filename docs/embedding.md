@@ -235,6 +235,13 @@ recomputes the managed id from its broker-pinned target before any gate, head, i
 access, so mint-time validation is not the terminal boundary. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
 
+A host that resumes retained managed actors also implements
+`remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
+already holds; the host validates them against its current managed row and returns only the
+non-secret authority shape. Do not copy the provider's `issuer.json` or `callout.json` into the
+participant store. Both contain private signing or exchange authority. The stock remote supervisor
+refuses retained adoption until its composition supplies this host check.
+
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
 the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference

@@ -28,6 +28,7 @@ const base = {
   serveGrant: {} as never,
   mintSessionServing: async () => "",
   mintRetirementRequester: async () => "",
+  validateRetainedAgent: async () => { throw new Error("not used by retirement ordering smoke"); },
 };
 type Internals = {
   driveDeprovision(agent: { id: string; name: string; lifecycleUid: string; userOwner?: string }): Promise<void>;

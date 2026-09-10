@@ -554,14 +554,11 @@ try {
   await endpoint.start();
   check("existing provider bearer connects from the registry-only participant", endpoint.principal.owner === owner && endpoint.principal.actor === "cli", endpoint.principal);
 
-  // The participant Manager needs two provider continuity records to validate retained actor material:
-  // the public bearer issuer record and the callout/sentinel record. Copy only those provider-owned
-  // records into its signerless store. The broker/account signer stays exclusively in hostStore.
-  for (const key of [authCalloutKey(space), authIssuerKey(space)]) {
-    const value = await hostStore.get(key);
-    if (!value) throw new Error(`host continuity record ${key} is missing`);
-    await participantStore.put(key, value);
-  }
+  check("participant store has no issuer or callout private authority",
+    await participantStore.get(authIssuerKey(space)) === undefined &&
+      await participantStore.get(authCalloutKey(space)) === undefined &&
+      !existsSync(join(participantRoot, ".cotal", authIssuerKey(space))) &&
+      !existsSync(join(participantRoot, ".cotal", authCalloutKey(space))));
 
   console.log("\ncell 2/7: sealed remote-manager authority registration");
   const state = loadOrCreateRemoteManagerIdentity(participantRoot, space);
@@ -638,6 +635,11 @@ try {
       const mode = (await import("node:fs")).statSync(journal.path).mode & 0o777;
       check("host release journal is private and terminally idempotent", mode === 0o600 && journal.row()?.state === "released", mode.toString(8));
     },
+    validateRetainedAgent: ({ owner: retainedOwner, actor, actorToken, sentinelCreds }) =>
+      cotalAuthProvider.validateRetainedAgent({
+        store: hostStore, dir: hostDir, space,
+        owner: retainedOwner, actor, actorToken, sentinelCreds,
+      }),
   };
 
   manager = new Manager({

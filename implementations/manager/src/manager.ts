@@ -368,6 +368,16 @@ export interface ManagerOptions {
       target: { owner: string; actor: string; lifecycleUid: string };
       opId: string;
     }) => Promise<void>;
+    /** Host-owned continuity check for a retained managed actor. A signerless participant cannot
+     * validate the actor token or sentinel from public material alone, and must never receive the
+     * provider's issuer/callout private records. Hosted compositions keep those records host-side
+     * and return only the non-secret current authority shape. */
+    validateRetainedAgent: (args: {
+      owner: string;
+      actor: string;
+      actorToken: string;
+      sentinelCreds: string;
+    }) => Promise<import("@cotal-ai/core").RetainedAgentAuthority>;
   };
 }
 
@@ -4645,15 +4655,22 @@ export class Manager {
       const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel, this.space));
       if (actorToken === undefined || sentinelCreds === undefined)
         throw new Error("the retained actor token / sentinel credential is not in the secret store");
-      const adopted = await provider.validateRetainedAgent({
-        store: secrets,
-        dir: userAuthStateDir(this.workspaceRoot, this.space),
-        space: this.space,
-        owner: entry.identity.owner,
-        actor: entry.identity.actor,
-        actorToken,
-        sentinelCreds,
-      });
+      const adopted = this.remoteAuthority
+        ? await this.remoteAuthority.validateRetainedAgent({
+            owner: entry.identity.owner,
+            actor: entry.identity.actor,
+            actorToken,
+            sentinelCreds,
+          })
+        : await provider.validateRetainedAgent({
+            store: secrets,
+            dir: userAuthStateDir(this.workspaceRoot, this.space),
+            space: this.space,
+            owner: entry.identity.owner,
+            actor: entry.identity.actor,
+            actorToken,
+            sentinelCreds,
+          });
       if (adopted.owner !== entry.identity.owner || adopted.actor !== entry.identity.actor)
         throw new Error(`auth provider returned a replacement principal; expected ${entry.identity.owner}.${entry.identity.actor}`);
       // Bind the inventory's uid to the CURRENT authority row BEFORE any spawn: a corrupt or
