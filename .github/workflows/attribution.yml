@@ -1,0 +1,51 @@
+name: Attribution
+
+# Refuse AI attribution before it can reach main.
+#
+# AGENTS.md bans tool and AI attribution in commits, PRs, issues and comments. Six commits on
+# main carry it anyway (ten Co-Authored-By trailers in the #1350 squash, one in each of four
+# 2026-08-29 squashes, two model ids in the #1419 squash). Every one arrived through a squash
+# merge, which concatenates each constituent commit body into the merge commit, so the person
+# merging never typed the trailer and a merge-time read of a 59-line generated body did not
+# catch it. The gate therefore reads what the squash body is built FROM: every commit on the
+# PR branch, plus the PR title and body. It runs on the pull_request event only; a push to
+# main is already merged and a red there would be a report, not a gate.
+#
+# The grammar is closed and lives in scripts/check-attribution.mjs with its own self-test,
+# which runs first so a broken grader cannot report clean.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  attribution:
+    timeout-minutes: 5
+    runs-on: tenki-standard-small-2c-4g
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The whole PR branch and its merge base, so the range below is complete. A shallow
+          # clone would truncate the range and the check would grade fewer commits than the
+          # squash will fold.
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Grader self-test
+        run: node scripts/check-attribution.mjs --selftest
+      - name: Commits, PR title and PR body
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "$BASE" "$HEAD"
+          echo "range $BASE..$HEAD"
+          node scripts/check-attribution.mjs --range "$BASE..$HEAD" --event "$GITHUB_EVENT_PATH"

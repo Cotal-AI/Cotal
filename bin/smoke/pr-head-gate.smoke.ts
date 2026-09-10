@@ -32,11 +32,13 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 // "Mutation reproof" is expected on every PR: mutation-reproof.yml (#1272, closing #1217) declares a
 // pull_request trigger with no paths filter, so the declaration-derived set includes it for any
 // changed-path set. Added in sorted position. The matching run row lives in the #1087 fixture below.
-const expectedNames = ["CI", "Docs", "Mutation reproof", "Windows"];
+// "Attribution" likewise: attribution.yml declares pull_request with no paths filter and a types
+// list that keeps opened and synchronize, so it is minted at every head of every PR.
+const expectedNames = ["Attribution", "CI", "Docs", "Mutation reproof", "Windows"];
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Mutation reproof", "Windows"]) &&
-    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Mutation reproof", "Windows"]),
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["Attribution", "CI", "Mutation reproof", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["Attribution", "CI", "Installer", "Mutation reproof", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;
 try {
@@ -103,6 +105,26 @@ try {
   unsupportedFilterRefused = /unsupported pull_request filter: branches/.test(String(error));
 }
 check("a pull_request filter the guard cannot evaluate fails closed", unsupportedFilterRefused);
+check(
+  "a types filter that keeps opened and synchronize still expects the workflow at every head",
+  JSON.stringify(expectedPullRequestWorkflows({
+    "typed.yml": "name: Typed\non:\n  pull_request:\n    types: [opened, synchronize, reopened, edited]\n",
+  }, ["package.json"])) === '["Typed"]',
+);
+for (const [label, types, pattern] of [
+  ["a types filter that drops synchronize fails closed instead of expecting a run that is never minted", "[opened, edited]", /types must keep opened and synchronize/],
+  ["a types filter that drops opened fails closed instead of expecting a run at the first head", "[synchronize]", /types must keep opened and synchronize/],
+  ["an unknown pull_request activity type fails closed", "[opened, synchronize, synchronise]", /unknown pull_request activity type: synchronise/],
+  ["an empty types list fails closed", "[]", /pull_request types must be a non-empty string array/],
+] as const) {
+  let refused = false;
+  try {
+    expectedPullRequestWorkflows({ "typed.yml": `name: Typed\non:\n  pull_request:\n    types: ${types}\n` }, ["package.json"]);
+  } catch (error) {
+    refused = pattern.test(String(error));
+  }
+  check(label, refused);
+}
 let unsupportedPatternRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -230,7 +252,7 @@ check(
   `${shippedMissing.stdout}${shippedMissing.stderr}`,
 );
 
-const EXPECTED = 34;
+const EXPECTED = 39;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
