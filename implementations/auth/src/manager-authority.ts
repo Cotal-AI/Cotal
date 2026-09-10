@@ -3,6 +3,7 @@ import {
   assertDerivedOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
+  managedRetirementOpId,
   remoteManagerActors,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
@@ -69,6 +70,8 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
       requestError("retire requires a requester user nkey, exact target, lifecycle opId, and non-negative safe serveEpoch");
     assertLifecycleToken(target.lifecycleUid, "manager authority retirement target lifecycleUid");
     assertLifecycleToken(r.opId, "manager authority retirement opId");
+    if (r.opId !== managedRetirementOpId(target.lifecycleUid))
+      requestError(`retire opId must be the managed lifecycle's derived terminal operation id for ${target.lifecycleUid}`);
     retirement = {
       id: r.id,
       target: {

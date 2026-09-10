@@ -1,3 +1,6 @@
+import { rawDigest } from "./canonical.js";
+import { assertLifecycleToken } from "./subjects.js";
+
 /**
  * Closed request for one remote manager-service authority lifecycle.
  *
@@ -98,4 +101,10 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
     goalWriter: `manager_goal_${instanceId}`,
     sessionLedger: `manager_session_${instanceId}`,
   };
+}
+
+/** The one terminal operation identity for a managed lifecycle. It is derived, never selected:
+ * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op. */
+export function managedRetirementOpId(lifecycleUid: string): string {
+  return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }

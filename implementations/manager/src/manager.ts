@@ -27,6 +27,7 @@ import {
   loadCotalConfig,
   mintCreds,
   mintLifecycleUid,
+  managedRetirementOpId,
   mkSecretDir,
   newIdentity,
   actionContext,
@@ -254,7 +255,7 @@ type StaticReconcileItem = ManagerStaticReconciliationFailure & {
  *  operation (the rail's idempotence table needs exactly one op per retiring incarnation). 26 hex
  *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
 function retireOpId(lifecycleUid: string): string {
-  return createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
+  return managedRetirementOpId(lifecycleUid);
 }
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a

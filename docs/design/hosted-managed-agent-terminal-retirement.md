@@ -17,7 +17,7 @@ Extend the closed remote manager-service authority protocol with one terminal-re
 
 - one caller-generated requester nkey,
 - the exact target owner, actor, and lifecycle UID,
-- one stable retirement operation ID,
+- one operation ID derived from the target lifecycle UID,
 - the manager's current registered serve epoch.
 
 The host derives the authenticated owner from the IdP proof and the manager actors from the registered instance ID. It fresh-checks `supervise`, the manager lifecycle, the endpoint issuance gate, its principal, and its process epoch. It then returns only a short-lived `retirement-requester` JWT for that nkey. The JWT is pinned to:
@@ -26,7 +26,7 @@ The host derives the authenticated owner from the IdP proof and the manager acto
 - the exact target lifecycle,
 - the auth retirement request and caller reply rails.
 
-The manager uses the existing auth endpoint retirement request. The target stays on the broker-enforced subject. The request carries the stable operation ID and the current registered instance ID and serve epoch. No barrier executor, lifecycle head writer, gate writer, signer, profile selector, generic permissions object, or caller-supplied principal crosses the public seam.
+The manager uses the existing auth endpoint retirement request. The target stays on the broker-enforced subject. The request carries the lifecycle-derived operation ID and the current registered instance ID and serve epoch. No barrier executor, lifecycle head writer, gate writer, signer, profile selector, generic permissions object, or caller-supplied principal crosses the public seam.
 
 ## Required ordering
 
@@ -35,7 +35,7 @@ The host composition must retain this order:
 1. Revoke the managed actor's standing mint grant.
 2. Complete or durably retain the hosted release state without freeing the alias.
 3. Mint the target-pinned one-shot retirement requester from the current manager registration.
-4. Request the existing auth-owned terminal barrier with the stable operation ID.
+4. Request the existing auth-owned terminal barrier with the lifecycle-derived operation ID.
 5. Remove the hosted survivor record and free the alias only after terminal confirmation.
 
 A failed or uncertain terminal request keeps the alias held. Repeating it uses the same operation ID and target UID.
@@ -46,7 +46,7 @@ The broker-free authority policy suite should prove:
 
 - only `supervise` may request terminal authority,
 - the terminal request shape is closed,
-- the target and operation ID are mandatory and validated,
+- the operation ID is derived from the target UID and a different valid ID is refused,
 - manager actors and the requester principal are server-derived,
 - a missing, retired, foreign-principal, or stale-epoch serve gate refuses issuance,
 - the returned JWT grants only the exact target's retirement request and the caller's reply rail,

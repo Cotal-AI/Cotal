@@ -1,6 +1,6 @@
 /** Closed remote manager-service authority policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { newIdentity, mintLifecycleUid, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
+import { managedRetirementOpId, newIdentity, mintLifecycleUid, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
@@ -49,7 +49,7 @@ const retirementTarget = { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "worker
 const retirement = {
   id: newIdentity().id,
   target: retirementTarget,
-  opId: mintLifecycleUid(),
+  opId: managedRetirementOpId(retirementTarget.lifecycleUid),
   serveEpoch: 7,
 };
 const retireRequest = { ...request, operation: "retire" as const, registrationProof, retirement };
@@ -79,6 +79,7 @@ await rejects("unknown operations are refused", () => parseRemoteManagerAuthorit
 await rejects("retire requires its closed operation object", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: undefined }), /retire requires retirement exactly/);
 await rejects("retire refuses unknown operation fields", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, profile: "admin" } }), /exactly/);
 await rejects("retire requires a stable lifecycle opId", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, opId: "not-valid" } }), /opId/);
+await rejects("retire refuses a different valid opId for the same lifecycle", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, opId: mintLifecycleUid() } }), /derived terminal operation id/);
 await rejects("retire requires a non-negative safe serve epoch", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, serveEpoch: -1 } }), /serveEpoch/);
 await rejects("retire requires a derived target owner", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, owner: "local" } } }), /derived owner/);
 await rejects("retire requires a subject-safe target actor", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, actor: "bad.actor" } } }), /single NATS-safe token/);

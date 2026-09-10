@@ -227,7 +227,8 @@ The typed remote-manager authority contract includes a one-shot terminal phase. 
 release while preserving the UID, then `remoteAuthority.mintRetirementRequester` returns the
 host-signed JWT for a fresh participant-owned nkey. The credential is pinned to the authenticated
 owner, server-derived manager serve principal, current instance epoch, and exact target lifecycle.
-The manager then uses the existing auth retirement rail with one stable operation id. A failure keeps
+The manager then uses the existing auth retirement rail with the operation id derived from the target
+lifecycle UID. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime

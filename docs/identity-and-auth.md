@@ -248,9 +248,10 @@ renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Each 
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
-credential pinned to that target. The manager sends it on the existing auth retirement rail with one
-stable operation id, so retries and auth-service boot recovery finish the same terminal barrier. It
-never exposes the barrier executor or a general mint surface.
+credential pinned to that target. The manager sends it on the existing auth retirement rail with the
+operation id derived from the target lifecycle UID. A caller cannot substitute another valid operation
+identity for the same target, and retries plus auth-service boot recovery finish the same terminal
+barrier. It never exposes the barrier executor or a general mint surface.
 
 A remote manager can provision only descendants of the same derived owner, and the host
 validates that relation and the current manager grant for every provision. It cannot broaden the
