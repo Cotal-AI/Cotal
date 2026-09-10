@@ -91,6 +91,7 @@ smoke:bind-fence
 smoke:unfenced-responder
 smoke:manager-service
 smoke:manager-service-authority
+smoke:hosted-retirement-order
 smoke:manager-service-ops
 smoke:manager-service-invoke
 smoke:manager-spawn-action
