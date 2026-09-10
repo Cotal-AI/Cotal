@@ -9,17 +9,58 @@ on:
   workflow_dispatch:
 
 jobs:
+  plan:
+    # One checkout runs the selector and names the shards that hold a selected fixture. Before this
+    # job every push fanned all 12 shards; on 2026-09-10, 107 of 228 shard jobs installed and built
+    # the tree and then printed "No selected mutation fixtures are assigned to shard N", 173
+    # job-minutes of setup against the org's 20 concurrent jobs. The plan uses the same selector,
+    # the same UNMEASURED refusals and the same dangling check as a shard run, so a shard that is
+    # not fanned is one the selector would have emptied. No install and no build: selection reads
+    # git and fixture JSON only.
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    runs-on: tenki-standard-small-2c-4g
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Plan the fan-out
+        id: plan
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          base="$BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
+            echo "no base commit on this event; using first parent $base"
+          fi
+          out="$(node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --list-shards 12)"
+          printf '%s\n' "$out"
+          # The plan's last line is the JSON. A selector refusal exits non-zero above and fails this
+          # job, which fails the gate: an unmeasured selection must not read as an empty fan-out.
+          shards="$(printf '%s\n' "$out" | tail -n 1 | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8"));if(!Array.isArray(p.shards))process.exit(3);console.log(JSON.stringify(p.shards))')"
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+
   changed_shard:
     # At dfbb4550f, PR #1350 selected 32 fixtures and exhausted the 145-minute serial step.
     # Each path is assigned to one shard by the runner's existing hash. Shards use separate
     # checkouts because mutation-proof temporarily changes source and compiled artifacts.
-    if: github.event_name != 'schedule'
+    # Only the shards the plan named are fanned; the shard run re-selects for itself, so a shard
+    # that disagrees with the plan prints its own selection rather than trusting the plan's.
+    if: github.event_name != 'schedule' && needs.plan.outputs.shards != '[]'
+    needs: [plan]
     timeout-minutes: 150
     runs-on: tenki-standard-medium-4c-8g
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     name: changed shard ${{ matrix.shard }}/12
     steps:
       - uses: actions/checkout@v6
@@ -76,15 +117,23 @@ jobs:
 
   changed:
     if: github.event_name != 'schedule' && always()
-    needs: [changed_shard]
+    needs: [plan, changed_shard]
     runs-on: tenki-standard-medium-4c-8g
     steps:
       - name: Gate
         env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PLAN_SHARDS: ${{ needs.plan.outputs.shards }}
           SHARD_RESULT: ${{ needs.changed_shard.result }}
         run: |
-          echo "changed_shard=$SHARD_RESULT"
-          test "$SHARD_RESULT" = success
+          set -euo pipefail
+          echo "plan=$PLAN_RESULT shards=$PLAN_SHARDS changed_shard=$SHARD_RESULT"
+          # A failed plan is UNMEASURED and fails the gate. An empty plan skips the fan-out, and the
+          # skipped matrix reads `skipped`, which passes only when the plan itself succeeded and
+          # said `[]`; a skipped fan-out for any other reason is a failure. `set -e` is explicit so
+          # the first test is a gate under any shell, not only under the runner's default `-e`.
+          test "$PLAN_RESULT" = success
+          if [ "$PLAN_SHARDS" = "[]" ]; then test "$SHARD_RESULT" = skipped; else test "$SHARD_RESULT" = success; fi
 
   full:
     # A daily sweep keeps the remaining ambient-drift window bounded without making every pull
