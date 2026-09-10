@@ -21,32 +21,32 @@
       "cell": "the subprocess entry is the repository's real bin/cotal.ts"
     },
     {
-      "name": "the CLI subprocesses no longer receive the owned broker address",
+      "name": "the CLI subprocesses no longer select the registered owned mesh",
       "file": "implementations/cli/smoke/send.smoke.ts",
-      "find": "  const target = [\"--space\", space, \"--server\", servers];",
-      "replace": "  const target = [\"--space\", space];",
-      "expectRed": "`cotal send dm` exits 0",
-      "cell": "`cotal send dm` exits 0"
+      "find": "  const target = [\"--space\", space];",
+      "replace": "  const target: string[] = [];",
+      "expectRed": "`cotal send dm` outside a seat exits 0",
+      "cell": "`cotal send dm` outside a seat exits 0"
     },
     {
-      "name": "one-shot sends again derive their display name from the command verb",
+      "name": "restore the obsolete managed-seat environment gate",
       "file": "implementations/cli/src/commands/send.ts",
-      "find": "  const caller = transientCaller();\n  if (!caller) {\n    console.error(c.red(\"`cotal send` requires COTAL_NAME plus either COTAL_ID or both COTAL_OWNER and COTAL_ACTOR.\"));\n    console.error(c.dim(\"Run it from that seat's shell, or use the in-session cotal_dm / cotal_send / cotal_anycast tool.\"));\n    process.exit(1);\n  }",
-      "replace": "  const caller = { name: \"send\", owner: \"local\", actor: \"send\" };",
+      "find": "  const opened = await openTransient(values, \"cotal-send\");",
+      "replace": "  const name = process.env.COTAL_NAME?.trim();\n  const id = process.env.COTAL_ID?.trim();\n  const owner = process.env.COTAL_OWNER?.trim();\n  const actor = process.env.COTAL_ACTOR?.trim();\n  if (!name || (!id && !(owner && actor))) process.exit(1);\n  const opened = await openTransient(values, name);",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:send",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "expectRed": "`cotal send dm` without COTAL_NAME exits non-zero",
-      "cell": "`cotal send dm` without COTAL_NAME exits non-zero"
+      "expectRed": "`cotal send dm` outside a seat exits 0",
+      "cell": "`cotal send dm` outside a seat exits 0"
     },
     {
-      "name": "the send identity refusal again names two independent alternatives",
-      "file": "implementations/cli/src/commands/send.ts",
-      "find": "console.error(c.red(\"`cotal send` requires COTAL_NAME plus either COTAL_ID or both COTAL_OWNER and COTAL_ACTOR.\"));",
-      "replace": "console.error(c.red(\"`cotal send` requires a managed seat identity (COTAL_NAME plus COTAL_ID, or COTAL_OWNER plus COTAL_ACTOR).\"));",
+      "name": "the transient endpoint again trusts the process environment as its wire principal",
+      "file": "implementations/cli/src/lib/transient.ts",
+      "find": "    card: { name, kind: \"endpoint\" },",
+      "replace": "    card: {\n      name,\n      kind: \"endpoint\",\n      ...(process.env.COTAL_OWNER && process.env.COTAL_ACTOR\n        ? { owner: process.env.COTAL_OWNER, actor: process.env.COTAL_ACTOR }\n        : process.env.COTAL_ID\n          ? { owner: \"local\", actor: process.env.COTAL_ID }\n          : {}),\n    },",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:send",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "expectRed": "`cotal send` identity refusal names COTAL_NAME as required in both accepted shapes",
-      "cell": "`cotal send` identity refusal names COTAL_NAME as required in both accepted shapes"
+      "expectRed": "seat-shaped environment cannot replace the credential-derived principal",
+      "cell": "seat-shaped environment cannot replace the credential-derived principal"
     },
     {
       "name": "remove the awaited broker-exit barrier before JetStream tree removal",
