@@ -2072,9 +2072,9 @@ export class Manager {
     const managed = [...this.agents.values()];
     const blocked = managed.filter((a) => a.handle.kind === "pty" && typeof a.handle.release !== "function");
     if (blocked.length) {
-      throw new Error(
+      return [
         `manager shutdown cannot detach ${blocked.map((a) => `${a.name} (${a.handle.kind})`).join(", ")}: runtime handle does not support release`,
-      );
+      ];
     }
     const failures: string[] = [];
     for (const a of managed) {
