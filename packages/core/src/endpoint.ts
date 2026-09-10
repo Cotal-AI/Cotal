@@ -4890,6 +4890,13 @@ export class CotalEndpoint extends EventEmitter {
     // the publisher — this covers stop(), setStatus("offline"), and any future offline publish site, so
     // the raw KV record is compliant, not only the observer-side roster materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
+    // #1356: this put can still be in flight when a teardown runs, because a rebind reaches
+    // publishPresence through onPresenceBucketEmpty and no teardown awaits that flight. Take the same
+    // epoch fence {@link startPresenceWatch} takes, so a put that outlives its epoch still throws to
+    // its caller but no longer writes presence-refusal state belonging to a later connection. Without
+    // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
+    // refusal on the connection that just published successfully.
+    const epoch = this.presenceEpoch;
     try {
       await this.kv.put(this.card.id, JSON.stringify(record));
     } catch (e) {
@@ -4898,10 +4905,15 @@ export class CotalEndpoint extends EventEmitter {
       // nothing else here notices. Record WHEN the refusals started, at the one site that knows the
       // failing write was a presence write; a caller cannot infer that from the generic `warning`
       // stream, which carries any recoverable error.
-      this.presenceWriteFailingSince ??= Date.now();
-      this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
+      if (epoch === this.presenceEpoch && !this.stopped) {
+        this.presenceWriteFailingSince ??= Date.now();
+        this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
+      }
       throw e;
     }
+    // A late SUCCESS is the same hazard mirrored: clearing here would erase a refusal the current
+    // epoch established from its own evidence.
+    if (epoch !== this.presenceEpoch || this.stopped) return;
     this.clearPresenceWriteFailure();
   }
 
