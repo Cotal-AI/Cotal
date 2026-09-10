@@ -26,6 +26,30 @@
       "cell": "a spawned repo entrypoint plus target-package build is gradable"
     },
     {
+      "name": "a suite mutating its own directly executed source is rejected",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;",
+      "replace": "    if (invokesFile(source, mutation.file)) return;",
+      "expectRed": "a suite is gradable when it directly executes the file being mutated",
+      "cell": "a suite is gradable when it directly executes the file being mutated"
+    },
+    {
+      "name": "a suite launching the exact mutated repo script is rejected",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;",
+      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "expectRed": "a suite is gradable when it launches the exact mutated script path",
+      "cell": "a suite is gradable when it launches the exact mutated script path"
+    },
+    {
+      "name": "any quoted mutation path is treated as a direct execution witness",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;",
+      "replace": "    if (resolve(mutation.file) === resolve(suite) || referencesRoot(source, mutation.file)) return;",
+      "expectRed": "a quoted script path without an invocation is refused",
+      "cell": "a quoted script path without an invocation is refused"
+    },
+    {
       "name": "completed all-passed fractions are not parsed",
       "file": "scripts/mutation-coverage.mjs",
       "find": "    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };",

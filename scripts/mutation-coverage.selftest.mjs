@@ -78,6 +78,18 @@ try {
   write("bin/smoke/direct.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/direct-suite.smoke.ts", "console.log('direct');\n");
+  write("scripts/direct.mjs", "console.log('direct');\n");
+  write("bin/smoke/direct-script.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/mentions-script.smoke.ts",
+    'const note = "scripts/direct.mjs";\n');
+  write("bin/smoke/unused-root.smoke.ts",
+    'import { x } from "@cotal-ai/seat";\n' +
+    'const unused = join(ROOT, "packages", "seat");\n');
+  write("bin/smoke/unrelated-spawn.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\n');
   write("pnpm", "#!/bin/sh\nexit 0\n");
   chmodSync(join(root, "pnpm"), 0o755);
   execFileSync("git", ["init", "-q"], { cwd: root });
@@ -106,6 +118,30 @@ try {
   config("foreign-assembled", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/other/src/index.ts")] });
   result = run("foreign-assembled");
   check("an assembled root cannot admit a foreign mutation", result.status !== 0 && /REFUSED foreign-assembled/.test(result.stderr), report(result));
+
+  config("direct-suite", { suite: ["bin/smoke/direct-suite.smoke.ts"], command: tally, mutations: [mutation("bin/smoke/direct-suite.smoke.ts")] });
+  result = run("direct-suite");
+  check("a suite is gradable when it directly executes the file being mutated", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("direct-script", { suite: ["bin/smoke/direct-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("direct-script");
+  check("a suite is gradable when it launches the exact mutated script path", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("mentions-script", { suite: ["bin/smoke/mentions-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("mentions-script");
+  check("a quoted script path without an invocation is refused", result.status !== 0 && /REFUSED mentions-script/.test(result.stderr), report(result));
+
+  config("malformed-assembles", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: "packages/seat", mutations: [mutation("packages/seat/package.json")] });
+  result = run("malformed-assembles");
+  check('a non-array "assembles" is refused', result.status !== 0 && /"assembles" must be an array/.test(result.stderr), report(result));
+
+  config("unused-root", { suite: ["bin/smoke/unused-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("unused-root");
+  check("an unused root spelling beside a by-name import is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("unrelated-spawn", { suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("unrelated-spawn");
+  check("an unrelated spawn near a quoted path is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");

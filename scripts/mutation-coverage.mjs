@@ -38,6 +38,11 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
 const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
 const referencesRoot = (source, root) =>
   new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(source);
+const invokesFile = (source, file) => {
+  const basename = file.split("/").at(-1);
+  if (basename === undefined || !referencesRoot(source, file)) return false;
+  return new RegExp(`(?:spawnSync|spawn|execFileSync|execFile)\\s*\\([\\s\\S]{0,500}${quoted(basename)}`).test(source);
+};
 
 const validStringArray = (value) =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry !== "");
@@ -198,7 +203,7 @@ const executedWitness = (suite, source, command, mutation, executes) => {
 const assertGradable = (configPath, cfg, suites, mutation) => {
   for (const suite of suites) {
     const source = readFileSync(suite, "utf8");
-    if (resolve(mutation.file) === resolve(suite)) return;
+    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;
     if (packageRoot(mutation.file) === packageRoot(suite) && source.includes("../src/")) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
     if (assembled !== undefined && referencesRoot(source, assembled)) return;
