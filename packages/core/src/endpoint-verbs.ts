@@ -14,6 +14,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
+import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { spacePrefix } from "./subjects.js";
 import {
   epRequestSubject, parseEpSubject, callerTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner,
@@ -362,8 +363,10 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  * value `failed-precondition` (the read's own failure, never mislabeled staleness); a stale reply `expired`;
  * NO responder `unavailable` (SPEC 13.5, the broker no-responders answer — the broker's no-responders 503 lands on a reply-to that
  * sits on THIS caller's own rail, so a manual, fully-disposed probe distinguishes it from a slow
- * responder without leaving a lingering request); a failed reply subscription `unavailable`; the
- * elapsed budget `deadline-exceeded`. Every subscription and timer is released in the `finally`.
+ * responder without leaving a lingering request); a failed reply subscription `unavailable`; a
+ * broker publish violation `permission-denied` naming the refused subject (the connection-status
+ * watch that keeps a missing GRANT from reading as an unanswered deadline); the elapsed budget
+ * `deadline-exceeded`. Every subscription, timer, and status watch is released in the `finally`.
  */
 export async function epCall(
   nc: NatsConnection,
@@ -385,6 +388,7 @@ export async function epCall(
   const started = Date.now();
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   try {
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
@@ -404,9 +408,14 @@ export async function epCall(
         },
       });
     });
+    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. See
+    // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
+    // from an unanswered call.
+    denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
+      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "call");
     nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
-    const msg = await Promise.race([outcome, timeout]);
+    const msg = await Promise.race([outcome, timeout, denialWatch.denied]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
     // the same question better: it knows it did not run the command, where the check can only
@@ -473,6 +482,7 @@ export async function epCall(
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
+    denialWatch?.release();
   }
 }
 
