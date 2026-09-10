@@ -237,10 +237,13 @@ the alias held. This does not expose the auth barrier or give the participant si
 
 A host that resumes retained managed actors also implements
 `remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
-already holds; the host validates them against its current managed row and returns only the
-non-secret authority shape. Do not copy the provider's `issuer.json` or `callout.json` into the
-participant store. Both contain private signing or exchange authority. The stock remote supervisor
-refuses retained adoption until its composition supplies this host check.
+already holds, plus the `nextRegistrationProof` returned by the activation response. That proof is
+host-issued after registration and binds the manager owner, actor, lifecycle, identity nkeys, current
+registration revision, and serving epoch. The host checks it against the current open manager gate,
+validates the retained secrets against its current managed row, and returns only the non-secret
+authority shape. The manager binds every result coordinate and the returned authority back to its
+inventory before use. Do not copy the provider's `issuer.json` or `callout.json` into the participant
+store. Both contain private signing or exchange authority.
 
 The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinned public auth-service
 base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must

@@ -93,6 +93,47 @@ export interface RemoteManagerAuthorityMaterial {
   }>;
 }
 
+/**
+ * Closed request for a remote manager to revalidate one retained managed agent on its host.
+ *
+ * The actor token and sentinel credential are existing per-agent material, not new authority. They
+ * cross only the authenticated manager-authority HTTPS exchange and are consumed by the host's
+ * current provider state. The host returns no credential or secret, only the current non-secret
+ * ledger authority shape.
+ */
+export interface RemoteRetainedAgentValidationRequest {
+  v: 1;
+  kind: "manager-retained-agent-validation";
+  space: string;
+  /** The interactive actor whose fresh `supervise` grant authorizes this manager lifecycle. */
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  target: { owner: string; actor: string; lifecycleUid: string };
+  actorToken: string;
+  sentinelCreds: string;
+}
+
+/** Exact non-secret answer to one retained-agent validation request. */
+export interface RemoteRetainedAgentValidationResult {
+  v: 1;
+  kind: "manager-retained-agent-validation";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  target: RemoteRetainedAgentValidationRequest["target"];
+  authority: import("./auth-provider.js").RetainedAgentAuthority;
+}
+
 export function remoteManagerActors(instanceId: string): RemoteManagerActors {
   return {
     supervisor: `manager_${instanceId}`,
@@ -101,6 +142,21 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
     goalWriter: `manager_goal_${instanceId}`,
     sessionLedger: `manager_session_${instanceId}`,
   };
+}
+
+/** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts. */
+export function remoteManagerRegistrationProof(owner: string, request: RemoteManagerAuthorityRequest): string {
+  const artifactDigests = request.operation === "session" ? [] : (request.contractArtifacts ?? []).map((value) => rawDigest(JSON.stringify(value)));
+  return rawDigest(JSON.stringify({
+    v: 1,
+    space: request.space,
+    owner,
+    instanceId: request.instanceId,
+    lifecycleUid: request.managerLifecycleUid,
+    actors: remoteManagerActors(request.instanceId),
+    identities: request.identities,
+    artifactDigests,
+  }));
 }
 
 /** The one terminal operation identity for a managed lifecycle. It is derived, never selected:

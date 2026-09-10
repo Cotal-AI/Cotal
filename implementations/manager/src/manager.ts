@@ -375,6 +375,7 @@ export interface ManagerOptions {
     validateRetainedAgent: (args: {
       owner: string;
       actor: string;
+      lifecycleUid: string;
       actorToken: string;
       sentinelCreds: string;
     }) => Promise<import("@cotal-ai/core").RetainedAgentAuthority>;
@@ -4662,6 +4663,7 @@ export class Manager {
         ? await this.remoteAuthority.validateRetainedAgent({
             owner: entry.identity.owner,
             actor: entry.identity.actor,
+            lifecycleUid: entry.identity.lifecycleUid,
             actorToken,
             sentinelCreds,
           })
