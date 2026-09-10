@@ -169,6 +169,7 @@ try {
     evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
       servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
     }),
+    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(workspaceRoot) }),
   });
   await mgr.start();
 

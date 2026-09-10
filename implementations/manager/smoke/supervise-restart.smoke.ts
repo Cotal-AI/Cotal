@@ -101,7 +101,10 @@ let userMgr: Manager | undefined;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: broker.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+  });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
