@@ -255,9 +255,6 @@ const validate = (path, cfg) => {
   if (cfg.minTicks !== undefined && (!Number.isInteger(cfg.minTicks) || cfg.minTicks < 1)) {
     throw new Error('"minTicks" must be a positive integer');
   }
-  if ((cfg.progressPattern === undefined) !== (cfg.minTicks === undefined)) {
-    throw new Error('"progressPattern" and "minTicks" must be supplied together');
-  }
   for (const key of ["assembles", "executes"]) {
     if (cfg[key] !== undefined && !validStringArray(cfg[key])) throw new Error(`"${key}" must be an array of non-empty repo paths`);
   }
@@ -304,12 +301,15 @@ for (const path of configs) {
   const summary = parseSummary(cfg, output);
   if (!summary) {
     unparsed++;
-    const progressDeclared = typeof cfg.progressPattern === "string"
-      && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0;
-    const markerMissing = cfg.completionMarker === undefined;
-    const why = progressDeclared && markerMissing
-      ? "command completed but printed no trustworthy executed-cell total; the progress path could not confirm completion because completionMarker was not declared"
-      : "command completed but printed no trustworthy executed-cell total";
+    const hasPattern = typeof cfg.progressPattern === "string";
+    const hasTicks = Number.isInteger(cfg.minTicks) && cfg.minTicks > 0;
+    const hasMarker = typeof cfg.completionMarker === "string";
+    let why = "command completed but printed no trustworthy executed-cell total";
+    if (hasPattern && !hasTicks) {
+      why += "; progressPattern is present and minTicks is absent, so the progress path could not produce a total";
+    } else if (hasPattern && hasTicks && !hasMarker) {
+      why += "; the progress path could not confirm completion because completionMarker was not declared";
+    }
     console.error(`UNPARSED ${path}: ${why}`);
     continue;
   }

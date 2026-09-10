@@ -194,6 +194,15 @@ try {
     report(result),
   );
 
+  config("progress-no-minticks", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-no-minticks");
+  check(
+    "progress without minTicks names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-no-minticks/.test(result.stderr)
+      && /progressPattern is present and minTicks is absent/.test(result.stderr),
+    report(result),
+  );
+
   for (const [name, text] of [
     ["early-ok", "SETUP OK\\n  ✓ one\\n  ✓ two\\nWORK REMAINS"],
     ["tick-passed", "  ✓ setup PASSED\\n  ✓ second\\nWORK REMAINS"],
