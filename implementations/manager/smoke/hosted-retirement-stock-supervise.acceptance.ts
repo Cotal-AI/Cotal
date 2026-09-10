@@ -53,23 +53,36 @@ if (subcommand === "" && !process.env.COTAL_STOCK_HTTPS_CA) {
   process.exit(status);
 }
 if (subcommand === "agent-child") {
-  const { CotalEndpoint } = await import("@cotal-ai/core");
-  const { readFileSync } = await import("node:fs");
-  const { execFile } = await import("node:child_process");
-  const bearerCommand = JSON.parse(process.env.COTAL_BEARER_CMD!) as string[];
-  const bearer = () => new Promise<string>((resolve, reject) => execFile(bearerCommand[0]!, bearerCommand.slice(1), (error, stdout, stderr) => {
-    if (error) reject(new Error(stderr.trim() || error.message));
-    else resolve(stdout.trim());
-  }));
-  const endpoint = new CotalEndpoint({
-    space: process.env.COTAL_SPACE!, servers: process.env.COTAL_SERVERS!, bearer,
-    sentinelCreds: readFileSync(process.env.COTAL_SENTINEL_CREDS!, "utf8"),
-    lifecycleUid: process.env.COTAL_LIFECYCLE_UID!, channels: [], consume: false,
-    card: { owner: process.env.COTAL_OWNER!, actor: process.env.COTAL_ACTOR!, name: process.env.COTAL_NAME!, kind: "agent" },
-  });
-  endpoint.on("error", () => {});
-  await endpoint.start();
-  await new Promise(() => {});
+  try {
+    const { CotalEndpoint } = await import("@cotal-ai/core");
+    const { readFileSync } = await import("node:fs");
+    const { execFile } = await import("node:child_process");
+    const bearerCommand = JSON.parse(process.env.COTAL_BEARER_CMD!) as string[];
+    const bearer = () => new Promise<string>((resolve, reject) => execFile(bearerCommand[0]!, bearerCommand.slice(1), (error, stdout, stderr) => {
+      if (error) reject(new Error(stderr.trim() || error.message));
+      else resolve(stdout.trim());
+    }));
+    const endpoint = new CotalEndpoint({
+      space: process.env.COTAL_SPACE!, servers: process.env.COTAL_SERVERS!, bearer,
+      sentinelCreds: readFileSync(process.env.COTAL_SENTINEL_CREDS!, "utf8"),
+      lifecycleUid: process.env.COTAL_LIFECYCLE_UID!, channels: [], consume: false,
+      card: { owner: process.env.COTAL_OWNER!, actor: process.env.COTAL_ACTOR!, name: process.env.COTAL_NAME!, kind: "agent" },
+    });
+    endpoint.on("error", () => {});
+    await endpoint.start();
+    await new Promise(() => {});
+  } catch (error) {
+    // The manager deliberately reports only the final bounded PTY line. An uncaught Node stack ends
+    // with `Node.js v…`, hiding the real child-launch cause. Emit one redacted final diagnostic so an
+    // owner-native failure is actionable without publishing argv, credentials, or raw scrollback.
+    const detail = (error instanceof Error ? error.message : String(error))
+      .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted credential block]")
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]")
+      .replace(/[\r\n]+/g, " ")
+      .slice(0, 500);
+    console.error(`stock-agent-child failed: ${detail}`);
+    process.exit(1);
+  }
 }
 if (subcommand === "delivery") {
   const { runDelivery } = await import("@cotal-ai/delivery");
