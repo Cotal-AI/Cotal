@@ -49,6 +49,13 @@
       "find": "    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n    try {\n      this.presenceWatchIter?.stop();\n    } catch {\n      /* already closed with the connection */\n    }\n",
       "replace": "    try {\n      this.presenceWatchIter?.stop();\n    } catch {\n      /* already closed with the connection */\n    }\n",
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch"
+    },
+    {
+      "name": "R8 the bind-time pending peek is dropped, so a rebind onto an EMPTY bucket (no entry ever delivered) leaves the view stale for good (rev-1421-grok BLOCK on c67c0bb9)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (pending === 0) this.lastPresenceWatchAt = Date.now();\n",
+      "replace": "",
+      "expectRed": "8.3 the rebind onto an EMPTY bucket turns the view current (nobody present is current knowledge)"
     }
   ],
   "suite": [

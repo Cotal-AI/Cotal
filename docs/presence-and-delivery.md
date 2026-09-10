@@ -42,6 +42,13 @@ and `stale` means the watch has been silent past its liveness window. Both unsaf
 complete roster. `waitForPresenceSnapshot()` returns `snapshot` or `timeout`; a timeout is a bounded
 give-up, not proof that the snapshot completed.
 
+A stale view under a live connection is not left to stand. The endpoint rebinds its presence watch
+from the bucket's current state once per liveness window and reports the rebind as a `warning`
+naming the silent interval; a held link's rebind fails or stays silent and the view stays stale. A
+rebind that is still awaiting the broker when the endpoint stops or rebuilds its connection installs
+nothing. `cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
+manager reports a view that is not `current` ([cli.md](cli.md)).
+
 ## Three delivery modes
 
 Every delivery message is addressed one of three ways

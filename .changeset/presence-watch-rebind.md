@@ -20,7 +20,10 @@ consumer. When the view is stale and the transport is up, the endpoint now stops
 binds a new one from the bucket's current state, once per liveness window, and reports the rebind
 as a warning that names the silent interval. The per-peer age-out also requires that the watch
 delivered for a full window after the peer's last heartbeat, so an observer's own deafness no longer
-emits one offline verdict per peer on the tick before the whole-bucket gate trips.
+emits one offline verdict per peer on the tick before the whole-bucket gate trips. A rebind that
+is still awaiting the broker when the endpoint stops or rebuilds its connection is retired: it
+installs nothing and reports nothing, so a stopped endpoint never regains a watch and a rebuilt
+one keeps the watch its fresh connection bound.
 
 Each `ps` row now carries the manager's presence-view state (`meshView`: `current`, `stale`, or
 `unpopulated`), and the CLI prints `mesh unknown` with the reason instead of `mesh offline` or
