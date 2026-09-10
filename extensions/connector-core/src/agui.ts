@@ -716,9 +716,14 @@ export function toolCallStart(o: {
 /**
  * `TOOL_CALL_ARGS` — `delta` is the FULL `JSON.stringify(input)`.
  *
+ * The constructor still builds the event. The durable emitter suppresses TOOL_CALL_ARGS before
+ * beginSend (and refuses a frozen pre-fix body that still carries it), because `events.<owner>.<actor>`
+ * has a different read ACL from the channel a mesh read tool ran on. Mappers keep constructing it so
+ * their own shape smokes stay about mapping, not about egress.
+ *
  * This is where `tr-`'s `salient()` died: it guessed which argument mattered and dropped the rest,
- * so a reader could not reconstruct what the agent actually did. The whole input goes on the wire,
- * and if it physically cannot fit, the sizing path truncates it with a label rather than silently.
+ * so a reader could not reconstruct what the agent actually did. The whole input is still the
+ * constructor's job; the events plane no longer carries it.
  */
 export function toolCallArgs(o: {
   toolCallId: string;
@@ -758,6 +763,11 @@ export function toolCallEnd(o: {
  * The parameter is required here so a mapper cannot omit it and discover the refusal downstream.
  *
  * `is_error` has no AG-UI field and rides `cotal.isError`.
+ *
+ * The constructor still builds the event. The durable emitter suppresses TOOL_CALL_RESULT before
+ * beginSend (and refuses a frozen pre-fix body that still carries it). Content is mandatory, so the
+ * event is dropped rather than emptied or placeholdered. Observers lose the tool output they see
+ * today; that is the boundary.
  */
 export function toolCallResult(o: {
   messageId: string;
@@ -1124,7 +1134,7 @@ export class AguiBracketStateLost extends AguiVocabularyError {
 
 export class AguiEmitterHalted extends Error {
   constructor(
-    readonly reason: "duplicate-ack" | "cas-loss",
+    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy",
     message: string,
   ) {
     super(message);
@@ -1235,6 +1245,53 @@ export function packUnits(opts: {
   }
   flush();
   return out;
+}
+
+/**
+ * Events that must never reach `events.<owner>.<actor>`.
+ *
+ * That channel carries a different read ACL from the channel a mesh read tool ran on. TOOL_CALL_ARGS
+ * and TOOL_CALL_RESULT republish tool inputs and outputs unredacted. Fail closed: without trusted
+ * provenance AND evidence the destination audience may read the bytes, do not republish them.
+ * Content is mandatory on both kinds (schema-measured: ARGS requires `delta`, RESULT requires
+ * `content` and `messageId`), so the event is suppressed rather than emptied, placeholdered, or
+ * rewritten. No tool-name allowlist. Observers lose the tool output they see today; that is the
+ * boundary, not a regression.
+ *
+ * Applied on the WRITE path before `beginSend`, so disk and wire agree, and on the RETRY path as a
+ * refusal rather than a rewrite: a body frozen by an older process can still carry a forbidden
+ * kind, and mutating frozen bytes between disk and wire would break the recovery machine. An
+ * upgrade across a pending pre-fix frame therefore HALTS rather than leaks.
+ */
+const EGRESS_FORBIDDEN_TYPES: ReadonlySet<string> = new Set([
+  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,
+  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,
+]);
+
+export function isForbiddenEgressEventType(type: unknown): boolean {
+  return typeof type === "string" && EGRESS_FORBIDDEN_TYPES.has(type);
+}
+
+/** Drop forbidden kinds from a mapped unit. Sibling lifecycle and text events stay. */
+export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[] {
+  return events.filter((e) => !isForbiddenEgressEventType((e as { type?: unknown }).type));
+}
+
+/**
+ * Does this frozen body carry a forbidden kind? Used on retry, where the body is already on disk
+ * and must not be rewritten. Reads `.events[].type` through {@link parseAguiFrame} when the part
+ * is a frame (live object or JSON-round-tripped WAL body — the same shape). A part that is not a
+ * frame is not this policy's to refuse.
+ */
+export function frozenBodyViolatesEgressPolicy(body: readonly unknown[]): boolean {
+  for (const part of body) {
+    if (!isAguiFramePart(part)) continue;
+    const frame = parseAguiFrame(part);
+    for (const e of frame.events) {
+      if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -1488,7 +1545,16 @@ export class AguiEmitter<T> {
         if (last) last.cursor = rec.cursor;
         continue;
       }
-      units.push({ runId: mapped.runId, events: mapped.events, cursor: rec.cursor });
+      // WRITE-PATH POLICY, before packing and therefore before beginSend. Disk and wire then agree.
+      // A record that mapped only to forbidden kinds becomes a drop: its cursor folds forward like
+      // any other drop, and packUnits never sees an empty unit.
+      const events = applyAguiEgressPolicy(mapped.events);
+      if (events.length === 0) {
+        const last = units[units.length - 1];
+        if (last) last.cursor = rec.cursor;
+        continue;
+      }
+      units.push({ runId: mapped.runId, events, cursor: rec.cursor });
     }
 
     // A bounded range that mapped to nothing advances the cursor atomically and ALONE.
@@ -1708,6 +1774,19 @@ export class AguiEmitter<T> {
    * the state that means "we do not know", and the next boot retries the same frozen frame.
    */
   private async attempt(o: { id: string; E: number; body: Part[]; retry: boolean }): Promise<void> {
+    if (frozenBodyViolatesEgressPolicy(o.body)) {
+      throw this.halt(
+        "egress-policy",
+        `event emitter for ${this.channel}: refusing to ${o.retry ? "republish a frozen" : "publish a"} ` +
+          `frame whose body carries TOOL_CALL_ARGS or TOOL_CALL_RESULT onto ${this.channel}. ` +
+          `That channel has a different read ACL from the one a mesh read tool ran on, and those ` +
+          `kinds republish tool inputs and outputs. The body is not rewritten: the WAL froze it at ` +
+          `beginSend, a retry must republish those bytes or not at all, and mutating them between ` +
+          `disk and wire would break the recovery machine. An upgrade across a pending pre-fix ` +
+          `frame therefore HALTS rather than leaks. Clear the pending frame only as an explicit ` +
+          `abandonment of this epoch.`,
+      );
+    }
     let ack: { seq: number; duplicate: boolean };
     try {
       ({ ack } = await this.ep.multicastExpecting({
@@ -1802,7 +1881,7 @@ export class AguiEmitter<T> {
     );
   }
 
-  private halt(reason: "duplicate-ack" | "cas-loss", message: string): AguiEmitterHalted {
+  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy", message: string): AguiEmitterHalted {
     this.halted = new AguiEmitterHalted(reason, message);
     return this.halted;
   }
