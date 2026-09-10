@@ -527,9 +527,17 @@ export class MeshAgent extends EventEmitter {
         // broker refuses: broker up, TCP connected, every sibling stream writable, and the operator
         // told the mesh was down. An anonymous error makes an operator look; a wrong one makes them
         // look in the wrong place. Both facts are already here, so report the one that is true.
-        const presence = this.ep.presenceWriteFailure();
+        // The presence sentence CLAIMS the transport is fine, so it is reachable only while a live
+        // transport observation says so. The endpoint clears the record whenever a connection is torn
+        // down, which is the primary guard; this is the second one, for a transport that drops without
+        // a teardown running. Belt and braces, because the failure this replaced was a confident wrong
+        // answer and the cost of one redundant check is lower than the cost of another.
+        const presence = this._transportConnected ? this.ep.presenceWriteFailure() : undefined;
+        // "for 0s" on the first retry read like a broken template. Report a sub-second age as "<1s"
+        // rather than rounding it up to a duration that has not elapsed yet.
+        const forS = presence === undefined ? "" : presence.forMs < 1000 ? "<1" : String(Math.round(presence.forMs / 1000));
         const diagnosis = presence
-          ? `connected, but this space's presence bucket "${presence.bucket}" has refused every write for ${Math.round(presence.forMs / 1000)}s (${presence.error ?? error.message}) - the transport is fine and the fault is not the network`
+          ? `connected, but this space's presence bucket "${presence.bucket}" has refused every write for ${forS}s (${presence.error ?? error.message}) - the transport is fine and the fault is not the network`
           : this._transportConnected
             ? `transport is connected but the mesh bind did not complete (${error.message})`
             : `mesh unreachable (${error.message})`;

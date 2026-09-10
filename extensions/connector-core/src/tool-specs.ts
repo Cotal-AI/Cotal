@@ -614,7 +614,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // into connectionIssue, because `ready` and "presence has been unwritable for 47s" are BOTH
         // true and a caller needs to see the pair. The name says what was observed; it does not bound
         // the fault, since JetStream can be down account-wide with connected/transportConnected true.
-        const presence = agent.presenceWriteFailure;
+        // Gated on a live transport for the same reason the connector's retry line is: the field's
+        // own note tells a reader the connection is up, so it must not be reachable when it is not.
+        // A machine-readable lie outranks a human-readable one - a caller PARSES this - so the guard
+        // matters more here than in the log string, not less. The endpoint clears the record on every
+        // connection teardown, which is the primary fix; this stops a transport that dropped without
+        // one from being described as healthy.
+        const presence = agent.transportConnected ? agent.presenceWriteFailure : undefined;
         const presenceField = presence === undefined ? {} : {
           presenceWriteFailure: {
             bucket: presence.bucket,

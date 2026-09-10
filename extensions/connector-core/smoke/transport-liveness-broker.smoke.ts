@@ -74,6 +74,7 @@ agent.ep.on("error", (error: Error) => {
   if (/^mesh connection closed/.test(error.message)) terminalIssueAtError = agent.connectionIssue;
 });
 let rebuildAgent: MeshAgent | undefined;
+let staleAgent: MeshAgent | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -261,7 +262,86 @@ try {
     reachedRebuildFinalStep && rebuildNcAfterStop === undefined,
     { reachedRebuildFinalStep, rebuildNcAfterStop: rebuildNcAfterStop === undefined ? "absent" : "present" },
   );
+  // #1356: THE PRESENCE-REFUSAL RECORD MUST NOT OUTLIVE THE CONNECTION THAT OBSERVED IT.
+  //
+  // The first cut of that change kept the record until the next SUCCESSFUL write. A reviewer measured
+  // the consequence on a live object: after a presence timeout it forced a bind failure, the endpoint's
+  // own connectionIssue became "connection refused", and the very next connector log line still said
+  // "the transport is fine and the fault is not the network". Same object wrong, fresh object right,
+  // which isolates it to retained state rather than branch logic. These cells encode THAT
+  // reproduction, not a reconstruction of it.
+  //
+  // The first cell is the true positive and it is the one that stops the fix from over-correcting:
+  // clearing too eagerly would silently delete the diagnosis this whole change exists to add, and a
+  // suite that only proves the sentence disappears cannot tell a repair from a deletion.
+  staleAgent = new MeshAgent({ ...cfg, name: `transport-live-stale-${port}` });
+  await staleAgent.start(100);
+  await until(() => staleAgent.connected, 30_000);
+  const staleEp = staleAgent.ep as unknown as {
+    kv?: unknown;
+    servers: string;
+    publishPresence(): Promise<void>;
+    presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
+    reconnect(): Promise<void>;
+  };
+  const liveKv = staleEp.kv;
+  // Drive the REAL publishPresence catch: only the put is replaced, so the recording, the clearing and
+  // the guard under test all run as shipped.
+  staleEp.kv = { put: () => Promise.reject(new Error("timeout")) };
+  await staleEp.publishPresence().catch(() => {});
+  check(
+    "a refused presence write IS recorded while the transport is genuinely up (the fix must not delete the diagnosis)",
+    staleEp.presenceWriteFailure() !== undefined && staleAgent.transportConnected === true,
+    { record: staleEp.presenceWriteFailure(), transport: staleAgent.transportConnected },
+  );
+
+  // The reviewer's reproduction: force a bind FAILURE while the record is set. `servers` is readonly
+  // to the compiler only; overriding it here is the same door the reviewer used, and it reaches
+  // closeFailedBind, which tears the connection down WITHOUT emitting a transport:false edge.
+  staleEp.kv = liveKv;
+  staleEp.servers = "nats://127.0.0.1:1";
+  await staleEp.reconnect().catch(() => {});
+  check(
+    "a FAILED bind clears the presence-refusal record rather than carrying it onto the next connection",
+    staleEp.presenceWriteFailure() === undefined,
+    { record: staleEp.presenceWriteFailure() },
+  );
+
+  // The operator-visible half, and it must be driven through MeshAgent's OWN retry loop, because that
+  // is where the sentence is composed. An earlier version of this cell asserted on stderr after the
+  // failed reconnect alone: connectLoop was not running, no diagnosis was ever produced, and the cell
+  // passed against the unfixed source as readily as the fixed one. A cell that cannot fail is not a
+  // control, so it is driven here and its discrimination is checked in both directions.
+  const staleErr: string[] = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  (process.stderr as unknown as { write: (chunk: unknown, ...rest: unknown[]) => boolean }).write = (
+    chunk: unknown,
+    ...rest: unknown[]
+  ): boolean => {
+    staleErr.push(String(chunk));
+    return (realWrite as unknown as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
+  };
+  const staleLoop = staleAgent.start(100).catch(() => {});
+  await sleep(900);
+  (process.stderr as unknown as { write: unknown }).write = realWrite;
+  const staleLog = staleErr.join("");
+  check(
+    "the retry line names the network rather than claiming the transport is fine",
+    staleLog.includes("mesh unreachable") && !staleLog.includes("the transport is fine and the fault is not the network"),
+    { tail: staleLog.slice(-400) },
+  );
+
+  // The same defect wearing a smaller hat: the duration is computed from Date.now(), so a record kept
+  // past stop() does not merely go stale, it keeps COUNTING UP for as long as the dead object is held.
+  await staleAgent.stop();
+  await staleLoop;
+  check(
+    "a stopped session reports no presence-refusal record",
+    staleEp.presenceWriteFailure() === undefined,
+    { record: staleEp.presenceWriteFailure() },
+  );
 } finally {
+  await staleAgent?.stop().catch(() => {});
   await rebuildAgent?.stop().catch(() => {});
   await agent.stop().catch(() => {});
   broker.kill("SIGKILL");
@@ -270,7 +350,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 17;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

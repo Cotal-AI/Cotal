@@ -1184,6 +1184,12 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
     this.roster.clear();
+    // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
+    // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
+    // connection that observed it. Left behind, a later failure on a different connection inherits it
+    // and is reported as a bucket refusal — measured: a failed bind against an unreachable server
+    // still printed the refusal sentence while `connectionIssue` already said "connection refused".
+    this.clearPresenceWriteFailure();
     this.lastPresenceWatchAt = 0;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
@@ -1519,6 +1525,12 @@ export class CotalEndpoint extends EventEmitter {
     } catch {
       /* ignore */
     }
+    // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
+    // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
+    // way out. A stopped endpoint has no live basis for "this bucket is refusing writes", and the
+    // duration is computed from `Date.now()`, so a retained record does not merely go stale: it keeps
+    // COUNTING UP for as long as the dead object is held.
+    this.clearPresenceWriteFailure();
   }
 
   // ---- messaging -----------------------------------------------------------
@@ -4868,6 +4880,19 @@ export class CotalEndpoint extends EventEmitter {
       this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
       throw e;
     }
+    this.clearPresenceWriteFailure();
+  }
+
+  /** #1356: drop the presence-refusal record when the connection that OBSERVED those refusals goes
+   *  away. "This bucket is refusing writes" is a claim about a specific broker connection; once that
+   *  connection is torn down or rebuilt the claim has no remaining basis, and a later failure on a
+   *  fresh connection must establish it again from its own evidence.
+   *
+   *  Cleared at the SOURCE rather than guarded at each reader, because a guard protects one consumer
+   *  and clearing protects every consumer, including ones not yet written. Measured: without this, a
+   *  failed bind against an unreachable server still reported the presence-refusal sentence while the
+   *  endpoint's own `connectionIssue` already said "connection refused". */
+  private clearPresenceWriteFailure(): void {
     this.presenceWriteFailingSince = undefined;
     this.lastPresenceWriteError = undefined;
   }
