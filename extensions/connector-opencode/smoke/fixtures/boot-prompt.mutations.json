@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+  "suite": [
+    "extensions/connector-opencode/smoke/boot-prompt.smoke.ts"
+  ],
   "guard": "a seat spawned with an initial prompt submits it as its first turn, exactly once",
   "command": "pnpm smoke:opencode-boot-prompt",
   "completionMarker": "OPENCODE BOOT-PROMPT TEST",

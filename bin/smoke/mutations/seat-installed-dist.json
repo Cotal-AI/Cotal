@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/seat-installed-dist.smoke.ts",
+  "suite": [
+    "bin/smoke/seat-installed-dist.smoke.ts"
+  ],
   "assembles": ["packages/seat"],
   "guard": "an assembled seat source tree with no dist packs declared entrypoints that support fresh seat import, manager import, and packaged CLI help",
   "command": "pnpm --filter cotal-ai... build > /dev/null && pnpm smoke:seat-installed-dist",

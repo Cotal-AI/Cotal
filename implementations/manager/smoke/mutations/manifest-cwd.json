@@ -1,8 +1,10 @@
 {
-  "suite": "implementations/manager/smoke/manager-service-ops.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/manager-service-ops.smoke.ts"
+  ],
   "guard": "manifest cwd reaches the real child through the registered launch endpoint and relative paths resolve on the manager host",
   "command": "pnpm smoke:manager-service-ops",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 4,
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/manifest-cwd.json",
   "why": [

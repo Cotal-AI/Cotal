@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/spawn-args.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/spawn-args.smoke.ts"
+  ],
   "guard": "a cotal_spawn model pin that the manager does not record is refused, and a matching inspect is named on the spawn result",
   "command": "pnpm smoke:spawn-args",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-model-pin.json",

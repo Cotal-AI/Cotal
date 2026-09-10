@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-replied.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-replied.smoke.ts"
+  ],
   "guard": "The mesh handler's wait(replied) observer is real: the descriptor routes to the turn-terminal machinery, an unobservable handle refuses on the roster, only a succeeded terminal is a reply, two replies resolve to the latest by the yield's own stamp, the mediated timeout is armed and claimed, and the turn-goal registry is fed at submission and reseeded at adoption",
   "command": "pnpm smoke:runtime-mesh-replied",
   "completionMarker": "mesh-replied.smoke:",

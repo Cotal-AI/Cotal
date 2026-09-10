@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/interpret.smoke.ts"
+  ],
   "guard": "Two concurrent turns on one agent handle are serialized at the dispatch seam, per agent: unserialized, an agent is asked to take two turns at once; globally serialized, unrelated agents queue behind each other.",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/turn-serialize.json",

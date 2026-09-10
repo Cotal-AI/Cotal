@@ -18,6 +18,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
+import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
@@ -118,24 +119,13 @@ export async function describeEndpoint(
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setInterval> | undefined;
-  /** The status stream itself, kept because `stop()`, not `return()`, is what releases it. */
-  let statusStream: { [Symbol.asyncIterator](): AsyncIterator<{ type: string; error?: unknown }>; stop(err?: Error): void } | undefined;
-  let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
+  let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   try {
-    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING: `nc.status()` registers its
-    // listener at CALL time, so one created after `nc.publish` cannot see a violation dispatched in
-    // between, and that dropped event is indistinguishable from the silence this watch exists to
-    // eliminate.
-    //
-    // RELEASE IS `stop()`, NOT `return()`. The stream is a `QueuedIterator` parked on an internal
-    // signal await, so a queued `return()` does not run until the NEXT status event — which on a
-    // healthy connection may never come, leaking one listener per resolve. `status()` is typed as a
-    // bare `AsyncIterable`, so `stop` is reached structurally and its absence fails loud HERE rather
-    // than leaking quietly.
-    statusStream = nc.status() as typeof statusStream;
-    if (typeof statusStream?.stop !== "function")
-      throw new EpEnvelopeError("unavailable", "the NATS connection's status() stream does not expose stop(); the describe's permission watch cannot be released and would leak a listener per resolve");
-    statusIter = statusStream[Symbol.asyncIterator]();
+    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. See
+    // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
+    // from an unanswered describe.
+    denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
+      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "describe");
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
@@ -171,32 +161,7 @@ export async function describeEndpoint(
       }, DESCRIBE_RETRY_MS);
     });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: "describe" }])), deadlineMs); });
-    // A REFUSED PUBLISH MUST NOT MASQUERADE AS AN ABSENT RESPONDER. `nc.publish` is fire-and-forget:
-    // when the credential lacks the subject the broker answers the CONNECTION asynchronously and the
-    // publish returns normally, so the only observable is a deadline that reads as "that endpoint
-    // isn't there". The two need opposite responses — mint the grant vs. find the responder.
-    //
-    // Watch only for OUR subject, and do not race the whole status stream: the connection is shared,
-    // and another component's denial or an unrelated transport error must not fail this describe.
-    const denied = new Promise<never>((_, reject) => {
-      void (async () => {
-        // Driven by hand rather than `for await` so the `finally` below can CLOSE it: `nc.status()`
-        // is connection-lived, and a `for await` parks on the next event and outlives the describe,
-        // leaking one listener per resolve.
-        const it = statusIter!;
-        for (;;) {
-          const { value: s, done } = await it.next();
-          if (done === true || s === undefined) return;
-          if (s.type !== "error") continue;
-          if (s.error instanceof PermissionViolationError && s.error.subject === subject) {
-            reject(new EpEnvelopeError("permission-denied",
-              `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`));
-            return;
-          }
-        }
-      })().catch(() => { /* the status stream ending is not a describe failure; the deadline still governs */ });
-    });
-    const { body: reply, responder } = await Promise.race([got, timeout, denied]);
+    const { body: reply, responder } = await Promise.race([got, timeout, denialWatch.denied]);
     if (reply.ok !== true) {
       // A responder ANSWERED with a refusal: it is rethrown under the responder's own code (which
       // may be `unavailable`) and deliberately without the EP_UNANSWERED marker the deadline above
@@ -209,11 +174,8 @@ export async function describeEndpoint(
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
     if (retryTimer !== undefined) clearInterval(retryTimer);
-    // Release on EVERY exit, success included. `stop()` resolves the generator's signal and its
-    // `iterClosed`, which is what the transport splices the listener on; `return()` is kept only to
-    // settle the parked `next()` it wakes.
-    statusStream?.stop();
-    void statusIter?.return?.(undefined);
+    // Release on EVERY exit, success included. See {@link openPublishDenialWatch}.
+    denialWatch?.release();
   }
 }
 

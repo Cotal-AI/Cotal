@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/static-lifecycle.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/static-lifecycle.smoke.ts"
+  ],
   "guard": "a successor never retires an orphaned static lifecycle and frees its alias until delivery-admin has verified the old seat principal gone",
   "command": "pnpm smoke:static-lifecycle",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/orphan-seat-eviction.mutations.json",

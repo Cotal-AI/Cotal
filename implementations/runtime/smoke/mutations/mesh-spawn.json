@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-spawn.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-spawn.smoke.ts"
+  ],
   "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, and a cancelled loser's seat is released by the discharge",
   "command": "pnpm smoke:runtime-mesh-spawn",
   "completionMarker": "mesh-spawn.smoke:",

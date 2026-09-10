@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/env-isolate.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/env-isolate.smoke.ts"
+  ],
   "guard": "env capture is valid before withheld cells, and dump-then-exit output still reaches attach",
   "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/cmux --filter @cotal-ai/tmux --filter @cotal-ai/manager build && pnpm smoke:env-isolate",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/env-isolate.json",

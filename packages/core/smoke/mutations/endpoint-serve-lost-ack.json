@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/endpoint-serve-auth.smoke.ts",
+  "suite": [
+    "packages/core/smoke/endpoint-serve-auth.smoke.ts"
+  ],
   "guard": "a committed-then-lost-ack re-registration spec-write completes the same freeze instead of exiting 1 with a new frozen coordinate",
   "command": "pnpm smoke:ep-serve:auth",
   "completionMarker": "ENDPOINT SERVE AUTH SMOKE",

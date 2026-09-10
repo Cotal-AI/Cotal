@@ -131,5 +131,27 @@
       "cell": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
       "note": "The most travelled of the three write sites and the one no cell read."
     }
+  ],
+  "suite": [
+    "packages/lang/smoke/grammar.smoke.ts",
+    "packages/lang/smoke/keys.smoke.ts",
+    "packages/lang/smoke/journal.smoke.ts",
+    "packages/lang/smoke/fuzz-journal.smoke.ts",
+    "packages/lang/smoke/pins.smoke.ts",
+    "packages/lang/smoke/scopes.smoke.ts",
+    "packages/lang/smoke/sim.smoke.ts",
+    "packages/lang/smoke/interpret.smoke.ts",
+    "packages/lang/smoke/fuel.smoke.ts",
+    "packages/lang/smoke/dryrun.smoke.ts",
+    "packages/lang/smoke/examples.smoke.ts",
+    "packages/lang/smoke/options.smoke.ts",
+    "packages/lang/smoke/notify-fact.smoke.ts",
+    "packages/lang/smoke/migrate.smoke.ts",
+    "packages/lang/smoke/semantics.smoke.ts",
+    "packages/lang/smoke/surface.smoke.ts",
+    "packages/lang/smoke/conformance.smoke.ts",
+    "packages/lang/smoke/transform.smoke.ts",
+    "packages/lang/smoke/differential.smoke.ts",
+    "packages/lang/smoke/engine.smoke.ts"
   ]
 }

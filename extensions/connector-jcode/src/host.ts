@@ -267,6 +267,10 @@ export async function runJcodeHost(): Promise<void> {
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
+  // Startup owns the kickoff until the Harness request is invoked. Any return before that boundary
+  // is provably unsent and safe to defer; after invocation acceptance is not knowable, so it is
+  // consumed and never guessed back into the queue.
+  let pendingKickoff = bootPrompt;
   const readinessBudgetMs = readinessTurnTimeoutMs();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
@@ -435,6 +439,10 @@ export async function runJcodeHost(): Promise<void> {
   const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
   const BRIDGE_RECOVERY_RETRY_MS = 1_000;
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
+  // increment failures and is never re-armed. The error-retry timer therefore never owns kickoff
+  // liveness; idle and bridge recovery below are the reachable pre-dispatch triggers.
+  const hasDriveWork = (): boolean => pendingKickoff !== undefined || agent.pendingWake() > 0 || wakeQueued;
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
@@ -452,7 +460,7 @@ export async function runJcodeHost(): Promise<void> {
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
       if (stopping || driving || turnActive) return;
-      if (agent.pendingWake() > 0 || wakeQueued) void drive();
+      if (hasDriveWork()) void drive();
     }, delay);
     // Never hold the process open on a pending retry.
     errorRetryTimer.unref?.();
@@ -494,15 +502,18 @@ export async function runJcodeHost(): Promise<void> {
 
   const finishHostIdleTurn = async (): Promise<void> => {
     await commitSteeredIfHostIdle();
-    if (!sessionBusy() && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+    if (!sessionBusy() && !reconnecting && hasDriveWork()) void drive();
   };
 
-  const drive = async (override?: string): Promise<void> => {
+  const drive = async (): Promise<void> => {
     if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
     driving = true;
+    if (pendingKickoff !== undefined && steering)
+      writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
     await steerSettled;
     if (stopping || reconnecting || turnActive || !client || !sessionId) {
       driving = false;
+      writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");
       return;
     }
     if (surfacedIds.length) {
@@ -510,14 +521,16 @@ export async function runJcodeHost(): Promise<void> {
       surfacedIds = [];
       agent.drainInboxDeliveries(committed);
     }
-    wakeQueued = false;
+    // Kickoff excludes the automatic inbox. Preserve that deferred work even when ordinary
+    // dnd traffic contributes nothing to pendingWake(). Pull-only traffic stays excluded.
+    wakeQueued = pendingKickoff !== undefined && agent.peekInbox("automatic").length > 0;
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
     // Run turns ride the same composed injection; their ids commit as surfaced only after the
     // turn verifiably ran (two-phase — a failed or severed turn re-surfaces them, never a lie).
     const turnPeek = agent.peekPendingTurns();
-    if (override) parts.push(override);
+    if (pendingKickoff !== undefined) parts.push(pendingKickoff);
     else {
       const inbox = agent.peekInbox("automatic");
       const injection = formatInjection(inbox);
@@ -545,6 +558,9 @@ export async function runJcodeHost(): Promise<void> {
     let turnClient: JcodeClient | undefined;
     try {
       turnClient = client;
+      // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
+      // run() is invoked, a close or timeout cannot prove the model rejected it, so never retry it.
+      pendingKickoff = undefined;
       await turnClient.run(sessionId, parts.join("\n\n"), { autoApprove: true });
       // The SDK's event iterator returns normally when its socket closes. That is not a successful
       // turn: the model may never have received the injection, so preserving the inbox batch is the
@@ -592,7 +608,7 @@ export async function runJcodeHost(): Promise<void> {
           scheduleErrorRetry();
         } else {
           void agent.setStatus("idle").catch(() => {});
-          if (agent.pendingWake() > 0 || wakeQueued) void drive();
+          if (hasDriveWork()) void drive();
         }
       }
     }
@@ -703,7 +719,7 @@ export async function runJcodeHost(): Promise<void> {
       await shutdown(1);
     } finally {
       reconnecting = false;
-      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+      if (!stopping && hasDriveWork()) void drive();
     }
   };
 
@@ -919,12 +935,23 @@ export async function runJcodeHost(): Promise<void> {
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).
-    await client.sendMessage(
-      sessionId,
-      `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
-      { noReply: true },
-    );
-    if (bootPrompt) await drive(bootPrompt);
+    // The seat has already joined by the time this runs, so the notice is the last cosmetic step of
+    // a launch that has otherwise succeeded. A resumed session whose saved transcript ends mid-turn
+    // is legitimately busy, the server refuses a context_message while it is, and the no-reply path
+    // reports that refusal by throwing — which killed the seat over one undelivered sentence, and
+    // took the session's accumulated memory with it. Record the refusal and carry on: no failure to
+    // deliver this notice is worth the seat it would otherwise cost. Any cause is tolerated here,
+    // not just a busy agent, because the thrown code is `internal` for every one of them.
+    try {
+      await client.sendMessage(
+        sessionId,
+        `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
+        { noReply: true },
+      );
+    } catch (notice) {
+      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+    }
+    if (pendingKickoff !== undefined) await drive();
   } catch (error) {
     // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
     // flight. That is the shutdown completing, not a startup failure: let its teardown own the

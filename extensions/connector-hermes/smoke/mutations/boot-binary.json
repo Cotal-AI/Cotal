@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-hermes/smoke/launch-env.smoke.ts",
+  "suite": [
+    "extensions/connector-hermes/smoke/launch-env.smoke.ts"
+  ],
   "guard": "the manager's boot-resolved uv executable reaches the Hermes launcher and is the command it executes",
   "command": "pnpm smoke:hermes-launch-env",
   "progressPattern": "launch-env smoke:",

@@ -1,5 +1,8 @@
 {
-  "suite": "extensions/connector-core/smoke/attention.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/attention.smoke.ts",
+    "extensions/connector-core/smoke/focus-recall-wildcard.smoke.ts"
+  ],
   "guard": "a focus-mode ack-dropped ambient/@mention on a channel recall cannot actually replay (replay=off, or reachable only via a wildcard join) is reported in `droppedChannels`, not silently claimed as an empty-but-complete window",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:attention",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/focus-recall-honesty.json",

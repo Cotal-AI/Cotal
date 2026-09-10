@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/migrate.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/migrate.smoke.ts"
+  ],
   "guard": "L5022: the walk refuses a recorded branch the edited source no longer declares",
   "command": "pnpm smoke:lang-migrate",
   "completionMarker": "migrate.smoke:",

@@ -1,5 +1,9 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+    "implementations/runtime/smoke/mesh-wait.smoke.ts",
+    "implementations/runtime/smoke/mesh-checkpoint.smoke.ts"
+  ],
   "guard": "a step that resumes a durable pause attaches to the spec already recorded for it — the deadline AND the holder — instead of re-minting from whatever clock and identity it happens to be running under",
   "command": "pnpm smoke:runtime-mesh-sleep",
   "completionMarker": "mesh-sleep.smoke:",

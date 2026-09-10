@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/subject-frontier.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/subject-frontier.smoke.ts"
+  ],
   "guard": "the per-principal subject record refuses every state its own writer cannot produce, and never conflates a record that is MISSING with one that reads zero; and the record on disk is the frontier, so a view that has gone stale under a second writer is refused rather than writing its own number over a later one",
   "command": "pnpm smoke:subject-frontier",
   "completionMarker": "subject-frontier smoke:",

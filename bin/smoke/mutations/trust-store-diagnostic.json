@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/space-auth-store.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/space-auth-store.smoke.ts"
+  ],
   "guard": "split trust-record failures use one accurate non-material diagnostic and never echo hostile stored bytes",
   "command": "pnpm smoke:space-auth-store",
   "completionMarker": "SPACE-AUTH-STORE SMOKE",

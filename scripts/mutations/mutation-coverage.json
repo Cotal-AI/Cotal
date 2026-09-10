@@ -1,4 +1,7 @@
 {
+  "suite": [
+    "scripts/mutation-coverage.selftest.mjs"
+  ],
   "grades": "tool",
   "guard": "mutation coverage accepts only direct execution witnesses that reach the mutated file without a package resolver",
   "command": "node scripts/mutation-coverage.selftest.mjs",

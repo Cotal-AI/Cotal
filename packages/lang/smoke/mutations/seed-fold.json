@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/journal.smoke.ts"
+  ],
   "guard": "folding a seeded APPEND LOG into the journal's ordered view, not only into its keyed one",
   "command": "pnpm smoke:lang-journal",
   "completionMarker": "ok a fresh key misses",

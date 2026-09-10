@@ -1,5 +1,23 @@
 # @cotal-ai/runtime
 
+## 0.48.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.48.2
+- @cotal-ai/workspace@0.48.2
+- @cotal-ai/lang@0.48.2
+
+## 0.48.1
+
+### Patch Changes
+
+- 9a8a2a6: Inspect version-2 workflow journals on the compiled engine when planning forks and migrations. Preserve recorded pins, stop before new effects, and retain divergence and branch-refusal details across the worker boundary. Fork cuts remain fixed through catch and finally blocks, and inspection leaves pending broker effects untouched.
+- Updated dependencies [9a8a2a6]
+  - @cotal-ai/lang@0.48.1
+  - @cotal-ai/core@0.48.1
+  - @cotal-ai/workspace@0.48.1
+
 ## 0.48.0
 
 ### Minor Changes

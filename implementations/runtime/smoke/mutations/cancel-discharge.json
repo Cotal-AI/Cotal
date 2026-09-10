@@ -1,5 +1,8 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-wait.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-wait.smoke.ts",
+    "implementations/runtime/smoke/mesh-sleep.smoke.ts"
+  ],
   "guard": "a branch that loses a race stops parking NOW and its recorded cancellation is DISCHARGED — the pause claimed, the consumer deleted, the class carried across the engine bridge, and `cancel.issued` flipped true only after the world was swept",
   "command": "pnpm smoke:runtime-mesh-wait",
   "completionMarker": "mesh-wait.smoke:",

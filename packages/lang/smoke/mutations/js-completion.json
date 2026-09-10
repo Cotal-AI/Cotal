@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/semantics.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/semantics.smoke.ts"
+  ],
   "guard": "`switch` selects as JavaScript selects (default only when nothing matched) and `finally` completions override, on both runners. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-semantics",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/js-completion.json",

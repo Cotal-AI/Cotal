@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke.ts",
+  "suite": [
+    "packages/core/smoke.ts"
+  ],
   "guard": "the repository's bare core smoke owns its broker and proves lifecycle-scoped open-mode delivery rather than borrowing ambient state",
   "command": "pnpm smoke",
   "completionMarker": "SMOKE ",

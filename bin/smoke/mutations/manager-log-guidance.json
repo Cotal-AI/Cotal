@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/manager-log-guidance.smoke.ts",
+  "suite": [
+    "bin/smoke/manager-log-guidance.smoke.ts"
+  ],
   "guard": "operator manager-log guidance is derived from the same writer-owned path helper at all three shipped messages",
   "command": "pnpm smoke:manager-log-guidance",
   "completionMarker": "MANAGER LOG GUIDANCE:",

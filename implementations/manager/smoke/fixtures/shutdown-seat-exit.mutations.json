@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/start-model-preflight.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/start-model-preflight.smoke.ts"
+  ],
   "guard": "normal Manager.stop does not release manager authority until every managed AgentHandle has authoritatively exited",
   "command": "pnpm smoke:start-model",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/shutdown-seat-exit.mutations.json",

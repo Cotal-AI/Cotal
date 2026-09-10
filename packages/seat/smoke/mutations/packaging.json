@@ -1,5 +1,7 @@
 {
-  "suite": "packages/seat/smoke/platform.smoke.ts",
+  "suite": [
+    "packages/seat/smoke/platform.smoke.ts"
+  ],
   "guard": "publishable @cotal-ai/seat trees carry native linux-x64 and linux-arm64 SO_PEERCRED helpers, load by process.arch, and refuse an unsupported arch",
   "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:seat-platform",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/packaging.json",

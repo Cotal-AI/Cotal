@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+  ],
   "guard": "Jcode retries a first readiness turn that used its pre-MCP tool snapshot exactly once, still refuses a never-callable bridge without presence, opens the foreground TUI before readiness completes, records that bootstrap orientation predates an actual completed mesh join, bounds the readiness proof so a long turn cannot stay invisible, names that pre-join gate in the connector log, and names the timeout outcome separately from a hang, a missing prompt, or a provider refusal",
   "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:jcode-host",
   "minTicks": 8,

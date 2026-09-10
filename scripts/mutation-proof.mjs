@@ -52,6 +52,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 /** Lines of transcript to echo from each end. Enough to carry a stack or an early exit, short
@@ -469,6 +470,11 @@ if (a.config) {
   const cfg = JSON.parse(readFileSync(resolve(cwd, a.config), "utf8"));
   const unknownCfg = Object.keys(cfg).filter((k) => !CONFIG_KEYS.has(k));
   if (unknownCfg.length) usage(`config has unknown top-level key(s): ${unknownCfg.join(", ")}`);
+  try {
+    parseSuiteSources(cwd, a.config, cfg.suite);
+  } catch (error) {
+    usage(error.message);
+  }
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
   opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {

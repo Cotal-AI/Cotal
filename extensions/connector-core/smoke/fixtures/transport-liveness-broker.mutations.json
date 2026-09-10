@@ -1,8 +1,10 @@
 {
-  "suite": "extensions/connector-core/smoke/transport-liveness-broker.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/transport-liveness-broker.smoke.ts"
+  ],
   "guard": "real NATS transport edges reach CotalEndpoint and MeshAgent without flapping readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness:broker",
-  "progressPattern": "  \u2713 ",
+  "progressPattern": "  ✓ ",
   "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness-broker.mutations.json",
   "why": [

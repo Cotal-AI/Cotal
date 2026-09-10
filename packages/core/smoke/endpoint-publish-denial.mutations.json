@@ -1,0 +1,43 @@
+{
+  "suite": [
+    "packages/core/smoke/endpoint-publish-denial.smoke.ts"
+  ],
+  "guard": "a broker-refused instance-rail invoke is permission-denied naming the subject, not an unanswered deadline, and the status watch is released",
+  "command": "pnpm smoke:ep-publish-denial:auth",
+  "completionMarker": "ENDPOINT PUBLISH DENIAL SMOKE",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/endpoint-publish-denial.mutations.json",
+  "mutations": [
+    {
+      "name": "epCall never races the publish-denial watch, so a refused publish waits out the budget",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    const msg = await Promise.race([outcome, timeout, denialWatch.denied]);",
+      "replace": "    denialWatch.denied.catch(() => {});\n    const msg = await Promise.race([outcome, timeout]);",
+      "expectRed": "invoke is permission-denied, NOT a deadline",
+      "cell": "invoke is permission-denied, NOT a deadline"
+    },
+    {
+      "name": "the watch never matches the refused subject, so the call waits out the budget",
+      "file": "packages/core/src/endpoint-publish-denial.ts",
+      "find": "        if (s.error instanceof PermissionViolationError && s.error.subject === subject) {",
+      "replace": "        if (s.error instanceof PermissionViolationError && s.error.subject === \"\") {",
+      "expectRed": "describe is permission-denied, not a deadline",
+      "cell": "describe is permission-denied, not a deadline"
+    },
+    {
+      "name": "the refusal message omits the refused subject, so the grant to mint is unreadable",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to \"${req.subject}\"${route.mode === \"inst\" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : \"\"}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), \"call\");",
+      "replace": "      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), \"call\");",
+      "expectRed": "invoke names the refused instance-rail subject",
+      "cell": "invoke names the refused instance-rail subject"
+    },
+    {
+      "name": "the status watch is never released, leaking one listener per call",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    denialWatch?.release();",
+      "replace": "    void denialWatch;",
+      "expectRed": "12 denied invokes leave the listener count where they found it",
+      "cell": "12 denied invokes leave the listener count where they found it"
+    }
+  ]
+}

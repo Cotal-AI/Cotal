@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/setup-connectors.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/setup-connectors.smoke.ts"
+  ],
   "guard": "guided setup derives its connector membership from the live registry and installed manifest, and derives readiness and setup hints from connector declarations rather than connector names",
   "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
   "completionMarker": "SUITE COMPLETE",

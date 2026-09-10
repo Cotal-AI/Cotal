@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/connection-status.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/connection-status.smoke.ts"
+  ],
   "guard": "cotal_connection_status reports MeshAgent's live state, and its five states stay distinct",
   "command": "pnpm smoke:connection-status",
   "progressPattern": "  ✓ ",

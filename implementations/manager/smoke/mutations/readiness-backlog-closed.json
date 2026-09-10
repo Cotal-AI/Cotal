@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/start-model-preflight.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/start-model-preflight.smoke.ts"
+  ],
   "guard": "awaitReadiness still reports a launch failure when backlog throws because waitForExit already closed the attach stream",
   "command": "pnpm smoke:start-model",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/readiness-backlog-closed.json",

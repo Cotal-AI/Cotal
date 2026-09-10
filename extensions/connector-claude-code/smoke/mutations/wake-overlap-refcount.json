@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/wake-path.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/wake-path.smoke.ts"
+  ],
   "guard": "overlapping hook frames count ownership of the same surfaced ids so one delivery verdict cannot release another frame's protection",
   "command": "pnpm --filter @cotal-ai/connector-claude-code... build && pnpm smoke:claude-wake",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/wake-overlap-refcount.json",

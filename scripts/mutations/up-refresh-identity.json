@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/up-refresh-identity-live.smoke.ts"
+  ],
   "grades": "suite",
   "guard": "an explicit cotal up refresh chooses the requested same-root space record rather than the first same-server registry record",
   "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",

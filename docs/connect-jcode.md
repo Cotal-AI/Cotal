@@ -169,6 +169,17 @@ host then waits for the mesh connection and presence bind to complete before it 
 notice that the bootstrap orientation predates the join and that a new orientation is live
 context. During a broker outage, it stays waiting and sends no connected notice.
 
+A refused post-join notice is logged without ending the joined session. The startup prompt stays
+pending while the native session is busy or its bridge reconnects. Once the host invokes the request,
+it consumes that prompt and does not retry it after an ambiguous error or close. This prevents a
+second submission; it cannot prove whether the first request executed.
+
+The startup prompt excludes the automatic inbox. Messages buffered before it run in the following
+turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic remains available only
+through an explicit inbox pull. The connector log names a startup prompt waiting on in-flight
+steering and a turn deferred because native state changed during that wait.
+
+
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
 the readiness proof passes. An inbound peer message then wakes a Harness API turn. A directed message

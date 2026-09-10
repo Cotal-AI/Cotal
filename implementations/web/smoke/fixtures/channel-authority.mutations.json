@@ -8,5 +8,8 @@
       "replace": "        apply: (page) => { activityPage = page; } },",
       "expectRed": "graph.js activity source: exactly one apply this harness can run"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/channel-authority.smoke.ts"
   ]
 }

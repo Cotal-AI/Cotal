@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/fuel.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/fuel.smoke.ts"
+  ],
   "guard": "A race arm's pure work is cut only when the arm can no longer win: the winner is a function of the recorded clocks and declaration order, never of the scheduler or `yieldEvery`. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-fuel",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-cut.json",

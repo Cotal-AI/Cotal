@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/persona-file.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/persona-file.smoke.ts"
+  ],
   "guard": "Claude carries a persona only through an owner-private file and never puts its body in argv",
   "command": "pnpm smoke:claude-persona-file",
   "completionMarker": "CLAUDE PERSONA FILE:",

@@ -1,6 +1,6 @@
 {
   "command": "pnpm --filter @cotal-ai/connector-jcode build && pnpm smoke:jcode-host",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 12,
   "mutations": [
     {
@@ -27,5 +27,8 @@
       "expectRed": "downstream effort-refusal text never reaches stderr",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     }
+  ],
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
   ]
 }

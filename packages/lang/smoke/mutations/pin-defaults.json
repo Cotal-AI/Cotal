@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/pins.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/pins.smoke.ts"
+  ],
   "guard": "The three documented limits are one number each, published twice: in PIN_DEFAULTS and in the pins table of spec/cotal-lang.md. Both cells anchor on the same literals, so a default may only change by an edit that says so in every place it is published.",
   "command": "pnpm smoke:lang-pins",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/pin-defaults.json",

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/backup-inventory.smoke.ts",
+  "suite": [
+    "packages/core/smoke/backup-inventory.smoke.ts"
+  ],
   "guard": "The gated backup inventory check compares the inventory to BROKER TRUTH (its own stream list), not to the inventory's output. A family removed from either side must redden the check by name (#643).",
   "command": "pnpm smoke:backup-inventory",
   "completionMarker": "backup inventory vs broker truth:",

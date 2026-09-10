@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "the synthetic status-walk child installs its signal handlers before the parent sends SIGUSR1 or SIGUSR2",
   "command": "pnpm smoke:user-spawn:live",
   "completionMarker": "USER-SPAWN SMOKE",

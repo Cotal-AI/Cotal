@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/no-implicit-general.smoke.ts",
+  "suite": [
+    "packages/core/smoke/no-implicit-general.smoke.ts"
+  ],
   "guard": "an omitted read set means NO channels, at the loader, at the mint, and at the send",
   "command": "pnpm smoke:no-implicit-general",
   "progressPattern": "  ✓ ",

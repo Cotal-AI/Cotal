@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/scopes.smoke.ts"
+  ],
   "guard": "The LIVE winner of a race is the arm with the least recorded branch clock among the settled arms, never the arm declared first or the arm that woke first. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-scopes",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-live-pick.json",

@@ -84,7 +84,7 @@ const runTool = (config) =>
 // Refused before this change and refused after it — the safety the `assembles` witness must not
 // weaken, pinned first so the cells below cannot pass by widening the rule.
 writeConfig("trap.json", {
-  suite: "packages/seat/smoke/local-by-name.smoke.ts", command: TALLY,
+  suite: ["packages/seat/smoke/local-by-name.smoke.ts"], command: TALLY,
   mutations: [mutation("packages/seat/src/impl.ts")],
 });
 let r = runTool("trap.json");
@@ -96,7 +96,7 @@ check(
 
 // 2. THE WITNESS: the assembling suite is gradable when the config declares the tree it copies.
 writeConfig("assembled.json", {
-  suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: ["packages/seat"],
+  suite: ["bin/smoke/assembling.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/seat/package.json")],
 });
 r = runTool("assembled.json");
@@ -108,7 +108,7 @@ check(
 
 // 3. DIRECT SUITE: the command executes the mutation target itself.
 writeConfig("direct.json", {
-  suite: "bin/smoke/direct.smoke.ts", command: TALLY,
+  suite: ["bin/smoke/direct.smoke.ts"], command: TALLY,
   mutations: [mutation("bin/smoke/direct.smoke.ts")],
 });
 r = runTool("direct.json");
@@ -120,7 +120,7 @@ check(
 
 // 4. DIRECT SCRIPT: the suite launches the exact repo-relative mutation target.
 writeConfig("direct-script.json", {
-  suite: "bin/smoke/direct-script.smoke.ts", command: TALLY,
+  suite: ["bin/smoke/direct-script.smoke.ts"], command: TALLY,
   mutations: [mutation("scripts/direct.mjs")],
 });
 r = runTool("direct-script.json");
@@ -132,31 +132,31 @@ check(
 
 // 5. A QUOTED PATH IS NOT AN INVOCATION: prose or a fixture string cannot license a mutation.
 writeConfig("mentions-script.json", {
-  suite: "bin/smoke/mentions-script.smoke.ts", command: TALLY,
+  suite: ["bin/smoke/mentions-script.smoke.ts"], command: TALLY,
   mutations: [mutation("scripts/direct.mjs")],
 });
 r = runTool("mentions-script.json");
 check(
   "a quoted script path without an invocation is refused",
-  r.status !== 0 && /neither imports by source path nor reaches through/.test(r.stderr),
+  r.status !== 0 && /imports by source path or reaches through/.test(r.stderr),
   r.stderr.slice(-300),
 );
 
 // 6. THE DECLARATION IS NOT THE WITNESS: same declaration, suite that never references the tree.
 writeConfig("hollow.json", {
-  suite: "bin/smoke/by-name.smoke.ts", command: TALLY, assembles: ["packages/seat"],
+  suite: ["bin/smoke/by-name.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/seat/package.json")],
 });
 r = runTool("hollow.json");
 check(
   "a declaration the suite source cannot back is refused",
-  r.status !== 0 && /neither imports by source path nor reaches through/.test(r.stderr),
+  r.status !== 0 && /imports by source path or reaches through/.test(r.stderr),
   r.stderr.slice(-300),
 );
 
 // 7. CONTAINMENT: a declared root cannot smuggle a file it does not contain.
 writeConfig("foreign.json", {
-  suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: ["packages/seat"],
+  suite: ["bin/smoke/assembling.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
   mutations: [mutation("packages/other/impl.ts")],
 });
 r = runTool("foreign.json");
@@ -168,7 +168,7 @@ check(
 
 // 8. SHAPE: `assembles` is an array of paths, and anything else is refused rather than guessed at.
 writeConfig("malformed.json", {
-  suite: "bin/smoke/assembling.smoke.ts", command: TALLY, assembles: "packages/seat",
+  suite: ["bin/smoke/assembling.smoke.ts"], command: TALLY, assembles: "packages/seat",
   mutations: [mutation("packages/seat/package.json")],
 });
 r = runTool("malformed.json");

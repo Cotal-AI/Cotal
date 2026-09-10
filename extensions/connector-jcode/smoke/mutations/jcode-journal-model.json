@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+  ],
   "guard": "the session journal records the requested model pin after setModel, not the harness default",
   "command": "pnpm smoke:jcode-host",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-journal-model.json",
