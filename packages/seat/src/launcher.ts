@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
+import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
 import { unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
@@ -22,8 +22,6 @@ export interface LaunchSeatOpts {
    *  `root`, so it must carry the seat-id shape and must not already hold a record. */
   id?: string;
 }
-
-const SEAT_ID = /^[0-9a-f]{32}$/;
 
 function packageRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
@@ -50,9 +48,7 @@ function pidLive(pid: number | undefined): boolean {
 export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
   if (process.platform !== "linux") throw unsupportedTransport();
   mkdirSync(opts.root, { recursive: true, mode: 0o700 });
-  const id = opts.id ?? seatId();
-  if (!SEAT_ID.test(id))
-    throw new Error(`seat custody id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under ${opts.root}`);
+  const id = assertSeatId(opts.id ?? seatId());
   const token = capabilityToken();
   const socket = socketPath(opts.root, id);
   const recPath = recordPath(opts.root, id);

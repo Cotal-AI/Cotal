@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, reapSeat, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, reapSeat, seatId, SeatClient } from "../src/index.js";
 import { EXIT_LINGER_MAX_MS, EXIT_LINGER_MS } from "../src/protocol.js";
 
 if (process.platform !== "linux") {
@@ -425,6 +425,27 @@ await h.waitForExit();
     check("the child's whole process group is gone", after.length === 0, after);
     check("the custody record is forgotten", !existsSync(join(root, rec.id)), rec.id);
     check("a second reap of the same id reports absent", (await reapSeat(root, rec.id)).outcome === "absent");
+  }
+
+  {
+    // A reference reaches reapSeat and loadSeat from a durable slot row, so the id is checked
+    // against the shape seatId mints before it is joined to the custody root. An id that walks out
+    // of the root is refused rather than resolved: reporting it as absent would call an
+    // unaddressable seat "already forgotten".
+    const traversal = "../../../etc";
+    let refusedReap = "";
+    try { await reapSeat(root, traversal); } catch (e) { refusedReap = (e as Error).message; }
+    check("a forged custody id that walks out of the root is refused, not resolved", /is not 32 lowercase hex characters/.test(refusedReap), refusedReap);
+    let refusedLaunch = "";
+    try { launchSeat({ root, name: "traversal", spec: { command: process.execPath, args: ["-e", ""], env: { PATH: process.env.PATH ?? "" } }, cwd: process.cwd(), id: traversal }); } catch (e) { refusedLaunch = (e as Error).message; }
+    check("a launch under a forged custody id is refused before any process starts", /is not 32 lowercase hex characters/.test(refusedLaunch), refusedLaunch);
+    const reserved = seatId();
+    const rec = launchSeat({ root, name: "reserved", spec: { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }, cwd: process.cwd(), id: reserved });
+    handles.push(adoptSeatSync(rec));
+    check("a launch under a reserved id custodies the seat under exactly that id", rec.id === reserved && existsSync(join(root, reserved, "record.json")), { reserved, got: rec.id });
+    let reused = "";
+    try { launchSeat({ root, name: "reserved", spec: { command: process.execPath, args: ["-e", ""], env: { PATH: process.env.PATH ?? "" } }, cwd: process.cwd(), id: reserved }); } catch (e) { reused = (e as Error).message; }
+    check("a custody id already holding a record refuses a second launch", /already holds a custody record/.test(reused), reused);
   }
 
   {
