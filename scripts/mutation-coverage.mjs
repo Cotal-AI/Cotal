@@ -304,7 +304,13 @@ for (const path of configs) {
   const summary = parseSummary(cfg, output);
   if (!summary) {
     unparsed++;
-    console.error(`UNPARSED ${path}: command completed but printed no trustworthy executed-cell total`);
+    const progressDeclared = typeof cfg.progressPattern === "string"
+      && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0;
+    const markerMissing = cfg.completionMarker === undefined;
+    const why = progressDeclared && markerMissing
+      ? "command completed but printed no trustworthy executed-cell total; the progress path could not confirm completion because completionMarker was not declared"
+      : "command completed but printed no trustworthy executed-cell total";
+    console.error(`UNPARSED ${path}: ${why}`);
     continue;
   }
   if (summary.failures !== 0) {

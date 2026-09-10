@@ -185,6 +185,15 @@ try {
   result = run("unfinished-progress");
   check("progress without completion is unparsed", result.status !== 0 && /UNPARSED unfinished-progress/.test(result.stderr), report(result));
 
+  config("progress-no-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-no-marker");
+  check(
+    "progress without a declared completionMarker names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-no-marker/.test(result.stderr)
+      && /the progress path could not confirm completion because completionMarker was not declared/.test(result.stderr),
+    report(result),
+  );
+
   for (const [name, text] of [
     ["early-ok", "SETUP OK\\n  ✓ one\\n  ✓ two\\nWORK REMAINS"],
     ["tick-passed", "  ✓ setup PASSED\\n  ✓ second\\nWORK REMAINS"],
