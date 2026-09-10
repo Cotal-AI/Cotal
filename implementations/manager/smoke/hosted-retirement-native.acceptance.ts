@@ -26,17 +26,17 @@ if (subcommand === "") {
       const result = spawnSync("openssl", args, { stdio: "pipe", encoding: "utf8" });
       if (result.status !== 0) throw new Error(`openssl fixture setup failed: ${result.stderr || result.stdout}`);
     };
-    openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
-      "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-native-retirement-ca",
-      "-addext", "basicConstraints=critical,CA:TRUE"]);
-    openssl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"),
-      "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost"]);
-    writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
-    openssl(["x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"),
-      "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"),
-      "-days", "2", "-extfile", join(pki, "leaf.ext")]);
     let childStatus = 1;
     try {
+      openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
+        "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-native-retirement-ca",
+        "-addext", "basicConstraints=critical,CA:TRUE"]);
+      openssl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"),
+        "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost"]);
+      writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
+      openssl(["x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"),
+        "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"),
+        "-days", "2", "-extfile", join(pki, "leaf.ext")]);
       const child = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...process.argv.slice(2)], {
         stdio: "inherit",
         env: {
