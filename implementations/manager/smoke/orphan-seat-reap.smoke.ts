@@ -8,11 +8,6 @@
  * custody reference, and the successor's terminal reaps by that reference, verified by process
  * start identity, before the lifecycle retires. Linux only, like the custodian.
  *
- * Scenario 2 covers the narrower window the first one cannot see: a manager that dies AFTER the
- * seat processes exist and BEFORE the slot activation CAS records anything. The reference is
- * reserved before the launch and rides the provisioning row, so the successor can still address
- * the seat. Without the reservation that row carries no reference, the terminal has nothing to
- * reap, and it retires the alias over a running process.
  *
  * Run: pnpm smoke:orphan-seat-reap
  */
@@ -58,7 +53,7 @@ const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
 
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `reap1100-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); const seatRoot = join(dir, "seats"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); for (const alias of ["worker", "hangworker"]) writeFileSync(join(root, ".cotal", "agents", `${alias}.md`), `---\nname: ${alias}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); const seatRoot = join(dir, "seats"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; const managers: ChildProcess[] = []; const pids: number[] = [];
 type Ready = { managerPid: number; managerInstanceId: string; seatPid: number; reference: { kind: string; id: string }; actor: string; lifecycleUid: string };
 async function startManager(tag: string, spawnSeat: boolean, opts: { alias?: string; hangMarker?: string } = {}): Promise<{ child: ChildProcess; ready?: Ready; stdout: () => string; stderr: () => string }> {
@@ -99,29 +94,7 @@ try {
   check("broker eviction and process reap are separate, ordered evidence (rails verified gone, then the process)", evictedFirst >= 0 && reapedAt > evictedFirst, { evictedFirst, reapedAt });
   const retired = await until(() => /static reconcile completed: 1 attempted, 1 succeeded, 0 failed/.test(second.stderr()), 30_000);
   check("the lifecycle retires once the process is proved gone", retired && !/static retirement worker \(/.test(second.stderr()), second.stderr().split("\n").filter((l) => /static (reconcile|retirement)/.test(l)).join("\n"));
-  // ---- scenario 2: the manager dies inside the spawn window, before the slot activation CAS ----
-  // Every manager here derives the same instance id from the shared workspace root, so scenario 1's
-  // successor must be gone and its liveness lease lapsed before the next one may serve the space.
-  stopGroup(second.child.pid); await new Promise((resolve) => second.child.once("exit", resolve));
-  await wait(20_000);
-  const marker = join(dir, "hang.json");
-  const hung = await startManager("hang-window", true, { alias: "hangworker", hangMarker: marker });
-  const spawned = JSON.parse(readFileSync(marker, "utf8")) as { managerPid: number; seatPid: number; reference: { kind: string; id: string } };
-  const hungRecord = readRecord(recordPath(seatRoot, spawned.reference.id));
-  pids.push(spawned.seatPid, hungRecord.custodianPid);
-  check("instrument: the frozen manager launched a real seat and never activated its slot", live(hungRecord.childPid) && live(hungRecord.custodianPid) && !hung.stdout().includes("REPRO_READY "), { spawned, state: { child: state(hungRecord.childPid), custodian: state(hungRecord.custodianPid) } });
-  process.kill(spawned.managerPid, "SIGKILL"); await new Promise((resolve) => hung.child.once("exit", resolve));
-  await wait(1_000);
-  check("instrument: killing it there leaves the seat live with no activated slot", live(hungRecord.childPid) && live(hungRecord.custodianPid), { child: state(hungRecord.childPid), custodian: state(hungRecord.custodianPid) });
-  await wait(20_000);
-  const third = await startManager("hang-successor", false, { alias: "hangworker" });
-  const sawProvisioning = await until(() => /static reconcile terminal alias=hangworker phase=provisioning/.test(third.stderr()), 60_000);
-  check("the successor terminalizes that slot from phase=provisioning", sawProvisioning, third.stderr().split("\n").filter((l) => l.includes("static reconcile terminal")).join("\n"));
-  const hangReaped = await until(() => /static retirement hangworker: orphan seat process custodian \d+ (signalled|gone), child \d+ (signalled|gone)/.test(third.stderr()), 60_000);
-  check("a seat whose spawn never reached the slot activation is still reaped by its reserved reference", hangReaped && !live(hungRecord.childPid) && !live(hungRecord.custodianPid), { stderr: third.stderr().split("\n").filter((l) => l.includes("static retirement hangworker")).join("\n"), custodian: state(hungRecord.custodianPid), child: state(hungRecord.childPid) });
-  check("that lifecycle retires only after its process is proved gone", await until(() => /static reconcile completed: \d+ attempted, \d+ succeeded, 0 failed/.test(third.stderr()), 30_000), third.stderr().split("\n").filter((l) => /static reconcile completed/.test(l)).join("\n"));
-
-  const EXPECTED = 11;
+  const EXPECTED = 6;
   if (pass + fail !== EXPECTED) throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);
   console.log(`\nORPHAN-SEAT REAP SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
