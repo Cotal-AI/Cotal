@@ -11,6 +11,12 @@
  * Run: COTAL_OWNER_NATIVE_ACCEPTANCE=1 tsx implementations/manager/smoke/hosted-retirement-native.acceptance.ts
  */
 
+function ownedChildEnv(owned: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return { ...env, ...owned };
+}
+
 const subcommand = process.argv[2] ?? "";
 if (subcommand === "") {
   if (process.env.COTAL_OWNER_NATIVE_ACCEPTANCE !== "1")
@@ -39,13 +45,13 @@ if (subcommand === "") {
         "-days", "2", "-extfile", join(pki, "leaf.ext")]);
       const child = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...process.argv.slice(2)], {
         stdio: "inherit",
-        env: {
-          ...process.env,
+        env: ownedChildEnv({
+          COTAL_OWNER_NATIVE_ACCEPTANCE: "1",
           COTAL_NATIVE_HTTPS_CA: join(pki, "ca.pem"),
           COTAL_NATIVE_HTTPS_CERT: join(pki, "leaf.pem"),
           COTAL_NATIVE_HTTPS_KEY: join(pki, "leaf.key"),
           NODE_EXTRA_CA_CERTS: join(pki, "ca.pem"),
-        },
+        }),
       });
       childStatus = child.status ?? 1;
     } finally {
@@ -312,7 +318,7 @@ class ChildHandle implements AgentHandle {
 const childRuntime: Runtime = {
   kind: "native-acceptance",
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
-    const env = { ...process.env, ...spec.env };
+    const env = ownedChildEnv(spec.env);
     // This acceptance owns a private CA and gives its public certificate to the child explicitly.
     // Never let a caller environment turn the proof into an insecure NODE_TLS_REJECT_UNAUTHORIZED=0
     // connection while the fixture still reports a successful remote bearer exchange.
@@ -394,7 +400,7 @@ function trackChild(child: ChildProcess): ChildProcess {
 }
 
 function probeHttpsFromFreshNode(url: string, caFile?: string): Promise<{ code: number | null; diagnostic: string }> {
-  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_NATIVE_TLS_PROBE_URL: url };
+  const env = ownedChildEnv({ COTAL_NATIVE_TLS_PROBE_URL: url });
   delete env.NODE_EXTRA_CA_CERTS;
   delete env.NODE_TLS_REJECT_UNAUTHORIZED;
   if (caFile) env.NODE_EXTRA_CA_CERTS = caFile;
@@ -605,7 +611,7 @@ try {
   deliverySpawnError = undefined;
   delivery = trackChild(spawn(process.execPath, [...process.execArgv, self, "delivery"], {
     cwd: hostRoot,
-    env: { ...process.env, COTAL_NATIVE_HOST_ROOT: hostRoot, COTAL_SPACE: space, COTAL_SERVERS: server },
+    env: ownedChildEnv({ COTAL_NATIVE_HOST_ROOT: hostRoot, COTAL_SPACE: space, COTAL_SERVERS: server }),
     stdio: ["ignore", "pipe", "pipe"],
   }));
   delivery.stdout?.on("data", appendDeliveryDiagnostic);
