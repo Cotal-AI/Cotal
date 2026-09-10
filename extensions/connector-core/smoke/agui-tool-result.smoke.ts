@@ -872,9 +872,50 @@ try {
       verdict([envelope({})]) === "clean",
       verdict([envelope({})]),
     );
+
+    // DIST PARITY. connector-core's package exports resolve to `dist/`, but every cell above reads
+    // `../src/agui.js`, so a stale or poisoned `dist` is invisible to all of them. `mutation-proof`
+    // restores the source and rebuilds only when the mutation carries `afterRestore`; T-ENVELOPE
+    // shipped without one and left `try { void part; }` in `dist/agui.js`, where this panel's own
+    // freshness check - a grep for the real call - then read the mutant as fresh code.
+    //
+    // Compare behaviour rather than text, so the cell cannot be fooled by whether the compiler
+    // keeps comments. During a mutation run both copies are built from the mutant and agree; a
+    // restore that skips the rebuild is the only state that disagrees. This reaches any mutation to
+    // the classifier or the forbidden set, which is four of the five. T-RETRY mutates `attempt()`
+    // and is out of its range; it carries its own `afterRestore`.
+    {
+      const built = (await import("../dist/agui.js")) as {
+        frozenBodyEgressVerdict: (body: readonly unknown[]) => FrozenBodyEgressVerdict;
+      };
+      const answer = (fn: (body: readonly unknown[]) => FrozenBodyEgressVerdict, body: readonly unknown[]): string => {
+        try {
+          return fn(body);
+        } catch (e) {
+          return `THREW: ${(e as Error).message}`;
+        }
+      };
+      const corpus: ReadonlyArray<readonly [string, readonly unknown[]]> = [
+        ["well-formed", [envelope({})]],
+        ["TOOL_CALL_RESULT", [envelope({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] })]],
+        ["TOOL_CALL_ARGS", [envelope({ events: [{ type: "TOOL_CALL_ARGS", delta: "x" }] })]],
+        ["sibling text", [envelope({ events: goodEvents })]],
+        ["broken envelope (seq -1)", [envelope({ seq: -1 })]],
+        ["empty event list", [envelope({ events: [] })]],
+        ["unknown event type", [envelope({ events: [{ type: "WEIRD" }] })]],
+      ];
+      const drift = corpus
+        .map(([name, body]) => [name, answer(built.frozenBodyEgressVerdict, body), answer(frozenBodyEgressVerdict, body)] as const)
+        .filter(([, d, s]) => d !== s);
+      c(
+        "dist:the built connector-core dist agrees with src on every fence verdict",
+        drift.length === 0,
+        drift.map(([name, d, s]) => `${name}: dist=${d} src=${s}`),
+      );
+    }
   }
 
-  const EXPECTED = 48;
+  const EXPECTED = 49;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
