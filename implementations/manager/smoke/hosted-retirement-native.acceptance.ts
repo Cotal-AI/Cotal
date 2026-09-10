@@ -918,7 +918,7 @@ try {
 
   console.log("\ncell 3/7: retained validation rejects stale, foreign-owner, and revoked authority");
   const validationUid = mintLifecycleUid();
-  const validationEntry = await provisionRetained("validation-negative", validationUid);
+  const validationEntry = await provisionRetained("validation_negative", validationUid);
   if (validationEntry.identity.mode !== "user") throw new Error("native validation entry is not user mode");
   let validationActorToken = readFileSync(validationEntry.identity.actorToken.path, "utf8");
   let validationSentinel = readFileSync(validationEntry.identity.sentinelCredential.path, "utf8");
@@ -934,29 +934,29 @@ try {
   };
   check("stale registration proof is refused through registry-pinned HTTPS",
     await refuses(
-      () => validateRemote({ owner, actor: "validation-negative", lifecycleUid: validationUid }, `sha256:${"f".repeat(64)}`),
+      () => validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid }, `sha256:${"f".repeat(64)}`),
       /current host registration/,
     ));
   const wrongOwner = `u_${"b".repeat(26)}`;
   check("wrong-owner retained validation is refused through registry-pinned HTTPS",
     await refuses(
-      () => validateRemote({ owner: wrongOwner, actor: "validation-negative", lifecycleUid: validationUid }),
+      () => validateRemote({ owner: wrongOwner, actor: "validation_negative", lifecycleUid: validationUid }),
       /authenticated owner/,
     ));
-  await cotalAuthProvider.revokeAgent({ dir: hostDir, owner, actor: "validation-negative" });
+  await cotalAuthProvider.revokeAgent({ dir: hostDir, owner, actor: "validation_negative" });
   check("revoked retained authority is refused through registry-pinned HTTPS",
     await refuses(
-      () => validateRemote({ owner, actor: "validation-negative", lifecycleUid: validationUid }),
+      () => validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid }),
       /no longer granted|not granted|missing/,
     ));
   const restoredGrant = await cotalAuthProvider.grantAgent({
-    store: hostStore, dir: hostDir, space, owner, actor: "validation-negative", lifecycleUid: validationUid,
+    store: hostStore, dir: hostDir, space, owner, actor: "validation_negative", lifecycleUid: validationUid,
     scope: [], allowSubscribe: [], allowPublish: [], parent: `${owner}.cli`,
   });
   validationActorToken = restoredGrant.actorToken;
   validationSentinel = restoredGrant.sentinelCreds;
   check("current retained authority validates through registry-pinned HTTPS after negative controls",
-    Boolean(await validateRemote({ owner, actor: "validation-negative", lifecycleUid: validationUid })));
+    Boolean(await validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid })));
 
   console.log("\ncell 4/7: managed grant and lifecycle-keyed durables");
   const blockedUid = mintLifecycleUid();
