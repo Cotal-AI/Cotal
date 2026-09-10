@@ -50,11 +50,20 @@
     {
       "name": "M5 drop the prepack gate",
       "file": "packages/seat/package.json",
-      "find": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs\",\n",
+      "find": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs && pnpm run build:ts\",\n",
       "replace": "",
       "expectRed": "host-only pnpm pack is refused by prepack",
       "cell": "host-only pnpm pack is refused by prepack",
       "note": "prepublishOnly does not run on pnpm pack. Removing prepack lets a host-only tree pack."
+    },
+    {
+      "name": "M6 prepack stops compiling the declared JavaScript entrypoint",
+      "file": "packages/seat/package.json",
+      "find": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs && pnpm run build:ts\",\n",
+      "replace": "    \"prepack\": \"node scripts/assert-shipped-natives.mjs\",\n",
+      "expectRed": "the tarball ships dist/index.js compiled by prepack",
+      "cell": "the tarball ships dist/index.js compiled by prepack",
+      "note": "Recreates 0.47.0: an assembled tree with no dist packs native helpers but omits its declared JavaScript entrypoint."
     }
   ]
 }

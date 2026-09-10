@@ -81,15 +81,55 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
  * an approximation of the resolver on purpose: same package, and the suite actually reaches into
  * `../src`. It is here rather than in a note because a rule that depends on the next author
  * remembering it is the rule that just failed.
+ *
+ * A second witness exists for suites that never IMPORT the target at all: a config may declare
+ * `"assembles": ["packages/seat", …]` — source trees the suite copies into a fixture where it runs
+ * a real lifecycle on the copy. The installed-distribution smoke packs an assembled seat clone, so
+ * a mutation in `packages/seat/package.json` reaches the run through the copied bytes and the
+ * resolver is never asked. Declaring alone proves nothing: the mutated file must live under a
+ * declared root, and the suite's own source must reference that root. That reference check is the
+ * same order of approximation as the `../src/` substring above — a textual witness for a data-flow
+ * fact — and it is what keeps the declaration honest: a suite that only imports the package by
+ * name references no source tree, so the dist trap stays refused.
  */
-const assertGradable = (configPath, suites, m) => {
-  const suite = suites.find((source) =>
-    packageRoot(m.file) === packageRoot(source) && readFileSync(source, "utf8").includes("../src/"));
-  if (suite) return;
+const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
+/**
+ * Does the suite reference a repo source root? `packages/seat` matches `join(ROOT, "packages",
+ * "seat")` — how this repo spells repo-relative paths, as quoted segments — and `cpSync("packages/
+ * seat", …)` — one quoted path — alike. Matching only the contiguous form would refuse every suite
+ * that assembles from one.
+ */
+const referencesRoot = (suiteSource, root) =>
+  new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(suiteSource);
+const invokesFile = (suiteSource, file) => {
+  const parts = file.split("/");
+  const basename = parts.at(-1);
+  if (basename === undefined || !referencesRoot(suiteSource, file)) return false;
+  return new RegExp(`(?:spawnSync|spawn|execFileSync|execFile)\\s*\\([\\s\\S]{0,500}${quoted(basename)}`).test(suiteSource);
+};
+
+/** Does THIS one suite run the bytes the mutation edits? The witnesses are tried in the order they
+ * are cheapest to be sure of: the suite is the target, the suite launches it as a script, the suite
+ * imports its package by source path, the suite assembles it from a declared source tree. */
+const gradableFrom = (suite, m, assembles) => {
+  const suiteSource = readFileSync(suite, "utf8");
+  // A smoke that mutates its own source executes those bytes directly. A smoke may also launch a
+  // repo script by its exact relative path, as the seat packaging suite does for the native
+  // assembler. Neither path crosses a package resolver or an assembled-copy boundary.
+  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;
+  if (packageRoot(m.file) === packageRoot(suite) && suiteSource.includes("../src/")) return true;
+  const root = assembles.find((r) => m.file === r || m.file.startsWith(r + "/"));
+  return root !== undefined && referencesRoot(suiteSource, root);
+};
+
+const assertGradable = (configPath, suites, m, assembles) => {
+  if (suites.some((suite) => gradableFrom(suite, m, assembles))) return;
   throw new Error(
-    `${configPath}: mutation "${m.name}" targets ${m.file}, which none of [${suites.join(", ")}] imports by source path — ` +
-    `it would resolve that package to dist and the mutation could not reach the running code. ` +
-    `Grade it from a suite in ${packageRoot(m.file)}, or record it in this config's "unkillable" array with the reason.`,
+    `${configPath}: mutation "${m.name}" targets ${m.file}, which none of [${suites.join(", ")}] imports by ` +
+    `source path or reaches through a source tree in this config's "assembles" array — a by-name import ` +
+    `resolves that package to dist and the mutation could not reach the running code. Grade it from a suite ` +
+    `in ${packageRoot(m.file)} that reaches into ../src, declare the source tree the suite copies and runs, ` +
+    `or record it in this config's "unkillable" array with the reason.`,
   );
 };
 
@@ -100,6 +140,10 @@ for (const path of configs) {
   // A tool config predicts a named red and has no cell to attribute it to, because there is no
   // suite whose coverage it could be part of.
   const required = gradesTool ? REQUIRED.filter((k) => k !== "cell") : REQUIRED;
+  if (cfg.assembles !== undefined
+    && (!Array.isArray(cfg.assembles) || cfg.assembles.some((r) => typeof r !== "string" || r === ""))) {
+    throw new Error(`${path}: "assembles" must be an array of source-tree paths the suite copies`);
+  }
   for (const m of cfg.mutations) {
     for (const k of required) {
       if (typeof m[k] !== "string" || m[k] === "") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
@@ -107,7 +151,7 @@ for (const path of configs) {
     for (const k of REQUIRED_MAY_BE_EMPTY) {
       if (typeof m[k] !== "string") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
     }
-    if (!gradesTool) assertGradable(path, suites, m);
+    if (!gradesTool) assertGradable(path, suites, m, cfg.assembles ?? []);
   }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
