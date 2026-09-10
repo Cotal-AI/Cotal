@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/console-gaps.smoke.ts",
+  "suite": ["implementations/cli/smoke/console-gaps.smoke.ts"],
   "guard": "unread badges count live arrivals and stay honest at the retention cap, the roster tags the harness, and a deleted channel leaves the strip",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-gaps",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-gaps.json",

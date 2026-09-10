@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/topo-membership.smoke.ts",
+  "suite": ["implementations/cli/smoke/topo-membership.smoke.ts"],
   "guard": "the topology lens overlays only a membership feed the viewer actually read, and names a failed read as its own",
   "command": "pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/topo-membership.json",

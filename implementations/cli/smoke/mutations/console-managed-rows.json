@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/console-managed-rows.smoke.ts",
+  "suite": ["implementations/cli/smoke/console-managed-rows.smoke.ts"],
   "guard": "a partial ps poll keeps a silent manager's seats, replaces an answering manager's rows wholesale, drops a manager that is neither, and never applies two reads out of order",
   "command": "pnpm smoke:console-managed-rows",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-managed-rows.json",

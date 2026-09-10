@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/console-attach.smoke.ts",
+  "suite": ["implementations/cli/smoke/console-attach.smoke.ts"],
   "guard": "the console attaches through the CLI attach loop in place: the seat gets the keyboard, Ctrl-] returns and repaints",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-attach",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-attach.json",

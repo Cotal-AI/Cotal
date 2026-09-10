@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/console-participant.smoke.ts",
+  "suite": ["implementations/cli/smoke/console-participant.smoke.ts"],
   "guard": "the operator becomes a roster peer under the observer's own card on its first send",
   "command": "pnpm --filter @cotal-ai/cli smoke:console-participant",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-participant.json",

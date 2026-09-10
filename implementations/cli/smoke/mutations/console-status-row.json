@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/console-status-row.smoke.ts",
+  "suite": ["implementations/cli/smoke/console-status-row.smoke.ts"],
   "guard": "the managed row keeps the process fact and the mesh fact separate, never prints `working` as a bare word, parenthesises the role, and reports uptime in minutes",
   "command": "pnpm smoke:console-status-row",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-status-row.json",

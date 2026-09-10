@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/console-render.smoke.tsx",
+  "suite": ["implementations/cli/smoke/console-render.smoke.tsx"],
   "guard": "the rendered console preserves truthful topology identity, membership freshness, activity, and first-send participant failures",
   "command": "pnpm smoke:console-render",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-render.json",

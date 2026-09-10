@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/cli/smoke/sparkline.smoke.ts",
+  "suite": ["implementations/cli/smoke/sparkline.smoke.ts"],
   "guard": "the status bar's activity series counts live arrivals into the newest bucket, decays with idle time, and draws bars scaled to its own max",
   "command": "pnpm exec tsx implementations/cli/smoke/sparkline.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/sparkline.json",
