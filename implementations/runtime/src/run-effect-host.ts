@@ -1,4 +1,4 @@
-import type { RunHostPlanes } from "@cotal-ai/core";
+import type { RunHostPlanes, RunAdmissionView } from "@cotal-ai/core";
 import { digest, type EffectContext, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
 import { createRunPauseHost } from "./run-pause-host.js";
@@ -17,10 +17,11 @@ export function createRunEffectHost(
   broker: RunHostPlanes,
   binding: MeshHandlerBinding,
   authority: RunScopeAuthority,
+  admission: () => Promise<RunAdmissionView>,
 ): RunEffectHost {
   const pinned = structuredClone(binding);
   const pauses = createRunPauseHost(broker, pinned, authority);
-  const waits = createRunWaitHost(broker, authority);
+  const waits = createRunWaitHost(broker, authority, admission);
   const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, {
     async awaitSettle(ref) {
       for (;;) {
@@ -29,7 +30,7 @@ export function createRunEffectHost(
         await new Promise((resolve) => setTimeout(resolve, 2_000).unref());
       }
     },
-  }, Date.now, { pauses, waits, authority });
+  }, Date.now, { pauses, waits, authority, admission });
 
   async function dispatch<R, T>(kind: string, req: R, ctx: EffectContext, call: (request: R, context: EffectContext) => Promise<T>): Promise<T> {
     const request = structuredClone(req);

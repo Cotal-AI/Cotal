@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "implementations/manager/smoke/instrument-instance-pin.smoke.ts"
+  ],
+  "guard": "the deployer instrument mints on the legacy rail: it is the one unbounded instrument, and an issuance with no lifecycle gate must carry an expiry, so folding it into the issuance arm refuses every cotal down at mint",
+  "command": "pnpm smoke:instrument-instance-pin",
+  "completionMarker": "passed,",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/instrument-issuance-arm.json",
+  "why": [
+    "The CLI's instruments mint through connectOrThrow. The control-caller tiers are five-minute",
+    "one-shots, so their issuance evidence carries the credential's own expiry as its liveness. The",
+    "deployer has no default TTL (a deploy spans launches and readiness waits), and the mint refuses",
+    "an issuance that has neither a source gate nor an expiry. Measured live: `cotal down` printed",
+    "the mint refusal and exited non-zero on every static mesh. The mutation puts the deployer back",
+    "on the issuance arm; the cell that mints it through the shipped path is the one that reddens."
+  ],
+  "mutations": [
+    {
+      "name": "the deployer is minted as an issuance again",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "      if (role === \"deployer\") {",
+      "replace": "      if (role === \"deployer\" && opts.instanceId === \"never\") {",
+      "expectRed": "deployer mints through the shipped connect path",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:instrument-instance-pin",
+      "note": "A bare `if (false)` narrows `role` and the branch no longer typechecks, so the suite never runs. The comparison against a pin no command passes keeps the types and sends the deployer down the issuance arm."
+    }
+  ]
+}

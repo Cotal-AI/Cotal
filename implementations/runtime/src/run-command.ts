@@ -20,7 +20,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
-import type { KV } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
@@ -31,6 +31,15 @@ import {
   newIdentity,
   mintCreds,
   openRecordsBucket,
+  admissionBucket,
+  createRunAdmission,
+  readRunAdmission,
+  revokeRunAdmission,
+  chatSubject,
+  DEV_OWNER,
+  type RunAdmission,
+  type RunAdmissionView,
+  type IssuedSubjectAllow,
   readRunProgram,
   readRunRecord,
   renderLifecycleBlocked,
@@ -59,7 +68,7 @@ import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]> [--local] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -72,6 +81,13 @@ interface RunValues {
   value?: string;
   artifact?: string;
   local?: boolean;
+  /** `--local start` only: the channel ceiling the operator admits the run under (SPEC 14.8),
+   *  comma-separated channel patterns; `none` is deny-all. Both are REQUIRED for a local start:
+   *  a local run never defaults to the host's own scope. */
+  "admit-read"?: string;
+  "admit-publish"?: string;
+  /** `revoke --local` only: why the run's admission is being revoked, recorded on the marker. */
+  reason?: string;
 }
 
 interface Planes {
@@ -117,10 +133,16 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
 }
 
 /** Mint from the same resolved target as the driver, preserving its broker and TLS intent. */
-async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<RunHostPlanes> {
-  const conn = driver.connection;
+/** A local drive mints its mediator and its admitter from the folder's signer; a lone `--creds`
+ *  file can supply neither, and is refused by name before any other local check. */
+function refuseSingleCredential(conn: Connection): void {
   if (conn.creds !== undefined && conn.auth === undefined)
     throw new Error("run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles. From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.");
+}
+
+async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<RunHostPlanes> {
+  const conn = driver.connection;
+  refuseSingleCredential(conn);
   const creds = conn.auth === undefined ? undefined : await mintCreds(conn.auth, newIdentity(), "run-mediator", { runMediator: pin });
   const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }) });
   try {
@@ -202,9 +224,83 @@ async function start(values: RunValues): Promise<void> {
   const takeoverId = newTakeoverId();
   const planes = await openPlanes(values, "run-driver", { runDriver: { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch: 1 } });
   try {
-    await drive(values, planes, { endpoint, runId, source, who, epoch: 1, fencingToken: 1, takeoverId, mode: "new" });
+    const admission = await admitLocal(values, planes, { endpoint, runId, who });
+    await drive(values, planes, { endpoint, runId, source, who, epoch: 1, fencingToken: 1, takeoverId, mode: "new", admission });
   } finally {
     await planes.close();
+  }
+}
+
+/** The explicit admission of a LOCAL run (SPEC 14.8): the operator names the channel ceiling on
+ *  the command line, the record is written create-only under a one-shot `run-admitter` credential
+ *  from the folder's trust material, and the provenance says who admitted it and why. A local
+ *  start with no ceiling named is refused; the host's own scope is never the default. */
+async function admitLocal(values: RunValues, planes: Planes, a: { endpoint: string; runId: string; who: ReturnType<typeof cliHolder> }): Promise<RunAdmissionView> {
+  const conn = planes.connection;
+  refuseSingleCredential(conn);
+  const read = values["admit-read"];
+  const publish = values["admit-publish"];
+  if (read === undefined || publish === undefined) {
+    console.error("run start --local: --admit-read <channels> and --admit-publish <channels> are required; a local run is admitted under the ceiling you name (comma-separated channel patterns, or `none`), never under this process's own scope");
+    process.exit(1);
+  }
+  if (conn.auth === undefined) {
+    console.error("run start --local: an open mesh keeps no admission store; a run there is not admitted and performs no channel effect. Run it on a static-auth mesh from its project folder.");
+    process.exit(1);
+  }
+  const caller = { owner: DEV_OWNER, actor: a.who.id, uid: a.who.lifecycleUid };
+  const allow = (spec: string, direction: "read" | "publish"): IssuedSubjectAllow => {
+    const channels = spec.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (channels.length === 1 && channels[0] === "none") return { mode: "none" };
+    if (channels.length === 0) throw new Error(`--admit-${direction}: name at least one channel, or \`none\``);
+    return { mode: "patterns", patterns: channels.map((ch) => direction === "read" ? chatSubject(conn.space, "*", "*", ch) : chatSubject(conn.space, caller.owner, caller.actor, ch)) };
+  };
+  const admission: RunAdmission = {
+    version: 1,
+    space: conn.space,
+    endpoint: a.endpoint,
+    runId: a.runId,
+    instanceId: a.who.instanceId,
+    caller,
+    ceiling: { publish: { allow: allow(publish, "publish"), deny: [] }, subscribe: { allow: allow(read, "read"), deny: [] } },
+    provenance: { kind: "operator", by: a.who.id, reason: `cotal run start --local --admit-read ${read} --admit-publish ${publish}` },
+    admittedAt: Date.now(),
+  };
+  const creds = await mintCreds(conn.auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: a.endpoint, runId: a.runId } });
+  const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }), maxReconnectAttempts: 0 });
+  try {
+    await createRunAdmission(await new Kvm(nc).open(admissionBucket(conn.space)), admission);
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+  return { admission, revoked: undefined };
+}
+
+/** `revoke --local`: write the run's revocation marker (SPEC 14.8) under a one-shot `run-admitter`
+ *  credential from the folder's trust material. The admission itself is never rewritten; the
+ *  marker is create-only and idempotent, and every host reads it before its next channel effect,
+ *  so an open wait refuses within one poll and no resume or takeback continues the run. */
+async function revoke(values: RunValues, runId: string | undefined): Promise<void> {
+  if (runId === undefined || values.by === undefined || values.reason === undefined) {
+    console.error(USAGE);
+    console.error("run revoke: <runId>, --by <who> and --reason <text> are required");
+    process.exit(1);
+  }
+  const endpoint = values.endpoint ?? "manager";
+  const conn = await connectOrExit(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
+  refuseSingleCredential(conn);
+  if (conn.auth === undefined) {
+    console.error("run revoke: an open mesh keeps no admission store, so there is nothing to revoke there");
+    process.exit(1);
+  }
+  const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }), maxReconnectAttempts: 0 });
+  try {
+    const kv = await new Kvm(nc).open(admissionBucket(conn.space));
+    await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
+    const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
+    console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
+  } finally {
+    await nc.drain().catch(() => nc.close());
   }
 }
 
@@ -219,6 +315,7 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
   const reader = await openPlanes(values, "run-operator", { runOperator: { endpoint, runId, takeoverId: newTakeoverId() } });
   let source: string;
   let status: RunStatusValue | undefined;
+  let admission: RunAdmissionView;
   try {
     const record = await readRunRecord(reader.kv, endpoint, runId);
     if (record === undefined) {
@@ -227,6 +324,12 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
     }
     source = await resumeSource(values, reader, endpoint, runId);
     status = record.status?.value;
+    // The ORIGINAL admission (SPEC 14.8): a resume continues under it, never under a new one.
+    admission = await readRunAdmission(reader.jsm, reader.space, endpoint, runId);
+    if (admission.revoked !== undefined) {
+      console.error(`run ${runId}: revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
+      process.exit(1);
+    }
   } finally {
     await reader.close();
   }
@@ -235,7 +338,7 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
   const takeoverId = newTakeoverId();
   const planes = await openPlanes(values, "run-driver", { runDriver: { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch } });
   try {
-    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: (status?.fencingToken ?? 0) + 1, takeoverId, mode: "existing" });
+    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: (status?.fencingToken ?? 0) + 1, takeoverId, mode: "existing", admission });
   } finally {
     await planes.close();
   }
@@ -246,17 +349,20 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
 async function drive(
   values: RunValues,
   planes: Planes,
-  a: { endpoint: string; runId: string; source: string; who: ReturnType<typeof cliHolder>; epoch: number; fencingToken: number; takeoverId: string; mode: "new" | "existing" },
+  a: { endpoint: string; runId: string; source: string; who: ReturnType<typeof cliHolder>; epoch: number; fencingToken: number; takeoverId: string; mode: "new" | "existing"; admission: RunAdmissionView },
 ): Promise<void> {
   const { endpoint, runId, source, who, epoch, fencingToken, takeoverId } = a;
   const mediator = await openMediator(planes, { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch });
   try {
     const authority = createRunScopeAuthority(mediator, runId, { holder: who.id, epoch, fencingToken, takeoverId });
+    const admitted = a.admission.admission;
+    if (admitted.space !== planes.space || admitted.endpoint !== endpoint || admitted.runId !== runId)
+      throw new Error(`run ${runId}: the admission names ${admitted.space}/${admitted.endpoint}/${admitted.runId}; refused (SPEC 14.8)`);
     const handler = createRunEffectHost(mediator, {
       space: planes.space, endpoint, runId, caller: runDriverCaller(runId), instanceId: who.instanceId,
       epoch, holder: { id: who.id, lifecycleUid: who.lifecycleUid },
       defaultCheckpointTimeout: values.timeout ?? "1h",
-    }, authority);
+    }, authority, () => readRunAdmission(mediator.jsm, planes.space, endpoint, runId));
     const req = {
       space: planes.space,
       endpoint,
@@ -553,9 +659,18 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
   const values = args.values as RunValues;
   const [verb, a, b] = args.positionals;
-  if (verb === undefined || !["start", "resume", "ps", "journal", "answer"].includes(verb)) {
+  if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "revoke"].includes(verb)) {
     console.error(USAGE);
     process.exit(1);
+  }
+  if (verb === "revoke") {
+    // Revocation is an operator act on the admission store, never a served command: the marker is
+    // written from the folder's trust material, so it is `--local` only.
+    if (values.local !== true) {
+      console.error("run revoke: a revocation is written from the mesh's project folder; run `cotal run revoke <runId> --local --by <who> --reason <text>`");
+      process.exit(1);
+    }
+    return revoke(values, a);
   }
   if (values.local !== true) {
     await hosted(values, verb, a, b);

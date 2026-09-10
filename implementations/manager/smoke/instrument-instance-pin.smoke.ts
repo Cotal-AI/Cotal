@@ -52,7 +52,7 @@ import {
   type ResolvedService,
   type EpError,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, recordMesh, connectOrThrow } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -251,6 +251,28 @@ try {
   const unpinnedInstrument = instRows(pubRows("control-caller-privileged", "unpinnedinstr", { lifecycleUid: "aa11bb22cc33dd44ee55ff6677" }));
   check("an instrument minted WITHOUT a pin also holds none (the pin is opt-in, not implicit)",
     unpinnedInstrument.length === 0, unpinnedInstrument.slice(0, 3));
+
+  // ---- 1b. EVERY INSTRUMENT MINTS THROUGH THE SHIPPED CONNECT PATH ----------------------------
+  // The rows above are read off `permissionsFor`; the CLI reaches them through `connectOrThrow`,
+  // which is where an instrument is minted as an ISSUANCE (SPEC 13.15). The deployer is the one
+  // instrument the profile table leaves unbounded, and an issuance with no lifecycle gate must
+  // carry an expiry, so folding it into the issuance arm made `cotal down` refuse at mint. Each
+  // instrument is minted here the way its command mints it, from a root that resolves this mesh.
+  console.log("\n1b. every instrument mints through connectOrThrow on this mesh");
+  process.chdir(root1);
+  try {
+    for (const role of ["control-caller-privileged", "control-caller-admin", "deployer"] as const) {
+      const minted = await connectOrThrow({ space }, role).then((c) => c, (e: Error) => e);
+      check(`${role} mints through the shipped connect path`, !(minted instanceof Error) && typeof minted.creds === "string",
+        minted instanceof Error ? minted.message : undefined);
+      if (minted instanceof Error) continue;
+      const issued = typeof (minted.epCaller as { generation?: unknown } | undefined)?.generation === "string";
+      check(`${role} ${role === "deployer" ? "rides the legacy rail (unbounded, no liveness gate to issue under)" : "is an issuance (its caller carries a generation)"}`,
+        role === "deployer" ? !issued : issued, minted.epCaller);
+    }
+  } finally {
+    process.chdir(dir);
+  }
 
   // ---- 2. THE PIN IS EXACT, NEVER A WILDCARD ---------------------------------------------------
   console.log("\n2. a pinned mint yields EXACT-instance rows only");

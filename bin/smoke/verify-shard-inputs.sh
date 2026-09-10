@@ -60,6 +60,7 @@ if [ "$#" -eq 10 ]; then
 else
   node_bin="$(command -v node || true)"
   pnpm_bin="$(command -v pnpm || true)"
+  runner_home="${HOME:-/home/runner}"
 fi
 
 if [ ! -x "$node_bin" ] || [ ! -x "$pnpm_bin" ]; then
@@ -72,9 +73,18 @@ if [ "$#" -eq 10 ]; then
     /opt/hostedtoolcache/node/22.*/*/bin/node) ;;
     *) echo "unexpected CI node path: $node_bin" >&2; exit 2 ;;
   esac
+  # pnpm/action-setup installs under the runner user's home. GitHub-hosted runners run as `runner`,
+  # Tenki runners as `tenki`; the shape below is what both produce, and the home is read back out of
+  # the matched path rather than assumed, so the clean environment further down names the home the
+  # toolchain actually lives in.
   case "$pnpm_bin" in
-    /home/runner/setup-pnpm/node_modules/.bin*/pnpm) ;;
+    /home/*/setup-pnpm/node_modules/.bin*/pnpm) ;;
     *) echo "unexpected CI pnpm path: $pnpm_bin" >&2; exit 2 ;;
+  esac
+  runner_home="${pnpm_bin%/setup-pnpm/*}"
+  case "$runner_home" in
+    /home/runner|/home/tenki) ;;
+    *) echo "unexpected CI runner home: $runner_home" >&2; exit 2 ;;
   esac
   actual_node_target="$(/usr/bin/readlink -f "$node_bin")"
   actual_pnpm_target="$(/usr/bin/readlink -f "$pnpm_bin")"
@@ -93,13 +103,14 @@ fi
 node_dir="${node_bin%/*}"
 pnpm_dir="${pnpm_bin%/*}"
 workspace="$(/bin/pwd -P)"
-clean_path="$pnpm_dir:$node_dir:/home/runner/nats-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+runner_user="${runner_home##*/}"
+clean_path="$pnpm_dir:$node_dir:$runner_home/nats-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 exec /usr/bin/env -i \
   PATH="$clean_path" \
-  HOME=/home/runner \
-  USER=runner \
-  LOGNAME=runner \
+  HOME="$runner_home" \
+  USER="$runner_user" \
+  LOGNAME="$runner_user" \
   SHELL=/usr/bin/bash \
   TMPDIR=/tmp \
   TMP=/tmp \

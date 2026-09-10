@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
-  DEV_OWNER, epCall, invokeCommand, resolveService, readGoalResult, registry,
-  type Connector, type EpCaller, type LaunchOpts, type LaunchSpec,
+  DEV_OWNER, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, registry,
+  type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import {
   authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, recordMesh, removeMesh, userAuthStateDir,
@@ -45,6 +45,7 @@ type ManagedRow = {
   id: string;
   lifecycleUid: string;
   handle: { pid?: number };
+  issued?: { generation: string; acceptedToken: string };
   restart?: { recovering: boolean; armed: boolean; policy?: { restarts: number; windowMs: number } };
 };
 
@@ -155,9 +156,6 @@ try {
   const seatCreds = firstUid
     ? readFileSync(agentLifecycleSecretFilePaths(workspaceRoot, space, "seat", firstUid).creds, "utf8")
     : "";
-  const seatTriple: EpCaller | undefined = row
-    ? { owner: DEV_OWNER, actor: row.id, uid: row.lifecycleUid }
-    : undefined;
   const turnOf = (goalId: string, deadlineMs: number) => call("turn",
     { payload: JSON.stringify({ run: "r1", step: "turn:seat", context: "do the thing" }), deadlineMs },
     { id: goalId, target: { actor: row!.id, lifecycleUid: row!.lifecycleUid } });
@@ -185,8 +183,12 @@ try {
     spawnedOpts.length >= 2 && spawnedOpts[1]?.resume === undefined && spawnedOpts[1]?.prompt === undefined, spawnedOpts[1]);
   c("a pending turn is not stamped dead across a restart", pendingOf(manager)?.seatDiedAt === undefined, pendingOf(manager));
 
-  if (seatTriple && after) {
+  if (row && after) {
     seatNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: seatCreds, tls: false }), maxReconnectAttempts: 0 });
+    // The seat's credential is an issuance (SPEC 13.15): its rows live on the versioned rail, so
+    // its caller carries the generation it discovers from the accepted row under its own grant.
+    const seatRef = await readAcceptedRow(seatNc, space, after.issued!.acceptedToken);
+    const seatTriple: EpCaller = { owner: DEV_OWNER, actor: after.id, uid: after.lifecycleUid, generation: seatRef.generation } as IssuedCaller;
     const seatService = await resolveService(seatNc, space, MANAGER_ENDPOINT, seatTriple);
     const pulled = await invokeCommand(seatNc, space, seatService, "turn-pending", undefined, { target: { mode: "self" }, deadlineMs: 10_000 }).then((r) => r.reply, asValue);
     const turns = ((pulled as { data?: { turns?: Array<{ goalId?: string }> } }).data?.turns ?? []);

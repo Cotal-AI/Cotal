@@ -220,6 +220,7 @@ export const claudeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
 
     // A leading positional is claude's first message, auto-submitted on start —
     // so a driving session can greet the operator the moment it joins.

@@ -9,6 +9,7 @@
  */
 import {
   readRunRecord,
+  readRunAdmission,
   replayRunJournal,
   runDriverCaller,
   walkKvEntries,
@@ -96,11 +97,18 @@ export const cotalLangRunHost: RunHost = {
     if (mediator === undefined || mediator.nc === planes.nc || mediator.space !== planes.space)
       throw new Error("a hosted run requires a separate trusted mediator connection in the same space");
     const authority = createRunScopeAuthority(mediator, req.runId, req.lease);
+    // The admission the HOST loaded is pinned to this drive's coordinates; every channel effect
+    // then re-reads it leader-served over the mediator (SPEC 14.8), so a revocation marker lands
+    // within one effect and a store that cannot be read refuses rather than proceeding.
+    const admitted = req.admission.admission;
+    if (admitted.space !== planes.space || admitted.endpoint !== req.endpoint || admitted.runId !== req.runId)
+      throw new Error(`run ${req.runId}: the admission handed to the drive names ${admitted.space}/${admitted.endpoint}/${admitted.runId}; refused (SPEC 14.8)`);
+    const admission = () => readRunAdmission(mediator.jsm, planes.space, req.endpoint, req.runId);
     const handler = createRunEffectHost(mediator, {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
       caller: runDriverCaller(req.runId), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
-    }, authority);
+    }, authority, admission);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);
     const driveReq = {
       space: planes.space,
