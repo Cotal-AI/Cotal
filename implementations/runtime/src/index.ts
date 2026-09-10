@@ -77,20 +77,23 @@ const runCommand: Command = {
   kind: "command",
   name: "run",
   group: "Manager",
-  summary: "operate workflow runs — start, resume, list, inspect, answer (hosted by the manager)",
+  summary: "operate workflow runs — start, resume, list, inspect, answer (hosted by the manager), revoke",
   usage:
-    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]> [--local]",
+    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text>> [--local [--admit-read <channels> --admit-publish <channels>]]",
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start; resume --local when no program is recorded)" },
     { name: "local", type: "boolean", description: "drive in this process instead of on the manager (bare broker, or a run the manager cannot host)" },
+    { name: "admit-read", type: "string", value: "<channels>", description: "start --local: the channels the run may read, comma-separated patterns or `none` (required; SPEC 14.8)" },
+    { name: "admit-publish", type: "string", value: "<channels>", description: "start --local: the channels the run may post to, comma-separated patterns or `none` (required; SPEC 14.8)" },
     { name: "endpoint", type: "string", value: "<ep>", description: "endpoint the run record lives under (ps, journal, answer; default: manager)" },
     { name: "timeout", type: "string", value: "<dur>", description: "default checkpoint timeout for this drive (default: 1h)" },
-    { name: "by", type: "string", value: "<who>", description: "who is answering (answer --local only; the manager records the caller)" },
+    { name: "by", type: "string", value: "<who>", description: "who is answering or revoking (answer --local, revoke; the manager records the caller for a hosted answer)" },
+    { name: "reason", type: "string", value: "<text>", description: "revoke: why the run's admission is revoked, recorded on the marker (required)" },
     { name: "value", type: "string", value: "<json>", description: "checkpoint answer payload as JSON (answer)" },
     { name: "artifact", type: "string", value: "<ref>", description: "artifact reference attached to the answer (answer)" },
   ],
-  positionals: "<start|resume|ps|journal|answer> …",
+  positionals: "<start|resume|ps|journal|answer|revoke> …",
   run: (args) => runWorkflowCommand(args),
 };
 

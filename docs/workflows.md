@@ -147,11 +147,33 @@ retry a moment later is the whole remedy.
 
 `--local` drives the run in this process instead: `start`, `resume` and `answer` exit when the
 drive settles, `--by <who>` names the answerer, and `cotal run resume <runId> --local --file
-<program>` is how a run with no recorded program, or a run on a bare broker with no manager, is
-continued. On a static mesh the local drive mints the run's own credential from the folder's
-trust material, so it runs from the mesh's project folder. A user-auth mesh runs no programs
-yet, hosted or local: the manager refuses the family by name, since a hosted run's seats would be
-spawned under the static owner, which a user mesh refuses, and a user bearer holds no run rows.
+<program>` is how a run with no recorded program is continued. On a static mesh the local drive
+mints the run's own credential from the folder's trust material, so it runs from the mesh's
+project folder. A local start also names the run's channel ceiling itself:
+`--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
+required. The record it writes says an operator admitted the run and why, and the host checks
+it the same way it checks a hosted admission. A user-auth mesh runs no programs yet, hosted or
+local: the manager refuses the family by name, since a hosted run's seats would be spawned under
+the static owner, which a user mesh refuses, and a user bearer holds no run rows. An open mesh
+hosts none either, since it issues no caller authority to admit a run under.
+
+A hosted run is **admitted** under the caller that started it. The caller's credential is an
+issuance ([identity and auth](identity-and-auth.md#issued-authority)): its requests ride a
+versioned rail that carries the credential's generation, and the manager resolves that
+generation's recorded permission ceiling and writes it beside the run before the driver starts.
+That ceiling, the caller's own channel scope as it was issued, is what the run may read and post
+in channels; the manager's own reach never stands in for it. A request from a credential minted
+without an issuance is refused with `permission-denied` and a detail naming the caller. A run
+whose caller had no channels can still sleep, checkpoint and turn agents; its `wait` on a channel
+is refused at the effect.
+
+`cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
+from the project folder. The admission itself is never rewritten. Every host reads the marker
+before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
+takeover or manager restart continues the run. Revoking twice is not an error, and the first
+reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
+reconcile, named in its log.
+
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
 `journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
@@ -170,6 +192,8 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | a checkpoint answer | `answer.<endpoint>.<token>.<answerId>` | the payload beside the one-use settle fact; the settle names the answer it accepted |
 | a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |
 | a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
+| the admission | `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>` | the caller the run was admitted for, its channel ceiling and its provenance; written once before the driver starts, and the store refuses a second write on the key |
+| a revocation | `revoked.v1.<endpoint>.<runId>` in the same store | who revoked the run and why; create-only, idempotent, permanent at the broker, read by every host before its next channel effect |
 
 A run's **driver** connects on a `run-driver` credential minted for one run and takeover
 attempt. It can append to its journal, use its replay durable, and write its own `run`, `program`,
@@ -198,14 +222,17 @@ Direct library users supplying broker clients to `MeshHandler` are constructing 
 host. A hosted driver receives its closed effect interface instead.
 
 This split confines broker credentials; it is not process isolation for injected host code.
-The runtime and its effect host share the manager process. Workflow channel access still follows
-the program's requested channels, without inheriting the starting caller's channel ACL. Treat
-`run` as trusted program-execution authority. The host's journal checks enforce current run and
-step identity; they do not provide caller-scoped channel delegation.
+The runtime and its effect host share the manager process. A run's channel reach is the admitted
+ceiling ([SPEC §14.8](../SPEC.md#148-run-admission)): the starting caller's issued channel scope,
+recorded once in `cotal_admission_<space>` under a per-run `run-admitter` credential the driver
+never holds, and re-read by the host before every channel effect. Spawn and turn keep their own
+delegated checks; `notify` writes agent-addressed notices and is not channel publication. Treat
+`run` as program-execution authority bounded by that ceiling, not as sandboxing of the program.
 
 A version-1 fork can replay its settled parent history through the host. Inherited checkpoint
 identifiers carry no authority to read, rearm or claim the parent's pauses. New child effects use
-child-derived identifiers.
+child-derived identifiers. A fork is a new run and takes a new admission under the caller who
+forks it; the parent's ceiling is not inherited.
 
 
 ## What ships today

@@ -76,6 +76,7 @@ export const piConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
 
     const args = ["--extension", STANDALONE];

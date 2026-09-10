@@ -1,5 +1,5 @@
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import { chatStream, chatSubject, subjectMatches, waitConsumerConfig, waitConsumerName } from "@cotal-ai/core";
+import { assertAdmittedSubscribe, chatStream, chatSubject, subjectMatches, waitConsumerConfig, waitConsumerName, type RunAdmissionView } from "@cotal-ai/core";
 import { RunScopeAuthority, RunScopeDenied, WaitReceipts, type WaitReceipt } from "./run-scope-authority.js";
 
 export interface RunWaitMessage {
@@ -21,20 +21,28 @@ export interface RunWaitHost {
 export function createRunWaitHost(
   broker: { js: JetStreamClient; jsm: JetStreamManager; space: string },
   authority: RunScopeAuthority,
+  admission: () => Promise<RunAdmissionView>,
 ): RunWaitHost {
   const stream = chatStream(broker.space);
   const receipts = new WaitReceipts();
+  // SPEC 14.8: the admitted READ ceiling is checked on every path that hands channel bytes to the
+  // run: the fresh open, each fetch (so a revocation lands within one poll and the consumer is
+  // closed by the wait's own ending), and the recovered re-read of a matched message. The
+  // admission is re-read leader-served each time; a failed read refuses.
+  const admitted = async (channel: string): Promise<void> => assertAdmittedSubscribe(await admission(), channel);
   return Object.freeze({
     async open(requestId: string, channel: string): Promise<void> {
       const entry = await authority.wait(requestId, "open");
       if (entry.external?.waitChannel !== channel)
         throw new RunScopeDenied(entry.run, channel, "open unrecorded wait channel");
+      await admitted(channel);
       await broker.jsm.consumers.add(stream, waitConsumerConfig(broker.space, requestId, channel));
     },
     async fetch(requestId: string): Promise<readonly RunWaitMessage[]> {
       const entry = await authority.wait(requestId, "fetch");
       const channel = entry.external?.waitChannel;
       if (typeof channel !== "string") throw new RunScopeDenied(entry.run, requestId, "fetch unrecorded wait channel");
+      await admitted(channel);
       const consumer = await broker.js.consumers.get(stream, waitConsumerName(requestId));
       const info = await consumer.info();
       const expected = chatSubject(broker.space, "*", "*", channel);
@@ -74,6 +82,7 @@ export function createRunWaitHost(
       const entry = await authority.matchedMessage(requestId, sequence);
       const channel = entry.external?.waitChannel;
       if (typeof channel !== "string") throw new RunScopeDenied(entry.run, requestId, "read unrecorded wait channel");
+      await admitted(channel);
       const message = await broker.jsm.streams.getMessage(stream, { seq: sequence });
       if (message === null || message === undefined)
         throw new Error(`wait ${requestId}'s recorded message ${sequence} no longer exists`);

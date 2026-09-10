@@ -40,16 +40,19 @@ const inventory = spaceBackupInventory(space);
 
 assert.equal(inventory.full.length, 8);
 const endpointStreams = endpointPlaneStreamNames(space);
-assert.equal(endpointStreams.length, 12);
-assert.equal(new Set(endpointStreams).size, 12);
+assert.equal(endpointStreams.length, 15);
+assert.equal(new Set(endpointStreams).size, 15);
 assert.deepEqual(
   inventory.excluded.filter((stream) => stream.class === "control").map((stream) => stream.name).sort(),
   [...endpointStreams].sort(),
 );
-// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources. The
+// The five legacy exclusions remain alongside fifteen nonportable endpoint/control resources. The
 // artifact object store keeps its own class because pin extends lifetime, not durability; endpoint
 // state is recreated empty after restore rather than misrepresented as derived or transient data.
-assert.equal(inventory.excluded.length, 17);
+// The issued-authority and run-admission stores (SPEC 13.15, 14.8) ride with the run, program and
+// journal state they authorize: a restore recreates all of them empty, so no run is resumable and
+// none is taken back under authority the restore could not verify.
+assert.equal(inventory.excluded.length, 20);
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live
