@@ -306,8 +306,9 @@ const SEAMS: Seam[] = [
   // 128/94 -> 133/98: #774 adds one typechecked provisioner re-read before each static reconcile
   // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
   // observer, caller, and exact terminal gate inspection). Every site states tls: false.
-  // 133/98 -> 134/99: endpoint-publish-denial.smoke.ts adds one smoke-only class-rail caller
-  // connection for the broker-refused instance-addressed publish proof. It states tls: false.
+  // 133/98 -> 134/99: the publish-denial smoke dials a static-auth broker under a class-rail
+  // instrument to prove a refused instance-rail invoke is permission-denied (one smoke-side call,
+  // tls: false).
   { fn: "standaloneConnectOpts", key: "tls", sites: 134, untypecheckedSites: 99 },
 ];
 

@@ -212,6 +212,25 @@ class FakeEndpoint {
  *  reader can see at a glance which cells are about brackets and which merely need the field. */
 const BR = { run: undefined, text: [], reasoning: [], tools: [] };
 
+// A WELL-FORMED frozen body for the cells below, which are about the WAL/CAS machinery and not
+// about frame content. They previously froze `{ kind, protocol }` with no `events` at all. No such
+// frame can exist in production: `aguiFrame()` enforces a non-empty events ARRAY at construction,
+// and the publish path iterates `frame.events` before `beginSend`. The egress fence now HALTS on a
+// frozen body whose event list it cannot read, rather than publishing it opaque onto a channel with
+// a different read ACL, so a stub that could never have been written is no longer a usable stand-in
+// for "some frozen frame".
+const frozenBody = (): Part[] => [
+  {
+    kind: "ag-ui.frame",
+    protocol: "ag-ui/0.0.57",
+    threadId: THREAD,
+    runId: "frozen-run",
+    epoch: "frozen-epoch",
+    seq: 1,
+    events: [{ type: "RUN_STARTED", threadId: THREAD, runId: "frozen-run", timestamp: 1 }],
+  } as unknown as Part,
+];
+
 const casLoss = (): Error => Object.assign(new Error("wrong last sequence"), { code: 10071 });
 
 /** One turn's worth of legal, bracketed events. */
@@ -309,7 +328,7 @@ try {
       E: 0,
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: BR,
     });
     const ep = new FakeEndpoint();
@@ -348,7 +367,7 @@ try {
       E: 0,
       seq: 1,
       sourceCursor: cursor,
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: open,
     });
     await wal.recordAck(1);
@@ -358,7 +377,7 @@ try {
       E: wal.expectedTip,
       seq: 2,
       sourceCursor: cursor,
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: BR,
     });
     append(src, { run: "next-run", msg: "next-message", text: "after recovery" });
@@ -394,7 +413,7 @@ try {
       E: 0,
       seq: 1,
       sourceCursor: cursor,
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: open,
     });
     await wal.recordAck(1);
@@ -404,7 +423,7 @@ try {
       E: wal.expectedTip,
       seq: 2,
       sourceCursor: cursor,
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: BR,
     });
     await wal.recordAck(2); // crash after ack, before fold
@@ -563,7 +582,7 @@ try {
       E: 0,
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: BR,
     });
     const ep = new FakeEndpoint();
@@ -600,7 +619,7 @@ try {
       E: 0,
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
-      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      body: frozenBody(),
       brackets: BR,
     });
     const ep = new FakeEndpoint();
