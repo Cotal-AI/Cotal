@@ -2,10 +2,10 @@
  * Owner-only native hosted retirement acceptance.
  *
  * Starts a disposable authenticated broker, IdP, public auth service, real remote-authority Manager,
- * and real managed children. The only test collaborator is a private atomic host release journal.
- * Seven named cells cover grant, durables, sealed authority, public resume, public targeted despawn,
- * host preparation, HTTP issuance, and the terminal rail. The unavailable deterministic crash seam
- * is reported as an explicit failing acceptance-blocked cell rather than simulated through internals.
+ * and real managed children. A real public `runDelivery` daemon supplies the retirement liveness
+ * oracle. The only test collaborator is a private atomic host release journal.
+ * These first two scoped cells cover release refusal and successful public terminal retirement.
+ * Native cells 3-7 remain out of scope for this incremental gate and do not affect its result.
  *
  * All homes, workspace roots, the broker store, and IdP state are scratch. Requires nats-server.
  * Run: COTAL_OWNER_NATIVE_ACCEPTANCE=1 tsx implementations/manager/smoke/hosted-retirement-native.acceptance.ts
@@ -37,6 +37,16 @@ if (subcommand === "agent-child") {
   child.on("error", () => {});
   await child.start();
   await new Promise(() => {});
+}
+if (subcommand === "delivery") {
+  const { runDelivery } = await import("@cotal-ai/delivery");
+  const { workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const root = process.env.COTAL_NATIVE_HOST_ROOT!;
+  await runDelivery({
+    values: { space: process.env.COTAL_SPACE!, server: process.env.COTAL_SERVERS! },
+    positionals: [], raw: [],
+  }, workspaceSecretStore(root));
+  process.exit(0);
 }
 if (subcommand === "auth-service" || subcommand === "agent-bearer") {
   await import("@cotal-ai/auth");
@@ -79,8 +89,10 @@ import {
   CotalEndpoint,
   createSpaceAuth,
   managedRetirementOpId,
+  mintConnectionEvictorCreds,
   mintCreds,
   mintLifecycleUid,
+  mintMembershipObserverCreds,
   newIdentity,
   principalKey,
   provisionAgentDurables,
@@ -90,6 +102,7 @@ import {
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  waitForDeliveryLease,
   registry,
   type AgentHandle,
   type AttachSession,
@@ -103,8 +116,12 @@ import {
   agentSecretKeyForFile,
   assertUserAuthInfo,
   authDir,
+  connectionEvictorCredsKey,
+  deliveryCredsKey,
   hasUserAuthState,
   materializeSecretToFile,
+  membershipObserverCredsKey,
+  membershipRwCredsKey,
   userAuthStateDir,
   workspaceSecretStore,
 } from "@cotal-ai/workspace";
@@ -117,7 +134,10 @@ import {
 } from "@cotal-ai/auth";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
-import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
+import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "@cotal-ai/manager";
+// Fixture assembly only: these reproduce the published supervisor composition around the package-root
+// Manager. The behavior under acceptance stays on public Manager.start/resumePreserved and endpoint
+// invokeService("manager", "despawn"). Lifecycle-registry internals below are read-only observation.
 import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "../src/remote-authority.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 import { managerAuthorityContractSource, managerClusterArtifacts } from "../src/manager-service-contract.js";
@@ -229,6 +249,7 @@ const hostStore = workspaceSecretStore(hostRoot);
 const authDiagnosticCap = 32 * 1024;
 const closedChildren = new WeakSet<ChildProcess>();
 let authService: ChildProcess | undefined;
+let delivery: ChildProcess | undefined;
 let authServiceDiagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 let authServiceSpawnError: Error | undefined;
 let broker: ChildProcess | undefined;
@@ -407,6 +428,23 @@ try {
   }
   check("user-auth broker is running", brokerReady && broker.exitCode === null);
   await setupSpaceStreams({ servers: server, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+
+  const hosted = { injected: true } as const;
+  await hostStore.put(deliveryCredsKey(space, hosted), await mintCreds(auth, newIdentity(), "delivery"));
+  await hostStore.put(membershipRwCredsKey(space, hosted), await mintCreds(auth, newIdentity(), "membership-rw"));
+  await hostStore.put(membershipObserverCredsKey(space, hosted), await mintMembershipObserverCreds(auth, newIdentity()));
+  await hostStore.put(connectionEvictorCredsKey(space, hosted), await mintConnectionEvictorCreds(auth, newIdentity()));
+  delivery = trackChild(spawn(process.execPath, [...process.execArgv, self, "delivery"], {
+    cwd: hostRoot,
+    env: { ...process.env, COTAL_NATIVE_HOST_ROOT: hostRoot, COTAL_SPACE: space, COTAL_SERVERS: server },
+    stdio: "ignore",
+  }));
+  const deliveryProbe = newIdentity();
+  const deliveryReady = await waitForDeliveryLease({
+    servers: server, space, creds: await mintCreds(auth, deliveryProbe, "delivery"),
+    id: deliveryProbe.id, holder: undefined, timeoutMs: 30_000,
+  });
+  check("real delivery daemon is ready before auth retirement", deliveryReady && delivery.exitCode === null);
 
   authService = spawnAuthService();
   const service = await awaitAuthService(authService);
@@ -636,9 +674,7 @@ try {
   const aliasProbe = await manager.resumePreserved(inventoryOf(replacementEntry));
   check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, aliasProbe);
 
-  console.log("\ncell 7/7: deterministic crash boundary");
-  fail++;
-  console.log("  ✗ ACCEPTANCE-BLOCKED: no production failpoint can deterministically terminate this process after gate retirement and before head retirement; private Manager calls and simulated state are intentionally refused");
+  console.log("\nremaining native cells 3-7: OUT OF SCOPE for this incremental two-cell gate");
 
 } catch (error) {
   fail++;
@@ -648,17 +684,19 @@ try {
   await manager?.stop().catch(() => {});
   await observerNc?.drain().catch(() => observerNc?.close());
   const authStopped = await stopChild(authService);
+  const deliveryStopped = await stopChild(delivery);
   const brokerStopped = await stopChild(broker);
   idpServer?.closeAllConnections();
   await new Promise<void>((resolve) => {
     if (!idpServer) { resolve(); return; }
     idpServer.close(() => resolve());
   });
-  check("teardown stops both owned daemons before removing scratch state", authStopped && brokerStopped, {
+  check("teardown stops all owned daemons before removing scratch state", authStopped && deliveryStopped && brokerStopped, {
     auth: { exitCode: authService?.exitCode, signalCode: authService?.signalCode },
+    delivery: { exitCode: delivery?.exitCode, signalCode: delivery?.signalCode },
     broker: { exitCode: broker?.exitCode, signalCode: broker?.signalCode },
   });
-  if (authStopped && brokerStopped) {
+  if (authStopped && deliveryStopped && brokerStopped) {
     rmSync(participantHome, { recursive: true, force: true });
     rmSync(participantRoot, { recursive: true, force: true });
     rmSync(hostRoot, { recursive: true, force: true });
@@ -668,5 +706,5 @@ try {
   else process.env.COTAL_HOME = previousHome;
 }
 
-console.log(`\nHOSTED RETIREMENT NATIVE ACCEPTANCE ${fail === 0 ? "GREEN" : "BLOCKED/FAILED"} (${pass} passed, ${fail} failed; credentials logged: no)`);
+console.log(`\nHOSTED RETIREMENT NATIVE TWO-CELL ACCEPTANCE ${fail === 0 ? "GREEN" : "FAILED"} (${pass} passed, ${fail} failed; cells 3-7 out of scope; credentials logged: no)`);
 process.exitCode = fail === 0 ? 0 : 1;

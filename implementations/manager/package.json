@@ -48,6 +48,7 @@
     "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
+    "@cotal-ai/delivery": "workspace:*",
     "@nats-io/nats-core": "^3.4.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1"
