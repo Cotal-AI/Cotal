@@ -850,10 +850,13 @@ try {
   const blockedUid = mintLifecycleUid();
   const blockedEntry = await provisionRetained("blocked", blockedUid);
   console.log("\ncell 4/7: public resumePreserved launches agent-child");
+  const beforeBlockedValidations = retainedValidations;
   const blockedResume = await manager.resumePreserved(inventoryOf(blockedEntry));
   check("public resumePreserved adopts the exact blocked lifecycle", blockedResume.ok,
     blockedResume.ok ? undefined : { reply: blockedResume, diagnostic: adoptionDiagnostic("blocked") });
-  check("retained adoption crossed the authenticated typed host validation route", retainedValidations > 0, retainedValidations);
+  check("blocked adoption fresh-validates through the authenticated typed host route at preflight and spawn",
+    retainedValidations === beforeBlockedValidations + 2,
+    { before: beforeBlockedValidations, after: retainedValidations });
   if (!blockedResume.ok) throw new Error("blocked lifecycle adoption failed before release-refusal coverage armed");
   console.log("\ncell 5/7: public targeted despawn reaches host prepare and fails closed");
   failRelease.add("blocked");
@@ -871,9 +874,13 @@ try {
   console.log("\ncell 6/7: durable prepare, HTTP requester issuance, and terminal rail");
   const retiredUid = mintLifecycleUid();
   const retiredEntry = await provisionRetained("retired", retiredUid);
+  const beforeRetiredValidations = retainedValidations;
   const retiredResume = await manager.resumePreserved(inventoryOf(retiredEntry));
   check("public resumePreserved adopts the exact terminal lifecycle", retiredResume.ok,
     retiredResume.ok ? undefined : { reply: retiredResume, diagnostic: adoptionDiagnostic("retired") });
+  check("terminal adoption independently fresh-validates through the authenticated typed host route at preflight and spawn",
+    retainedValidations === beforeRetiredValidations + 2,
+    { before: beforeRetiredValidations, after: retainedValidations });
   if (!retiredResume.ok) throw new Error("terminal lifecycle adoption failed before release-success coverage armed");
   const beforeRetiredMints = retirementMints;
   const retiredStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
