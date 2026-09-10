@@ -141,7 +141,7 @@ import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "@
 // invokeService("manager", "despawn"). Lifecycle-registry internals below are read-only observation.
 import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "../src/remote-authority.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
-import { managerAuthorityContractSource, managerClusterArtifacts } from "../src/manager-service-contract.js";
+import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../auth/src/lifecycle-registry.js";
 
 const self = process.argv[1]!;
@@ -565,7 +565,10 @@ try {
     prepareCreds: materialCredential(prepare, "executor", state.identities.executor), tlsRequired: false,
   });
   const artifacts = managerClusterArtifacts();
-  const contractArtifacts = [...managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];
+  // The activation door is intentionally bounded to 64 canonical values. Registration publishes the
+  // complete schema closure through registerRemoteManagerAuthority; activation needs the canonical
+  // manager cluster document and its closure manifest to reconstruct the scoped serve surface.
+  const contractArtifacts = [artifacts.document, artifacts.manifest];
   const registrationProof = rawDigest(JSON.stringify({
     v: 1, space, owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, actors,
     identities: prepareRequest.identities,
@@ -583,6 +586,10 @@ try {
     store: hostStore, dir: managerAuthDir,
     request: activateRequest,
   });
+  const terminalProof = rawDigest(JSON.stringify({
+    v: 1, space, owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, actors,
+    identities: prepareRequest.identities, artifactDigests: [],
+  }));
 
   const releaseDir = join(participantRoot, ".cotal", "native-retirement");
   mkdirSync(releaseDir, { recursive: true, mode: 0o700 });
@@ -602,7 +609,7 @@ try {
       retirementMints++;
       const response = await cotalAuthProvider.managerServiceAuthority!({
         store: hostStore, dir: managerAuthDir,
-        request: remoteManagerAuthorityRequest(state, "cli", "retire", registrationProof, undefined, undefined, {
+        request: remoteManagerAuthorityRequest(state, "cli", "retire", terminalProof, undefined, undefined, {
           id: identity.id, target, opId, serveEpoch,
         }),
       });
