@@ -22,7 +22,8 @@
  * peers live again, without emitting a wholesale offline verdict and without a reconnect.
  *
  * Section 8 purges every key and kills the consumer so the rebind lands on an EMPTY bucket: the
- * bind-time pending count, not a delivery, is what makes that view current.
+ * bind-time pending count, not a delivery, is what makes that view current, retires the frozen
+ * roster, and keeps the view current without a rebind per window while the mesh stays empty.
  *
  * Sections 6 and 7 hold the return of the real kv.watch() so a rebind is mid-bind when stop() or
  * reconnect() lands: the late bind must install nothing (an epoch fence retires it).
@@ -313,10 +314,14 @@ try {
 
   // --- EMPTY BUCKET (rev-1421-grok BLOCK on c67c0bb9): a rebind onto zero keys delivers no entry,
   // so nothing refreshes lastPresenceWatchAt by delivery. The bind-time pending count is the one
-  // fact that says "nobody is present" and must turn the view current. A non-registering
-  // observer is populated while peers live, then every key is purged and its consumer killed.
+  // fact that says "nobody is present": it must turn the view current, retire the frozen roster,
+  // and NOT relapse to stale one window later (a rebind per TTL for as long as the mesh is empty).
+  // A non-registering observer is populated while peers live, then every key is purged and its
+  // consumer killed.
   {
     const { ep, log } = mkObserver("emptywatcher", false);
+    const emptyViews: string[] = [];
+    ep.on("presence-view", (v: { state: string }) => emptyViews.push(v.state));
     await ep.start();
     const populated = await until(() => ep.presenceView().state === "current" && live(ep).length >= PEERS, 3_000);
     ok("8.1 SETUP: a non-registering observer is populated and current while peers live",
@@ -325,16 +330,34 @@ try {
     await observer.stop();
     await jsm.streams.purge(stream);
     await killConsumersExcept([]);
-    const wentStaleEmpty = await until(() => ep.presenceView().state === "stale", TTL_MS * 2 + 500);
-    ok("8.2 with every key purged and its consumer gone the view reads stale",
-      wentStaleEmpty === true, ep.presenceView());
+    const wentStaleEmpty = await until(() => emptyViews.includes("stale"), TTL_MS * 2 + 500);
+    ok("8.2 with every key purged and its consumer gone the view was reported stale",
+      wentStaleEmpty === true, { views: emptyViews, view: ep.presenceView() });
     const reboundEmpty = await until(() => ep.presenceView().state === "current", TTL_MS * 3);
     ok("8.3 the rebind onto an EMPTY bucket turns the view current (nobody present is current knowledge)",
       reboundEmpty === true, { view: ep.presenceView(), warnings: log.warnings, errors: log.errors });
-    ok("8.4 that rebind is reported once as a warning and raises no error",
-      log.warnings.filter((w) => /rebound/.test(w)).length === 1 && log.errors.length === 0, log);
-    ok("8.5 the frozen roster ages out on the current view (no peer reads live on an empty bucket)",
-      (await until(() => live(ep).length === 0, TTL_MS * 3)) === true && ep.presenceView().state === "current", statusOf(ep));
+    ok("8.4 the frozen roster is retired at the rebind (no peer reads live on an empty bucket)",
+      (await until(() => live(ep).length === 0, TTL_MS)) === true, statusOf(ep));
+    const reboundCount = () => log.warnings.filter((w) => /rebound/.test(w)).length;
+    ok("8.5 that rebind was reported once and raised no error",
+      reboundCount() === 1 && log.errors.length === 0, log);
+    await wait(TTL_MS * 3);
+    ok("8.6 the empty-bucket view stays current for three further windows with no further rebind (silence on an empty bucket is not staleness)",
+      ep.presenceView().state === "current" && reboundCount() === 1 && emptyViews.filter((v) => v === "stale").length === 1,
+      { view: ep.presenceView(), rebinds: reboundCount(), views: emptyViews });
+    // POSITIVE CONTROL: the empty-bucket watch is a live watch; the first write lands on it.
+    const returner = new CotalEndpoint({
+      space, servers: SERVERS,
+      channels: [], consume: false, watchPresence: false, registerPresence: true,
+      heartbeatMs: HEARTBEAT_MS, ttlMs: TTL_MS,
+      card: { name: "returner", kind: "agent", role: "agent" },
+    });
+    returner.on("error", () => { /* unused */ });
+    await returner.start();
+    const returned = await until(() => ep.getRoster().some((p) => p.card.name === "returner" && p.status !== "offline"), 3_000);
+    ok("8.7 CONTROL: a peer joining the empty bucket is observed live on the rebound watch",
+      returned === true && ep.presenceView().state === "current", { roster: statusOf(ep), view: ep.presenceView() });
+    await returner.stop();
     await ep.stop();
   }
 

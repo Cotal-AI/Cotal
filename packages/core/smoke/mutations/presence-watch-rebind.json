@@ -53,9 +53,23 @@
     {
       "name": "R8 the bind-time pending peek is dropped, so a rebind onto an EMPTY bucket (no entry ever delivered) leaves the view stale for good (rev-1421-grok BLOCK on c67c0bb9)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (pending === 0) this.lastPresenceWatchAt = Date.now();\n",
+      "find": "        if (pending === 0) this.markPresenceBucketEmpty();\n",
       "replace": "",
       "expectRed": "8.3 the rebind onto an EMPTY bucket turns the view current (nobody present is current knowledge)"
+    },
+    {
+      "name": "R9 the empty-bucket marker no longer disarms the silence gate, so an empty mesh relapses to stale and rebinds (one consumer create and one warning) every window",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.presenceWatchEmpty = true;\n    this.lastPresenceWatchAt = 0;\n",
+      "replace": "    this.presenceWatchEmpty = true;\n    this.lastPresenceWatchAt = Date.now();\n",
+      "expectRed": "8.6 the empty-bucket view stays current for three further windows with no further rebind (silence on an empty bucket is not staleness)"
+    },
+    {
+      "name": "R10 the first delivery no longer clears the empty-bucket marker, so a watch that has heard peers still reads current through any later silence",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.lastPresenceWatchAt = Date.now();\n    this.presenceWatchEmpty = false;\n",
+      "replace": "    this.lastPresenceWatchAt = Date.now();\n",
+      "expectRed": "2.1 within ~TTL of silence the view reads stale (the observer noticed its own deafness)"
     }
   ],
   "suite": [

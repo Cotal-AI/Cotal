@@ -507,6 +507,9 @@ export class CotalEndpoint extends EventEmitter {
    *  awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
    *  iterator it got and installs nothing (see {@link startPresenceWatch}). */
   private presenceEpoch = 0;
+  /** The current watch was bound onto a bucket with NO keys (see {@link markPresenceBucketEmpty}).
+   *  Such a watch cannot deliver until someone writes, so its silence is not staleness. */
+  private presenceWatchEmpty = false;
   /** Wall-clock of the last rebind attempt, so a bucket that is silent because it is EMPTY (or a
    *  broker that keeps refusing the consumer create) is retried once per TTL, not per sweep tick. */
   private presenceRebindAt = 0;
@@ -1179,6 +1182,7 @@ export class CotalEndpoint extends EventEmitter {
     this.roster.clear();
     this.lastPresenceWatchAt = 0;
     this.presenceRebindAt = 0;
+    this.presenceWatchEmpty = false;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
     this.joinSeq.clear();
@@ -2130,6 +2134,7 @@ export class CotalEndpoint extends EventEmitter {
   presenceView(): PresenceView {
     if (!this.doWatch) return { state: "current", fresh: true };
     if (!this.presenceSnapshotPopulated) return { state: "unpopulated", fresh: false };
+    if (this.presenceWatchEmpty) return { state: "current", fresh: true };
     const staleSince = this.lastPresenceWatchAt + this.ttlMs;
     if (Date.now() < staleSince) return { state: "current", fresh: true };
     return { state: "stale", fresh: false, staleSince };
@@ -4928,12 +4933,11 @@ export class CotalEndpoint extends EventEmitter {
         if (!installed) return;
         if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
         // A bucket with no keys replays nothing, so the new watch cannot refresh
-        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present, and the
-        // frozen roster ages out on the next sweep (each peer's ts is a full window behind). Read
+        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. Read
         // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
         // from the same `info(true)` it used to place the isUpdate marker.
         const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
-        if (pending === 0) this.lastPresenceWatchAt = Date.now();
+        if (pending === 0) this.markPresenceBucketEmpty();
         this.emit("warning", new Error(
           `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
         ));
@@ -4984,8 +4988,33 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The watch was just bound onto a bucket with no keys. Every peer still in the roster is
+   *  known gone (its key is not there to replay), so it is marked offline now rather than aged
+   *  out against a delivery that cannot come. The silence gate is disarmed (`lastPresenceWatchAt`
+   *  back to its never-delivered value) and the view reads current until the first write lands:
+   *  without this the empty-bucket view relapsed to stale one window later and rebound again on
+   *  every window, one consumer create and one warning per TTL for as long as the mesh was
+   *  empty. What this does NOT cover: a consumer that dies again while the bucket is still empty
+   *  is not detectable by silence, so the first write after that is missed until the observer
+   *  restarts; a registering observer (the manager) never sits on an empty bucket. */
+  private markPresenceBucketEmpty(): void {
+    this.presenceWatchEmpty = true;
+    this.lastPresenceWatchAt = 0;
+    let changed = false;
+    for (const [id, p] of this.roster) {
+      if (p.status === "offline") continue;
+      const offline = this.toOffline(p);
+      this.roster.set(id, offline);
+      this.emit("presence", { type: "offline", presence: offline });
+      changed = true;
+    }
+    if (changed) this.emit("roster", this.getRoster());
+    this.emitPresenceViewIfChanged();
+  }
+
   private handleKvEntry(e: KvEntry): void {
     this.lastPresenceWatchAt = Date.now();
+    this.presenceWatchEmpty = false;
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
