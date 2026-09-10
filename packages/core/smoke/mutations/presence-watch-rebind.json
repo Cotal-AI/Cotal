@@ -39,15 +39,15 @@
     {
       "name": "R6 stop() no longer moves the epoch, so only a rebuild retires an in-flight bind and a stop-time bind still lands",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    // window to install a watch on this stopped endpoint.\n    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n",
-      "replace": "",
+      "find": "    this.stopped = true;\n    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n",
+      "replace": "    this.stopped = true;\n",
       "expectRed": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)"
     },
     {
       "name": "R7 clearConnectionScoped no longer moves the epoch, so an old epoch's late bind overwrites the fresh epoch's watch after a reconnect",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n    try {\n      this.presenceWatchIter?.stop();\n    } catch {\n      /* already closed with the connection */\n    }\n",
-      "replace": "    try {\n      this.presenceWatchIter?.stop();\n    } catch {\n      /* already closed with the connection */\n    }\n",
+      "find": "    this.streamMsgs.length = 0;\n    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n",
+      "replace": "    this.streamMsgs.length = 0;\n",
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch"
     },
     {

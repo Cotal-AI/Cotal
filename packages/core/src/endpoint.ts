@@ -1453,11 +1453,12 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The presence epoch moves first: a bind still awaiting the broker must find it moved
+   *  before any await below gives it a window to install a watch on a stopped endpoint
+   *  (see {@link startPresenceWatch}). */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    // Retire any presence bind still awaiting the broker before the awaits below give it a
-    // window to install a watch on this stopped endpoint.
     this.presenceEpoch++;
     this.presenceRebind = undefined;
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
