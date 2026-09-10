@@ -432,6 +432,19 @@ export class MeshAgent extends EventEmitter {
     return this.lastConnectionError;
   }
 
+  /** #1356: the space's presence bucket has been refusing writes since this time, or `undefined`.
+   *
+   *  Deliberately NOT folded into {@link connectionIssue}. That field has a defined relationship to
+   *  readiness which existing callers already read, and a bound endpoint surviving refused heartbeats
+   *  IS still ready — the neighbouring decision at the `warning` listener is correct and stands. This
+   *  is a distinct fact that can be true at the same time as `ready`, which is the actual shape of the
+   *  incident: connected, serving, and silently unable to publish presence.
+   *
+   *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
+  get presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+    return this.ep.presenceWriteFailure();
+  }
+
   /** The latest successful, non-empty inbox drain in this session. */
   get lastInboxDrainedAt(): number | undefined {
     return this._lastInboxDrainedAt;
@@ -509,7 +522,18 @@ export class MeshAgent extends EventEmitter {
         // session, and there is no next retry to explain or sleep toward.
         if (this._stopping) return;
         this.lastConnectionError = error.message;
-        this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
+        // #1356: "mesh unreachable" was asserted unconditionally, including while this same object
+        // held `transportConnected: true` — measured against a presence bucket whose writes the
+        // broker refuses: broker up, TCP connected, every sibling stream writable, and the operator
+        // told the mesh was down. An anonymous error makes an operator look; a wrong one makes them
+        // look in the wrong place. Both facts are already here, so report the one that is true.
+        const presence = this.ep.presenceWriteFailure();
+        const diagnosis = presence
+          ? `connected, but this space's presence bucket "${presence.bucket}" has refused every write for ${Math.round(presence.forMs / 1000)}s (${presence.error ?? error.message}) - the transport is fine and the fault is not the network`
+          : this._transportConnected
+            ? `transport is connected but the mesh bind did not complete (${error.message})`
+            : `mesh unreachable (${error.message})`;
+        this.log(`${diagnosis}; retrying in ${retryMs}ms`);
         await sleep(retryMs);
       }
     }

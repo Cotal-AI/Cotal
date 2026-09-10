@@ -487,6 +487,10 @@ export class CotalEndpoint extends EventEmitter {
   private firstConnect = true;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
+  /** #1356: when the presence bucket started refusing writes; undefined once one succeeds. */
+  private presenceWriteFailingSince?: number;
+  /** #1356: the broker's last refusal message, kept alongside the start time for diagnosis. */
+  private lastPresenceWriteError?: string;
   private readonly roster = new Map<string, Presence>();
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
@@ -1090,7 +1094,21 @@ export class CotalEndpoint extends EventEmitter {
     }
 
     if (this.doRegister) {
-      await this.publishPresence();
+      // #1356: this await is bounded already — a refused presence write returns no response at all,
+      // so it surfaces as the JetStream request TIMEOUT (~5s), once, with no retry here. What it did
+      // NOT do was say what failed: the bare `timeout` names no bucket, no space and no subsystem,
+      // and a launcher that catches it has nothing to act on. The lifecycle-proof failure a few lines
+      // above throws a fully explanatory message; this one is held to the same standard. Still fails
+      // rather than degrading — SPEC 13.1 fail-before-presence means a registering agent that cannot
+      // publish presence must not come up as though it had.
+      try {
+        await this.publishPresence();
+      } catch (e) {
+        const detail = (e as Error)?.message ?? String(e);
+        throw new Error(
+          `presence registration failed for ${this.card.id}: the space's presence KV bucket "${presenceBucket(this.space)}" did not accept this endpoint's first write (${detail}). The bucket can be OPENED and WATCHED while refusing every write, so a healthy-looking connection does not rule this out; a broker whose store has latched refuses until it is restarted, and no client can clear it (#1356).`,
+        );
+      }
       this.heartbeatTimer = setInterval(() => {
         this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }, this.heartbeatMs);
@@ -4838,7 +4856,37 @@ export class CotalEndpoint extends EventEmitter {
     // the publisher — this covers stop(), setStatus("offline"), and any future offline publish site, so
     // the raw KV record is compliant, not only the observer-side roster materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
-    await this.kv.put(this.card.id, JSON.stringify(record));
+    try {
+      await this.kv.put(this.card.id, JSON.stringify(record));
+    } catch (e) {
+      // #1356: a broker can put this bucket into a state where it refuses every write and never
+      // recovers, and the write is the ONLY thing that fails — open and watch both still succeed, so
+      // nothing else here notices. Record WHEN the refusals started, at the one site that knows the
+      // failing write was a presence write; a caller cannot infer that from the generic `warning`
+      // stream, which carries any recoverable error.
+      this.presenceWriteFailingSince ??= Date.now();
+      this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
+      throw e;
+    }
+    this.presenceWriteFailingSince = undefined;
+    this.lastPresenceWriteError = undefined;
+  }
+
+  /** #1356: the presence bucket has been refusing writes since this time, or `undefined` when the
+   *  last publish succeeded. Cleared by the first successful write, so a survived blip reads as
+   *  healthy and only a SUSTAINED failure carries a duration.
+   *
+   *  Presence writes are the CANARY, not the scope: the broker can disable JetStream account-wide
+   *  while the NATS connection stays up, so a caller must not read this as "only presence is
+   *  affected". It reports what was observed, not how far the fault extends. */
+  presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+    if (this.presenceWriteFailingSince === undefined) return undefined;
+    return {
+      since: this.presenceWriteFailingSince,
+      forMs: Date.now() - this.presenceWriteFailingSince,
+      error: this.lastPresenceWriteError,
+      bucket: presenceBucket(this.space),
+    };
   }
 
   private async startPresenceWatch(): Promise<void> {
