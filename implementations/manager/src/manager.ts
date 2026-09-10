@@ -332,8 +332,9 @@ export interface ManagerOptions {
    *  authority). Defaults to the workstation FS store over `workspaceRoot`, so a local `cotal up` is
    *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`).
    *  `start()` challenges the daemon's `reloadStoreIdentity` before the first remint and refuses
-   *  naming both stores when they diverge. An injected store must also set `COTAL_SECRET_STORE` to
-   *  the same coordinate the daemon process uses. */
+   *  naming both stores when they diverge. No bound daemon is not a named store, so start proceeds
+   *  and remint writes this store; a hung rail (request timeout) fails closed. An injected store
+   *  must also set `COTAL_SECRET_STORE` to the same coordinate the daemon process uses. */
   secretStore?: SecretStore;
   /** P2 item 6: the global ceiling on concurrently live §13.6 sessions this manager will serve.
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
@@ -879,6 +880,12 @@ function injectedManagerStoreIdentity(): SecretStoreIdentity {
       "ManagerOptions.secretStore requires COTAL_SECRET_STORE so the manager and delivery daemon can name the same authority (never a silent local-root fallback)",
     );
   return { kind: "injected", coordinate };
+}
+
+/** True only when the delivery-admin rail has no bound responder. A timeout is a hung rail, not absence. */
+function isAbsentDeliveryAdmin(msg: string): boolean {
+  if (/timeout/i.test(msg)) return false;
+  return /no responders|\b503\b/i.test(msg);
 }
 
 export class Manager {
@@ -1438,15 +1445,20 @@ export class Manager {
   }
 
   /** Construction-time proof that this manager remints into the store the delivery daemon reloads
-   *  from. Fingerprint-only `reloadCreds` is safe only after this. A missing daemon is not a
-   *  divergence (the 75% backstop still adopts a shared store); two named, different stores are. */
+   *  from. Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores are
+   *  a refused start. A daemon that is not bound yet is not a named store: `cotal up` starts
+   *  delivery before the manager, but a manager may also start with no daemon (tests, delayed
+   *  delivery). Remint still writes this manager's store; a later daemon on that same store
+   *  adopts at launch and on its 75% re-read. The two-root defect is two live named stores, which
+   *  this challenge can only see when a daemon answers. A request timeout is not absence: a hung
+   *  rail would skip the proof, so it fails closed. */
   private async assertDaemonSharesSecretStore(): Promise<void> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
       const msg = (e as Error).message;
-      if (/no responders|503|timeout/i.test(msg)) return;
+      if (isAbsentDeliveryAdmin(msg)) return;
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
     }
     if (!reply.ok)
