@@ -36,7 +36,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -186,6 +186,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
       if (!provider.validateRemoteRetainedAgent)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed remote retained-agent validation protocol`);
+      if (!provider.scanRemoteManagerGoalIndex)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager goal-index scan protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
@@ -295,6 +297,29 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             request,
           });
           return retainedAgentAuthority(result, request);
+        },
+        scanGoalIndex: async () => {
+          const request = {
+            v: 1 as const,
+            kind: "manager-goal-index-scan" as const,
+            space,
+            actor: "cli",
+            instanceId: state.instanceId,
+            managerLifecycleUid: state.lifecycleUid,
+            requestId: `scan${mintLifecycleUid()}`,
+            registrationProof: retainedRegistrationProof,
+            serveEpoch: registered.processEpoch,
+            identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as {
+              supervisor: { id: string }; executor: { id: string }; serve: { id: string };
+              goalWriter: { id: string }; sessionLedger: { id: string };
+            },
+          };
+          const result = await provider.scanRemoteManagerGoalIndex!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          return remoteManagerGoalIndexEntries(result, request, material.owner);
         },
       };
     } catch (e) {

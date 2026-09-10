@@ -798,6 +798,7 @@ try {
       });
       return retainedAgentAuthority(result, request);
     },
+    scanGoalIndex: async () => [],
   };
 
   manager = new Manager({

@@ -30,6 +30,7 @@ const base = {
   mintSessionServing: async () => "",
   mintRetirementRequester: async () => "",
   validateRetainedAgent: async () => { throw new Error("not used by retirement ordering smoke"); },
+  scanGoalIndex: async () => [],
 };
 type Internals = {
   driveDeprovision(agent: { id: string; name: string; lifecycleUid: string; userOwner?: string }): Promise<void>;

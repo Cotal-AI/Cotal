@@ -66,6 +66,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { issueRemoteManagerAuthority } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
@@ -147,6 +148,11 @@ export interface AuthAuthorityPlane {
     scope: string[];
     request: RemoteRetainedAgentValidationRequest;
   }) => Promise<RemoteRetainedAgentValidationRequest>;
+  scanManagerGoalIndex: (args: {
+    owner: string;
+    scope: string[];
+    request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagerGoalIndexScanResult>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -597,6 +603,17 @@ export async function openAuthAuthorityPlane(opts: {
         },
       });
     },
+    scanManagerGoalIndex: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      const authorized = await authorizeRemoteManagerGoalIndexScan({
+        owner, scope, proofSecret: dataAccount.signingSeed, space, request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+      return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
+    },
     fenced,
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
@@ -805,6 +822,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     ownerSecret,
     managerServiceAuthority: plane.issueManagerServiceAuthority,
     validateRetainedAgent: plane.validateRetainedAgent,
+    scanManagerGoalIndex: plane.scanManagerGoalIndex,
     secrets,
     retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
     cap,
@@ -899,6 +917,7 @@ interface HandlerCtx {
   ownerSecret: string | Uint8Array;
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
   validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
+  scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   cap: string;
@@ -914,7 +933,7 @@ interface HandlerCtx {
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "validateRetainedAgent">,
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "validateRetainedAgent" | "scanManagerGoalIndex">,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -940,6 +959,8 @@ export async function dispatchManagerAuthorityRequest(
     });
     return completeRemoteRetainedAgentValidation(retained, owner, authority);
   }
+  if (request.kind === "manager-goal-index-scan")
+    return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
   return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
 }
 

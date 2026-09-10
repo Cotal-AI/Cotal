@@ -134,6 +134,35 @@ export interface RemoteRetainedAgentValidationResult {
   authority: import("./auth-provider.js").RetainedAgentAuthority;
 }
 
+/** Closed host-owned boot scan. The participant supplies no filter and receives parsed manager
+ * goal-index rows for its authenticated owner only, never a records credential or raw KV body. */
+export interface RemoteManagerGoalIndexScanRequest {
+  v: 1;
+  kind: "manager-goal-index-scan";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+}
+
+export interface RemoteManagerGoalIndexScanResult {
+  v: 1;
+  kind: "manager-goal-index-scan";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  entries: import("./endpoint-action.js").GoalIndexEntry[];
+}
+
 export function remoteManagerActors(instanceId: string): RemoteManagerActors {
   return {
     supervisor: `manager_${instanceId}`,

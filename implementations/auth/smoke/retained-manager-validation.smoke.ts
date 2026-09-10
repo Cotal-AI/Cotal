@@ -145,6 +145,7 @@ await cell("actual host dispatcher runs the fixed provider validation and return
     const result = await dispatchManagerAuthorityRequest({
       space, dir, secrets: store,
       managerServiceAuthority: async () => { throw new Error("wrong dispatcher arm"); },
+      scanManagerGoalIndex: async () => { throw new Error("wrong dispatcher arm"); },
       validateRetainedAgent: ({ owner: requestOwner, scope, request: candidate }) =>
         authorizeRemoteRetainedAgentValidation({
           owner: requestOwner, scope, request: candidate, space, proofSecret,

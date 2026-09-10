@@ -379,6 +379,9 @@ export interface ManagerOptions {
       actorToken: string;
       sentinelCreds: string;
     }) => Promise<import("@cotal-ai/core").RetainedAgentAuthority>;
+    /** Host-owned boot enumeration. It returns parsed, owner-scoped manager goal-index entries and
+     * never hands the participant records-stream consumer authority. */
+    scanGoalIndex: () => Promise<import("@cotal-ai/core").GoalIndexEntry[]>;
     /** Pinned public auth-service base used by retained managed children for fresh bearers. The
      * signerless Manager must select `agent-bearer --exchange-url`, never the local `--dir` arm. */
     agentBearerExchangeUrl: string;
@@ -5957,7 +5960,12 @@ export class Manager {
     try {
       let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
       if (this.remoteAuthority) {
-        entries = await this.withEndpointServeExecutor(({ recordsKv }) => listGoalIndex(recordsKv, MANAGER_ENDPOINT));
+        entries = (await this.remoteAuthority.scanGoalIndex()).map((entry) => ({
+          ref: { endpoint: entry.endpoint, caller: { owner: entry.owner, actor: entry.actor, uid: entry.uid }, goalId: entry.goalId },
+          iid: entry.iid,
+          ...(entry.allocated !== undefined ? { allocated: entry.allocated } : {}),
+          ...(entry.note !== undefined ? { note: entry.note } : {}),
+        }));
       } else {
         const nc = this.auth
           ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })

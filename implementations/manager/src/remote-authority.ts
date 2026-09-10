@@ -9,6 +9,8 @@ import {
   type Identity,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
+  type RemoteManagerGoalIndexScanRequest,
+  type RemoteManagerGoalIndexScanResult,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RetainedAgentAuthority,
@@ -186,6 +188,37 @@ export function retainedAgentAuthority(
       (authority.parent !== undefined && typeof authority.parent !== "string"))
     throw new Error("manager retained-agent validation returned an invalid or replacement authority");
   return authority;
+}
+
+/** Bind a host-owned goal-index scan back to its request and validate every returned row before the
+ * manager acts on it. The HTTP result is untrusted input even though the host authenticated it. */
+export function remoteManagerGoalIndexEntries(
+  result: RemoteManagerGoalIndexScanResult,
+  request: RemoteManagerGoalIndexScanRequest,
+  expectedOwner: string,
+): import("@cotal-ai/core").GoalIndexEntry[] {
+  const envelopeKeys = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "entries"];
+  if (result === null || typeof result !== "object" || Array.isArray(result) || Object.keys(result).sort().join(",") !== envelopeKeys.sort().join(","))
+    throw new Error("manager goal-index scan returned a non-closed result");
+  if (result.v !== 1 || result.kind !== "manager-goal-index-scan" || result.space !== request.space ||
+      result.owner !== expectedOwner || result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch || !Array.isArray(result.entries))
+    throw new Error("manager goal-index scan returned different lifecycle coordinates");
+  return result.entries.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+        Object.keys(entry).some((key) => !["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"].includes(key)) ||
+        entry.v !== 1 || entry.endpoint !== "manager" || entry.owner !== expectedOwner ||
+        ![entry.actor, entry.uid, entry.goalId, entry.iid].every((value) => typeof value === "string" && value.length > 0) ||
+        (entry.note !== undefined && (typeof entry.note !== "string" || entry.note.length === 0 || entry.note.length > 65_536)))
+      throw new Error(`manager goal-index scan returned invalid entry ${index}`);
+    if (entry.allocated !== undefined && (!entry.allocated || typeof entry.allocated !== "object" || Array.isArray(entry.allocated) ||
+        Object.keys(entry.allocated).some((key) => !["name", "actor", "uid", "readinessDeadlineMs"].includes(key)) ||
+        ![entry.allocated.name, entry.allocated.actor, entry.allocated.uid].every((value) => typeof value === "string" && value.length > 0) ||
+        (entry.allocated.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(entry.allocated.readinessDeadlineMs) || entry.allocated.readinessDeadlineMs <= 0))))
+      throw new Error(`manager goal-index scan returned invalid allocation in entry ${index}`);
+    return entry;
+  });
 }
 
 /** Combine a host-signed JWT with the participant's private seed, after exact identity checks. */

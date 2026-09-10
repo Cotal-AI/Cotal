@@ -2,12 +2,14 @@
 import assert from "node:assert/strict";
 import { mintLifecycleUid, newIdentity, remoteManagerActors } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
+import { remoteManagerGoalIndexEntries } from "../src/remote-authority.js";
 
 const instanceId = mintLifecycleUid();
 const identities = {
   supervisor: newIdentity(), executor: newIdentity(), serve: newIdentity(),
   goalWriter: newIdentity(), sessionLedger: newIdentity(),
 };
+let hostScans = 0;
 const manager = new Manager({
   space: "demo",
   runtime: "pty",
@@ -24,6 +26,7 @@ const manager = new Manager({
     mintRetirementRequester: async () => "",
     prepareAgentRetirement: async () => {},
     validateRetainedAgent: async () => { throw new Error("not used"); },
+    scanGoalIndex: async () => { hostScans++; return []; },
   },
 }) as unknown as {
   managerInstanceId: string;
@@ -47,7 +50,7 @@ manager.withOpenServeConnection = async () => {
   throw new Error("remote authority must not use a bare connection");
 };
 await manager.deregisterServiceOnStop();
-assert.deepEqual({ scoped, bare }, { scoped: 1, bare: 0 });
+assert.deepEqual({ scoped, bare, hostScans }, { scoped: 1, bare: 0, hostScans: 0 });
 
 manager.goalWriter = {};
 manager.dial = async () => {
@@ -59,7 +62,7 @@ manager.withEndpointServeExecutor = async () => {
   return [] as never;
 };
 await manager.reconcileGoalIndex();
-assert.deepEqual({ scoped, bare }, { scoped: 2, bare: 0 });
+assert.deepEqual({ scoped, bare, hostScans }, { scoped: 1, bare: 0, hostScans: 1 });
 
 const guarded = new Manager({
   space: "demo", runtime: "pty",
@@ -70,8 +73,31 @@ const guarded = new Manager({
     serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
     mintSessionServing: async () => "", mintRetirementRequester: async () => "",
     prepareAgentRetirement: async () => {}, validateRetainedAgent: async () => { throw new Error("not used"); },
+    scanGoalIndex: async () => [],
   },
 }) as unknown as { withOpenServeConnection<T>(fn: unknown): Promise<T> };
 await assert.rejects(guarded.withOpenServeConnection(async () => undefined), /authenticated mesh must use the scoped endpoint-serve executor/);
 
-console.log("remote authority operations: 3 passed, 0 failed");
+const owner = `u_${"a".repeat(26)}`;
+const request = {
+  v: 1 as const, kind: "manager-goal-index-scan" as const, space: "demo", actor: "cli", instanceId,
+  managerLifecycleUid: mintLifecycleUid(), requestId: `scan${mintLifecycleUid()}`,
+  registrationProof: `sha256:${"a".repeat(64)}`, serveEpoch: 7,
+  identities: Object.fromEntries(Object.entries(identities).map(([name, identity]) => [name, { id: identity.id }])) as {
+    supervisor: { id: string }; executor: { id: string }; serve: { id: string };
+    goalWriter: { id: string }; sessionLedger: { id: string };
+  },
+};
+const entry = { v: 1 as const, endpoint: "manager", owner, actor: "cli", uid: mintLifecycleUid(), goalId: `goal${mintLifecycleUid()}`, iid: instanceId };
+const result = {
+  v: 1 as const, kind: "manager-goal-index-scan" as const, space: request.space, owner, actor: request.actor,
+  instanceId: request.instanceId, managerLifecycleUid: request.managerLifecycleUid, requestId: request.requestId,
+  registrationProof: request.registrationProof, serveEpoch: request.serveEpoch, entries: [entry],
+};
+assert.deepEqual(remoteManagerGoalIndexEntries(result, request, owner), [entry]);
+assert.throws(() => remoteManagerGoalIndexEntries({ ...result, extra: true } as never, request, owner), /non-closed result/);
+assert.throws(() => remoteManagerGoalIndexEntries({ ...result, actor: "other" }, request, owner), /different lifecycle coordinates/);
+assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, owner: `u_${"b".repeat(26)}` }] }, request, owner), /invalid entry 0/);
+assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, extra: true } as never] }, request, owner), /invalid entry 0/);
+
+console.log("remote authority operations: 8 passed, 0 failed");

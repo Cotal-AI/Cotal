@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -213,6 +213,43 @@ export const cotalAuthProvider: AuthProvider = {
     if (!res.ok)
       throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
     return body as RemoteManagerAuthorityMaterial;
+  },
+
+  async scanRemoteManagerGoalIndex({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerGoalIndexScanRequest }): Promise<RemoteManagerGoalIndexScanResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before scanning manager goal indexes`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+      body: JSON.stringify({ idpToken: idpJwt, request }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch((error) => { throw new Error(`the manager goal-index endpoint for space "${request.space}" did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+    if (response.status >= 300 && response.status < 400)
+      throw new Error(`the manager goal-index endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`signed in, but manager goal-index scan was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    return body as RemoteManagerGoalIndexScanResult;
   },
 
   async validateRemoteRetainedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRetainedAgentValidationRequest }): Promise<RemoteRetainedAgentValidationResult> {

@@ -174,7 +174,7 @@ await cell("supervise authority has no arbitrary stream/KV/static mint surface",
   assert.equal(all.some((row) => row.includes("STREAM.CREATE") || row.includes("STREAM.DELETE") || row.includes("$KV.>")), false);
   assert.equal(all.every((row) => !row.includes("epgate.manager.") || row.includes(instanceId)), true);
 });
-await cell("only the short remote executor can enumerate records for the required goal-index sweep", () => {
+await cell("neither remote manager credential carries records consumer authority", () => {
   const actors = remoteManagerActors(instanceId);
   const rows = (actor: string) => (permissionsFor("remote-manager", "demo", {
     owner: retirementTarget.owner, actor, connId: newIdentity().id, lifecycleUid,
@@ -182,7 +182,7 @@ await cell("only the short remote executor can enumerate records for the require
   const executor = rows(actors.executor);
   const supervisor = rows(actors.supervisor);
   const expected = ["CREATE", "INFO", "DELETE"].map((verb) => `$JS.API.CONSUMER.${verb}.KV_cotal_records_demo.>`);
-  assert.equal(expected.every((row) => executor.includes(row)), true);
+  assert.equal(expected.every((row) => !executor.includes(row)), true);
   assert.equal(expected.every((row) => !supervisor.includes(row)), true);
   assert.equal(executor.some((row) => row.includes("CONSUMER.MSG.NEXT") || row.includes("$JS.ACK")), false);
 });

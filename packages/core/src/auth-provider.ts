@@ -3,6 +3,8 @@ import type { SecretStore } from "./secret-store.js";
 import type {
   RemoteManagerAuthorityMaterial,
   RemoteManagerAuthorityRequest,
+  RemoteManagerGoalIndexScanRequest,
+  RemoteManagerGoalIndexScanResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
 } from "./remote-manager-authority.js";
@@ -70,6 +72,13 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** Host-owned manager boot scan. The provider authenticates the human and returns only parsed,
+   * owner-scoped manager goal-index entries. No raw records or consumer authority crosses. */
+  scanRemoteManagerGoalIndex?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerGoalIndexScanRequest;
+  }): Promise<RemoteManagerGoalIndexScanResult>;
   /**
    * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
    * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.

@@ -249,8 +249,12 @@ The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinn
 base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
 not select the local `--dir` arm, which depends on a host-only auth-service process record.
 
-The remote authority's instance executor remains the scoped maintenance credential for the manager's
-boot `goalidx` sweep and clean service deregistration. It is short-lived. A hosted process expected to
+The remote authority's instance executor remains the scoped maintenance credential for clean service
+deregistration and exact instance registration operations. It carries no records-stream consumer
+lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
+returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
+consumer connection and its create/delete rights. The executor remains a five-minute credential for
+registration operations and clean deregistration. A hosted process expected to
 run beyond that window cannot yet renew it in place. Clean deregistration then fails loud and the
 operator removes the stale instance with `cotal deregister-instance`. Wiring the typed `renew` phase
 into the running manager remains required for unattended long-lived hosting.
