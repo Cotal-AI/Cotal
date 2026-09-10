@@ -234,17 +234,24 @@ try {
     gateBAfterRefusal?.generation === 1 && gateBAfterRefusal.state === "open", gateBAfterRefusal);
 
   console.log("4. is that control a DISCRIMINATOR? re-run its observation through a LOOSENED predicate");
-  // The single most plausible off-by-one a future edit introduces: `<` widened to `<=`, which reads
-  // an in-flight slot as orphaned. If section 3 would stay green under this, it is guarding nothing.
+  // The single most plausible off-by-one a future edit introduces: admitting the EQUAL generation,
+  // which reads an in-flight slot as orphaned. If section 3 would stay green under this, it is
+  // guarding nothing.
+  //
+  // Read the slot DEFENSIVELY rather than asserting it non-null. Under exactly the mutant this
+  // section models, section 3's registration succeeds and the slot is released, so `provisional`
+  // is gone by here — and a `!` would then throw a TypeError that kills the run before the final
+  // banner, which `mutation-proof` grades INCONCLUSIVE instead of the kill section 3 just earned.
+  // A suite must not die on the input its own subject mutation produces.
   {
-    const slotGen = govDuringFlight!.provisional!.generation;
+    const slotGen = govDuringFlight?.provisional?.generation;
     const liveGen = await observeHolderGeneration(IID_A);
-    const shipped = liveGen > slotGen;          // the predicate the fix ships
-    const loosened = liveGen >= slotGen;        // the off-by-one
+    const shipped = slotGen !== undefined && liveGen > slotGen;   // the predicate the fix ships
+    const loosened = slotGen !== undefined && liveGen >= slotGen; // the off-by-one
     c("at section 3's exact coordinate the SHIPPED predicate refuses and the LOOSENED one admits",
-      shipped === false && loosened === true, { slotGen, liveGen, shipped, loosened });
+      slotGen !== undefined && shipped === false && loosened === true, { slotGen, liveGen, shipped, loosened });
     c("...so section 3 is a real discriminator: a loosened predicate turns THAT cell red, not this one",
-      loosened !== shipped, { shipped, loosened });
+      slotGen !== undefined && loosened !== shipped, { slotGen, shipped, loosened });
   }
 
   console.log("5. THE FIX: reconciliation reopens the holder's gate, and B's own start reclaims the slot");
