@@ -18,7 +18,10 @@
  *
  * AXES 1-15 were derived from the origin/main read pattern BEFORE any 1429 lane artifact was
  * opened (commit 8ff8eb763). Everything after that line is append-only: ADOPTED / NOVEL / LANE
- * axes labelled as such, then the corpus, the loader, and the two grading pairs.
+ * axes labelled as such, then the corpus, the loader, and the two grading pairs. The forbidden
+ * set is derived behaviourally from applyAguiEgressPolicy over Object.values(AGUI_EVENT_TYPE)
+ * from the #1429 acceptance harness; the three ADOPTED axes are also from #1429, rebuilt here
+ * rather than copied.
  *
  * Follows `packages/lang/smoke/differential.smoke.ts`: CORPUS / DIVERGENT / HELD, both-direction
  * grading, and prose on what a zero does not prove. #1426 is the adjacent reachability gap;
@@ -166,26 +169,27 @@ export const ORIGINAL_AXES = [
 ] as const;
 
 /**
- * Append-only over ORIGINAL_AXES. Labels: ADOPTED (mgr-695's instrument had the idea, we rebuilt
- * the fixture), NOVEL (only we named it), LANE (manager-supplied, not derived here).
+ * Append-only over ORIGINAL_AXES. Labels: ADOPTED (#1429 named the axis; we rebuilt the
+ * fixture), NOVEL (only we named it), LANE (manager-supplied, not derived here).
  */
 export const APPENDED_AXES = [
   {
     id: "same-part-ordering",
     origin: "ADOPTED",
     rationale:
-      "One frame that both fails parse and carries a forbidden event. Across-parts is a different catch; parseAguiFrame runs before the scan, so within one part unreadable beats forbidden.",
+      "#1429: one frame that both fails parse and carries a forbidden event. Across-parts is a different catch; parseAguiFrame runs before the scan, so within one part unreadable beats forbidden.",
   },
   {
     id: "event-type-throw",
     origin: "ADOPTED",
-    rationale: "A throwing getter on events[i].type, inside an element the scan reads after parse.",
+    rationale:
+      "#1429: a throwing getter on events[i].type, inside an element the scan reads after parse.",
   },
   {
     id: "representation-flip",
     origin: "ADOPTED",
     rationale:
-      "Successive reads of events disagree: clean on reads 1..N and forbidden after. This is the axis that grades 'four reads in the same order', rebuilt over both forbidden types and the allowed set, not lifted as a TEXT-vs-RESULT shape.",
+      "#1429: successive reads of events disagree: clean on reads 1..N and forbidden after. This is the axis that grades 'four reads in the same order', rebuilt over both forbidden types and the allowed set, not lifted as a TEXT-vs-RESULT shape.",
   },
   {
     id: "events-throw",
@@ -286,6 +290,9 @@ const EPOCH = "ep-1";
 const MARK = "SYNTHETIC-PLACEHOLDER-1433-EGRESS-DIFF-NOT-A-SECRET";
 
 const knownTypes = Object.values(AGUI_EVENT_TYPE);
+// #1429: enumerate the forbidden set from the live policy, not a hand-written list. A type
+// applyAguiEgressPolicy drops is forbidden; every other known type is allowed. Adding a new
+// AGUI_EVENT_TYPE either extends coverage or fails the coverage cell; it cannot silently skip.
 const forbiddenTypes = knownTypes.filter(
   (t) => applyAguiEgressPolicy([{ type: t } as AguiEvent]).length === 0,
 );
