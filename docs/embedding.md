@@ -183,8 +183,9 @@ divergent pair is refused naming both stores. The identity is the store the daem
 reloads: an injected coordinate, the workstation root only when `--creds` is
 `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
 file's own directory for any other `--creds` path, or the workstation root. Uninjected
-`--creds` that names a different root from process cwd is refused at start, naming both
-roots, because membership-rw still resolves via `findCotalRoot`. It never
+`--creds` that names one real workstation while process cwd resolves another is refused
+at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
+path that is not under any `.cotal` tree is not that case and is not refused here. It never
 walks ancestors with `findCotalRoot`. No bound daemon is not a named
 store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
 An injected store names its coordinate in

@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sameSecretStoreIdentity } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment } from "@cotal-ai/workspace";
-import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf } from "../src/delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, workspaceRootFromCredsPath } from "../src/delivery.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -95,19 +95,27 @@ try {
   ok("correct space + delivery.creds still SAME", sameSecretStoreIdentity(canonicalArm, id(credsC)));
   ok("canonical arm still agrees", sameSecretStoreIdentity(canonicalArm, fromC));
 
-  assertUninjectedCredsSharesCwdRoot({ injected: false, identity: fromC, cwdRoot: resolve(workspaceC) });
-  ok("--creds canonical under the cwd root is accepted", true);
+  ok("canonical --creds names its workstation", workspaceRootFromCredsPath(credsC) === resolve(workspaceC));
+  ok("legacy shallow --creds names the same workstation", workspaceRootFromCredsPath(legacyShallow) === resolve(workspaceC));
+  ok("a --creds path not under .cotal names no workstation", workspaceRootFromCredsPath(credsForeign) === undefined);
+
+  assertUninjectedCredsSharesCwdRoot({ injected: false, credsPath: credsC, cwdRoot: resolve(workspaceC) });
+  ok("--creds canonical under the cwd workspace is accepted", true);
+  assertUninjectedCredsSharesCwdRoot({ injected: false, credsPath: legacyShallow, cwdRoot: resolve(workspaceC) });
+  ok("--creds legacy shallow under the cwd workspace is accepted", true);
   throws(
-    "--creds canonical under a different cwd is refused naming both roots",
-    () => assertUninjectedCredsSharesCwdRoot({ injected: false, identity: fromC, cwdRoot: resolve(workspaceA) }),
+    "--creds canonical under a different real workspace is refused naming both workspaces",
+    () => assertUninjectedCredsSharesCwdRoot({ injected: false, credsPath: credsC, cwdRoot: resolve(workspaceA) }),
     resolve(workspaceC),
   );
   throws(
-    "--creds vs cwd refusal also names the cwd root",
-    () => assertUninjectedCredsSharesCwdRoot({ injected: false, identity: fromC, cwdRoot: resolve(workspaceA) }),
+    "--creds vs cwd refusal also names the cwd workspace",
+    () => assertUninjectedCredsSharesCwdRoot({ injected: false, credsPath: credsC, cwdRoot: resolve(workspaceA) }),
     resolve(workspaceA),
   );
-  assertUninjectedCredsSharesCwdRoot({ injected: true, identity: fromC, cwdRoot: resolve(workspaceA) });
+  assertUninjectedCredsSharesCwdRoot({ injected: false, credsPath: credsForeign, cwdRoot: resolve(workspaceA) });
+  ok("--creds not under a .cotal tree is not refused here", true);
+  assertUninjectedCredsSharesCwdRoot({ injected: true, credsPath: credsC, cwdRoot: resolve(workspaceA) });
   ok("injected composition is unaffected by a cwd mismatch", true);
 
   const prev = process.env.COTAL_SECRET_STORE;

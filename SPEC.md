@@ -4152,10 +4152,11 @@ single-function profiles, each granting only the verbs its function needs and no
   identity, swaps its connection, and reconnects the membership feed's rw connection, replying
   with the adopted JWT windows); `reloadStoreIdentity`, the store-identity challenge that
   names the SecretStore the daemon reloads from (the workstation root only when `--creds` is
-  `<root>/.cotal/<spaceSegment(space)>/delivery.creds` and that root is also process cwd, because
-  uninjected membership-rw still resolves via `findCotalRoot`; the file's own directory otherwise, an injected coordinate,
-  or the workstation root of the canonical arm; never a `findCotalRoot` ancestor walk) so a
-  manager whose remint store diverges is refused before that remint, including a daemon that
+  `<root>/.cotal/<spaceSegment(space)>/delivery.creds`; the file's own directory otherwise, an injected coordinate,
+  or the workstation root of the canonical arm; never a `findCotalRoot` ancestor walk). Uninjected `--creds`
+  that names one real workstation while process cwd resolves another is refused at start, because
+  membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
+  case. A manager whose remint store diverges is refused before that remint, including a daemon that
   bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement

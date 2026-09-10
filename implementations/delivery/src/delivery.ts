@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -88,23 +89,53 @@ export function reloadStoreIdentityFromCredsPath(credsPath: string, space: strin
 }
 
 /**
- * Uninjected `--creds` must name the same workstation root membership-rw will
- * resolve: `startMembership` falls back to `findCotalRoot()` (cwd), not the
- * `--creds` file. A challenge that certifies the delivery file while membership
- * reads another root is a false same-store proof. Injected compositions skip
- * this: both rails take the injected store. Never silently prefer either root.
+ * Workstation root implied by a `--creds` path: the parent of the enclosing
+ * `.cotal` directory. A path that is not under any `.cotal` tree names no
+ * workstation (a flat mount, a container file) and returns undefined.
+ *
+ * Distinct from {@link reloadStoreIdentityFromCredsPath}, which names the
+ * SecretStore the manager challenges. That identity stays the file's own
+ * directory for a legacy shallow path; this helper answers a different
+ * question so the cwd guard can compare two workspace roots.
+ */
+export function workspaceRootFromCredsPath(credsPath: string): string | undefined {
+  let dir = dirname(resolve(credsPath));
+  for (;;) {
+    if (basename(dir) === ".cotal") {
+      const root = dirname(dir);
+      return root === dir ? undefined : root;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Uninjected `--creds` that names one real workstation root while process cwd
+ * resolves another is a false same-store proof: membership-rw still resolves
+ * via `findCotalRoot()` (cwd), not the `--creds` file. Fire only when BOTH
+ * sides resolve real workstation roots and those differ. A path that is not
+ * under a `.cotal` tree names no workstation, so this check does not fire
+ * (the manager challenge already diverges on that composition). Injected
+ * compositions skip this: both rails take the injected store. Never silently
+ * prefer either root.
  */
 export function assertUninjectedCredsSharesCwdRoot(opts: {
   injected: boolean;
-  identity: SecretStoreIdentity;
+  credsPath: string;
   cwdRoot?: string;
 }): void {
   if (opts.injected) return;
   const cwdRoot = opts.cwdRoot ?? findCotalRoot();
+  if (!existsSync(join(cwdRoot, ".cotal"))) return;
+  const credsWorkspace = workspaceRootFromCredsPath(opts.credsPath);
+  if (credsWorkspace === undefined) return;
   const cwdIdentity: SecretStoreIdentity = { kind: "fs", root: cwdRoot };
-  if (sameSecretStoreIdentity(opts.identity, cwdIdentity)) return;
+  const credsIdentity: SecretStoreIdentity = { kind: "fs", root: credsWorkspace };
+  if (sameSecretStoreIdentity(credsIdentity, cwdIdentity)) return;
   throw new Error(
-    `delivery: --creds reloads from ${formatSecretStoreIdentity(opts.identity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (process cwd). Pass both the same workstation root, or inject one SecretStore.`,
+    `delivery: --creds names workstation ${formatSecretStoreIdentity(credsIdentity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (process cwd). Pass both the same workstation root, or inject one SecretStore.`,
   );
 }
 
@@ -128,9 +159,10 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
 
 /** Where the daemon's pre-minted cred lives — exactly ONE source: an injected {@link SecretStore}
  *  (a hosted composition), an explicit `--creds <file>` as an FS store over that exact file
- *  (uninjected `--creds` must sit under the same workstation root as process cwd, because
- *  membership-rw resolves via `findCotalRoot`; a container composition that cannot satisfy
- *  that should inject a SecretStore instead), or the default workstation location. `where` is the human label used
+ *  (uninjected `--creds` that names one real workstation while process cwd
+ *  resolves another is refused, because membership-rw still uses
+ *  `findCotalRoot`; a path that is not under any `.cotal` tree is not that
+ *  case and is not refused here), or the default workstation location. `where` is the human label used
  *  in error messages so a local operator still sees a path, not an abstract key.
  *
  *  Called AFTER {@link assertNoLocalCredSourceFlags} has settled the injected/local conflict, which
@@ -272,7 +304,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
   const credsSrc = resolveCredsStore(v, space, store);
   if (v.creds !== undefined)
-    assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, identity: credsSrc.identity });
+    assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
