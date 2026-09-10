@@ -15,6 +15,7 @@ import {
   type MembershipFeedHandle,
   type ParsedArgs,
   type SecretStore,
+  type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
@@ -31,6 +32,24 @@ type Values = Record<string, string | undefined>;
 export { DELIVERY_CREDS_KIND, deliveryCredsKey };
 
 type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean };
+
+/**
+ * The store identity THIS daemon will re-read on `reloadCreds`. The `--creds` file is the
+ * launch-time delivery cred only; membership-rw and later reloads still resolve the workspace
+ * store from the daemon's root. Naming the file directory here would report a store the
+ * manager can never remint into.
+ */
+function reloadStoreIdentityOf(injected: SecretStore | undefined, root: string): SecretStoreIdentity {
+  if (injected) {
+    const coordinate = process.env.COTAL_SECRET_STORE;
+    if (!coordinate)
+      throw new Error(
+        "delivery: an injected SecretStore must name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)",
+      );
+    return { kind: "injected", coordinate };
+  }
+  return { kind: "fs", root };
+}
 
 /**
  * THE ORDERING-CRITICAL HALF of the cred-source decision, split out so it cannot drift below the
@@ -214,6 +233,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
   await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
+  const reloadStoreIdentity = reloadStoreIdentityOf(store, scanRoot);
 
   const ep = new CotalEndpoint({
     space,
@@ -288,6 +308,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // evictPrincipal, so gate reconciliation can refuse on a live holder's behalf rather than
     // killing it to discover it was alive (any refusal/unknown blocks the repair, fail-closed).
     principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
+    reloadStoreIdentity: () => reloadStoreIdentity,
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,

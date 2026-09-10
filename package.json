@@ -442,6 +442,7 @@
     "smoke:ep-verbs": "tsx packages/core/smoke/endpoint-verbs.smoke.ts",
     "smoke:ep-traits": "tsx packages/core/smoke/endpoint-traits.smoke.ts",
     "smoke:canonical": "tsx packages/core/smoke/canonical.smoke.ts",
+    "smoke:secret-store-identity": "tsx packages/core/smoke/secret-store-identity.smoke.ts",
     "smoke:artifact-contract": "tsx packages/core/smoke/artifact-contract.smoke.ts",
     "smoke:schema-profile": "tsx packages/core/smoke/schema-profile.smoke.ts",
     "smoke:safe-pattern-fuzz": "tsx packages/core/smoke/safe-pattern-fuzz.smoke.ts",

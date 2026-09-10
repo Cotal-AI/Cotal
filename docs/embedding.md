@@ -176,7 +176,11 @@ stripped; a legitimate local re-sign is continuous and proceeds without a networ
 `Manager` runs it on a schedule against its **own**
 `secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
-into it, and the daemon adopts each generation on a preflight-proven 75% timer. It never throws: it
+into it, and the daemon adopts each generation on a preflight-proven 75% timer. The stock
+cross-host composition cannot satisfy that by writing one filesystem and fingerprinting another:
+`Manager.start()` challenges the daemon's `reloadStoreIdentity` before the first remint, and a
+divergent pair is refused naming both stores. An injected store names its coordinate in
+`COTAL_SECRET_STORE` on both processes. It never throws: it
 returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
 KMS/Vault simply injects that store; no bespoke renewal is needed. A `--creds` file path must be
@@ -211,7 +215,8 @@ registry record and the workspace user-auth marker to start in user mode. `Manag
 injects the one `SecretStore` the manager uses for **the signer itself (the split trust
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
-hosted renewal. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+hosted renewal, and set `COTAL_SECRET_STORE` to the same coordinate on both processes. The manager
+refuses to start when the daemon names a different store. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.

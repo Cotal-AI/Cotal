@@ -80,6 +80,7 @@ let mgr: InstanceType<typeof Manager> | undefined;
 let delivery: DeliveryDaemon | undefined;
 
 const store = recordingStore(workspaceSecretStore(workspaceRoot));
+process.env.COTAL_SECRET_STORE = `fs:${workspaceRoot}`;
 
 try {
   let up = false;

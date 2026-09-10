@@ -3,24 +3,18 @@
  * `Manager` (its initial class-2 renewal pass in `start()`), a REAL delivery daemon
  * (`tsx bin/cotal.ts deliver`), a REAL authed broker. No live stack, no shared state.
  *
- * THE DEFECT (#773, UNFIXED): the manager re-signs the daemon creds through ITS OWN store (the FS
- * store over its `workspaceRoot`), then hands the daemon per-component expected fingerprints over
- * the delivery-admin rail - but the daemon re-reads its OWN store (resolved from its own root). In
- * a composition where the two roots differ (cross-host stock deployment), the manager writes
- * filesystem A, the daemon re-reads filesystem B, and EVERY adoption is refused with the exact
- * generation-mismatch error. Nothing refuses the divergent composition at startup.
- *
- * The "#773 unfixed:" cells below ENCODE THAT DEFECTIVE BEHAVIOR AS THE EXPECTATION, explicitly
- * labeled: they are green on today's tree and go red when #773 is fixed (either startup refuses
- * the divergence loudly, or adoption succeeds through one shared authority) - the fix PR must
- * flip them to the fixed expectations.
+ * THE FIX (#773): the manager challenges the daemon's reload-store identity at start, before the
+ * first remint. Fingerprint-only `reloadCreds` stays; it is safe once both sides name one store.
+ * A composition where the two roots differ is refused at construction, naming BOTH roots. The
+ * cells below encode the FIXED behavior. The CONTROL phase still runs the identical path over a
+ * UNIFIED root and must keep adopting.
  *
  * Both roots are load-bearing, and the refusal is produced end to end by shipped code only:
- *   - root A is the Manager's actual `workspaceRoot`: `remintDaemonCreds` reads the space signer
- *     from A's store and writes the re-signs into A (asserted: A's bytes CHANGE);
- *   - root B is the daemon's actual read path: its `--creds` source and its membership feed's
- *     store both resolve B (asserted: B's bytes DO NOT change, yet the refusal names them).
- * The suite never hand-sends a fingerprint; `Manager.start()` drives the whole pass.
+ *   - root A is the Manager's actual `workspaceRoot`;
+ *   - root B is the daemon's actual read path (its `--creds` source and membership feed store).
+ * The suite never hand-sends a fingerprint; `Manager.start()` drives the whole pass. The
+ * construction-time challenge names both roots and must fire BEFORE any remint, so A's bytes
+ * stay the original generation.
  *
  * The CONTROL phase runs the IDENTICAL path over a UNIFIED root (manager and daemon share one
  * root, the stock single-host composition): adoption succeeds, proving the phase-1 refusal is
@@ -92,7 +86,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 /** Every cell above is enumerated: a run that silently skipped cells must not read as green. */
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 18;
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -195,38 +189,21 @@ try {
     startRefusal = (e as Error).message;
   }
   ok(
-    "#773 unfixed: the divergent manager-store/daemon-store composition starts WITHOUT any refusal naming the two roots",
-    startRefusal === undefined,
-    { startRefusal },
+    "#773: the divergent manager-store/daemon-store composition is refused at start, naming both roots",
+    startRefusal !== undefined && startRefusal.includes(rootA) && startRefusal.includes(rootB),
+    { startRefusal, rootA, rootB },
   );
 
   const rec = readRenewalRecord(rootA);
   ok(
-    "#773 unfixed: the manager's pass re-signed BOTH daemon creds in ITS OWN root's store",
-    rec !== undefined && rec.owner === "manager" &&
-      rec.results.some((r) => r.file === DELIVERY_CREDS_KIND && r.ok) &&
-      rec.results.some((r) => r.file === MEMBERSHIP_RW_CREDS_KIND && r.ok),
-    rec?.results,
+    "#773: the refused start never reminted (no manager renewal record, no write into A)",
+    rec === undefined,
+    rec,
   );
-  ok("#773 unfixed: the daemon's adoption of that pass is REFUSED (renewal.json records adoption.ok:false)", rec?.adoption?.ok === false, rec?.adoption);
-  const detail = (rec?.adoption?.detail ?? {}) as { delivery?: { ok?: boolean; error?: string }; membership?: { ok?: boolean; error?: string } };
-  ok(
-    "#773 unfixed: the DELIVERY component refusal is the exact generation mismatch (manager wrote A, daemon re-read B)",
-    detail.delivery?.ok === false && /did not match the expected re-signed generation/.test(detail.delivery?.error ?? ""),
-    detail.delivery,
-  );
-  ok(
-    "#773 unfixed: the MEMBERSHIP component refusal is the same generation mismatch (both components are refused, not just delivery)",
-    detail.membership?.ok === false && /did not match the expected re-signed generation/.test(detail.membership?.error ?? ""),
-    detail.membership,
-  );
-  // The physical divergence, asserted on the FILES so neither root can be scenery: the manager's
-  // write landed in A (A's bytes changed) and never reached the root the daemon reads (B's bytes
-  // are the untouched original generation the refusal is about).
-  ok("#773 unfixed: root A's delivery cred now holds the NEW generation (the manager re-signed its own store)", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") !== dlvGen1);
-  ok("#773 unfixed: root B's delivery cred still holds the OLD generation (the daemon's store was never written)", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
-  ok("#773 unfixed: root B's membership rw cred still holds the OLD generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
-  ok("daemon B outlives the refused pass (refusal is a structured reply, not a daemon death)", !sinkB.exited);
+  ok("#773: root A's delivery cred still holds the ORIGINAL generation (remint did not run)", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  ok("#773: root B's delivery cred still holds the ORIGINAL generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  ok("#773: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
+  ok("daemon B outlives the refused start (refusal is a manager construction error, not a daemon death)", !sinkB.exited);
 
   await mgrA.stop();
   mgrA = undefined;

@@ -172,6 +172,7 @@ for (const { name } of SCENARIOS)
   );
 
 await putSpaceAuth(secrets, auth);
+process.env.COTAL_SECRET_STORE = `memory:renewal-terminal-race`;
 const mgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, secretStore: secrets });
 (mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   async (principal) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true });
