@@ -1,0 +1,16 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/transport-liveness-broker.smoke.ts"
+  ],
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness:broker",
+  "mutations": [
+    {
+      "name": "F1 the catch in publishPresence records unconditionally, so a put that outlives its epoch writes presence-refusal state belonging to a later connection: held across stop() it re-plants the record on the stopped endpoint, and held across a rebuild it plants one on the connection that replaced it (heartbeat 2s against a ~5s put timeout, so a rebuild finishing inside that window is the common case, not a corner). This suite imports @cotal-ai/core, which resolves to dist/, so the command builds core first and afterRestore rebuilds it: without that rebuild the tree keeps a dist/ compiled FROM THE MUTANT after the source is restored, and dist/ is gitignored so git cannot be the recovery.",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (epoch === this.presenceEpoch && !this.stopped) {\n        this.presenceWriteFailingSince ??= Date.now();\n        this.lastPresenceWriteError = (e as Error)?.message ?? String(e);\n      }\n",
+      "replace": "      this.presenceWriteFailingSince ??= Date.now();\n      this.lastPresenceWriteError = (e as Error)?.message ?? String(e);\n",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a presence put that settles AFTER stop() does not resurrect the record on the stopped endpoint"
+    }
+  ]
+}
