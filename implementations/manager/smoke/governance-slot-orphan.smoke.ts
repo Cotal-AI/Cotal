@@ -70,13 +70,13 @@ import {
   endpointRegistrationBarrier, provisionEndpointGateOpen, epAuthBucket, epgateKey,
   parseEndpointGate, mintLifecycleUid, principalKey, DEV_OWNER, readEndpointGateGeneration,
   recordAtomicKey, recordSpecKey, GOVERN_HEAD, RECORD_KINDS,
-  contractDigest, VOID_SCHEMA, EpEnvelopeError,
+  contractDigest, VOID_SCHEMA, EpEnvelopeError, TRAIT_GUARDED,
   type ServiceNameAuthority, type ServiceSpec,
 } from "@cotal-ai/core";
 import { reconcileEndpointGate } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const EXPECTED_CELLS = 30;
+const EXPECTED_CELLS = 32;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -109,13 +109,22 @@ const IID_F = "f".repeat(26); // section 8: the registrant whose seam is aimed a
 
 const dec = new TextDecoder();
 
-// One minimal §13.7 cluster, content-addressed as a real registration's is. A GOVERNED trait rides
-// it so section 7 can prove a reclaim carries the endpoint's BINDING impositions forward rather
-// than laundering them away.
+// One minimal §13.7 cluster, content-addressed as a real registration's is. `ping` carries the
+// GOVERNED trait `ai.cotal.guarded` so section 7 can prove a reclaim carries the endpoint's BINDING
+// impositions forward rather than laundering them away.
+//
+// THE TRAIT IS LOAD-BEARING, NOT DECORATION, and this comment was false before it was true. An
+// earlier draft claimed the trait rode this descriptor while no `traits` key existed at all. That
+// mattered because `readGovernedDeclarations` records only URNs in `GOVERNED_TRAIT_URNS`, and
+// `serializeGovernanceCommands` then DROPS any command whose governed set is empty — so the binding
+// map serialized to `{}` for the whole suite, and section 7 compared `{}` against `{}` and passed
+// no matter what the reclaim did to it. A reviewer rewrote the shipped slot-take to `commands: {}`
+// and this suite stayed 30/30 green. A comment asserting the one property worth checking is how
+// that vacuity survived review, so it is stated here with what makes it true.
 const D_VOID = contractDigest(VOID_SCHEMA);
 const DOC = {
   urn: "ai.cotal.govslot", revision: 1, attributes: [], events: [],
-  commands: [{ name: "ping", class: "ephemeral", targeted: false, capability: "manager.call", inputDigest: D_VOID, outputDigest: D_VOID }],
+  commands: [{ name: "ping", class: "ephemeral", targeted: false, capability: "manager.call", traits: [TRAIT_GUARDED], inputDigest: D_VOID, outputDigest: D_VOID }],
 };
 const MANIFEST = { v: 1, root: contractDigest(DOC), members: [] as string[] };
 const CLOSURE = contractDigest(MANIFEST);
@@ -312,9 +321,34 @@ try {
 
   console.log("7. a reclaim carries the endpoint's BINDING impositions forward, never launders them");
   const govFinal = await readGov();
-  const govBeforeReclaim = govBefore!;
+  // THE BASELINE IS B's COMPLETED REGISTRATION, not the pre-reclaim read. Impositions bind in
+  // `promoteHeldGovernance`, AFTER a publish commits, so before B completed there was no binding
+  // map to carry: comparing against that earlier read would compare `{}` to `{}`.
+  const govBoundByB = govAfter!;
+  // ASSERT THE CONTENTS, NOT JUST THE EQUALITY. An earlier version compared two maps and nothing
+  // else, which passes whenever BOTH are empty — and both were, because the staged descriptor
+  // carried no governed trait. `commands: {}` written into the shipped slot-take left this cell
+  // green. The map is pinned to what the descriptor actually governs, so a reclaim that launders
+  // the impositions away now has nowhere to hide: an empty map fails the first cell, and a map
+  // that changed across D's reclaim fails the second.
+  const EXPECTED_BINDING = { ping: [TRAIT_GUARDED] };
+  c("the binding map is NON-EMPTY and names the governed trait - so the cells below cannot pass vacuously",
+    JSON.stringify(govBoundByB.commands) === JSON.stringify(EXPECTED_BINDING),
+    { expected: EXPECTED_BINDING, actual: govBoundByB.commands });
+  // OBSERVE THE SLOT-TAKE ITSELF, which is the only place laundering is visible. A COMPLETED
+  // registration ends in `promoteHeldGovernance`, which merges the binding with the registrant's
+  // OWN provisional declarations — so a successor that re-declares the same governed commands
+  // rebuilds an identical map and a slot-take that dropped the binding looks the same afterwards.
+  // Section 6's residue is the exception: C's slot-take COMMITTED and its ack was lost, so the head
+  // holds what the slot-take wrote and nothing has promoted over it. That read is the carry-forward,
+  // unmerged. Rewriting the shipped slot-take to `commands: {}` reds HERE and nowhere else.
+  c("a slot-take carries the BINDING forward: C's committed-but-unacked take left it intact, not laundered",
+    JSON.stringify(govC?.commands) === JSON.stringify(EXPECTED_BINDING),
+    { expected: EXPECTED_BINDING, atCommittedSlotTake: govC?.commands });
   c("the binding command map survived every reclaim above unchanged - only `provisional` is replaced",
-    JSON.stringify(govFinal?.commands) === JSON.stringify(govBeforeReclaim.commands), { before: govBeforeReclaim.commands, after: govFinal?.commands });
+    JSON.stringify(govFinal?.commands) === JSON.stringify(EXPECTED_BINDING)
+    && JSON.stringify(govFinal?.commands) === JSON.stringify(govBoundByB.commands),
+    { expected: EXPECTED_BINDING, before: govBoundByB.commands, after: govFinal?.commands });
 
   console.log("8. every doubtful observation FAILS CLOSED (AGENTS.md: throw, never silently degrade)");
   // Re-stage a genuine orphan, then aim a doubtful seam at it. Each case below WOULD be reclaimed
