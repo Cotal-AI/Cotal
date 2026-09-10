@@ -301,7 +301,7 @@ try {
   );
   check("the audit summary names the exact checkout tree", result.stdout.includes(`head=${fixtureHead}`), report(result));
 
-  const sentinelPath = (name) => join(root, `sentinel-${name}`);
+  const sentinelPath = (name) => join(root, `mark-${name}`);
   const sentinelCmd = (name, tag = "") => {
     const inner = `require("fs").writeFileSync(${JSON.stringify(sentinelPath(name))}, "ran"); console.log("FIXTURE: 3 passed, 0 failed");`;
     const node = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(inner)}`;
@@ -316,12 +316,12 @@ try {
   const clearSentinels = (...names) => {
     for (const name of names) try { unlinkSync(sentinelPath(name)); } catch { /* absent */ }
   };
-  const fenceNames = ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e", "live-suffix", "live-ops"];
+  const fenceNames = ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e", "suffix", "ops"];
   for (const name of ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"]) {
     write(`bin/smoke/mutations/${name}.json`, JSON.stringify(fenceBody(sentinelCmd(name))));
   }
-  write("bin/smoke/mutations/live-suffix.json", JSON.stringify(fenceBody(sentinelCmd("live-suffix", "pnpm smoke:user-spawn:live"))));
-  write("bin/smoke/mutations/live-ops.json", JSON.stringify(fenceBody(sentinelCmd("live-ops", "pnpm smoke:manager-service-ops"))));
+  write("bin/smoke/mutations/suffix.json", JSON.stringify(fenceBody(sentinelCmd("suffix", "pnpm smoke:user-spawn:live"))));
+  write("bin/smoke/mutations/ops.json", JSON.stringify(fenceBody(sentinelCmd("ops", "pnpm smoke:manager-service-ops"))));
   execFileSync("git", ["add", "bin/smoke/mutations"], { cwd: root });
 
   clearSentinels(...fenceNames);
@@ -331,23 +331,23 @@ try {
     "bin/smoke/mutations/safe-c.json",
     "bin/smoke/mutations/safe-d.json",
     "bin/smoke/mutations/safe-e.json",
-    "bin/smoke/mutations/live-suffix.json",
+    "bin/smoke/mutations/suffix.json",
   );
   check(
     "a glob-shaped argv still fences a live-suite command",
-    !existsSync(sentinelPath("live-suffix"))
+    !existsSync(sentinelPath("suffix"))
       && ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"].every((name) => existsSync(sentinelPath(name)))
-      && /FENCED bin\/smoke\/mutations\/live-suffix\.json/.test(result.stderr)
+      && /FENCED bin\/smoke\/mutations\/suffix\.json/.test(result.stderr)
       && /fenced-live=1/.test(result.stdout),
     report(result),
   );
 
   clearSentinels(...fenceNames);
-  result = runArgs("bin/smoke/mutations/live-ops.json");
+  result = runArgs("bin/smoke/mutations/ops.json");
   check(
     "an always-live suite name is fenced without a :live suffix",
-    !existsSync(sentinelPath("live-ops"))
-      && /FENCED bin\/smoke\/mutations\/live-ops\.json/.test(result.stderr)
+    !existsSync(sentinelPath("ops"))
+      && /FENCED bin\/smoke\/mutations\/ops\.json/.test(result.stderr)
       && /fenced-live=1/.test(result.stdout),
     report(result),
   );
@@ -362,10 +362,10 @@ try {
   );
 
   clearSentinels(...fenceNames);
-  result = runArgs("--execute-live", "bin/smoke/mutations/live-suffix.json");
+  result = runArgs("--execute-live", "bin/smoke/mutations/suffix.json");
   check(
     "an explicit --execute-live flag still runs a live-suite command",
-    existsSync(sentinelPath("live-suffix")) && /graded=1/.test(result.stdout) && /fenced-live=0/.test(result.stdout),
+    existsSync(sentinelPath("suffix")) && /graded=1/.test(result.stdout) && /fenced-live=0/.test(result.stdout),
     report(result),
   );
 
