@@ -645,7 +645,8 @@ let openInventory: ManagerResumeAgent;
   const held = await manager.resumePreserved(inventoryOf(openInventory));
   check("resume refuses an unresolved retirement hold before launch", !held.ok && /pending retirement/.test(held.error ?? "") && /terminal outcome unknown/.test(held.error ?? "") && spawns === 0, held.error);
   await new Promise((resolveTick) => setTimeout(resolveTick, 0));
-  check("resume re-drives the exact held lifecycle teardown", redriven.length === 1 && redriven[0]?.id === openInventory.identity.id && redriven[0]?.name === openInventory.name && redriven[0]?.lifecycleUid === openInventory.identity.lifecycleUid, redriven);
+  const heldId = openInventory.identity.mode === "open" ? openInventory.identity.id : "";
+  check("resume re-drives the exact held lifecycle teardown", redriven.length === 1 && redriven[0]?.id === heldId && redriven[0]?.name === openInventory.name && redriven[0]?.lifecycleUid === openInventory.identity.lifecycleUid, redriven);
 }
 
 // Wire resume is admin-only, attempt-bound, and relaunches the exact retained principal.
