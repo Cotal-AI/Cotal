@@ -848,6 +848,7 @@ try {
   });
   const livenessDiagnostic = (actor: string, handle: ChildHandle) => {
     const principal = `${owner}.${actor}`;
+    const exit = handle.exitInfo();
     const roster = (manager as unknown as { ep: { getRoster(): Array<{
       card: { id: string; name: string };
       lifecycleUid?: string;
@@ -861,7 +862,13 @@ try {
         status: presence.status,
         ts: presence.ts,
       }));
-    return { principal, process: { pid: handle.pid, status: handle.status(), exit: handle.exitInfo() }, roster };
+    return {
+      processPid: handle.pid,
+      processStatus: handle.status(),
+      exitCode: exit?.code,
+      exitSignal: exit?.signal,
+      roster,
+    };
   };
   const awaitOwnedExit = async (actor: string, handle: ChildHandle): Promise<void> => {
     let timer: NodeJS.Timeout | undefined;
@@ -876,7 +883,6 @@ try {
       if (timer) clearTimeout(timer);
     }
   };
-
   console.log("\ncell 3/7: managed grant and lifecycle-keyed durables");
   const blockedUid = mintLifecycleUid();
   const blockedEntry = await provisionRetained("blocked", blockedUid);
@@ -945,9 +951,8 @@ try {
   const replacementEntry = await provisionRetained("retired", replacementUid);
   const aliasProbe = await manager.resumePreserved(inventoryOf(replacementEntry));
   check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, JSON.stringify({
-    reply: aliasProbe,
-    predecessorUid: retiredUid,
-    replacementUid,
+    error: aliasProbe.error,
+    agents: aliasProbe.agents.map(({ name, reply }) => ({ name, error: reply.error })),
     liveness: livenessDiagnostic("retired", retiredHandle),
   }));
 
