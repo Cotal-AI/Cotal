@@ -530,13 +530,14 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     `records-reader-bind: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.ACK.KV_cotal_records_d32m.${READER_D}.>`,
   ].sort();
-  c("the authority-stream consumer surface is EXACTLY the three sealed consumers across two scanner profiles + the provisioner's reader CREATE/DELETE + the read mediator's reader bind (INFO/NEXT/ACK); ACK included, nothing else",
+  c("the authority-stream consumer surface is EXACTLY three sealed consumers across two scanner profiles: records CREATE filters are only oblig.> + goalidx.manager.>, plus the provisioner's reader CREATE/DELETE and the read mediator's reader bind (INFO/NEXT/ACK); ACK included, nothing else",
     JSON.stringify(actual) === JSON.stringify(expected), actual);
 }
 
 // (2a'') the partition is ENFORCED at the reader-config SEAM, driven by the CANONICAL collection
-// (panel + freelance a559d9c re-verify): the records scanner's CREATE filter is confined to
-// `oblig.>`, and recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
+// (panel + freelance a559d9c re-verify): the records scanner profile's two CREATE filters are
+// confined to `oblig.>` and `goalidx.manager.>` by the complete equality above, and
+// recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
 // caller-readable record kind. Iterating AUTHORITY_KIND_DEFS (the same collection the registry is
 // built from) proves the exclusion is by construction, not a hand-kept parallel list: a new
 // authority def is covered automatically. Dual-token `lifecycle` admits deeper audit but head-guards.
