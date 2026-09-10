@@ -92,7 +92,21 @@ export interface Runtime {
    * here would drop custody on the floor.
    */
   adopt?(reference: RuntimeReference): AgentHandle;
+  /**
+   * Reap a process this runtime custodies that no live manager owns any more: the orphan a crashed
+   * manager left behind, addressed by the reference its handle carried. It must signal only a
+   * process whose identity it can verify against its own custody record, prove the process and its
+   * descendants gone, and forget the record. OPTIONAL, and absent means REFUSE, never "assume
+   * gone": a runtime without durable custody has no verified process to address, and the caller
+   * must throw naming that runtime so the lifecycle stays held instead of retiring over a live seat.
+   */
+  reap?(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
 }
+
+/** What a {@link Runtime.reap} proved. `absent`: no custody record exists for that reference (the
+ *  runtime already forgot it, so nothing it addresses is running). `reaped`: every process the record
+ *  named was signalled and verified gone, or found already gone by identity. */
+export type RuntimeReapEvidence = { outcome: "absent" } | { outcome: "reaped"; detail: string };
 
 /**
  * A bridge that contributes one runtime backend — an {@link Extension} of kind

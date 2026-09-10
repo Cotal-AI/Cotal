@@ -53,6 +53,7 @@ import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelC
 import {
   createRuntime,
   requireRuntimeAdopt,
+  requireRuntimeReap,
   type AgentHandle,
   type Runtime,
   type RuntimeMode,
@@ -3406,6 +3407,7 @@ export class Manager {
         replacement = undefined;
         restart.opts = opts;
         restart.recovering = false;
+        await this.recordSlotRuntime(a);
         if (continueSession !== undefined)
           console.error(`! ${a.name}: recovered Pi session ${continueSession} after crash (${restart.crashes.length}/${limit})`);
         else
@@ -4346,7 +4348,9 @@ export class Manager {
           const slot = await readStaticSlot(t, DEV_OWNER, name);
           if (slot === undefined || slot.row.lifecycleUid !== lifecycleUid || slot.row.phase !== "provisioning")
             throw new Error(`the static slot for "${name}" is ${slot === undefined ? "absent" : `${slot.row.phase} at uid ${slot.row.lifecycleUid}`}, not this spawn's provisioning intent; refusing to take the slot`);
-          await casStaticSlot(t, { ...slot.row, phase: "active" }, slot.revision);
+          // The custody reference rides the SAME CAS as activation: a crash after this write leaves
+          // an active slot a successor can reap by reference, never a live seat nobody addresses.
+          await casStaticSlot(t, { ...slot.row, phase: "active", ...(handle.reference ? { runtime: handle.reference } : {}) }, slot.revision);
         });
       }
       this.agents.set(name, managed);
@@ -4866,6 +4870,7 @@ export class Manager {
       };
       this.agents.set(entry.name, managed);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
+      await this.recordSlotRuntime(managed);
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
       if (!readiness.ok) {
@@ -6702,6 +6707,26 @@ export class Manager {
     }
   }
 
+  /** Re-record the custody reference of a managed agent's CURRENT handle on its active slot: a
+   *  same-lifecycle restart or a resume binds a new custody under the old uid, and the successor's
+   *  reap must address the live one. Static auth only; a runtime without durable custody records
+   *  nothing (there is nothing to reap by reference). Loud on failure, never fatal to the bind: the
+   *  handle is already live and a stale reference is refused by identity at reap time. */
+  private async recordSlotRuntime(a: ManagedAgent): Promise<void> {
+    if (!this.auth || this.userMode || a.handle.reference === undefined) return;
+    const runtime = a.handle.reference;
+    try {
+      await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
+        const slot = await readStaticSlot(t, DEV_OWNER, a.name);
+        if (slot === undefined || slot.row.lifecycleUid !== a.lifecycleUid || slot.row.phase !== "active") return;
+        if (slot.row.runtime?.kind === runtime.kind && slot.row.runtime.id === runtime.id) return;
+        await casStaticSlot(t, { ...slot.row, runtime }, slot.revision);
+      });
+    } catch (e) {
+      console.error(`! ${a.name}: could not record the custody reference ${runtime.kind}:${runtime.id} on its static slot: ${(e as Error).message} - a successor reaps this seat only by an up-to-date reference`);
+    }
+  }
+
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
    *  sequence to the shared core saga over the executor transport; the footprint teardown (creds
    *  file + broker durables/ACL) runs INSIDE the barrier as its cleanup step. On completion the
@@ -6709,7 +6734,7 @@ export class Manager {
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void> }, surfaceFailure = false): Promise<void> {
+  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void>; runtime?: RuntimeReference }, surfaceFailure = false): Promise<void> {
     // A renewal that published its flight before the synchronous terminal latch is accepted work.
     // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
     // material; a failed renewal must not block retirement because it may still have staged an id.
@@ -6723,6 +6748,15 @@ export class Manager {
       log: (line) => console.error(`static retirement ${a.name}: ${line}`),
     });
     const cleanup = async (): Promise<void> => {
+      // An orphan (no live handle in THIS process) is reaped by the custody reference the slot
+      // recorded, before its footprint goes: a successor must never retire a lifecycle and free its
+      // alias while the predecessor's seat process is still running outside every manager. The
+      // runtime verifies the process identity against its own record and proves the exit; a
+      // runtime that cannot reap refuses by name and the lifecycle stays terminalizing.
+      if (a.runtime !== undefined) {
+        const evidence = await requireRuntimeReap(this.runtime, a.runtime);
+        console.error(`static retirement ${a.name}: orphan seat process ${evidence.outcome === "absent" ? `already forgotten by runtime "${a.runtime.kind}" (${a.runtime.id})` : evidence.detail}`);
+      }
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
       if (files.creds) {
@@ -6954,7 +6988,7 @@ export class Manager {
       this.reconcilingAliases.add(row.alias);
       console.error(`static reconcile terminal alias=${row.alias} phase=${row.phase} uid=${row.lifecycleUid} attempt=${item.attempts}/${item.maxAttempts}`);
       try {
-        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid }, true);
+        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true);
         if (item.attempts === 1) {
           this.staticReconcileItems.delete(key);
         } else {
