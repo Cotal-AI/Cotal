@@ -83,17 +83,18 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
     throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
   }
-  if (rec.custodianStart === undefined || rec.childStart === undefined)
+  if (rec.custodianStart === undefined)
     throw new Error(`seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`);
   const custodianStart = rec.custodianStart;
-  const childStart = rec.childStart;
+  // A pinned record without a child identity means the child was gone before custody began.
+  const childLive = (): boolean => rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";
 
   // The child first: node-pty made it a session and process-group leader, so signalling the group
   // takes its descendants (a connector host's TUI and bridges) with it. A child that is no longer a
   // group leader is signalled alone and its group is not claimed.
   let child: "signalled" | "gone" = "gone";
   let groupKilled = false;
-  if (identityVerdict(rec.childPid, childStart) === "live") {
+  if (childLive()) {
     const leader = processGroupOf(rec.childPid) === rec.childPid;
     child = leader ? signal(-rec.childPid, "SIGKILL") : signal(rec.childPid, "SIGKILL");
     groupKilled = leader && child === "signalled";
@@ -101,8 +102,7 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   let custodian: "signalled" | "gone" = "gone";
   if (identityVerdict(rec.custodianPid, custodianStart) === "live") custodian = signal(rec.custodianPid, "SIGKILL");
 
-  const gone = (): boolean =>
-    identityVerdict(rec.childPid, childStart) === "gone" && identityVerdict(rec.custodianPid, custodianStart) === "gone";
+  const gone = (): boolean => !childLive() && identityVerdict(rec.custodianPid, custodianStart) === "gone";
   if (!(await until(gone, graceMs)))
     throw new Error(`seat ${id}: custodian ${rec.custodianPid} or child ${rec.childPid} still holds its recorded start identity ${graceMs}ms after SIGKILL; exit not proved`);
   // The group after the leader: a member that re-parented to init keeps the pgid, and the pgid
