@@ -1,0 +1,2 @@
+# A broker-refused instance-rail invoke must be permission-denied, not a deadline.
+smoke:ep-publish-denial:auth

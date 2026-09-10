@@ -243,8 +243,8 @@ with the adapter:
 ## Event plane
 
 A session launched with `cotal spawn --events` publishes a **structured** account of what it
-did: run boundaries per turn, assistant text, reasoning, and each tool call with its arguments,
-its end, and its result. Not prose about the work, the work itself, in a vocabulary a program can
+did: run boundaries per turn, assistant text, reasoning, and each tool call with its start
+and its end. Not prose about the work, the work itself, in a vocabulary a program can
 read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
 with the plugin installed publishes nothing.
 
@@ -268,9 +268,12 @@ new startup waits up to five seconds for that file with capped backoff, and the 
 one stalled file read; expiry fails loud instead of silently losing the first run. Retained-history
 starts and recovered cursors still require their existing source at once.
 
-Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
-make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
-or in the contents of a file, reaches every reader of the channel.
+Tool arguments (`TOOL_CALL_ARGS`) and tool results (`TOOL_CALL_RESULT`) are not republished
+onto this channel. The durable emitter drops those events before they are written to the
+write-ahead log, because this channel's read ACL is not the ACL the tool ran under. Content is
+mandatory on both kinds, so the event is suppressed rather than emptied or replaced with a
+placeholder. Tool start and end still go out. A restart that finds a pending pre-fix frame
+still carrying those kinds HALTS rather than republishing it.
 
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh
@@ -279,7 +282,7 @@ do not share a stream; on a user-auth mesh it is the agent's own name, because t
 ledger row is keyed on. Spelled out again with both halves below. The launch grants publish rights
 on that channel alone. A spawn
 that asks for a *different* agent's event channel is refused at the door rather than granted, since
-that channel carries the session's tool inputs and outputs. The same rule runs on restart: a manager
+that channel is that session's event stream. The same rule runs on restart: a manager
 resume document that names another agent's event channel is refused rather than adopted, because the
 managed row is re-armed from that document and the credential is re-minted from the row.
 
