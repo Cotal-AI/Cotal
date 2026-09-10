@@ -11,6 +11,7 @@ import {
   fetchContractArtifact,
   provisionEndpointGateOpen,
   publishContractArtifact,
+  readEndpointGateGeneration,
   recordsBucket,
   registerServiceInstance,
   serveIssuanceGateKv,
@@ -74,6 +75,11 @@ export async function registerRemoteManagerAuthority(args: {
       authority,
       barrier,
       readClusterArtifact,
+      // #1393: same seam the local registration wires — a foreign slot is reclaimed only when that
+      // holder's own gate has provably reopened past the slot's stamp, over this connection's
+      // existing auth-bucket read grant.
+      observeHolderGeneration: (holderInstanceId) =>
+        readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
     });
     const observed = await fence.observe();
     if (observed === null) throw new Error("remote manager issuance gate vanished after registration");
