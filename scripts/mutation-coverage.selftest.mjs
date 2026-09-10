@@ -203,6 +203,24 @@ try {
     report(result),
   );
 
+  const markerOffTerminal = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nhost pins the seat binary against background self-update\\nJCODE HOST SMOKE PASSED (85 checks)')")}`;
+  config("progress-marker-not-terminal", {
+    suite: ["bin/smoke/direct.smoke.ts"],
+    command: markerOffTerminal,
+    progressPattern: "^  ✓ ",
+    minTicks: 3,
+    completionMarker: "host pins the seat binary against background self-update",
+    executes: ["bin/direct.mjs"],
+    mutations: [mutation("bin/direct.mjs")],
+  });
+  result = run("progress-marker-not-terminal");
+  check(
+    "progress with a non-terminal completionMarker names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-marker-not-terminal/.test(result.stderr)
+      && /the declared completionMarker was not present on the final output line/.test(result.stderr),
+    report(result),
+  );
+
   for (const [name, text] of [
     ["early-ok", "SETUP OK\\n  ✓ one\\n  ✓ two\\nWORK REMAINS"],
     ["tick-passed", "  ✓ setup PASSED\\n  ✓ second\\nWORK REMAINS"],

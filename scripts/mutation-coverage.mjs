@@ -309,6 +309,11 @@ for (const path of configs) {
       why += "; progressPattern is present and minTicks is absent, so the progress path could not produce a total";
     } else if (hasPattern && hasTicks && !hasMarker) {
       why += "; the progress path could not confirm completion because completionMarker was not declared";
+    } else if (hasPattern && hasTicks && hasMarker) {
+      const terminal = output.trimEnd().split(/\r?\n/).at(-1) ?? "";
+      if (!terminal.includes(cfg.completionMarker)) {
+        why += "; the progress path could not confirm completion because the declared completionMarker was not present on the final output line";
+      }
     }
     console.error(`UNPARSED ${path}: ${why}`);
     continue;
