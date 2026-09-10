@@ -347,6 +347,12 @@ try {
     mkdirSync(userAuthStateDir(wsUser, spaceA), { recursive: true });
     writeFileSync(join(userAuthStateDir(wsUser, spaceA), "idp.json"), "{}\n");
     recordMesh({ space: spaceA, server: brokerA.servers, root: wsUser, mode: "user", ts: new Date().toISOString() });
+    // A second workspace is required so this manager is not the static successor.
+    // The daemon already bound at wsA would then fail the store-identity challenge.
+    // Unbind it first so start sees an absent rail (not a named store). Restore it
+    // after this cell so A7's static successor still remints into the same store.
+    await delivery?.stop().catch(() => {});
+    delivery = undefined;
     const mgrU = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsUser });
     await mgrU.start();
     try {
@@ -357,6 +363,10 @@ try {
       await mgrU.stop();
       removeMesh(spaceA);
     }
+    delivery = await bootDeliveryDaemon({
+      space: spaceA, servers: brokerA.servers, auth,
+      reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
+    });
     mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
     await mgrB.start();
   }
