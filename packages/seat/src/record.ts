@@ -25,16 +25,28 @@ export function seatId(): string {
   return randomBytes(16).toString("hex");
 }
 
+const SEAT_ID = /^[0-9a-f]{32}$/;
+
+/** Every seat id names a directory under the custody root, so it is checked against the shape
+ *  {@link seatId} mints before it is ever joined to a path. A reference reaches `reapSeat` and
+ *  `loadSeat` from a durable slot row, and an id carrying `..` or a separator would address a
+ *  record outside the root. Refuse rather than resolve: an unaddressable reference must not be
+ *  reported as a seat that is already forgotten. */
+export function assertSeatId(id: string): string {
+  if (!SEAT_ID.test(id)) throw new Error(`seat id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under the custody root`);
+  return id;
+}
+
 export function capabilityToken(): string {
   return randomBytes(32).toString("hex");
 }
 
 export function recordPath(root: string, id: string): string {
-  return join(root, id, "record.json");
+  return join(root, assertSeatId(id), "record.json");
 }
 
 export function socketPath(root: string, id: string): string {
-  return join(root, id, "seat.sock");
+  return join(root, assertSeatId(id), "seat.sock");
 }
 
 /** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
