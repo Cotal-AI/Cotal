@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/env-isolate.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/env-isolate.smoke.ts"
+  ],
   "guard": "a manager whose own env carries CLAUDE_CODE_CHILD_SESSION must not hand that marker to a seat, and PATH must still include the entries connector binaries live in",
   "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:env-isolate",
   "completionMarker": "ENV-BOUNDARY SMOKE",

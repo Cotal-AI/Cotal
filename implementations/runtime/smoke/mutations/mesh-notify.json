@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/runtime/smoke/mesh-notify.smoke.ts",
+  "suite": [
+    "implementations/runtime/smoke/mesh-notify.smoke.ts"
+  ],
   "guard": "`notify` reaches an agent as DATA and reaching it twice is safe: one create-only notice per addressee keyed by a derived id, an instant bound with the step so a retry rewrites the same bytes, a render that refuses a value it cannot put in one row, and an explicit sentence when there is nothing to render",
   "command": "pnpm smoke:runtime-mesh-notify",
   "completionMarker": "mesh-notify.smoke:",

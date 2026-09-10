@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/delivery/smoke/injected-tenancy-admission.smoke.ts",
+  "suite": [
+    "implementations/delivery/smoke/injected-tenancy-admission.smoke.ts"
+  ],
   "guard": "an injected two-account delivery composition validates its observer tenancy before endpoint construction and lease.0 acquisition",
   "command": "pnpm --filter @cotal-ai/delivery... build && pnpm smoke:delivery-injected-tenancy-admission",
   "progressPattern": "✓",

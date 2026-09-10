@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-claude-code/smoke/events-arm.smoke.ts",
+  "suite": [
+    "extensions/connector-claude-code/smoke/events-arm.smoke.ts"
+  ],
   "guard": "the connector arms its event plane from the launch flag alone, never from a grant it happens to hold, and refuses an armed launch that gives the write-ahead log nowhere to live",
   "command": "pnpm smoke:claude-events-arm",
   "completionMarker": "SUITE COMPLETE:",

@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/manager-service-invoke.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/manager-service-invoke.smoke.ts"
+  ],
   "guard": "resolved manager command count is derived from the shipped cluster document, not restated",
   "command": "pnpm smoke:manager-service-invoke",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/shipped-surface-pin.json",

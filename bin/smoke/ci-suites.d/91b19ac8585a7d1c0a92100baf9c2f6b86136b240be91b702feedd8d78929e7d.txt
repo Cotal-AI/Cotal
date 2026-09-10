@@ -1,0 +1,3 @@
+# The generated Claude Code marketplace must list plugins as objects carrying a resolvable source.
+# Bare names validate and then fail to resolve, which pauses `cotal setup` for every new install.
+smoke:claude-marketplace

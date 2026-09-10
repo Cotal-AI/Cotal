@@ -996,6 +996,15 @@ cursor is harmless because its old gate revision cannot authorize a later freeze
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.
 
+**What reopening the gate does for the endpoint's governance slot.** A registration takes the
+endpoint-wide governance slot before it publishes its spec, and holds it until its gate reopens. An
+instance that died between those two points leaves the slot held with no registration behind it.
+This command does not write that slot and never has; the registration path is its only writer. What
+the reopen does is advance the holder's gate past the generation the slot is stamped with, which is
+what marks the slot abandoned. The next registration for that endpoint then reclaims it as part of
+its ordinary start. So the repair here is still one command followed by starting the manager, and
+the slot needs no separate step.
+
 ## deregister-instance
 
 ```bash

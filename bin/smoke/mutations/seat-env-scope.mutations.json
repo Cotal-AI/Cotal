@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/seat-env-scope.smoke.ts",
+  "suite": [
+    "bin/smoke/seat-env-scope.smoke.ts"
+  ],
   "guard": "a manager-spawned seat hands no connection material to the processes it spawns, and still resolves its own identity and control token from the launch-material file",
   "command": "pnpm build > /dev/null && pnpm smoke:seat-env-scope",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-env-scope.mutations.json",

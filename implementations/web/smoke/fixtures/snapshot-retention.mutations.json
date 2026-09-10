@@ -99,5 +99,8 @@
       "replace": "        read: async () => (await fetch(\"/api/meta\")).json(),",
       "expectRed": "5.4 a 500 whose body is JSON does NOT become the space name"
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/snapshot-retention.smoke.ts"
   ]
 }

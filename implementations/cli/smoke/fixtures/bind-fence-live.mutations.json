@@ -8,5 +8,8 @@
       "replace": "  const bind = undefined;",
       "expectRed": "carrying the bind-refused marker"
     }
+  ],
+  "suite": [
+    "implementations/cli/smoke/bind-fence-live.smoke.ts"
   ]
 }

@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/transform.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/transform.smoke.ts"
+  ],
   "guard": "The emitted module is closed over the seam, routes each law through it, and carries the binding-depth rule the walker keeps at run time. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-transform",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-surface.json",

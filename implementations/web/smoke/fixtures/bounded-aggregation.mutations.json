@@ -100,5 +100,10 @@
       "completionMarker": "activity-read-cost smoke:",
       "note": "Reverts ONLY the down counter. 4.7 reads local.bytesUp alone and stays green under this mutation, which is why 4.9 exists."
     }
+  ],
+  "suite": [
+    "implementations/web/smoke/bounded-aggregation.smoke.ts",
+    "implementations/web/smoke/slow-link-serialization.probe.ts",
+    "implementations/web/smoke/activity-read-cost.smoke.ts"
   ]
 }

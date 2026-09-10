@@ -37,5 +37,8 @@
       "replace": "  if (!isSafeNonNegInt(doc.gen)) return 0;",
       "expectRed": "[G] a v3 document with `gen` STRIPPED is refused, not read as generation 0"
     }
+  ],
+  "suite": [
+    "extensions/connector-core/smoke/event-wal.smoke.ts"
   ]
 }

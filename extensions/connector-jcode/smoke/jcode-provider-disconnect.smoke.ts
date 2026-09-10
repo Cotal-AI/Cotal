@@ -29,12 +29,16 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
     const value = read();
     if (value !== undefined) return value;
     if (Date.now() > deadline) {
-      console.error(`  ✗ ${name}`);
       throw new Error(`timed out waiting for ${name}`);
     }
     await sleep(100);
   }
 }
+
+// Keep mutation groups independent while the default smoke still executes both.
+const startupOnly = process.argv.includes("--startup-only");
+const steadyOnly = process.argv.includes("--steady-only");
+assert.ok(!(startupOnly && steadyOnly), "choose at most one recovery group");
 
 const root = mkdtempSync(join(tmpdir(), "cotal-jcode-provider-disconnect-"));
 const port = await freePort();
@@ -53,9 +57,23 @@ const safetyCloseOnce = join(root, "safety-first-bridge-closed");
 const safetyFailAttachOnce = join(root, "safety-recovery-attach-failed");
 const safetySessionState = join(root, "safety-session.json");
 const safetyLaunchCount = join(root, "safety-launch-count");
+const kickoffLog = join(root, "kickoff.jsonl");
+const kickoffSessionState = join(root, "kickoff-session.json");
+const kickoffNoticeClosed = join(root, "kickoff-notice-closed");
+const guardLog = join(root, "guard-kickoff.jsonl");
+const guardIdle = join(root, "guard-native-idle");
+const guardSteerAck = join(root, "guard-steer-ack");
+const guardSteerIdle = join(root, "guard-steer-idle");
+const ambiguousLog = join(root, "ambiguous-kickoff.jsonl");
+const ambiguousSessionState = join(root, "ambiguous-session.json");
+const ambiguousRequestClosed = join(root, "ambiguous-request-closed");
+const ambiguousCloseRelease = join(root, "ambiguous-close-release");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
 let safetyChild: ChildProcess | undefined;
+let kickoffChild: ChildProcess | undefined;
+let ambiguousChild: ChildProcess | undefined;
+let guardChild: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -97,9 +115,15 @@ try {
   operator.on("error", () => {});
   let peerId: string | undefined;
   let safetyPeerId: string | undefined;
+  let kickoffPeerId: string | undefined;
+  let ambiguousPeerId: string | undefined;
+  let guardPeerId: string | undefined;
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodesafety") safetyPeerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodekickoff") kickoffPeerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodeambiguous") ambiguousPeerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodeguard") guardPeerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -108,183 +132,354 @@ try {
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "provider-disconnect-smoke-token", { mode: 0o600 });
-  child = spawn(tsx, [host], {
-    cwd: root,
-    env: {
-      ...env,
-      PATH: `${shimDir}:${env.PATH ?? ""}`,
-      FAKE_JCODE_LOG: log,
-      FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_PROVIDER_STALL",
-      FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT: "SIMULATE_SECOND_PROVIDER_STALL",
-      FAKE_JCODE_CLOSE_ONCE_FILE: closeOnce,
-      FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: failAttachOnce,
-      FAKE_JCODE_SESSION_STATE: sessionState,
-      JCODE_HOME: inheritedJcodeHome,
-      COTAL_SPACE: "jcodeclose",
-      COTAL_NAME: "jcodepeer",
-      COTAL_ID: "jcodepeer",
-      COTAL_SERVERS: servers,
-      COTAL_SUBSCRIBE: "team",
-      COTAL_ALLOW_SUBSCRIBE: "team",
-      COTAL_ALLOW_PUBLISH: "team",
-      COTAL_JCODE_HOME: root,
-      COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-control-token",
-    },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  let stderr = "";
-  child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
 
-  await waitFor("initial bridge", () => entries().find((entry) => entry.ev === "listening"));
-  await waitFor("mesh presence", () => peerId);
-  check("Jcode host joins before the provider stall", Boolean(peerId));
-
-  await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
-  await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
-  await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined);
-  check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
-  await waitFor("recovery retry or seat exit after the transient attach loss", () =>
-    stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
-      ? true
-      : undefined,
-  );
-  check("provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)", child.exitCode === null && stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window"), { code: child.exitCode, stderr });
-  await waitFor("recovery Harness connection", () => {
-    const hellos = entries().filter(
-      (entry) => entry.ev === "request" && (entry.frame as { req?: string }).req === "hello",
+  if (!steadyOnly) {
+    // A close after the refused notice but before drive() dispatches the busy startup kickoff leaves
+    // that kickoff provably unsent. Recovery must reattach and drive it without any inbox wake.
+    kickoffChild = spawn(tsx, [host], {
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: kickoffLog,
+        FAKE_JCODE_BUSY_MODEL: "1",
+        FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+        FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
+        FAKE_JCODE_BUSY_HOLD_MS: "500",
+        FAKE_JCODE_CLOSE_AFTER_BUSY_NOTICE_FILE: kickoffNoticeClosed,
+        FAKE_JCODE_SESSION_STATE: kickoffSessionState,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodeclose",
+        COTAL_NAME: "jcodekickoff",
+        COTAL_ID: "jcodekickoff",
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_JCODE_PROMPT: "KICKOFF-PENDING-ACROSS-RECOVERY",
+        COTAL_CONTROL_SOCKET: join(root, "kickoff-control.sock"),
+        COTAL_CONTROL_TOKEN: "jcode-kickoff-recovery-token",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let kickoffStderr = "";
+    kickoffChild.stderr?.on("data", (chunk: Buffer) => (kickoffStderr += chunk.toString()));
+    await waitFor("pending-kickoff notice close", () => existsSync(kickoffNoticeClosed) ? true : undefined);
+    await waitFor("pending-kickoff recovery reattachment", () => {
+      const attaches = entriesOf(kickoffLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
+      return attaches.length ? attaches : undefined;
+    });
+    const recoveredKickoff = await waitFor("pending kickoff after recovery without inbox wake", () => {
+      const turns = entriesOf(kickoffLog).filter(
+        (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+          !(entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes("KICKOFF-PENDING-ACROSS-RECOVERY"),
+      );
+      return turns.length ? turns : undefined;
+    }).catch(() => []);
+    check("a startup kickoff still pending before send is delivered once after recovery without an inbox wake", recoveredKickoff.length === 1, { recoveredKickoff, stderr: kickoffStderr });
+    await waitFor("pending kickoff recovery turn boundary", () => entriesOf(kickoffLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("KICKOFF-PENDING-ACROSS-RECOVERY")));
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    const stableRecoveredKickoffs = entriesOf(kickoffLog).filter(
+      (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+        !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("KICKOFF-PENDING-ACROSS-RECOVERY"),
     );
-    return hellos.length >= 3 ? hellos : undefined;
-  });
-  const transientBridges = entries().filter(
-    (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
-  );
-  check(
-    "the failed transient replacement is stopped before the successful retry",
-    transientBridges.length >= 3 && !alive(transientBridges[1]!.pid) && alive(transientBridges[2]!.pid),
-    transientBridges,
-  );
-  const reattachments = await waitFor("recovery session reattachment after the transient loss", () => {
-    const attempts = entries().filter(
-      (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",
+    check("the recovered pre-send kickoff is not duplicated", stableRecoveredKickoffs.length === 1, stableRecoveredKickoffs);
+    kickoffChild.kill("SIGTERM");
+    await Promise.race([once(kickoffChild, "exit"), sleep(15_000)]);
+
+    // A directed delivery can enter drive while an earlier steer is still awaiting its reply.
+    // Hold that reply, observe the host waiting, then make the native session busy before acking.
+    guardChild = spawn(tsx, [host], {
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: guardLog,
+        FAKE_JCODE_BUSY_MODEL: "1",
+        FAKE_JCODE_BUSY_AFTER_READINESS: "1",
+        FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
+        FAKE_JCODE_BUSY_RELEASE_FILE: guardIdle,
+        FAKE_JCODE_STEER_RELEASE_FILE: guardSteerAck,
+        FAKE_JCODE_STEER_IDLE_FILE: guardSteerIdle,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodeclose",
+        COTAL_NAME: "jcodeguard",
+        COTAL_ID: "jcodeguard",
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_JCODE_PROMPT: "KICKOFF-AFTER-SECOND-GUARD",
+        COTAL_CONTROL_SOCKET: join(root, "guard-control.sock"),
+        COTAL_CONTROL_TOKEN: "guard-control-token",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let guardStderr = "";
+    guardChild.stderr?.on("data", (chunk: Buffer) => (guardStderr += chunk.toString()));
+    await waitFor("guard peer joins", () => guardPeerId);
+    await waitFor("guard peer has an external busy turn", () =>
+      entriesOf(guardLog).find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "working"));
+    await operator.unicast(guardPeerId!, "STEER-HELD-BEFORE-KICKOFF");
+    await waitFor("first steer reply is held", () => entriesOf(guardLog).find((entry) => entry.ev === "steer_held"));
+    writeFileSync(guardIdle, "idle");
+    for (let attempt = 0; attempt < 100 && !guardStderr.includes("startup kickoff waiting for in-flight steering"); attempt++) {
+      await operator.unicast(guardPeerId!, "WAKE-KICKOFF-WHILE-STEER-PENDING");
+      await sleep(100);
+    }
+    check("the second guard fixture observes startup waiting on an unacknowledged steer", guardStderr.includes("startup kickoff waiting for in-flight steering"), guardStderr);
+    writeFileSync(guardSteerAck, "ack");
+    await waitFor("the host defers after native state changes during steering", () =>
+      guardStderr.includes("deferred turn after steering: native session unavailable") ? true : undefined);
+    writeFileSync(guardSteerIdle, "idle");
+    const guardKickoffs = await waitFor("kickoff after the observed second pre-send guard", () => {
+      const turns = entriesOf(guardLog).filter((entry) => {
+        const frame = entry.frame as { req?: string; no_reply?: boolean; content?: string } | undefined;
+        return entry.ev === "request" && frame?.req === "send_message" && !frame.no_reply &&
+          String(frame.content).includes("KICKOFF-AFTER-SECOND-GUARD");
+      });
+      return turns.length ? turns : undefined;
+    }).catch(() => []);
+    check("a startup kickoff survives native state changing while steering settles", guardKickoffs.length === 1, { guardKickoffs, stderr: guardStderr });
+    guardChild.kill("SIGTERM");
+    await Promise.race([once(guardChild, "exit"), sleep(15_000)]);
+
+    // Once run() has emitted its request, acceptance is unknowable across a close. Recovery may restore
+    // the seat, but it must not invent a second kickoff attempt or claim that the first executed.
+    ambiguousChild = spawn(tsx, [host], {
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: ambiguousLog,
+        FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ON_CONTENT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
+        FAKE_JCODE_ERROR_BEFORE_CLOSE: "1",
+        FAKE_JCODE_ERROR_CLOSE_RELEASE_FILE: ambiguousCloseRelease,
+        FAKE_JCODE_CLOSE_BEFORE_ACCEPT_ONCE_FILE: ambiguousRequestClosed,
+        FAKE_JCODE_SESSION_STATE: ambiguousSessionState,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodeclose",
+        COTAL_NAME: "jcodeambiguous",
+        COTAL_ID: "jcodeambiguous",
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_JCODE_PROMPT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
+        COTAL_CONTROL_SOCKET: join(root, "ambiguous-control.sock"),
+        COTAL_CONTROL_TOKEN: "jcode-ambiguous-kickoff-token",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let ambiguousStderr = "";
+    ambiguousChild.stderr?.on("data", (chunk: Buffer) => (ambiguousStderr += chunk.toString()));
+    await waitFor("ambiguous kickoff request recorded", () => existsSync(ambiguousRequestClosed) ? true : undefined);
+    await waitFor("the host observes the post-dispatch error before close", () =>
+      ambiguousStderr.includes("turn failed (1 in a row):") && ambiguousStderr.includes("synthetic error after request dispatch") ? true : undefined);
+    writeFileSync(ambiguousCloseRelease, "close");
+    await waitFor("ambiguous kickoff recovery reattachment", () => {
+      const attaches = entriesOf(ambiguousLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
+      return attaches.length ? attaches : undefined;
+    });
+    await waitFor("ambiguous kickoff seat returns to the roster", () => ambiguousPeerId);
+    await sleep(500);
+    const ambiguousAttempts = entriesOf(ambiguousLog).filter(
+      (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+        !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("KICKOFF-DISPATCHED-OUTCOME-UNKNOWN"),
     );
-    return attempts.length >= 2 ? attempts : undefined;
-  });
-  check("recovered Harness client reattaches the existing private session after the transient loss (#971)", reattachments.length >= 2, reattachments);
+    check("a kickoff request closed after dispatch is attempted at most once across recovery", ambiguousAttempts.length === 1, { ambiguousAttempts, stderr: ambiguousStderr });
+    ambiguousChild.kill("SIGTERM");
+    await Promise.race([once(ambiguousChild, "exit"), sleep(15_000)]);
+  }
+  if (!startupOnly) {
+    child = spawn(tsx, [host], {
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: log,
+        FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_PROVIDER_STALL",
+        FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT: "SIMULATE_SECOND_PROVIDER_STALL",
+        FAKE_JCODE_CLOSE_ONCE_FILE: closeOnce,
+        FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: failAttachOnce,
+        FAKE_JCODE_SESSION_STATE: sessionState,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodeclose",
+        COTAL_NAME: "jcodepeer",
+        COTAL_ID: "jcodepeer",
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+        COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-control-token",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
 
-  const retriedTurn = await waitFor("unacknowledged stalled turn redelivery", () => {
-    const attempts = entries().filter(
-      (entry) =>
-        entry.ev === "request" &&
-        (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
-        !(entry.frame as { no_reply?: boolean }).no_reply &&
-        String((entry.frame as { content?: string }).content).includes("SIMULATE_PROVIDER_STALL"),
+    await waitFor("initial bridge", () => entries().find((entry) => entry.ev === "listening"));
+    await waitFor("mesh presence", () => peerId);
+    check("Jcode host joins before the provider stall", Boolean(peerId));
+
+    await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
+    await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
+    await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined).catch(() => undefined);
+    check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
+    await waitFor("recovery retry or seat exit after the transient attach loss", () =>
+      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
+        ? true
+        : undefined,
     );
-    return attempts.length >= 2 ? attempts : undefined;
-  });
-  check("recovered seat redrives the unacknowledged stalled turn (#781)", retriedTurn.length >= 2, retriedTurn);
+    check("provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)", child.exitCode === null && stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window"), { code: child.exitCode, stderr });
+    await waitFor("recovery Harness connection", () => {
+      const hellos = entries().filter(
+        (entry) => entry.ev === "request" && (entry.frame as { req?: string }).req === "hello",
+      );
+      return hellos.length >= 3 ? hellos : undefined;
+    });
+    const transientBridges = entries().filter(
+      (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
+    );
+    check(
+      "the failed transient replacement is stopped before the successful retry",
+      transientBridges.length >= 3 && !alive(transientBridges[1]!.pid) && alive(transientBridges[2]!.pid),
+      transientBridges,
+    );
+    const reattachments = await waitFor("recovery session reattachment after the transient loss", () => {
+      const attempts = entries().filter(
+        (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",
+      );
+      return attempts.length >= 2 ? attempts : undefined;
+    });
+    check("recovered Harness client reattaches the existing private session after the transient loss (#971)", reattachments.length >= 2, reattachments);
 
-  // The redriven turn owns the session until its boundary, so the post-recovery work is only sent
-  // once that turn is done. A directed DM arriving while it is still live is delivered through
-  // Jcode's soft-interrupt queue instead, which is the documented mid-turn path and commits at the
-  // containing turn's boundary — a correct delivery that never opens the new turn this cell reads.
-  await waitFor("redriven stalled turn boundary", () =>
-    entries().find(
-      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("SIMULATE_PROVIDER_STALL"),
-    ),
-  );
-  await operator.unicast(peerId!, "RECOVERED_MESH_WORK");
-  const recoveredTurn = await waitFor("post-recovery turn", () =>
-    entries().find(
-      (entry) =>
-        entry.ev === "request" &&
-        (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
-        !(entry.frame as { no_reply?: boolean }).no_reply &&
-        String((entry.frame as { content?: string }).content).includes("RECOVERED_MESH_WORK"),
-    ),
-  );
-  check("recovered seat accepts a later mesh turn (#781)", JSON.stringify(recoveredTurn).includes("RECOVERED_MESH_WORK"), recoveredTurn);
-  await waitFor("post-recovery turn boundary", () =>
-    entries().find(
-      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("RECOVERED_MESH_WORK"),
-    ),
-  );
+    const retriedTurn = await waitFor("unacknowledged stalled turn redelivery", () => {
+      const attempts = entries().filter(
+        (entry) =>
+          entry.ev === "request" &&
+          (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+          !(entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes("SIMULATE_PROVIDER_STALL"),
+      );
+      return attempts.length >= 2 ? attempts : undefined;
+    }).catch(() => []);
+    check("recovered seat redrives the unacknowledged stalled turn (#781)", retriedTurn.length >= 2, retriedTurn);
 
-  const secondCloseStarted = Date.now();
-  await operator.unicast(peerId!, "SIMULATE_SECOND_PROVIDER_STALL");
-  await waitFor("second provider disconnect remains terminal", () =>
-    stderr.includes("private Harness connection closed after its one recovery attempt") ? stderr : undefined,
-  );
-  await Promise.race([once(child, "exit"), sleep(10_000)]);
-  check("a second provider disconnect stays terminal without opening an unbounded recovery loop", child.exitCode === 1 && Date.now() - secondCloseStarted < 10_000, { code: child.exitCode, elapsedMs: Date.now() - secondCloseStarted, stderr });
+    // The redriven turn owns the session until its boundary, so the post-recovery work is only sent
+    // once that turn is done. A directed DM arriving while it is still live is delivered through
+    // Jcode's soft-interrupt queue instead, which is the documented mid-turn path and commits at the
+    // containing turn's boundary — a correct delivery that never opens the new turn this cell reads.
+    await waitFor("redriven stalled turn boundary", () =>
+      entries().find(
+        (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("SIMULATE_PROVIDER_STALL"),
+      ),
+    );
+    await operator.unicast(peerId!, "RECOVERED_MESH_WORK");
+    const recoveredTurn = await waitFor("post-recovery turn", () =>
+      entries().find(
+        (entry) =>
+          entry.ev === "request" &&
+          (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+          !(entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes("RECOVERED_MESH_WORK"),
+      ),
+    );
+    check("recovered seat accepts a later mesh turn (#781)", JSON.stringify(recoveredTurn).includes("RECOVERED_MESH_WORK"), recoveredTurn);
+    await waitFor("post-recovery turn boundary", () =>
+      entries().find(
+        (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("RECOVERED_MESH_WORK"),
+      ),
+    );
 
-  // A failed replacement may be retried only after its exact private tree is proven gone. Strip the
-  // launch identity from replacement 2 so stopPrivateTree takes its documented fail-loud path; the
-  // host must exit while that identity is still current, rather than launch replacement 3 and lose
-  // the only safe handle for the unproven tree.
-  writeFileSync(
-    shim,
-    `#!/bin/sh\nn=0\n[ ! -f "${safetyLaunchCount}" ] || n=$(cat "${safetyLaunchCount}")\nn=$((n+1))\nprintf '%s' "$n" > "${safetyLaunchCount}"\nif [ "$n" -eq 2 ]; then exec env -u JCODE_COTAL_LAUNCH_IDENTITY "${process.execPath}" "${fake}" "$@"; fi\nexec "${process.execPath}" "${fake}" "$@"\n`,
-  );
-  safetyChild = spawn(tsx, [host], {
-    cwd: root,
-    env: {
-      ...env,
-      PATH: `${shimDir}:${env.PATH ?? ""}`,
-      FAKE_JCODE_LOG: safetyLog,
-      FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_UNPROVEN_TEARDOWN",
-      FAKE_JCODE_CLOSE_ONCE_FILE: safetyCloseOnce,
-      FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: safetyFailAttachOnce,
-      FAKE_JCODE_SESSION_STATE: safetySessionState,
-      JCODE_HOME: inheritedJcodeHome,
-      COTAL_SPACE: "jcodeclose",
-      COTAL_NAME: "jcodesafety",
-      COTAL_ID: "jcodesafety",
-      COTAL_SERVERS: servers,
-      COTAL_SUBSCRIBE: "team",
-      COTAL_ALLOW_SUBSCRIBE: "team",
-      COTAL_ALLOW_PUBLISH: "team",
-      COTAL_JCODE_HOME: root,
-      COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "safety-control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-safety-token",
-    },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  let safetyStderr = "";
-  safetyChild.stderr?.on("data", (chunk: Buffer) => (safetyStderr += chunk.toString()));
-  await waitFor("safety initial bridge", () => entriesOf(safetyLog).find((entry) => entry.ev === "listening"));
-  await waitFor("safety mesh presence", () => safetyPeerId);
-  await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
-  await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
-  const safetyDeadline = Date.now() + 10_000;
-  while (
-    safetyChild.exitCode === null &&
-    (!existsSync(safetyLaunchCount) || Number(readFileSync(safetyLaunchCount, "utf8")) < 3) &&
-    Date.now() < safetyDeadline
-  ) await sleep(100);
-  const safetyLaunches = Number(readFileSync(safetyLaunchCount, "utf8"));
-  const safetyBridges = entriesOf(safetyLog).filter(
-    (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
-  );
-  check(
-    "terminal ownership refusal or unsafe third launch",
-    safetyChild.exitCode === 1 &&
-      safetyLaunches === 2 &&
-      safetyStderr.includes("does not carry its launch-bound identity — refusing unsafe teardown"),
-    { code: safetyChild.exitCode, launches: safetyLaunches, bridges: safetyBridges, stderr: safetyStderr },
-  );
-  check(
-    "the ownership-refused replacement stays live until exact harness cleanup (instrument control)",
-    safetyBridges.length === 2 && alive(safetyBridges[1]!.pid),
-    safetyBridges,
-  );
+    const secondCloseStarted = Date.now();
+    await operator.unicast(peerId!, "SIMULATE_SECOND_PROVIDER_STALL");
+    await waitFor("second provider disconnect remains terminal", () =>
+      stderr.includes("private Harness connection closed after its one recovery attempt") ? stderr : undefined,
+    );
+    await Promise.race([once(child, "exit"), sleep(10_000)]);
+    check("a second provider disconnect stays terminal without opening an unbounded recovery loop", child.exitCode === 1 && Date.now() - secondCloseStarted < 10_000, { code: child.exitCode, elapsedMs: Date.now() - secondCloseStarted, stderr });
+
+    // A failed replacement may be retried only after its exact private tree is proven gone. Strip the
+    // launch identity from replacement 2 so stopPrivateTree takes its documented fail-loud path; the
+    // host must exit while that identity is still current, rather than launch replacement 3 and lose
+    // the only safe handle for the unproven tree.
+    writeFileSync(
+      shim,
+      `#!/bin/sh\nn=0\n[ ! -f "${safetyLaunchCount}" ] || n=$(cat "${safetyLaunchCount}")\nn=$((n+1))\nprintf '%s' "$n" > "${safetyLaunchCount}"\nif [ "$n" -eq 2 ]; then exec env -u JCODE_COTAL_LAUNCH_IDENTITY "${process.execPath}" "${fake}" "$@"; fi\nexec "${process.execPath}" "${fake}" "$@"\n`,
+    );
+    safetyChild = spawn(tsx, [host], {
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: safetyLog,
+        FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_UNPROVEN_TEARDOWN",
+        FAKE_JCODE_CLOSE_ONCE_FILE: safetyCloseOnce,
+        FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: safetyFailAttachOnce,
+        FAKE_JCODE_SESSION_STATE: safetySessionState,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodeclose",
+        COTAL_NAME: "jcodesafety",
+        COTAL_ID: "jcodesafety",
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_CONTROL_SOCKET: join(root, "safety-control.sock"),
+        COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-safety-token",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let safetyStderr = "";
+    safetyChild.stderr?.on("data", (chunk: Buffer) => (safetyStderr += chunk.toString()));
+    await waitFor("safety initial bridge", () => entriesOf(safetyLog).find((entry) => entry.ev === "listening"));
+    await waitFor("safety mesh presence", () => safetyPeerId);
+    await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
+    await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
+    const safetyDeadline = Date.now() + 10_000;
+    while (
+      safetyChild.exitCode === null &&
+      (!existsSync(safetyLaunchCount) || Number(readFileSync(safetyLaunchCount, "utf8")) < 3) &&
+      Date.now() < safetyDeadline
+    ) await sleep(100);
+    const safetyLaunches = Number(readFileSync(safetyLaunchCount, "utf8"));
+    const safetyBridges = entriesOf(safetyLog).filter(
+      (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
+    );
+    check(
+      "terminal ownership refusal or unsafe third launch",
+      safetyChild.exitCode === 1 &&
+        safetyLaunches === 2 &&
+        safetyStderr.includes("does not carry its launch-bound identity — refusing unsafe teardown"),
+      { code: safetyChild.exitCode, launches: safetyLaunches, bridges: safetyBridges, stderr: safetyStderr },
+    );
+    check(
+      "the ownership-refused replacement stays live until exact harness cleanup (instrument control)",
+      safetyBridges.length === 2 && alive(safetyBridges[1]!.pid),
+      safetyBridges,
+    );
+  }
   console.log(`\nJCODE PROVIDER-DISCONNECT SMOKE: ${pass} checks passed`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   if (safetyChild && safetyChild.exitCode === null) safetyChild.kill("SIGKILL");
-  for (const entry of [...entriesOf(log), ...entriesOf(safetyLog)]) {
+  if (kickoffChild && kickoffChild.exitCode === null) kickoffChild.kill("SIGKILL");
+  if (ambiguousChild && ambiguousChild.exitCode === null) ambiguousChild.kill("SIGKILL");
+  if (guardChild && guardChild.exitCode === null) guardChild.kill("SIGKILL");
+  for (const entry of [...entriesOf(log), ...entriesOf(safetyLog), ...entriesOf(kickoffLog), ...entriesOf(ambiguousLog), ...entriesOf(guardLog)]) {
     if (entry.ev !== "listening" || typeof entry.pid !== "number") continue;
     try {
       process.kill(entry.pid, "SIGKILL");

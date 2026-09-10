@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/run-host-live.smoke.ts",
+  "suite": [
+    "bin/smoke/run-host-live.smoke.ts"
+  ],
   "guard": "The manager hosts workflow runs (SPEC 14.3): run-start refuses an invalid program with the language's records (frame stripped) and answers only once the run is recorded; a checkpoint parked in the hosted drive is answered from outside under the caller's own name; a manager restart takes a run recorded running back under the next epoch, each attempt under its own holder id, and no launch is served until that reconcile has returned. An answer's writes are pinned to the one pause it answers; a refusal at the admission cap gives its slot back; a user-auth mesh refuses the family by name.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",

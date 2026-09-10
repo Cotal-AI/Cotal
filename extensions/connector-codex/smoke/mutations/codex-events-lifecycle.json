@@ -107,5 +107,8 @@
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
       "expectRed": "broker-outage-live:setup:the replacement holder stays alive through recovery"
     }
+  ],
+  "suite": [
+    "extensions/connector-codex/smoke/events-lifecycle.smoke.ts"
   ]
 }

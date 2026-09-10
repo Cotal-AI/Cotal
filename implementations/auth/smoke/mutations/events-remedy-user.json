@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
   "guard": "the out-of-band remedy a user-mesh refusal prints is a NARROW grant, spelled out field by field, rather than a bare verb whose omitted flags mean the wide default",
   "command": "pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
   "completionMarker": "USER-SPAWN",

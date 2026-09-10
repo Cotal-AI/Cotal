@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/custodial-pty.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/custodial-pty.smoke.ts"
+  ],
   "guard": "the production pty runtime adopts a live proxy and a runtime without adopt still refuses by name",
   "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && pnpm smoke:custodial-pty",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/custodial-pty.json",

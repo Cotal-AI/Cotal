@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts"
+  ],
   "guard": "the connector waits through late Jcode registry writes and signals only PIDs carrying the immutable launch-bound identity captured from the bridge this host spawned; stale foreign records are skipped on startup failure and graceful stop",
   "command": "pnpm smoke:jcode-lifecycle",
   "progressPattern": "✓",

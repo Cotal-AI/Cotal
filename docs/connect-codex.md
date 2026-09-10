@@ -139,8 +139,9 @@ spawn, not at launch) rather than silently overridden.
 
 A seat launched with `cotal spawn --events` publishes a structured account of what it did: run
 boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
-function-call and custom-tool interfaces, each with its arguments, its end, and its result. That
-covers the tools you watch a seat use, `shell` and `apply_patch` among them. The channel is
+function-call and custom-tool interfaces, each with its start and its end. Tool arguments and
+tool results are not republished onto this channel. That covers the tools you watch a seat use,
+`shell` and `apply_patch` among them. The channel is
 `events.<owner>.<actor>`, named after the seat's principal, and the rules for it are the same on
 every connector: see [connect-claude.md](connect-claude.md#event-plane) for the channel, the grant,
 and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; your own
@@ -194,33 +195,26 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   rather than left to be discovered: if the emitter had already been publishing this thread and
   then died, the seat's log carries its position, and the rebind CONTINUES that log rather than
   starting where it binds. The rebind publishes the complete outage backlog once the plane is back,
-  including everything the thread wrote after the previous emitter became terminal. Two consequences
-  are worth stating plainly, because both are easy to read past. A tool RESULT is published as the tool returned it, so anything a tool read on
-  the seat's behalf, including messages it fetched from a channel with a narrower reader set, is in
-  this stream; nothing redacts it or marks where it came from. And a backlog written while the
-  plane was terminal is not discarded, it is delivered on recovery. Together those mean the readers
-  of an events channel must be treated as at least as wide as every channel the seat's own tools
-  can read. What the stream does not carry, here or on a live plane, is the session's own record of
-  the user's words and the developer instructions. Neither of those two carriers is introduced by
-  the boundary rule above and neither changes shape, but the rule is not confined to the seat whose
-  emitter never started. It changes WHICH RECORDS reach the stream, on every armed seat. A bind
-  announces where the stream starts and the emitter's setup then runs before its first read; what
-  the thread appended inside that window used to land behind the cursor and be dropped, and it is
-  published now. A whole turn can sit in there, tool results included, so the carrier described
-  just above now covers a stretch of the session it previously lost. Nothing is sent twice in
-  either case.
+  including everything the thread wrote after the previous emitter became terminal. A backlog
+  written while the plane was terminal is not discarded; it is delivered on recovery. Tool
+  arguments and tool results are still not republished, on the live plane or on that backlog.
+  What the stream also does not carry is the session's own record of the user's words and the
+  developer instructions. The boundary rule is not confined to the seat whose emitter never
+  started. It changes WHICH RECORDS reach the stream, on every armed seat. A bind announces
+  where the stream starts and the emitter's setup then runs before its first read; what the
+  thread appended inside that window used to land behind the cursor and be dropped, and it is
+  published now. A whole turn can sit in there, so the recovery path now covers a stretch of
+  the session it previously lost. Nothing is sent twice in either case.
 
-  And the reader set is a requirement rather than a guarantee, which is the last thing to say
-  plainly. The grant does not enforce it, and it is worth being exact about what does. A spawn
-  through the manager gives a seat publish rights on its own event channel and nothing else, and a
-  spawn whose grant names a different agent's event channel is refused at the door. That fence is
-  the manager's, it reads the concrete form and leaves a pattern such as `events.<owner>.>` to
-  ordinary ACL authority, and a foreground `cotal spawn` on your own machine grants whatever you
-  name because it mints from your own signing material. [connect-claude.md](connect-claude.md#event-plane)
-  spells all three out. Who may READ a plane is minted separately and out of band either way, with
+  The grant still does not decide who may READ a plane. A spawn through the manager gives a seat
+  publish rights on its own event channel and nothing else, and a spawn whose grant names a
+  different agent's event channel is refused at the door. That fence is the manager's, it reads
+  the concrete form and leaves a pattern such as `events.<owner>.>` to ordinary ACL authority,
+  and a foreground `cotal spawn` on your own machine grants whatever you name because it mints
+  from your own signing material. [connect-claude.md](connect-claude.md#event-plane) spells all
+  three out. Who may READ a plane is minted separately and out of band either way, with
   `cotal actor grant` on a user-auth mesh and `cotal mint --profile agent --allow-subscribe` on a
-  static one. So holding the events readers to at least the width of every channel the seat's tools
-  can read is the operator's policy to keep, enforced by whoever mints those readers.
+  static one. Who may read the plane is still that mint, not the spawn grant.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 

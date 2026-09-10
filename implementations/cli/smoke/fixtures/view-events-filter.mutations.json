@@ -29,5 +29,8 @@
       "replace": "      events: undefined,",
       "expectRed": "it is MARKED as event traffic"
     }
+  ],
+  "suite": [
+    "implementations/cli/smoke/view-events-filter.smoke.ts"
   ]
 }

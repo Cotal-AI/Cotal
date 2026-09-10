@@ -1,5 +1,7 @@
 {
-  "suite": "opencode-coop",
+  "suite": [
+    "extensions/connector-opencode/smoke/cooperative-stop.smoke.ts"
+  ],
   "guard": "the manager's cooperative stop joins queued event work before it exits",
   "command": "pnpm smoke:opencode-coop",
   "completionMarker": "OPENCODE COOPERATIVE-STOP SMOKE",

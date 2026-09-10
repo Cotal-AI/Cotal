@@ -24,5 +24,8 @@
       "replace": "  process.stderr.write(`[cotal-jcode] fatal: ${String(error)}\\n`);",
       "expectRed": "host launch failure never prints captured Jcode child stderr canary"
     }
+  ],
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-security.smoke.ts"
   ]
 }

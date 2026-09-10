@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/scopes.smoke.ts"
+  ],
   "guard": "A cancellation that arrives while `begin` is in flight still stops the dispatch: the handler is never asked, and the pending entry settles cancelled. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-scopes",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/begin-gap.json",

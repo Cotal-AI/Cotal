@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/artifact-store.smoke.ts",
+  "suite": [
+    "packages/core/smoke/artifact-store.smoke.ts"
+  ],
   "guard": "deleteSpace removes every endpoint/control stream represented in the shared downstream ownership inventory",
   "command": "pnpm smoke:artifact-store",
   "completionMarker": "artifact-store:",

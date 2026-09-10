@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/fixtures/control-transport-crash-cleanup.mts",
+  "suite": [
+    "bin/smoke/fixtures/control-transport-crash-cleanup.mts"
+  ],
   "guard": "credential-bearing temporary paths are owned before auth persistence and broker spawn",
   "command": "pnpm smoke:control-transport-crash-cleanup",
   "completionMarker": "CONTROL PRE-BROKER CRASH PROBE",

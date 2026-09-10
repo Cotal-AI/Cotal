@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/suite-own-process-material.smoke.ts",
+  "suite": [
+    "bin/smoke/suite-own-process-material.smoke.ts"
+  ],
   "guard": "every file that defaults COTAL_SERVERS and then calls configFromEnv() on process.env must drop the COTAL_LAUNCH_MATERIAL pointer first",
   "command": "pnpm smoke:suite-own-process-material",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/suite-own-process-material.json",

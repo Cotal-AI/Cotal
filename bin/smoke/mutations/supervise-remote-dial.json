@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/supervise-remote-dial.smoke.ts",
+  "suite": [
+    "bin/smoke/supervise-remote-dial.smoke.ts"
+  ],
   "guard": "Remote supervision and `cotal run --local` dial the recorded broker URL with the recorded TLS requirement, and the registration resolves its cluster digests against the store's key form",
   "command": "pnpm build && pnpm smoke:supervise-remote-dial",
   "completionMarker": "supervise remote dial:",

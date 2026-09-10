@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/cli/smoke/seed.smoke.ts",
+  "suite": [
+    "implementations/cli/smoke/seed.smoke.ts"
+  ],
   "guard": "the operator-global seed store announces what it WRITES and what it REMOVES, names the exact path, and stays silent when it copies nothing",
   "command": "pnpm smoke:seed",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-store-announce.mutations.json",

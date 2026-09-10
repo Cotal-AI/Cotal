@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/discovery-bundle-consumable.smoke.ts",
+  "suite": [
+    "bin/smoke/discovery-bundle-consumable.smoke.ts"
+  ],
   "guard": "the discovery document a real auth-service serves over the wire is accepted by the real consumer `cotal meshes add --from` validates it with, and names the same provider the registered AuthProvider answers to",
   "command": "pnpm --filter @cotal-ai/auth... build && pnpm smoke:discovery-bundle-consumable:live",
   "completionMarker": "discovery-bundle-consumable:",

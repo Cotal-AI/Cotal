@@ -193,5 +193,8 @@
       "afterRestore": "pnpm gen:reaper-dts",
       "note": "The arm keys distinguish shapes WITHIN one call signature and say nothing about a second one. `declaredModuleSurface` read only the first signature, so a declaration promising an overload was enumerated by nothing, compiled by nothing and run by nothing. Reproduced first-party at the previous tip: adding exactly this overload and regenerating left the suite at 40 passed, 0 failed while the committed declaration promised `reportReaped(label: number, ...)`, which the module does not honour. The fix does not enumerate every signature, it refuses more than one: a bound described by what it declines beats one that silently covers signature 0. The same cell reds in the opposite direction, verified by hand with a valid program that made the export a non-callable object: `reportReaped is enumerated as a callable and declares 0`."
     }
+  ],
+  "suite": [
+    "bin/smoke/reaper.smoke.ts"
   ]
 }

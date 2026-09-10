@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/seat-exit-cause.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/seat-exit-cause.smoke.ts"
+  ],
   "guard": "every path that gives up a seat's slot says WHICH path it was and WHAT the runtime saw, and a runtime that cannot see the exit says so instead of reporting a clean one",
   "command": "pnpm smoke:seat-exit-cause",
   "completionMarker": "checks passed",

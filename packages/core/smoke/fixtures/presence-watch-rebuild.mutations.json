@@ -15,5 +15,8 @@
       "replace": "      `$JS.API.CONSUMER.DELETE.${CHAT}.oc.>`,\n",
       "expectRed": "1.4 and the rebuild DELETED the predecessor it named"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/presence-watch-rebuild.smoke.ts"
   ]
 }

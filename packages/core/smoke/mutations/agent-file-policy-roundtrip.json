@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/agent-file.smoke.ts",
+  "suite": [
+    "packages/core/smoke/agent-file.smoke.ts"
+  ],
   "guard": "Saving an agent file preserves the three channel-policy fields exactly as set, an EMPTY list included, and a second save changes nothing.",
   "command": "pnpm smoke:agent-file",
   "completionMarker": "agent-file yaml smoke:",

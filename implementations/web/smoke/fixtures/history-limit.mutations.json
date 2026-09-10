@@ -58,5 +58,8 @@
       "expectRed": "1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500"
     }
   ],
-  "progressPattern": "^[0-9]\\. "
+  "progressPattern": "^[0-9]\\. ",
+  "suite": [
+    "implementations/web/smoke/history-limit.smoke.ts"
+  ]
 }

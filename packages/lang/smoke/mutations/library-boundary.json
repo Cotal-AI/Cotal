@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "The L4018 no-coercion law holds at the library boundary: a builtin or method parameter that takes a primitive refuses a container or function before the host can coerce it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/library-boundary.json",
@@ -22,7 +24,7 @@
       "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
       "completionMarker": "ok every admitted node type is classified against the key guard: coercing (exercised above) or inert, no type unclassified",
       "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
-      "note": "Elements sit inside the declared container argument, so gateArgs cannot see them; only the element loop does. Under the mutant `join([{a:1}], \",\")` silently answers \"[object Object]\" (measured pre-fix) \u2014 the join conjunct runs clean and reds the cell; the record has no closure, so no detached rejection."
+      "note": "Elements sit inside the declared container argument, so gateArgs cannot see them; only the element loop does. Under the mutant `join([{a:1}], \",\")` silently answers \"[object Object]\" (measured pre-fix) — the join conjunct runs clean and reds the cell; the record has no closure, so no detached rejection."
     },
     {
       "name": "string methods lose the gate",
@@ -31,7 +33,7 @@
       "replace": "    concat: (_f, s, a) => s.concat(...a.map(String)),\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),\n  );",
       "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
       "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
-      "note": "NO completionMarker on purpose: under the mutant `\"a\".repeat(spy)` reaches the host, which calls the program's own toString closure \u2014 the red prints at the conjunct (the surfaced error is not L4018) but the detached closure may still crash the process afterwards, and a real red followed by a crash is still KILLED only when no marker is declared."
+      "note": "NO completionMarker on purpose: under the mutant `\"a\".repeat(spy)` reaches the host, which calls the program's own toString closure — the red prints at the conjunct (the surfaced error is not L4018) but the detached closure may still crash the process afterwards, and a real red followed by a crash is still KILLED only when no marker is declared."
     }
   ]
 }

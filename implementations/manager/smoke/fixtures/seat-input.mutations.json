@@ -1,5 +1,7 @@
 {
-  "suite": "implementations/manager/smoke/seat-input-live.smoke.ts",
+  "suite": [
+    "implementations/manager/smoke/seat-input-live.smoke.ts"
+  ],
   "guard": "the `input` op authorizes exactly as `attach` does before it writes, and `enter:false` really suppresses the carriage return",
   "command": "pnpm smoke:seat-input",
   "completionMarker": "SEAT INPUT SMOKE",

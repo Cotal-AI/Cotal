@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/surface.smoke.ts"
+  ],
   "guard": "The crossing boundary refuses sparse arrays, cycles, and own __proto__ fields by name, while diamonds still cross. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-surface",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/crossing-shapes.json",

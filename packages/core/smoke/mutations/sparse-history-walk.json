@@ -8,5 +8,8 @@
       "replace": "        if (page.length >= limit || start === 1) return page.slice(-limit);\n",
       "expectRed": "1.2 the walk does NOT start at stream sequence 1"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/sparse-history-walk.smoke.ts"
   ]
 }

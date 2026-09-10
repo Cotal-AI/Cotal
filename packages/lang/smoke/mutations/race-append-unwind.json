@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/interpret.smoke.ts"
+  ],
   "guard": "A refused journal append OR a held run among a race's settled arms unwinds the run ahead of the winner scan; a winning sibling may not bury a refused append as a completed race, and may not bury a held arm's heal inside a settled scope a resume short-circuits. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-append-unwind.json",

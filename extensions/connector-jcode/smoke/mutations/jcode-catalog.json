@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-jcode/smoke/jcode-args.smoke.ts",
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-args.smoke.ts"
+  ],
   "guard": "the Jcode connector exposes enabled config catalogs, labels declared efforts as non-authoritative, and fails loud on unusable declarations",
   "command": "pnpm smoke:jcode-args",
   "completionMarker": "JCODE ARGS SMOKE PASSED",

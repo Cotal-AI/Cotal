@@ -1,5 +1,7 @@
 {
-  "suite": "packages/workspace/smoke/bin-path.smoke.ts",
+  "suite": [
+    "packages/workspace/smoke/bin-path.smoke.ts"
+  ],
   "guard": "a valid relative PATH entry resolves to the exact absolute executable that remains usable from another cwd",
   "command": "pnpm smoke:bin-path",
   "progressPattern": "✓",

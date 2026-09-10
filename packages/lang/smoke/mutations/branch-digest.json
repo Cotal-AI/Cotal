@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/migrate.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/migrate.smoke.ts"
+  ],
   "guard": "the entry's `branchDigest`: the arms a settled race is never walked into",
   "command": "pnpm smoke:lang-migrate",
   "completionMarker": "migrate.smoke:",

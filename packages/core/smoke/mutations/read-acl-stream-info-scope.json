@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/read-acl-auth.smoke.ts",
+  "suite": [
+    "packages/core/smoke/read-acl-auth.smoke.ts"
+  ],
   "guard": "A role-less agent credential carries no `$JS.API.STREAM.INFO` grant on DM, TASK, DLV or EPC, so it cannot read stream state or enumerate retained subjects on any per-peer stream.",
   "command": "pnpm smoke:read-acl:auth",
   "completionMarker": "READ-ACL SMOKE",

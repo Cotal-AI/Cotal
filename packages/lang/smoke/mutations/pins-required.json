@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/pins.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/pins.smoke.ts"
+  ],
   "guard": "a resume over a recorded journal must carry the run's pins (L5021)",
   "command": "pnpm smoke:lang-pins",
   "progressPattern": "  ok ",

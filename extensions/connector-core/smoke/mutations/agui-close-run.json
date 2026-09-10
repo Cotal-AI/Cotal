@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/agui-close-run.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/agui-close-run.smoke.ts"
+  ],
   "guard": "closing a run out of band from the record stream publishes ONE terminal — RUN_FINISHED, or RUN_ERROR when the connector reports a failed turn — consumes no source record, and refuses every state where publishing would be a guess",
   "command": "pnpm smoke:agui-close-run",
   "completionMarker": "agui-close-run smoke:",

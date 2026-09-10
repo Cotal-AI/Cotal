@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/agui-emitter.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/agui-emitter.smoke.ts"
+  ],
   "guard": "an emitter publishes to the channel derived from its endpoint's allocated principal, and to nothing a caller, a record or a write-ahead log can name",
   "command": "pnpm smoke:agui-emitter",
   "completionMarker": "agui-emitter smoke:",

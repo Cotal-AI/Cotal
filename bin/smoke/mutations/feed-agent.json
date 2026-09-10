@@ -1,5 +1,7 @@
 {
-  "suite": "examples/06-feed-agent/test/pump.test.ts",
+  "suite": [
+    "examples/06-feed-agent/test/pump.test.ts"
+  ],
   "guard": "the feed pump rejects private destinations, bounds remote bodies, isolates bad items, labels remote text as untrusted, and keeps agent control on a separate channel",
   "command": "pnpm --filter @cotal-ai/example-06-feed-agent test",
   "completionMarker": "tests 12",

@@ -1,0 +1,128 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/fork-run.smoke.ts"
+  ],
+  "guard": "Version-correct, read-only compiled fork and migration inspection with unchanged recorded pins and explicit worker snapshots.",
+  "command": "pnpm --filter @cotal-ai/lang build >/dev/null 2>&1 && pnpm smoke:runtime-fork",
+  "completionMarker": "fork-run.smoke:",
+  "grades": "integration",
+  "mutations": [
+    {
+      "name": "compiled fork planning falls back to the version-1 interpreter",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (req.pins.languageVersion === ENGINE_LANGUAGE_VERSION) {",
+      "replace": "    if (false && req.pins.languageVersion === ENGINE_LANGUAGE_VERSION) {",
+      "expectRed": "a broker-recorded version-2 run can plan a fork without changing its pins",
+      "cell": "a broker-recorded version-2 run can plan a fork without changing its pins",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "compiled migration falls back to the version-1 interpreter",
+      "file": "implementations/runtime/src/migrate.ts",
+      "find": "    if (req.pins.languageVersion === ENGINE_LANGUAGE_VERSION) {",
+      "replace": "    if (false && req.pins.languageVersion === ENGINE_LANGUAGE_VERSION) {",
+      "expectRed": "a broker-recorded version-2 run can be inspected for migration",
+      "cell": "a broker-recorded version-2 run can be inspected for migration",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "worker inspection does not enter settled scopes",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    ...(request.handler === \"inspection\" ? { migration: true } : {}),",
+      "replace": "    ...(request.handler === \"inspection\" ? { migration: false } : {}),",
+      "expectRed": "compiled nested cut stops before its frontier and excludes later history",
+      "cell": "compiled nested cut stops before its frontier and excludes later history",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "engine host drops the inspection migration option",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "    ...(options.migration !== undefined ? { migration: options.migration } : {}),",
+      "replace": "    ...(options.migration !== undefined ? { migration: false } : {}),",
+      "expectRed": "compiled nested cut stops before its frontier and excludes later history",
+      "cell": "compiled nested cut stops before its frontier and excludes later history",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "engine effect context drops the inspection migration option",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      ...(run.migration !== undefined ? { migration: run.migration } : {}),",
+      "replace": "      ...(run.migration !== undefined ? { migration: false } : {}),",
+      "expectRed": "compiled nested cut stops before its frontier and excludes later history",
+      "cell": "compiled nested cut stops before its frontier and excludes later history",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "cut lookup consumes the cut key before stopping",
+      "file": "packages/lang/src/engine/inspection.ts",
+      "find": "    if (step === this.cutAt) this.halt(\"cut\", step);",
+      "replace": "    if (step === this.cutAt) { super.lookup(key, inputHash); this.halt(\"cut\", step); }",
+      "expectRed": "a broker-recorded version-2 run can plan a fork without changing its pins",
+      "cell": "a broker-recorded version-2 run can plan a fork without changing its pins",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "finally blocks can consume entries after the latched cut",
+      "file": "packages/lang/src/engine/inspection.ts",
+      "find": "    if (this.stoppedAt !== undefined) throw this.stoppedAt;\n",
+      "replace": "",
+      "expectRed": "compiled finalized cut stops before its frontier and excludes later history",
+      "cell": "compiled finalized cut stops before its frontier and excludes later history",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "inspection completion forgets a stop suppressed by finally return",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    if (seam.journal instanceof InspectionJournal && seam.journal.stop !== undefined)\n      throw seam.journal.stop;",
+      "replace": "",
+      "expectRed": "compiled finally-return cut stops before its frontier and excludes later history",
+      "cell": "compiled finally-return cut stops before its frontier and excludes later history",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "pending effects are not treated as an inspection frontier",
+      "file": "packages/lang/src/engine/inspection.ts",
+      "find": "verdict.verdict === \"miss\" || verdict.verdict === \"pending\" || verdict.verdict === \"refused\"",
+      "replace": "verdict.verdict === \"miss\" || verdict.verdict === \"refused\"",
+      "expectRed": "compiled inspection stops at a pending effect without resuming or settling it",
+      "cell": "compiled inspection stops at a pending effect without resuming or settling it",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "inspection failure drops the orphan snapshot",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "      inspection: { orphans: seam.journal!.orphans(), exit },",
+      "replace": "      inspection: { orphans: [], exit },",
+      "expectRed": "a broker-recorded version-2 run can plan a fork without changing its pins",
+      "cell": "a broker-recorded version-2 run can plan a fork without changing its pins",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "completed inspection reports no removed history",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "{ inspection: { orphans: result.journal.orphans() } }",
+      "replace": "{ inspection: { orphans: [] } }",
+      "expectRed": "compiled migration reports only the removed recorded effect",
+      "cell": "compiled migration reports only the removed recorded effect",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "worker divergence serialization drops the recorded hash",
+      "file": "packages/lang/src/engine/inspection.ts",
+      "find": "recordedHash: e.recordedHash, programHash: e.programHash",
+      "replace": "recordedHash: e.programHash, programHash: e.programHash",
+      "expectRed": "compiled migration retains the divergence step and both input hashes",
+      "cell": "compiled migration retains the divergence step and both input hashes",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "missing branch failure is flattened into a generic program error",
+      "file": "implementations/runtime/src/inspect-compiled.ts",
+      "find": "case \"missing-branch\": error = new ScopeBranchMissing(exit.step, exit.scope, exit.missing, exit.recorded, exit.source); break;",
+      "replace": "case \"missing-branch\": error = Object.assign(new Error(\"missing branch\"), { code: \"L5022\" }); break;",
+      "expectRed": "compiled migration preserves a missing recorded branch refusal",
+      "cell": "compiled migration preserves a missing recorded branch refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    }
+  ]
+}

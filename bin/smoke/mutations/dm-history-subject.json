@@ -1,0 +1,67 @@
+{
+  "suite": [
+    "packages/core/smoke/dm-history-subject.smoke.ts"
+  ],
+  "guard": "history drain rejects SPEC §5 from.id mismatches and fail-closes on shape without full CotalMessage validation; surviving DMs take recipient from the subject; god-view keeps the viewer's own send; public-API data:undefined still surfaces",
+  "command": "pnpm smoke:dm-history-subject",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/dm-history-subject.json",
+  "why": [
+    "SPEC §5: mismatch / missing from / unparseable subject MUST be rejected, never rewritten.",
+    "A stored JSON null used to throw TypeError mid-page and drop honest rows (regression vs HEAD^).",
+    "God-view must include a DM the viewer itself sent; a comment is not a test.",
+    "Matching from.id still rewrites recipient from the subject so thread injection cannot land.",
+    "isHistoryDrainEnvelope is the parent isRecord triple under a named type predicate. There is no stored row that one admits and the other drops; reverting the name to an inline triple is a compile change, not a behavioural one. Recorded unkillable. The load-bearing behavioural difference is refusing full isCotalMessage.",
+    "JSON null as a message object is unreachable against the current guard: isHistoryDrainEnvelope(null) is already false via isRecord. Recorded unkillable rather than manufactured red.",
+    "A public unicast with parts [{kind:\"data\", data: undefined}] serializes without a data key and must still appear in dmHistory. Full isCotalMessage validation dropped that row."
+  ],
+  "mutations": [
+    {
+      "name": "history drain returns the payload and discards SPEC §5",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "replace": "  return raw as CotalMessage;",
+      "expectRed": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
+      "cell": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
+      "completionMarker": "dm-history-subject smoke:"
+    },
+    {
+      "name": "authenticatedMessage skips DM recipient rewrite",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (parsed.kind === \"inst\") return authenticatedDmMessage(msg, parsed.rest);",
+      "replace": "  if (parsed.kind === \"inst\") return msg;",
+      "expectRed": "matching from.id still rewrites recipient from the subject, not payload to",
+      "cell": "matching from.id still rewrites recipient from the subject, not payload to",
+      "completionMarker": "dm-history-subject smoke:"
+    },
+    {
+      "name": "history echo-drops the viewer's own send",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "replace": "  if (raw.from.id !== parsed.sender) return undefined;\n  if (raw.from.id === \"local.viewer\") return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "expectRed": "history still includes a DM the viewer itself sent",
+      "cell": "history still includes a DM the viewer itself sent",
+      "completionMarker": "dm-history-subject smoke:"
+    },
+    {
+      "name": "history drain uses full isCotalMessage and drops public-API data:undefined",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;",
+      "replace": "  if (!isCotalMessage(raw) || !isUsableMessageId(raw.id)) return undefined;",
+      "expectRed": "public-API data part with undefined data still appears in dmHistory",
+      "cell": "public-API data part with undefined data still appears in dmHistory",
+      "completionMarker": "dm-history-subject smoke:"
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "JSON null is treated as a message object",
+      "file": "packages/core/src/endpoint.ts",
+      "why": "Unkillable against the current guard, not dropped from the record. The parent mutation removed the isRecord(raw) limb so JSON null was treated as a message object and threw mid-page. isHistoryDrainEnvelope(null) is already false via isRecord, so deleting the named predicate cannot reproduce that defect: null still never reaches from.id / authenticatedMessage."
+    },
+    {
+      "name": "history drain reverts isHistoryDrainEnvelope to the parent isRecord triple",
+      "file": "packages/core/src/endpoint.ts",
+      "why": "Compile-only named wrapping of the parent isRecord triple, not a behavioural delta. There is no stored row the inline triple admits and the named predicate drops (measured: extra typeof from.id === \"string\" limb SURVIVED at 24/24 because SPEC §5 still rejects). The behavioural difference this PR grades is refusing full isCotalMessage, via the data:undefined mutation."
+    }
+  ]
+}

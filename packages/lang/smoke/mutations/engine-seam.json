@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/engine.smoke.ts"
+  ],
   "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and the invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), the cell read (get's third argument, hasOwn rather than truthiness) and the loud clause that a native ReferenceError is the ENGINE's fault, the node floor (refused at the run boundary, by major version), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",

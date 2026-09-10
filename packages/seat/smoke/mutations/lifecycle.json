@@ -1,5 +1,7 @@
 {
-  "suite": "packages/seat/smoke/lifecycle.smoke.ts",
+  "suite": [
+    "packages/seat/smoke/lifecycle.smoke.ts"
+  ],
   "guard": "an isolated worker can die without taking the custodial child PID with it, and a successor can adopt the surviving seat",
   "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:seat-lifecycle",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/seat/smoke/mutations/lifecycle.json",

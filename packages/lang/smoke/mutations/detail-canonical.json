@@ -1,5 +1,7 @@
 {
-  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "suite": [
+    "packages/lang/smoke/journal.smoke.ts"
+  ],
   "guard": "A failure's `detail` is a recorded value too: refused where it is written, at BOTH sites, and refused on load by the same door (L5024). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-journal",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/detail-canonical.json",

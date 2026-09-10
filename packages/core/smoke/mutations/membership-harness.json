@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/membership.smoke.ts",
+  "suite": [
+    "packages/core/smoke/membership.smoke.ts"
+  ],
   "guard": "the channel-membership feature smoke provisions each unique space on its own broker and uses a valid custom actor id",
   "command": "pnpm smoke:membership",
   "completionMarker": "MEMBERSHIP TESTS",

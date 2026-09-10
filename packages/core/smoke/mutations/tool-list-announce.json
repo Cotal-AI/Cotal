@@ -1,5 +1,7 @@
 {
-  "suite": "packages/core/smoke/tool-list-announce.smoke.ts",
+  "suite": [
+    "packages/core/smoke/tool-list-announce.smoke.ts"
+  ],
   "guard": "a connection-changing op branches on supportsToolListAnnounce, never on a connector name; undeclared is refuse, not a no-op; the refusal names no connector",
   "command": "pnpm smoke:tool-list-announce",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/tool-list-announce.json",

@@ -36,5 +36,8 @@
       "replace": "  if (typeof part !== \"object\" || part === null) return false;\n  return true;",
       "expectRed": "CONTROL: a text part is NOT"
     }
+  ],
+  "suite": [
+    "packages/core/smoke/agui-kind.smoke.ts"
   ]
 }

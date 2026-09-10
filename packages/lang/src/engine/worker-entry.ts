@@ -31,6 +31,7 @@ import { assertCrossable } from "../values.js";
 import { EffectError, type EffectHandler } from "../effects.js";
 import { bridgedSeam } from "./bridge.js";
 import { runOnEngine } from "./host.js";
+import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerRunRequest, WorkerRunResult } from "./worker.js";
 
@@ -87,6 +88,17 @@ const confined = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) 
  * module-named handler keeps its whole path in the thread, journal and all, as it always has.
  */
 async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal }> {
+  if (request.handler === "inspection") {
+    const stop = (): never => { throw new Error("read-only inspection attempted to dispatch an effect"); };
+    return {
+      handler: {
+        now: () => request.pins!.startedAt,
+        spawn: stop, turn: stop, ask: stop, checkpoint: stop, sleep: stop,
+        wait: stop, notify: stop, monitor: stop, openConclave: stop, closeConclave: stop,
+      } as unknown as EffectHandler,
+      journal: new InspectionJournal(request.runId, request.entries ?? [], request.cutAt),
+    };
+  }
   if (request.handler === "bridged") {
     if (bridge === undefined) {
       throw new EngineUnavailable(
@@ -121,11 +133,12 @@ async function buildHandler(module: string, exportName: string | undefined, conf
 
 async function run(): Promise<WorkerRunResult> {
   const seam = await buildSeam();
-  const result = await runOnEngine(request.source, request.module, {
+  const executing = runOnEngine(request.source, request.module, {
     runId: request.runId,
     handler: seam.handler,
     evaluate: confined,
     shouldStop,
+    ...(request.handler === "inspection" ? { migration: true } : {}),
     ...(request.file !== undefined ? { file: request.file } : {}),
     ...(request.pins !== undefined ? { pins: request.pins } : {}),
     ...(seam.journal !== undefined ? { journal: seam.journal } : {}),
@@ -134,6 +147,21 @@ async function run(): Promise<WorkerRunResult> {
     ...(request.stepBudget !== undefined ? { stepBudget: request.stepBudget } : {}),
     onLog: (line) => port.postMessage({ kind: "log", line: { scope: line.scope, values: [...line.values] } }),
   });
+  let result;
+  try {
+    result = await executing;
+    if (seam.journal instanceof InspectionJournal && seam.journal.stop !== undefined)
+      throw seam.journal.stop;
+  } catch (error) {
+    if (request.handler !== "inspection") throw error;
+    const exit = inspectionExit(seam.journal instanceof InspectionJournal ? seam.journal.stop ?? error : error);
+    return {
+      ok: false,
+      name: error instanceof Error ? error.name : "Error",
+      message: error instanceof Error ? error.message : String(error),
+      inspection: { orphans: seam.journal!.orphans(), exit },
+    };
+  }
   // THE RUN'S VALUE CROSSES A BOUNDARY, so it answers to the language's own crossing rule rather
   // than to the structured-clone algorithm's. A function reaching this line would otherwise fail as
   // a DataCloneError naming a host algorithm, when what happened is that a run tried to return
@@ -151,6 +179,7 @@ async function run(): Promise<WorkerRunResult> {
     pins: result.pins,
     programHash: result.programHash,
     steps: result.steps,
+    ...(request.handler === "inspection" ? { inspection: { orphans: result.journal.orphans() } } : {}),
   };
 }
 

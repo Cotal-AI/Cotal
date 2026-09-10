@@ -1,0 +1,64 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/agui-tool-result.smoke.ts"
+  ],
+  "guard": "the events plane does not republish TOOL_CALL_ARGS or TOOL_CALL_RESULT, including on AguiEmitter.start recovery of a frozen pre-fix body; six carriers fail independently; sibling text still publishes",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:agui-tool-result",
+  "completionMarker": "agui-tool-result smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-tool-result.json",
+  "why": [
+    "THE COORDINATE IS THE RECORDED PUBLISH. FakeEndpoint.multicastExpecting is what the broker would",
+    "have been handed. The mapper return is upstream of recover()'s bypass. The WAL body is frozen",
+    "pre-policy by design. A cell on either of those would pass with the defect wide open. That is why",
+    "PR #1415's two mutation kills proved the suite depended on the mutated lines rather than that a",
+    "live entry point reached them. This fixture's recover mutation is the one #1415 lacked: it drives",
+    "AguiEmitter.start() against a sent_unacked TOOL_CALL_RESULT body.",
+    "",
+    "CONNECTOR-CORE EXPORTS RESOLVE TO dist/. The command AND each mutation's afterRestore rebuild, or",
+    "the mutant is read by nothing and a poisoned dist survives the restore.",
+    "",
+    "SIX CARRIERS ARE SIX CELLS. A mutation that reopens only ARGS must red an args cell, not a shared",
+    "'no marks' cell. T-ARGS deletes TOOL_CALL_ARGS from the forbidden set; T-RESULT deletes",
+    "TOOL_CALL_RESULT; T-RETRY deletes the attempt() refusal.",
+    "",
+    "T-ARGS/T-RESULT/T-RETRY are all MORE PERMISSIVE, so they cannot grade liveness. T-LIVENESS adds",
+    "TEXT_MESSAGE_CONTENT to the forbidden set and must red the sibling-text cell. That is the decoy",
+    "that proves the suite would notice if the policy started refusing everything. A TOOL_CALL_START",
+    "decoy is not used: dropping START makes END fail the batch validator, so the first red would be",
+    "the channel-control cell (empty publish) rather than a START/END control."
+  ],
+  "mutations": [
+    {
+      "name": "T-RETRY recover republishes a frozen TOOL_CALL_RESULT body because attempt() no longer refuses it",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
+      "replace": "    if (false && frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
+      "expectRed": "recover:AguiEmitter.start refuses a frozen TOOL_CALL_RESULT body rather than publishing it",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-ARGS the forbidden set no longer includes TOOL_CALL_ARGS, reopening the three args carriers",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
+      "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
+      "expectRed": "carrier:claude-args mark is absent from the recorded publish",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-RESULT the forbidden set no longer includes TOOL_CALL_RESULT, reopening the three result carriers",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
+      "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,",
+      "expectRed": "carrier:claude-result mark is absent from the recorded publish",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-LIVENESS the forbidden set also drops TEXT_MESSAGE_CONTENT, so sibling text never publishes",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
+      "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,\n  AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT,",
+      "expectRed": "control:sibling TEXT_MESSAGE_CONTENT reaches the recorded publish (lifecycle survived the policy)",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    }
+  ]
+}

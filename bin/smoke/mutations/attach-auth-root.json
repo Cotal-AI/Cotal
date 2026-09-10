@@ -1,5 +1,7 @@
 {
-  "suite": "bin/smoke/attach-auth-root.smoke.ts",
+  "suite": [
+    "bin/smoke/attach-auth-root.smoke.ts"
+  ],
   "guard": "attach redeems a session grant with the seed the MESH resolved, never one walked up from the cwd, and a cwd anchor holding another chain for the same space is reported rather than obeyed",
   "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-auth-root",
   "completionMarker": "attach auth-root:",
@@ -74,8 +76,8 @@
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "  if (shadow)\n    console.error(\n      `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space \"${t.space}\".\\n` +\n      `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,\n    );",
       "replace": "  void shadow;",
-      "expectRed": "\u2026and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
-      "cell": "\u2026and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
+      "expectRed": "…and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
+      "cell": "…and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "note": "A careless edit, not a malicious one: the report is dropped and the detector call kept. Everything still typechecks and every functional cell still passes."
     },
@@ -114,15 +116,15 @@
       "file": "packages/workspace/src/auth-paths.ts",
       "find": "  let cwdRoot: string;\n  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    cwdRoot = findCotalRoot(cwd);\n    if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
       "replace": "  const cwdRoot = findCotalRoot(cwd);\n  if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;\n  let here: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
-      "expectRed": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
-      "cell": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
+      "expectRed": "…and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
+      "cell": "…and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
       "note": "The fix someone writes after reading only the bug report: guard the side the report named. The other side is the same abort with the roots swapped, and it is the direction a later change is most likely to reintroduce."
     },
     {
       "name": "CONTROL the attach seed-output assertion is live in its suite file",
       "file": "bin/smoke/attach-auth-root.smoke.ts",
-      "find": "    ![fromFossil, fromBare, fromCorrupt].some((o) =>\n      /(?:^|\\n)(?:\u2713 added @cotal-ai\\/|\u2192 wrote operator-global seed store payload|\u2717 refusing to reconcile the operator-global seed store)/.test(o),\n    ),",
+      "find": "    ![fromFossil, fromBare, fromCorrupt].some((o) =>\n      /(?:^|\\n)(?:✓ added @cotal-ai\\/|→ wrote operator-global seed store payload|✗ refusing to reconcile the operator-global seed store)/.test(o),\n    ),",
       "replace": "    false,",
       "expectRed": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
       "cell": "the attached-session subprocess does not reconcile connector payloads before exercising attach",

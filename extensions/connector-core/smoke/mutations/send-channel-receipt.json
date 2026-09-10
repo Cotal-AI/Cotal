@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/send-channel-receipt.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/send-channel-receipt.smoke.ts"
+  ],
   "guard": "cotal_send still creates unknown channels, but the success receipt lets a caller tell a new name from a known one",
   "command": "pnpm smoke:send-channel-receipt",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/send-channel-receipt.json",
