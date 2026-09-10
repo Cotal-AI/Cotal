@@ -50,6 +50,9 @@ export interface AgentHandle {
    *  leaves the mesh on its own) before ensuring the process/tab is gone; otherwise
    *  it's a hard, immediate kill. */
   stop(opts?: { graceful?: boolean }): void;
+  /** Release this manager's local handle without stopping or deprovisioning the agent. Optional,
+   *  and absent means the runtime cannot survive manager exit, so callers must fail closed. */
+  release?(): void;
   /** Resolve only after the runtime has authoritatively proved the process/window/workspace is gone.
    * Optional during the preservation rollout; a manager maintenance cut must fail closed when absent. */
   waitForExit?(): Promise<void>;
