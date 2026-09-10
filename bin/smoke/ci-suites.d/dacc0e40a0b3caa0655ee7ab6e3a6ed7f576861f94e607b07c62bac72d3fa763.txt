@@ -1,4 +1,4 @@
 # Construction-time SecretStore identity: same-store compare and the two-root refusal copy.
 smoke:secret-store-identity
-# --creds identity is the file's directory (the store actually read), never an ancestor workspace.
+# --creds identity: canonical .cotal/<segment> names the workstation root; any other path keeps dirname.
 smoke:reload-store-identity
