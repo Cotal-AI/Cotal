@@ -433,6 +433,19 @@ export class MeshAgent extends EventEmitter {
     return this.lastConnectionError;
   }
 
+  /** #1356: the space's presence bucket has been refusing writes since this time, or `undefined`.
+   *
+   *  Deliberately NOT folded into {@link connectionIssue}. That field has a defined relationship to
+   *  readiness which existing callers already read, and a bound endpoint surviving refused heartbeats
+   *  IS still ready — the neighbouring decision at the `warning` listener is correct and stands. This
+   *  is a distinct fact that can be true at the same time as `ready`, which is the actual shape of the
+   *  incident: connected, serving, and silently unable to publish presence.
+   *
+   *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
+  get presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+    return this.ep.presenceWriteFailure();
+  }
+
   /** The latest successful, non-empty inbox drain in this session. */
   get lastInboxDrainedAt(): number | undefined {
     return this._lastInboxDrainedAt;
@@ -510,7 +523,26 @@ export class MeshAgent extends EventEmitter {
         // session, and there is no next retry to explain or sleep toward.
         if (this._stopping) return;
         this.lastConnectionError = error.message;
-        this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
+        // #1356: "mesh unreachable" was asserted unconditionally, including while this same object
+        // held `transportConnected: true` — measured against a presence bucket whose writes the
+        // broker refuses: broker up, TCP connected, every sibling stream writable, and the operator
+        // told the mesh was down. An anonymous error makes an operator look; a wrong one makes them
+        // look in the wrong place. Both facts are already here, so report the one that is true.
+        // The presence sentence CLAIMS the transport is fine, so it is reachable only while a live
+        // transport observation says so. The endpoint clears the record whenever a connection is torn
+        // down, which is the primary guard; this is the second one, for a transport that drops without
+        // a teardown running. Belt and braces, because the failure this replaced was a confident wrong
+        // answer and the cost of one redundant check is lower than the cost of another.
+        const presence = this._transportConnected ? this.ep.presenceWriteFailure() : undefined;
+        // "for 0s" on the first retry read like a broken template. Report a sub-second age as "<1s"
+        // rather than rounding it up to a duration that has not elapsed yet.
+        const forS = presence === undefined ? "" : presence.forMs < 1000 ? "<1" : String(Math.round(presence.forMs / 1000));
+        const diagnosis = presence
+          ? `connected, but this space's presence bucket "${presence.bucket}" has refused every write for ${forS}s (${presence.error ?? error.message}) - the transport is fine and the fault is not the network`
+          : this._transportConnected
+            ? `transport is connected but the mesh bind did not complete (${error.message})`
+            : `mesh unreachable (${error.message})`;
+        this.log(`${diagnosis}; retrying in ${retryMs}ms`);
         await sleep(retryMs);
       }
     }

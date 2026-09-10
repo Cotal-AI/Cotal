@@ -1,0 +1,37 @@
+{
+  "suite": [
+    "scripts/mutation-coverage.selftest.mjs"
+  ],
+  "grades": "tool",
+  "guard": "mutation coverage accepts only direct execution witnesses that reach the mutated file without a package resolver",
+  "command": "node scripts/mutation-coverage.selftest.mjs",
+  "progressPattern": "^  ✓ ",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
+  "why": [
+    "The seat packaging suite executes the root native assembler directly, while the launcher smoke executes its own mutated source. Both are stronger witnesses than a by-name package import, and neither should be rejected as a dist trap.",
+    "A quoted path in prose is not execution. The self-test keeps that negative control beside both accepted direct paths."
+  ],
+  "mutations": [
+    {
+      "name": "a suite mutating its own directly executed source is rejected",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
+      "replace": "  if (invokesFile(suiteSource, m.file)) return true;",
+      "expectRed": "a suite is gradable when it directly executes the file being mutated"
+    },
+    {
+      "name": "a suite launching the exact mutated repo script is rejected",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
+      "replace": "  if (m.file === suite) return true;",
+      "expectRed": "a suite is gradable when it launches the exact mutated script path"
+    },
+    {
+      "name": "any quoted mutation path is treated as a direct execution witness",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
+      "replace": "  if (m.file === suite || referencesRoot(suiteSource, m.file)) return true;",
+      "expectRed": "a quoted script path without an invocation is refused"
+    }
+  ]
+}

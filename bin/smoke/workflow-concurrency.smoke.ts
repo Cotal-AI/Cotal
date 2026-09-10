@@ -65,22 +65,22 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  fixtures whose guarded source changed. It is the 7th workflow and is push-to-main startable (its
  *  `changed` job runs on push to main), so both the total and the push-to-main count move by one.
  *  It declares NO concurrency group, so EXPECTED_GROUPED is unchanged — see the note below for why a
- *  group was considered and deliberately not added here. */
-const EXPECTED_WORKFLOWS = 7;
-const EXPECTED_PUSH_TO_MAIN = 6;
-/** Of those, the ones that declare a concurrency group and therefore CAN evict. `docs.yml` pushes
- *  to main with no group at all, so its runs are independent and there is nothing to queue. That is
- *  a valid answer to this problem, not an omission, and counting it separately keeps the difference
- *  visible instead of letting a future removal of a group look like compliance.
+ *  group was considered and deliberately not added here.
  *
- *  `mutation-reproof.yml` is also groupless, on purpose: its scheduled full sweep runs daily (cron
- *  `17 5 * * *`) under a 360-minute cap, so a scheduled run cannot overlap the next one, and its
- *  lightweight push/PR `changed` job wants ordinary per-ref eviction, not queueing. The one residual
- *  overlap — a manual `workflow_dispatch` sweep alongside a scheduled one — is rare and intentional.
- *  A job-scoped `full` group (queue, not evict) would be the tidy belt-and-braces answer, but adding
- *  it edits a file under `.github/workflows/` and is folded into #1292 with the triage step, which
- *  needs a credential with the `workflow` OAuth scope this lane lacks. */
-const EXPECTED_GROUPED = 4;
+ *  Bumped for `attribution.yml` (the 8th): it runs on pull_request only, so it is not push-to-main
+ *  startable and neither of the other two counts moves. Its group keys on the PR ref and cancels
+ *  in progress, which is the only policy a PR-only workflow needs. */
+const EXPECTED_WORKFLOWS = 8;
+const EXPECTED_PUSH_TO_MAIN = 6;
+/** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
+ *  workflow carries one now: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
+ *  when every pushed pull-request head kept its own 12-shard reproof matrix and its own docs build
+ *  queued against the org's 20 concurrent-job cap. Both now use the CI policy: a pull-request push
+ *  supersedes the run already going for that ref, a merge to main queues (`queue: max`) instead of
+ *  evicting, which the checks below hold them to. The scheduled reproof sweep keys its group on
+ *  `refs/heads/main` like a merge, so a sweep and a merge queue behind each other rather than
+ *  running side by side; a manual `workflow_dispatch` sweep joins the same queue. */
+const EXPECTED_GROUPED = 6;
 
 /** What a concurrency key can be: absent, a literal, or one of the expressions this repo uses.
  *  `unknown` is deliberately terminal. */

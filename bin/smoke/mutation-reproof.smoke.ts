@@ -190,38 +190,70 @@ try {
   process.env.COTAL_REPROOF_SENTINEL = "synthetic-session-secret";
   const shards = Array.from({ length: 12 }, (_, i) => i);
   const workflow = parse(readFileSync(join(ROOT, ".github/workflows/mutation-reproof.yml"), "utf8"));
+  const plan = workflow.jobs.plan;
   const job = workflow.jobs.changed_shard;
   const aggregate = workflow.jobs.changed;
+  const planStep = plan?.steps.find((step: { id?: string }) => step.id === "plan");
   const reprove = job?.steps.find((step: { name?: string }) => step.name === "Re-prove fixtures for changed guarded sources");
+  // The plan job runs the selector once and names the shards to fan; the matrix is its output, so a
+  // shard the selector would empty is never started. A plan that hardcodes the list, or a matrix
+  // that ignores the plan, silently restores the 12-way fan-out this job exists to avoid.
   check(
-    "the changed workload runs every configured shard without fail-fast cancellation",
-    JSON.stringify(job?.strategy?.matrix?.shard) === JSON.stringify(shards)
-      && job?.strategy?.["fail-fast"] === false
-      && job?.if === "github.event_name != 'schedule'"
-      && reprove?.["continue-on-error"] !== true
-      && job?.["continue-on-error"] !== true
-      && reprove?.run.includes('--shard "${{ matrix.shard }}/12"'),
+    "the plan job runs the selector over the same shard count and publishes the fan-out",
+    plan?.if === "github.event_name != 'schedule'"
+      && plan?.outputs?.shards === "${{ steps.plan.outputs.shards }}"
+      && typeof planStep?.run === "string"
+      && planStep.run.includes(`--list-shards ${shards.length}`)
+      && planStep.run.includes('echo "shards=$shards" >> "$GITHUB_OUTPUT"')
+      && !plan.steps.some((step: { run?: string }) => typeof step.run === "string" && /pnpm (install|build)/.test(step.run)),
   );
   check(
-    "the aggregate changed check waits for all shards even after a failed or cancelled shard",
+    "the changed workload fans exactly the planned shards without fail-fast cancellation",
+    job?.strategy?.matrix?.shard === "${{ fromJSON(needs.plan.outputs.shards) }}"
+      && job?.strategy?.["fail-fast"] === false
+      && job?.if === "github.event_name != 'schedule' && needs.plan.outputs.shards != '[]'"
+      && JSON.stringify(job?.needs) === JSON.stringify(["plan"])
+      && reprove?.["continue-on-error"] !== true
+      && job?.["continue-on-error"] !== true
+      && reprove?.run.includes(`--shard "\${{ matrix.shard }}/${shards.length}"`),
+  );
+  check(
+    "the aggregate changed check waits for the plan and every shard even after a failed or cancelled shard",
     aggregate?.if === "github.event_name != 'schedule' && always()"
-      && JSON.stringify(aggregate.needs) === JSON.stringify(["changed_shard"])
+      && JSON.stringify(aggregate.needs) === JSON.stringify(["plan", "changed_shard"])
       && aggregate["continue-on-error"] !== true,
   );
   const gate = aggregate?.steps.find((step: { name?: string }) => step.name === "Gate");
   let aggregateEnvClean = true;
-  for (const result of ["success", "failure", "cancelled", "skipped"]) {
+  // The gate reads three facts: whether the plan ran, what it planned, and what the matrix did.
+  // A skipped matrix passes only behind a successful, empty plan; every other skip, and every
+  // failed or cancelled matrix, and every failed plan, is a red gate.
+  const gateCases: Array<[string, string, string, boolean]> = [
+    ["success", "[0,3]", "success", true],
+    ["success", "[0,3]", "failure", false],
+    ["success", "[0,3]", "cancelled", false],
+    ["success", "[0,3]", "skipped", false],
+    ["success", "[]", "skipped", true],
+    ["success", "[]", "success", false],
+    ["failure", "[0,3]", "success", false],
+    ["failure", "[]", "skipped", false],
+    ["cancelled", "[0,3]", "skipped", false],
+    ["skipped", "", "skipped", false],
+  ];
+  for (const [planResult, planShards, result, accepts] of gateCases) {
     const command = `if [ "\${COTAL_REPROOF_SENTINEL+x}" ]; then echo SESSION_LEAK; fi\n${gate?.run}`;
     const run = typeof gate?.run === "string" ? spawnSync("bash", ["-c", command], {
-      encoding: "utf8", env: { ...childEnv(), SHARD_RESULT: result },
+      encoding: "utf8", env: { ...childEnv(), PLAN_RESULT: planResult, PLAN_SHARDS: planShards, SHARD_RESULT: result },
     }) : undefined;
     const status = run?.status ?? null;
     aggregateEnvClean &&= run !== undefined && !run.stdout.includes("SESSION_LEAK");
     check(
-      `the aggregate shell ${result === "success" ? "accepts" : "rejects"} shard result ${result}`,
-      gate?.env?.SHARD_RESULT === "${{ needs.changed_shard.result }}"
+      `the aggregate shell ${accepts ? "accepts" : "rejects"} plan=${planResult} shards=${planShards || "(unset)"} matrix=${result}`,
+      gate?.env?.PLAN_RESULT === "${{ needs.plan.result }}"
+        && gate?.env?.PLAN_SHARDS === "${{ needs.plan.outputs.shards }}"
+        && gate?.env?.SHARD_RESULT === "${{ needs.changed_shard.result }}"
         && gate?.["continue-on-error"] !== true
-        && status !== null && (result === "success" ? status === 0 : status !== 0),
+        && status !== null && (accepts ? status === 0 : status !== 0),
       `status=${status}`,
     );
   }
