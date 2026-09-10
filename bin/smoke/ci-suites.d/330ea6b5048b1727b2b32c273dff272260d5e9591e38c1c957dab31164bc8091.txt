@@ -1,2 +1,2 @@
-# --creds identity: canonical .cotal/<segment> names the workstation root; any other path keeps dirname.
+# --creds identity: only this space's .cotal/<spaceSegment>/delivery.creds names the workstation root.
 smoke:reload-store-identity

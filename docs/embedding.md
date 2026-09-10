@@ -180,10 +180,10 @@ into it, and the daemon adopts each generation on a preflight-proven 75% timer. 
 cross-host composition cannot satisfy that by writing one filesystem and fingerprinting another:
 `Manager.start()` and every later remint challenge the daemon's `reloadStoreIdentity` and a
 divergent pair is refused naming both stores. The identity is the store the daemon actually
-reloads: an injected coordinate, the workstation root for a canonical `--creds` path
-under `.cotal/<segment>/` (matching the canonical arm), the file's own directory for
-any other `--creds` path, or the workstation root. It never walks ancestors with
-`findCotalRoot`. No bound daemon is not a named
+reloads: an injected coordinate, the workstation root only when `--creds` is
+`<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
+file's own directory for any other `--creds` path, or the workstation root. It never
+walks ancestors with `findCotalRoot`. No bound daemon is not a named
 store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
 An injected store names its coordinate in
 `COTAL_SECRET_STORE` on both processes. It never throws: it

@@ -18,7 +18,7 @@ import {
   type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceFromSegment, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
@@ -35,11 +35,12 @@ type CredsSource = { store: SecretStore; key: string; where: string; injected: b
 
 /**
  * The store identity THIS daemon will re-read on `reloadCreds`. It is the same store
- * `resolveCredsStore` returns: an injected coordinate, a `--creds` file under the
- * canonical `.cotal/<segment>/` layout (named as the workstation root, matching the
- * canonical arm), a `--creds` file outside that layout (named as the file's own
- * directory), or the workstation root. Naming an ancestor via `findCotalRoot` would
- * certify a two-root composition as a same-store proof.
+ * `resolveCredsStore` returns: an injected coordinate, a `--creds` file that is
+ * exactly `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (named as the
+ * workstation root, matching the canonical arm), a `--creds` file that is not
+ * that file (named as the file's own directory), or the workstation root.
+ * Naming an ancestor via `findCotalRoot` would certify a two-root composition
+ * as a same-store proof.
  */
 export function reloadStoreIdentityOf(src: Pick<CredsSource, "injected" | "identity">): SecretStoreIdentity {
   if (src.injected) {
@@ -58,31 +59,28 @@ export function reloadStoreIdentityOf(src: Pick<CredsSource, "injected" | "ident
  *
  * With `--creds` the store object is deliberately FLAT (root = the file's own
  * directory, key = basename). The canonical store is `<root>/.cotal` with a
- * segmented key. Different store objects, but when `--creds` names the canonical
- * file they resolve THE SAME FILE, so they are the same authority. Identity names
- * that authority, not the store object's root.
+ * segmented key. Different store objects, but when `--creds` names THE FILE THE
+ * MANAGER WRITES they resolve THE SAME FILE, so they are the same authority.
+ * Identity names that authority, not the store object's root.
  *
- * Canonical layout is `<root>/.cotal/<spaceSegment>/<kind>`. Strip exactly those
- * two trailing segments so this arm names the same workstation root the canonical
- * arm names. The match is BOTH `basename(parent) === ".cotal"` AND
- * `spaceFromSegment(basename(fileDir))` (the repo validator: prefix + even-length
- * lowercase hex + round-trip). A looser "ends in a space segment" would alias
- * `<root>/.cotal/auth/space.<hex>` (the user-auth state dir) to `<root>`.
- *
- * A legacy root-scoped `--creds <root>/.cotal/delivery.creds` is the remaining
- * shallow shape after `deliveryCredsKey` migrates that copy into the segmented
- * location on FS. It keeps `dirname` (`.cotal`): it is not the two-segment
- * canonical file, so collapsing it to `<root>` would be a third layout the
- * manager does not write.
- *
- * Any other path keeps `dirname` of the file. Never walk ancestors with
- * `findCotalRoot`.
+ * The manager remints only `segmentedKey(DELIVERY_CREDS_KIND, space)` under
+ * `<root>/.cotal`. Collapse only that exact path: basename is `delivery.creds`,
+ * parent of the file dir is `.cotal`, and the file dir is `spaceSegment(space)`
+ * for THIS space. Another space's segment, a decoy basename, `.cotal/auth/...`,
+ * or a legacy `<root>/.cotal/delivery.creds` keep `dirname`. Never
+ * `spaceFromSegment` ("a valid segment") and never `findCotalRoot`.
  */
-export function reloadStoreIdentityFromCredsPath(credsPath: string): SecretStoreIdentity {
-  const fileDir = dirname(resolve(credsPath));
+export function reloadStoreIdentityFromCredsPath(credsPath: string, space: string): SecretStoreIdentity {
+  const p = resolve(credsPath);
+  const fileDir = dirname(p);
   const parent = dirname(fileDir);
   const grand = dirname(parent);
-  if (basename(parent) === ".cotal" && spaceFromSegment(basename(fileDir)) !== undefined && grand !== parent)
+  if (
+    basename(p) === DELIVERY_CREDS_KIND
+    && basename(parent) === ".cotal"
+    && basename(fileDir) === spaceSegment(space)
+    && grand !== parent
+  )
     return { kind: "fs", root: grand };
   return { kind: "fs", root: fileDir };
 }
@@ -137,7 +135,7 @@ function resolveCredsStore(v: Values, space: string, injected?: SecretStore): Cr
       key: basename(p),
       where: p,
       injected: false,
-      identity: reloadStoreIdentityFromCredsPath(p),
+      identity: reloadStoreIdentityFromCredsPath(p, space),
     };
   }
   const root = findCotalRoot();
