@@ -20,8 +20,8 @@
       "file": "packages/core/src/endpoint-publish-denial.ts",
       "find": "        if (s.error instanceof PermissionViolationError && s.error.subject === subject) {",
       "replace": "        if (s.error instanceof PermissionViolationError && s.error.subject === \"\") {",
-      "expectRed": "invoke is permission-denied, NOT a deadline",
-      "cell": "invoke is permission-denied, NOT a deadline"
+      "expectRed": "describe is permission-denied, not a deadline",
+      "cell": "describe is permission-denied, not a deadline"
     },
     {
       "name": "the refusal message omits the refused subject, so the grant to mint is unreadable",
