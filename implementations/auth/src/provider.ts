@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -194,8 +194,7 @@ export const cotalAuthProvider: AuthProvider = {
       if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
         throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
       idpUrl = ua.idp.url;
-      const base = pinnedExchangeUrl(ua.endpoints.url, request.space).replace(/\/exchange$/, "");
-      endpoint = ua.endpoints.managerAuthorityUrl ?? `${base}/manager-service-authority`;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
     }
     const session = requireIdpSession(homeCotalDir(), idpUrl);
     const idpJwt = await fetchIdpJwt(idpUrl, session.token);
@@ -214,6 +213,86 @@ export const cotalAuthProvider: AuthProvider = {
     if (!res.ok)
       throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
     return body as RemoteManagerAuthorityMaterial;
+  },
+
+  async scanRemoteManagerGoalIndex({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerGoalIndexScanRequest }): Promise<RemoteManagerGoalIndexScanResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before scanning manager goal indexes`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+      body: JSON.stringify({ idpToken: idpJwt, request }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch((error) => { throw new Error(`the manager goal-index endpoint for space "${request.space}" did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+    if (response.status >= 300 && response.status < 400)
+      throw new Error(`the manager goal-index endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`signed in, but manager goal-index scan was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    return body as RemoteManagerGoalIndexScanResult;
+  },
+
+  async validateRemoteRetainedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRetainedAgentValidationRequest }): Promise<RemoteRetainedAgentValidationResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before validating retained manager authority`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+        body: JSON.stringify({ idpToken: idpJwt, request }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      throw new Error(`the manager retained-agent validation endpoint for space "${request.space}" did not answer at ${endpoint} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (res.status >= 300 && res.status < 400)
+      throw new Error(`the manager retained-agent validation endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so retained secrets cannot be walked onto another host`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(`signed in, but manager retained-agent validation was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
+    return body as RemoteRetainedAgentValidationResult;
   },
 
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the
@@ -402,6 +481,14 @@ function pinnedExchangeUrl(base: string, space: string): string {
   u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
   u.search = "";
   u.hash = "";
+  return u.toString();
+}
+
+/** The manager-authority route shares the verified exchange origin. A registry convenience field
+ * cannot redirect secret-bearing manager requests to another origin or to plaintext. */
+function managerAuthorityUrl(base: string, space: string): string {
+  const u = new URL(pinnedExchangeUrl(base, space));
+  u.pathname = `${u.pathname.slice(0, -"/exchange".length)}/manager-service-authority`;
   return u.toString();
 }
 

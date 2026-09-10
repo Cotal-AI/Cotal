@@ -1,6 +1,6 @@
 /** Closed remote manager-service authority policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { managedRetirementOpId, newIdentity, mintLifecycleUid, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
+import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
@@ -119,6 +119,23 @@ await cell("retirement-requester grants only its server-derived caller and exact
   assert.equal(rows.some((row) => row === ">" || row.includes("$KV") || row.includes("STREAM.")), false);
   assert.equal(rows.some((row) => row.includes("another-worker")), false);
 });
+await cell("the closed public mint issues only the typed retirement-requester profile", async () => {
+  const actors = remoteManagerActors(instanceId);
+  const issued = await mintPublicUserJwt(await createSpaceAuth("demo"), retirement.id, "retirement-requester", {
+    principal: { owner: retirementTarget.owner, actor: actors.serve },
+    lifecycleUid,
+    retirementRequester: {
+      owner: retirementTarget.owner, actor: actors.serve, uid: lifecycleUid, target: retirementTarget,
+    },
+  });
+  const payload = JSON.parse(Buffer.from(issued.jwt.split(".")[1]!, "base64url").toString("utf8")) as {
+    nats: { pub: { allow: string[] }; sub: { allow: string[] } };
+  };
+  const rows = [...payload.nats.pub.allow, ...payload.nats.sub.allow];
+  assert.equal(rows.some((row) => row.includes(retirementTarget.lifecycleUid)), true);
+  assert.equal(rows.some((row) => row === ">" || row.includes("$KV") || row.includes("STREAM.")), false);
+  assert.equal(issued.exp > Math.floor(Date.now() / 1000), true);
+});
 const serveActor = remoteManagerActors(instanceId).serve;
 const currentGate = { state: "open" as const, principal: `${retirementTarget.owner}.${serveActor}`, processEpoch: retirement.serveEpoch };
 await cell("current server-derived manager gate authorizes retirement requester issuance", () => {
@@ -157,9 +174,34 @@ await cell("supervise authority has no arbitrary stream/KV/static mint surface",
   assert.equal(all.some((row) => row.includes("STREAM.CREATE") || row.includes("STREAM.DELETE") || row.includes("$KV.>")), false);
   assert.equal(all.every((row) => !row.includes("epgate.manager.") || row.includes(instanceId)), true);
 });
+await cell("neither remote manager credential carries records consumer authority", () => {
+  const actors = remoteManagerActors(instanceId);
+  const rows = (actor: string) => (permissionsFor("remote-manager", "demo", {
+    owner: retirementTarget.owner, actor, connId: newIdentity().id, lifecycleUid,
+  }, { remoteManager: { instanceId, owner: retirementTarget.owner, actor } }) as { pub: { allow: string[] } }).pub.allow;
+  const executor = rows(actors.executor);
+  const supervisor = rows(actors.supervisor);
+  const expected = ["CREATE", "INFO", "DELETE"].map((verb) => `$JS.API.CONSUMER.${verb}.KV_cotal_records_demo.>`);
+  assert.equal(expected.every((row) => !executor.includes(row)), true);
+  assert.equal(expected.every((row) => !supervisor.includes(row)), true);
+  assert.equal(executor.some((row) => row.includes("CONSUMER.MSG.NEXT") || row.includes("$JS.ACK")), false);
+});
 await cell("host issuer grant has no signer or generic profile endpoint", () => {
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id);
   assert.equal(grants.publish.some((row) => row === ">" || row === "$JS.>" || row === "$KV.>"), false);
+});
+await cell("host issuer alone owns the manager endpoint gate and credential write families", () => {
+  const grants = remoteManagerIssuerGrants("demo", newIdentity().id).publish;
+  assert.equal(grants.includes("$KV.cotal_auth_demo.epgate.manager.>"), true);
+  assert.equal(grants.includes("$KV.cotal_auth_demo.epcred.manager.>"), true);
+  assert.equal(grants.some((row) => row.includes("epgate.") && !row.includes("epgate.manager.")), false);
+  assert.equal(grants.some((row) => row.includes("epcred.") && !row.includes("epcred.manager.")), false);
+  const participant = permissionsFor("remote-manager", "demo", {
+    owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: `manager_${instanceId}`, connId: newIdentity().id, lifecycleUid,
+  }, { remoteManager: { instanceId, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: `manager_${instanceId}` } }) as { pub: { allow: string[] } };
+  const participantRows = participant.pub.allow.filter((row) => row.includes("epgate.") || row.includes("epcred."));
+  assert.equal(participantRows.length > 0, true);
+  assert.equal(participantRows.every((row) => row.includes(`.manager.${instanceId}`) && !row.endsWith(".manager.>")), true);
 });
 await cell("manager actors are fixed by the server-selected instance coordinate", () => {
   assert.deepEqual(remoteManagerActors(instanceId), {

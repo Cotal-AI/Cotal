@@ -55,7 +55,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -65,6 +65,9 @@ import type { UserTokenView, ValidatedUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { issueRemoteManagerAuthority } from "./manager-authority.js";
+import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
+import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
@@ -140,6 +143,16 @@ export interface AuthAuthorityPlane {
     alreadyRetired?: boolean;
   }>;
   issueManagerServiceAuthority: (args: { owner: string; scope: string[]; request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
+  validateRetainedAgent: (args: {
+    owner: string;
+    scope: string[];
+    request: RemoteRetainedAgentValidationRequest;
+  }) => Promise<RemoteRetainedAgentValidationRequest>;
+  scanManagerGoalIndex: (args: {
+    owner: string;
+    scope: string[];
+    request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagerGoalIndexScanResult>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -462,9 +475,11 @@ export async function openAuthAuthorityPlane(opts: {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
               expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
             });
-            // The registration executor intentionally receives the SAME exact instance-scoped
-            // grant surface as the supervisor credential, but under a separate nkey and bounded
-            // five-minute lifetime. It is used only for prepare→activate and then discarded.
+            // The executor receives the exact instance-scoped registration/maintenance surface under
+            // a separate nkey and bounded five-minute lifetime. The participant retains it for the
+            // immediate goalidx boot sweep and clean service deregistration. In-place remote renewal
+            // is not wired into Manager yet, so a long-running manager fails deregistration loud at
+            // expiry rather than falling back to an anonymous dial.
             credentials.executor = await credential("executor", "remote-manager", actors.executor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
               expiresInSeconds: 5 * 60,
@@ -562,11 +577,42 @@ export async function openAuthAuthorityPlane(opts: {
             };
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
-            return { credentials };
+            return {
+              credentials,
+              nextRegistrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, {
+                registrationRevision: observed.registrationRevision,
+                processEpoch: observed.processEpoch,
+              }),
+            };
           }
           return { credentials };
         },
       });
+    },
+    validateRetainedAgent: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      return authorizeRemoteRetainedAgentValidation({
+        owner,
+        scope,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+    },
+    scanManagerGoalIndex: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      const authorized = await authorizeRemoteManagerGoalIndexScan({
+        owner, scope, proofSecret: dataAccount.signingSeed, space, request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+      return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
     },
     fenced,
     close: async () => {
@@ -775,6 +821,9 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     bridgeIdp,
     ownerSecret,
     managerServiceAuthority: plane.issueManagerServiceAuthority,
+    validateRetainedAgent: plane.validateRetainedAgent,
+    scanManagerGoalIndex: plane.scanManagerGoalIndex,
+    secrets,
     retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
     cap,
     failures,
@@ -867,6 +916,9 @@ interface HandlerCtx {
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
   ownerSecret: string | Uint8Array;
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
+  validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
+  scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
+  secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   cap: string;
   failures: number[];
@@ -877,6 +929,39 @@ interface HandlerCtx {
   /** The authority plane's root-credential ensure — the agent-exchange arm stamps from it (the
    *  human arm stamps inside the bridge). */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+}
+
+/** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
+export async function dispatchManagerAuthorityRequest(
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "validateRetainedAgent" | "scanManagerGoalIndex">,
+  owner: string,
+  body: { request: unknown },
+): Promise<unknown> {
+  if (body.request === null || typeof body.request !== "object" || Array.isArray(body.request))
+    throw new Error("manager-service authority request must be an object");
+  const request = body.request as { kind?: unknown; actor?: unknown };
+  if (typeof request.actor !== "string") throw new Error("manager-service authority request requires an actor");
+  const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
+  if (request.kind === "manager-retained-agent-validation") {
+    const retained = await ctx.validateRetainedAgent({
+      owner,
+      scope: row.scope ?? [],
+      request: body.request as RemoteRetainedAgentValidationRequest,
+    });
+    const authority = await validateRetainedManagedAgent({
+      store: ctx.secrets,
+      dir: ctx.dir,
+      space: ctx.space,
+      owner: retained.target.owner,
+      actor: retained.target.actor,
+      actorToken: retained.actorToken,
+      sentinelCreds: retained.sentinelCreds,
+    });
+    return completeRemoteRetainedAgentValidation(retained, owner, authority);
+  }
+  if (request.kind === "manager-goal-index-scan")
+    return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
+  return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
 }
 
 /** Per-listener policy for `POST /exchange` — how a caller is proven, attributed, and throttled on
@@ -1178,12 +1263,7 @@ async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerRe
   try {
     const verified = await verifyIdpToken(body.idpToken, ctx.bridgeIdp);
     const owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
-    if (body.request === null || typeof body.request !== "object" || Array.isArray(body.request))
-      throw new Error("manager-service authority request must be an object");
-    const request = body.request as RemoteManagerAuthorityRequest;
-    const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
-    const material = await ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request });
-    return send(res, 200, material);
+    return send(res, 200, await dispatchManagerAuthorityRequest(ctx, owner, { request: body.request }));
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`auth-service: refused manager-service authority: ${reason}`);

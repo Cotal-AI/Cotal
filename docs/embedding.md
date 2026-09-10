@@ -235,6 +235,30 @@ recomputes the managed id from its broker-pinned target before any gate, head, i
 access, so mint-time validation is not the terminal boundary. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
 
+A host that resumes retained managed actors also implements
+`remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
+already holds, plus the `nextRegistrationProof` returned by the activation response. That proof is
+host-issued after registration and binds the manager owner, actor, lifecycle, identity nkeys, current
+registration revision, and serving epoch. The host checks it against the current open manager gate,
+validates the retained secrets against its current managed row, and returns only the non-secret
+authority shape. The manager binds every result coordinate and the returned authority back to its
+inventory before use. Do not copy the provider's `issuer.json` or `callout.json` into the participant
+store. Both contain private signing or exchange authority.
+
+The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinned public auth-service
+base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
+not select the local `--dir` arm, which depends on a host-only auth-service process record.
+
+The remote authority's instance executor remains the scoped maintenance credential for clean service
+deregistration and exact instance registration operations. It carries no records-stream consumer
+lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
+returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
+consumer connection and its create/delete rights. The executor remains a five-minute credential for
+registration operations and clean deregistration. A hosted process expected to
+run beyond that window cannot yet renew it in place. Clean deregistration then fails loud and the
+operator removes the stale instance with `cotal deregister-instance`. Wiring the typed `renew` phase
+into the running manager remains required for unattended long-lived hosting.
+
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
 the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference

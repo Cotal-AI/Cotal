@@ -1,6 +1,13 @@
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
-import type { RemoteManagerAuthorityMaterial, RemoteManagerAuthorityRequest } from "./remote-manager-authority.js";
+import type {
+  RemoteManagerAuthorityMaterial,
+  RemoteManagerAuthorityRequest,
+  RemoteManagerGoalIndexScanRequest,
+  RemoteManagerGoalIndexScanResult,
+  RemoteRetainedAgentValidationRequest,
+  RemoteRetainedAgentValidationResult,
+} from "./remote-manager-authority.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -65,6 +72,24 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** Host-owned manager boot scan. The provider authenticates the human and returns only parsed,
+   * owner-scoped manager goal-index entries. No raw records or consumer authority crosses. */
+  scanRemoteManagerGoalIndex?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerGoalIndexScanRequest;
+  }): Promise<RemoteManagerGoalIndexScanResult>;
+  /**
+   * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
+   * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.
+   * The host authenticates the operator and manager lifecycle on every call and returns only the
+   * current non-secret authority row. Optional providers fail loud at the composition root.
+   */
+  validateRemoteRetainedAgent?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteRetainedAgentValidationRequest;
+  }): Promise<RemoteRetainedAgentValidationResult>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).

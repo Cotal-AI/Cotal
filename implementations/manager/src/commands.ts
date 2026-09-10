@@ -10,8 +10,8 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
-  rawDigest,
   remoteManagerActors,
+  remoteManagerRegistrationProof,
   resolveAuthProvider,
   standaloneConnectOpts,
   DEFAULT_SERVER,
@@ -36,7 +36,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -110,7 +110,7 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  * signer. Do not turn this into a partial startup that later fails on a broker permission error;
  * the public command owns the honest, actionable refusal below.
  */
-export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean } {
+export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean; agentBearerExchangeUrl?: string } {
   const localSpace = spaceFor(v, root);
   if (hasUserAuthState(root, localSpace)) {
     // Preserve the historical host path's missing/stale-registry diagnostics in Manager.start():
@@ -133,7 +133,10 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     if (target.mode === "user" && target.userAuth?.remote === true) {
       if (v.server !== undefined && v.server !== target.server)
         throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
-      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };
+      return {
+        space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired,
+        agentBearerExchangeUrl: target.userAuth.endpoints?.url,
+      };
     }
     // The marker is absent, but this is a local/static/open record or a malformed user entry. Let
     // the normal manager validation retain its mode-specific diagnostics rather than rewording a
@@ -181,7 +184,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       const provider = resolveAuthProvider();
       if (!provider.managerServiceAuthority)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
+      if (!provider.validateRemoteRetainedAgent)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement the typed remote retained-agent validation protocol`);
+      if (!provider.scanRemoteManagerGoalIndex)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager goal-index scan protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
+      const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
+      if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
+        throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
       const material = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
         dir: join(findCotalRoot(), ".cotal", "auth", space),
@@ -206,21 +216,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         artifacts.document,
         artifacts.manifest,
       ];
-      const registrationProof = rawDigest(JSON.stringify({
-        v: 1,
-        space,
-        owner: material.owner,
-        instanceId: state.instanceId,
-        lifecycleUid: state.lifecycleUid,
-        actors,
-        identities: request.identities,
-        artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
-      }));
+      const registrationProof = remoteManagerRegistrationProof(material.owner,
+        remoteManagerAuthorityRequest(state, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts));
       const activate = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
         dir: join(findCotalRoot(), ".cotal", "auth", space),
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
+      const retainedRegistrationProof = currentRegistrationProof(activate);
       remoteAuthority = {
         owner: material.owner,
         actors,
@@ -233,14 +236,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
         sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
         serveGrant: registered.serveGrant,
+        agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
           const sessionMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "session", rawDigest(JSON.stringify({
-              v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
-              actors, identities: request.identities, artifactDigests: [],
-            })), undefined, {
+            request: remoteManagerAuthorityRequest(state, "cli", "session", remoteManagerRegistrationProof(material.owner,
+              remoteManagerAuthorityRequest(state, "cli", "session", `sha256:${"0".repeat(64)}`)), undefined, {
               id: session.identity.id,
               endpoint: session.endpoint,
               sessionId: session.sessionId,
@@ -254,10 +256,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const retirementMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "retire", rawDigest(JSON.stringify({
-              v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
-              actors, identities: request.identities, artifactDigests: [],
-            })), undefined, undefined, {
+            request: remoteManagerAuthorityRequest(state, "cli", "retire", remoteManagerRegistrationProof(material.owner,
+              remoteManagerAuthorityRequest(state, "cli", "retire", `sha256:${"0".repeat(64)}`, undefined, undefined, {
+                id: identity.id,
+                target: retirementTarget,
+                opId,
+                serveEpoch,
+              })), undefined, undefined, {
               id: identity.id,
               target: retirementTarget,
               opId,
@@ -275,6 +280,46 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           // manages hosted agents must inject its revoke + resumable-release operation here rather
           // than letting consumer deprovision masquerade as terminal retirement.
           throw new Error("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition");
+        },
+        validateRetainedAgent: async ({ owner: targetOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
+          const request = remoteRetainedAgentValidationRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            { owner: targetOwner, actor, lifecycleUid },
+            actorToken,
+            sentinelCreds,
+          );
+          const result = await provider.validateRemoteRetainedAgent!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          return retainedAgentAuthority(result, request);
+        },
+        scanGoalIndex: async () => {
+          const request = {
+            v: 1 as const,
+            kind: "manager-goal-index-scan" as const,
+            space,
+            actor: "cli",
+            instanceId: state.instanceId,
+            managerLifecycleUid: state.lifecycleUid,
+            requestId: `scan${mintLifecycleUid()}`,
+            registrationProof: retainedRegistrationProof,
+            serveEpoch: registered.processEpoch,
+            identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as {
+              supervisor: { id: string }; executor: { id: string }; serve: { id: string };
+              goalWriter: { id: string }; sessionLedger: { id: string };
+            },
+          };
+          const result = await provider.scanRemoteManagerGoalIndex!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          return remoteManagerGoalIndexEntries(result, request, material.owner);
         },
       };
     } catch (e) {
