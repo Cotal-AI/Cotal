@@ -3,7 +3,7 @@
     "implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts"
   ],
   "guard": "stock cotal supervise validates retained authority at resume and commit, then refuses hosted terminal retirement before requester issuance while the alias remains held",
-  "command": "pnpm --filter @cotal-ai/manager build && COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm probe:hosted-retirement-stock-supervise",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build && COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm probe:hosted-retirement-stock-supervise",
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/hosted-retirement-stock-supervise.json",
   "why": [
     "This owner-native acceptance starts the real cotal supervise CLI, an authenticated broker, registry-pinned HTTPS authority, and a retained child from a registry-only participant root.",
