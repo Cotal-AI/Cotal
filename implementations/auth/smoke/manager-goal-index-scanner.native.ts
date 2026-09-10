@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
-import { createEndpointStreams, createSpaceAuth, isReachable, mintLifecycleUid, newIdentity, recordAtomicKey, RECORD_KINDS, recordsBucket, recordsKvStreamName, serverConfig } from "@cotal-ai/core";
+import { createEndpointStreams, createSpaceAuth, isReachable, meetsBrokerFloor, mintLifecycleUid, newIdentity, recordAtomicKey, RECORD_KINDS, recordsBucket, recordsKvStreamName, serverConfig } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openRecordsScannerCandidate } from "../src/records-scanner.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -38,6 +38,10 @@ const check = (name: string, condition: unknown, detail?: unknown) => {
 try {
   for (let i = 0; i < 50 && !(await isReachable(servers)); i++) await wait(100);
   fixture = await openAuthorityClient({ server: servers, space, dataAccount: auth.account, label: "fixture", grants: () => ({ publish: [">"], subscribe: [">"] }), log: () => {} });
+  const brokerVersion = fixture.nc.info?.version;
+  const brokerSupported = typeof brokerVersion === "string" && meetsBrokerFloor(brokerVersion);
+  check(`connected broker version ${brokerVersion ?? "<missing>"} meets required floor`, brokerSupported);
+  if (!brokerSupported) throw new Error(`native scanner refuses connected broker version ${brokerVersion ?? "<missing>"}; required floor is 2.12`);
   const jsm = await jetstreamManager(fixture.nc);
   await createEndpointStreams(jsm, new Kvm(fixture.nc), space);
   const kv = await new Kvm(fixture.nc).open(recordsBucket(space));
@@ -87,7 +91,7 @@ try {
   check("own DEL marker fails named", /carries a DEL marker/.test(marker), marker);
 
   await scanner.close();
-  check("every native scanner cell ran", passed + failed === 6, { passed, failed });
+  check("every native scanner cell ran", passed + failed === 7, { passed, failed });
   console.log(`manager goal-index scanner native: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 } finally {

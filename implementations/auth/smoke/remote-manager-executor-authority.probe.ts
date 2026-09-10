@@ -25,6 +25,7 @@ import {
   credsFromJwt,
   isReachable,
   listGoalIndex,
+  meetsBrokerFloor,
   mintLifecycleUid,
   mintPublicUserJwt,
   newIdentity,
@@ -163,6 +164,10 @@ try {
     inboxPrefix: `_INBOX_${identities.executor.id}`,
     maxReconnectAttempts: 0,
   });
+  const brokerVersion = executor.info?.version;
+  const brokerSupported = typeof brokerVersion === "string" && meetsBrokerFloor(brokerVersion);
+  check(`connected broker version ${brokerVersion ?? "<missing>"} meets required floor`, brokerSupported);
+  if (!brokerSupported) throw new Error(`executor authority probe refuses connected broker version ${brokerVersion ?? "<missing>"}; required floor is 2.12`);
 
   const execRecords = await new Kvm(executor).open(recordsBucket(space));
   try { await listGoalIndex(execRecords, endpoint); }

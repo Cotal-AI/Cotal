@@ -5987,11 +5987,11 @@ export class Manager {
 
   /** P2 item 2 must-5 Q-B — the boot reconcile: a fresh incarnation (a manager restart takes a NEW
    *  instanceId, so the in-memory acceptance map starts empty) inherits the endpoint's accepted-but-
-   *  unterminal goals from any predecessor. Enumerate the durable index over a bounded sweep cred:
-   *  the local signer's ephemeral PROVISIONER, or the remote manager's short instance EXECUTOR
-   *  (records CONSUMER.CREATE; the goal-writer and remote supervisor hold NO enumeration grant), and
-   *  settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh: a bare
-   *  connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
+   *  unterminal goals from any predecessor. The local signer enumerates with an ephemeral PROVISIONER.
+   *  A remote manager calls the authenticated host-owned scan, which keeps the sealed consumer and its
+   *  lifecycle authority on the host; the instance executor, goal-writer, and supervisor hold NO records
+   *  consumer grant. Settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh:
+   *  a bare connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
    *  accepting (the `goalReconcileDone` gate), so it never races a live goal's acceptance. Never
    *  fatal — a reconcile failure is logged and the gate opens either way. */
   private async reconcileGoalIndex(): Promise<void> {
