@@ -11,6 +11,14 @@
   ],
   "mutations": [
     {
+      "name": "stock activation resends the full command-schema closure",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "      const contractArtifacts = [artifacts.document, artifacts.manifest];",
+      "replace": "      const contractArtifacts = [...(await import(\"./manager-service-contract.js\")).managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];",
+      "expectRed": "stock cotal supervise reaches manager ready through remote prepare and activate",
+      "cell": "stock cotal supervise reaches manager ready through remote prepare and activate"
+    },
+    {
       "name": "stock supervision silently accepts hosted release without a host composition",
       "file": "implementations/manager/src/commands.ts",
       "find": "        prepareAgentRetirement: async () => {\n          // The stock remote participant path has no hosted storage lifecycle. A composition that\n          // manages hosted agents must inject its revoke + resumable-release operation here rather\n          // than letting consumer deprovision masquerade as terminal retirement.\n          throw new Error(\"remote participant supervision cannot terminally retire a hosted managed agent without a host release composition\");\n        },",

@@ -38,7 +38,7 @@ import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
 import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
-import { managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
+import { managerClusterArtifacts } from "./manager-service-contract.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -211,11 +211,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         tlsRequired: target.tlsRequired,
       });
       const artifacts = managerClusterArtifacts();
-      const contractArtifacts = [
-        ...managerAuthorityContractSource().artifacts,
-        artifacts.document,
-        artifacts.manifest,
-      ];
+      // Registration already published every command-schema artifact through the scoped executor.
+      // Activation carries only the canonical cluster document and its closure manifest: these are
+      // the bounded values the host validates to reconstruct the serve grant. Re-sending the full
+      // schema closure here exceeded the typed protocol's 64-artifact cap as the command set grew.
+      const contractArtifacts = [artifacts.document, artifacts.manifest];
       const registrationProof = remoteManagerRegistrationProof(material.owner,
         remoteManagerAuthorityRequest(state, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts));
       const activate = await provider.managerServiceAuthority({
