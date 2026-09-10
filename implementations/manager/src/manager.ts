@@ -331,10 +331,12 @@ export interface ManagerOptions {
    *  re-signing daemon creds into one store while it reads/writes agent creds through another (split
    *  authority). Defaults to the workstation FS store over `workspaceRoot`, so a local `cotal up` is
    *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`).
-   *  `start()` challenges the daemon's `reloadStoreIdentity` before the first remint and refuses
-   *  naming both stores when they diverge. No bound daemon is not a named store, so start proceeds
-   *  and remint writes this store; a hung rail (request timeout) fails closed. An injected store
-   *  must also set `COTAL_SECRET_STORE` to the same coordinate the daemon process uses. */
+   *  `start()` and every later remint challenge the daemon's `reloadStoreIdentity` and refuse
+   *  naming both stores when they diverge. No bound daemon is not a named store, so start
+   *  proceeds and remint writes this store; a later daemon on a foreign store is refused on
+   *  the next remint rather than certified by the earlier absence. A hung rail (request
+   *  timeout) fails closed. An injected store must also set `COTAL_SECRET_STORE` to the same
+   *  coordinate the daemon process uses. */
   secretStore?: SecretStore;
   /** P2 item 6: the global ceiling on concurrently live §13.6 sessions this manager will serve.
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
@@ -1444,21 +1446,20 @@ export class Manager {
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
   }
 
-  /** Construction-time proof that this manager remints into the store the delivery daemon reloads
-   *  from. Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores are
-   *  a refused start. A daemon that is not bound yet is not a named store: `cotal up` starts
-   *  delivery before the manager, but a manager may also start with no daemon (tests, delayed
-   *  delivery). Remint still writes this manager's store; a later daemon on that same store
-   *  adopts at launch and on its 75% re-read. The two-root defect is two live named stores, which
-   *  this challenge can only see when a daemon answers. A request timeout is not absence: a hung
-   *  rail would skip the proof, so it fails closed. */
-  private async assertDaemonSharesSecretStore(): Promise<void> {
+  /** Proof that this manager remints into the store the delivery daemon reloads from.
+   *  Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores
+   *  refuse the pass. A daemon that is not bound yet is not a named store: start and
+   *  remint still proceed (tests, delayed delivery), writing this manager's store. The
+   *  challenge runs again before every remint, so a later daemon on a foreign store is
+   *  refused then rather than certified by an earlier absence. A request timeout is not
+   *  absence: a hung rail would skip the proof, so it fails closed. */
+  private async assertDaemonSharesSecretStore(): Promise<"shared" | "absent"> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
       const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return;
+      if (isAbsentDeliveryAdmin(msg)) return "absent";
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
     }
     if (!reply.ok)
@@ -1473,6 +1474,7 @@ export class Manager {
     }
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon))
       throw new Error(divergentSecretStoreRefusal(this.secretStoreIdentity, daemon));
+    return "shared";
   }
 
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
@@ -1485,6 +1487,7 @@ export class Manager {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
+      await this.assertDaemonSharesSecretStore();
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).

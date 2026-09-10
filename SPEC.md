@@ -4150,9 +4150,11 @@ single-function profiles, each granting only the verbs its function needs and no
   endpoint's serve credential (§13.9); its admin commands, `reloadCreds`, the explicit adoption
   step of standing credential renewal (the daemon re-reads its re-signed creds file, pins the
   identity, swaps its connection, and reconnects the membership feed's rw connection, replying
-  with the adopted JWT windows); `reloadStoreIdentity`, the construction-time challenge that
-  names the SecretStore the daemon reloads from so a manager whose remint store diverges is
-  refused before the first renewal pass; and `evictPrincipal`, force-drop of a denied principal's live
+  with the adopted JWT windows); `reloadStoreIdentity`, the store-identity challenge that
+  names the SecretStore the daemon reloads from (the `--creds` file's workspace, an injected
+  coordinate, or the workstation root, never a cwd that differs from that reload store) so a
+  manager whose remint store diverges is refused before that remint, including a daemon that
+  bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement
   minted to the `supervisor` profile **and to the trusted auth path** (§9/§10), which is the

@@ -31,16 +31,17 @@ type Values = Record<string, string | undefined>;
  *  is the pre-P7 key and putting there leaves this daemon reading an empty location. */
 export { DELIVERY_CREDS_KIND, deliveryCredsKey };
 
-type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean };
+type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean; identity: SecretStoreIdentity };
 
 /**
- * The store identity THIS daemon will re-read on `reloadCreds`. The `--creds` file is the
- * launch-time delivery cred only; membership-rw and later reloads still resolve the workspace
- * store from the daemon's root. Naming the file directory here would report a store the
- * manager can never remint into.
+ * The store identity THIS daemon will re-read on `reloadCreds`. It is the same store
+ * `resolveCredsStore` returns: an injected coordinate, the workspace that contains a
+ * `--creds` file, or the workstation root. Naming `findCotalRoot()` (cwd) here while
+ * `--creds` reloads a different directory would certify the two-root defect as a
+ * same-store proof.
  */
-function reloadStoreIdentityOf(injected: SecretStore | undefined, root: string): SecretStoreIdentity {
-  if (injected) {
+export function reloadStoreIdentityOf(src: Pick<CredsSource, "injected" | "identity">): SecretStoreIdentity {
+  if (src.injected) {
     const coordinate = process.env.COTAL_SECRET_STORE;
     if (!coordinate)
       throw new Error(
@@ -48,7 +49,12 @@ function reloadStoreIdentityOf(injected: SecretStore | undefined, root: string):
       );
     return { kind: "injected", coordinate };
   }
-  return { kind: "fs", root };
+  return src.identity;
+}
+
+/** Workspace the manager names, derived from the `--creds` file the daemon actually reloads. */
+export function reloadStoreIdentityFromCredsPath(credsPath: string): SecretStoreIdentity {
+  return { kind: "fs", root: findCotalRoot(dirname(resolve(credsPath))) };
 }
 
 /**
@@ -84,15 +90,33 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
 function resolveCredsStore(v: Values, space: string, injected?: SecretStore): CredsSource {
   if (injected) {
     const key = segmentedKey(DELIVERY_CREDS_KIND, space);
-    return { store: injected, key, where: `secret-store key "${key}"`, injected: true };
+    return {
+      store: injected,
+      key,
+      where: `secret-store key "${key}"`,
+      injected: true,
+      identity: reloadStoreIdentityOf({ injected: true, identity: { kind: "injected", coordinate: "" } }),
+    };
   }
   if (v.creds !== undefined) {
     const p = resolve(v.creds);
-    return { store: new FsSecretStore(dirname(p)), key: basename(p), where: p, injected: false };
+    return {
+      store: new FsSecretStore(dirname(p)),
+      key: basename(p),
+      where: p,
+      injected: false,
+      identity: reloadStoreIdentityFromCredsPath(p),
+    };
   }
   const root = findCotalRoot();
   const key = deliveryCredsKey(space, { injected: false, root });
-  return { store: workspaceSecretStore(root), key, where: join(root, ".cotal", key), injected: false };
+  return {
+    store: workspaceSecretStore(root),
+    key,
+    where: join(root, ".cotal", key),
+    injected: false,
+    identity: { kind: "fs", root },
+  };
 }
 
 /** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED cred through the
@@ -233,7 +257,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
   await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
-  const reloadStoreIdentity = reloadStoreIdentityOf(store, scanRoot);
+  const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
 
   const ep = new CotalEndpoint({
     space,

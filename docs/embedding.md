@@ -178,8 +178,12 @@ stripped; a legitimate local re-sign is continuous and proceeds without a networ
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
 into it, and the daemon adopts each generation on a preflight-proven 75% timer. The stock
 cross-host composition cannot satisfy that by writing one filesystem and fingerprinting another:
-`Manager.start()` challenges the daemon's `reloadStoreIdentity` before the first remint, and a
-divergent pair is refused naming both stores. An injected store names its coordinate in
+`Manager.start()` and every later remint challenge the daemon's `reloadStoreIdentity` and a
+divergent pair is refused naming both stores. The identity is the store the daemon actually
+reloads: an injected coordinate, the workspace that contains a `--creds` file, or the
+workstation root, never the process cwd when those differ. No bound daemon is not a named
+store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
+An injected store names its coordinate in
 `COTAL_SECRET_STORE` on both processes. It never throws: it
 returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
@@ -216,7 +220,8 @@ injects the one `SecretStore` the manager uses for **the signer itself (the spli
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
 hosted renewal, and set `COTAL_SECRET_STORE` to the same coordinate on both processes. The manager
-refuses to start when the daemon names a different store. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+refuses to remint when the daemon names a different store, including a daemon that binds after
+start. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.

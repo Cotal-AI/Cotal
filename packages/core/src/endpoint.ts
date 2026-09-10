@@ -448,8 +448,8 @@ export class CotalEndpoint extends EventEmitter {
      *  can refuse on a live holder's behalf instead of killing it to find out. */
     principalLiveness?: (principal: string) => Promise<unknown>;
     /** Composition-root hook: name the SecretStore this daemon reloads standing creds from.
-     *  The manager challenges it at start so a two-root composition is refused before the first
-     *  remint, rather than twelve hours later on a fingerprint mismatch. */
+     *  The manager challenges it at start and before every remint so a two-root composition
+     *  is refused rather than twelve hours later on a fingerprint mismatch. */
     reloadStoreIdentity?: () => SecretStoreIdentity;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
@@ -4081,8 +4081,8 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     if (req.op === "reloadStoreIdentity") {
-      // Construction-time proof that this daemon reloads standing creds from ONE named store.
-      // The manager compares it to its remint store before the first renewal pass. Absent hook
+      // Proof that this daemon reloads standing creds from ONE named store. The manager
+      // compares it to its remint store before every renewal pass. Absent hook
       // is a daemon that cannot name its store, which is itself a divergent composition.
       if (!this.plane3?.reloadStoreIdentity)
         return { ok: false, error: "reloadStoreIdentity: this daemon did not name the SecretStore it reloads from" };
