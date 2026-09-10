@@ -367,7 +367,7 @@ try {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
     }
     check("a spawn-capable agent publishing the ANY-mode input subject is broker-dropped (no reply, never served)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+      refused === "permission-denied", refused);
   }
 
   console.log("\n7. a seat that is not running refuses");
@@ -473,7 +473,7 @@ try {
         refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
       }
       check(`a credential holding ONLY the spawn capability is broker-dropped on the ${mode}-mode input subject`,
-        refused === "unavailable" || refused === "deadline-exceeded", { mode, refused });
+        refused === "permission-denied", { mode, refused });
     }
     // The control that stops the cell above passing vacuously: the SAME credential class reaches
     // the manager fine on a row it does hold, so the refusals are about the missing input row and

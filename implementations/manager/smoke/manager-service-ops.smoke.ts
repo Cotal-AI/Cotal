@@ -728,7 +728,7 @@ try {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
     }
     check("purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: dropped by the broker, no reply)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+      refused === "permission-denied", refused);
     await S.nc.drain().catch(() => S.nc.close());
   }
 
@@ -780,7 +780,7 @@ try {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
     }
     check("a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+      refused === "permission-denied", refused);
   }
 
   }
