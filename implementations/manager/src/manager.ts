@@ -2544,13 +2544,13 @@ export class Manager {
       spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
@@ -2559,7 +2559,7 @@ export class Manager {
       // place for one of them to quietly acquire a condition the other does not have.
       input: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.inputAuthorized(a, args(ctx));
       }),
@@ -2568,7 +2568,7 @@ export class Manager {
       // reason `input` is (a shared policy, not a shared body).
       turn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.serveTurnGoal(ctx, a);
       }),
@@ -2661,7 +2661,21 @@ export class Manager {
    *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
    *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
    *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
-  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): Promise<string | undefined> {
+  private async authorizeNamed(target: ManagedAgent, caller: string, admin: boolean, epCaller?: EpCaller): Promise<string | undefined> {
+    if (this.remoteAuthority && epCaller && !admin) {
+      if (target.spawner === caller) return undefined;
+      const principal = parsePrincipalKey(caller);
+      if (principal && target.userOwner === principal.owner) return undefined;
+      // Unlike the local pure-policy adapter below, host authority faults are not collapsed into an
+      // ordinary denial. The registered remote manager must fail the operation closed and surface
+      // unavailable/corrupt authoritative state rather than implying a healthy `authorized:false`.
+      if (await this.epAdminReach(epCaller)) return undefined;
+      return (
+        `not authorized: ${target.name} runs under another owner - your grant covers agents under your own owner; ` +
+        `cross-owner stop/attach/input needs scope "admin" on your actor. Re-grant with "admin" ADDED to your current ` +
+        `scope (the upsert replaces the list; see \`cotal actor list\`)`
+      );
+    }
     return authorizeNamedControl({
       target: { name: target.name, spawner: target.spawner, userOwner: target.userOwner },
       caller,
