@@ -743,14 +743,20 @@ try {
       check("user bearer invokes `inspect` over ep (a spawn-set row; describe-bound currency, no epoch stub)",
         ri.reply.ok === true && (ri.reply.data as { name: string }).name === "alpha", ri.reply);
       let refused: string | undefined;
+      let detail = "";
       try {
         const rp = await invokeCommand(epNc, SPACE, svc, "ps", undefined, { deadlineMs: 2500 });
         refused = rp.reply.ok === false ? rp.reply.error?.code : "SERVED-OK";
+        detail = rp.reply.ok === false ? rp.reply.error?.message ?? "" : "";
       } catch (e) {
         refused = e instanceof EpEnvelopeError ? e.code : String(e);
+        detail = e instanceof Error ? e.message : String(e);
       }
-      check("a spawn-scope bearer's `ps` is broker-dropped (manager.read is not in the spawn set - the ep tier boundary holds on a user mesh)",
-        refused === "deadline-exceeded" || refused === "unavailable", refused);
+      // The broker refuses the publish and the caller's connection-status watch names the refused
+      // subject, so the refusal is permission-denied in the broker's words (a handler refusal
+      // would carry the same code without them).
+      check("a spawn-scope bearer's `ps` is refused by the broker (manager.read is not in the spawn set - the ep tier boundary holds on a user mesh)",
+        refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { refused, detail: detail.slice(0, 200) });
     } finally {
       await epNc.drain().catch(() => epNc.close());
     }
@@ -781,10 +787,10 @@ try {
     !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
   const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE, "--timeout", "1000"]);
   check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer",
-    !deniedRead.timedOut && deniedRead.status !== 0 && /deadline-exceeded|unavailable/i.test(deniedRead.plain), deniedRead);
+    !deniedRead.timedOut && deniedRead.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedRead.plain), deniedRead);
   const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE, "--timeout", "1000"]);
   check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer",
-    !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /deadline-exceeded|unavailable/i.test(deniedAdmin.plain), deniedAdmin);
+    !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedAdmin.plain), deniedAdmin);
 
   // The mutation proof runs this same fixture with only the native endpoint setup and B1g. It is
   // not a substitute: the full smoke still runs every section below. It keeps the old-guard red
@@ -1077,13 +1083,15 @@ try {
   // bearer is minted no `input` row in either mode, so the publish is broker-denied before the
   // manager sees it. `alpha` rather than `delta` because the sibling stop above took delta.
   // The refusal is asserted BY SHAPE, not just by `ok === false`, because an absence assertion is
-  // the kind that passes for the wrong reason. A broker drop surfaces as `unavailable` or
-  // `deadline-exceeded`: the publish never reached a manager, so nothing answered. Restoring the
-  // grant would not merely change that string, it would make the owner-mode call SUCCEED, since the
-  // own-domain arm admits the sibling. A `permission-denied` would mean the publish was ADMITTED
-  // and the handler refused, which is a weaker property than the one these cells are for.
+  // the kind that passes for the wrong reason. A broker refusal surfaces as `permission-denied`
+  // in the BROKER's words: the caller's connection-status watch sees the publish violation and
+  // names the refused subject, so the publish never reached a manager. Restoring the grant would
+  // not merely change that string, it would make the owner-mode call SUCCEED, since the own-domain
+  // arm admits the sibling. A handler `permission-denied` carries the same code without the
+  // broker's words, and would mean the publish was ADMITTED, which is the weaker property these
+  // cells are not for; the words are what tell the two apart.
   const brokerDropped = (r: EpReply): boolean =>
-    r.ok === false && /unavailable|deadline-exceeded/.test(r.error ?? "");
+    r.ok === false && /^permission-denied: .*REFUSED BY THE BROKER/.test(r.error ?? "");
   // BOTH modes, and the second one has to be forced. The helper derives `owner` for a same-owner
   // target, so without the override the any-mode subject is never published and a claim about it
   // would be untested text sitting next to a green cell.
