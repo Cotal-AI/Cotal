@@ -1299,9 +1299,12 @@ export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable";
  * `forbidden-kind` wins over `unreadable` when a body has both, because it is the more specific
  * diagnosis and the halts are graded on carrying the right one.
  *
- * TOTAL: no input makes this throw, including one whose properties are accessors. `isAguiFramePart`
- * in core makes the same promise for the same stated reason, that a function accepting `unknown`
- * and throwing on some of it is a trap for its next caller. This takes `readonly unknown[]`.
+ * TOTAL: no input makes this throw. That covers iterating `body` itself, not only reading a part's
+ * properties: a Proxy whose `Symbol.iterator` traps, or an array with a throwing index accessor,
+ * raises before any per-part catch can see it, and an abort there is fail-closed rather than
+ * `clean`. `isAguiFramePart` in core makes the same promise for the same stated reason, that a
+ * function accepting `unknown` and throwing on some of it is a trap for its next caller. This takes
+ * `readonly unknown[]`.
  */
 export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgressVerdict {
   let unreadable = false;
