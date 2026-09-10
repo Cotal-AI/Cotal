@@ -531,6 +531,100 @@ try {
     );
   }
 
+  // ── RECOVERY, ENVELOPE: a malformed envelope must HALT on the live boot path ─────────────────
+  // A cell that calls `frozenBodyEgressVerdict` directly proves what the function returns. It does
+  // NOT prove a real entry point reaches it, and `recover()` bypassing the mapper is the live
+  // carrier this whole issue turns on. These freeze an envelope-broken frame in a real WAL via
+  // `beginSend`, reopen it from disk, and boot `AguiEmitter.start()` — the concrete route by which
+  // a body the predecessor refused to publish reached the wire. `aguiFrame()` cannot construct
+  // these, which is the point: they come from a foreign writer or a version-skewed WAL, and
+  // `beginSend` admits any non-empty body of parts.
+  {
+    for (const [label, over] of [
+      ["seq -1", { seq: -1 }],
+      ["protocol mismatch", { protocol: "ag-ui/9.9.9" }],
+    ] as const) {
+      const slug = label.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const { wal, walPath, source } = await fresh(`recover-env-${slug}`);
+      const sf = memorySubjectFrontier();
+      await wal.bindSubjectFrontier(sf);
+      const wellFormed = aguiFrame({
+        threadId: THREAD,
+        runId: "run-env",
+        epoch: wal.epoch,
+        seq: 1,
+        events: [runStarted({ threadId: THREAD, runId: "run-env", timestamp: 1 })],
+      });
+      const brokenEnvelope = { ...(wellFormed as unknown as Record<string, unknown>), ...over };
+      await wal.beginSend({
+        id: `env-${slug}`,
+        E: 0,
+        seq: 1,
+        sourceCursor: "1:2:0:0000000000000000",
+        body: [brokenEnvelope as unknown as Part],
+        brackets: { run: "run-env", text: [], reasoning: [], tools: [] },
+      });
+      const wal2 = await EventWal.open(walPath, {
+        space: SPACE,
+        threadId: THREAD,
+        principal: PRINCIPAL_KEY,
+        subjectMayExist: true,
+      });
+      const ep = new FakeEndpoint();
+      const started = await attempt(() =>
+        AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: sf, source, map: () => null }),
+      );
+      const halted = started.err instanceof AguiEmitterHalted ? started.err : undefined;
+      // Spelled out per case rather than templated so the cell name is greppable in source: the
+      // mutation fixture names one of these in `expectRed`, and a name that only exists at runtime
+      // cannot be checked against the suite when the fixture is reviewed.
+      const cellName =
+        label === "seq -1"
+          ? "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes"
+          : "recover:an envelope-broken frozen body (protocol mismatch) HALTS egress-unreadable with zero publishes";
+      c(
+        cellName,
+        halted?.reason === "egress-unreadable" && ep.publishes.length === 0,
+        { reason: halted?.reason, publishes: ep.publishes.length, err: started.err?.message },
+      );
+    }
+    // CONTROL on the same path: a well-formed frozen body must still be republished, or the two
+    // cells above would also pass on an emitter that refuses everything on boot.
+    const { wal, walPath, source } = await fresh("recover-env-control");
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
+    const clean = aguiFrame({
+      threadId: THREAD,
+      runId: "run-env-ok",
+      epoch: wal.epoch,
+      seq: 1,
+      events: [runStarted({ threadId: THREAD, runId: "run-env-ok", timestamp: 1 })],
+    });
+    await wal.beginSend({
+      id: "env-control",
+      E: 0,
+      seq: 1,
+      sourceCursor: "1:2:0:0000000000000000",
+      body: [clean as unknown as Part],
+      brackets: { run: "run-env-ok", text: [], reasoning: [], tools: [] },
+    });
+    const wal2 = await EventWal.open(walPath, {
+      space: SPACE,
+      threadId: THREAD,
+      principal: PRINCIPAL_KEY,
+      subjectMayExist: true,
+    });
+    const ep = new FakeEndpoint();
+    const started = await attempt(() =>
+      AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: sf, source, map: () => null }),
+    );
+    c(
+      "recover:CONTROL a well-formed frozen body still republishes on boot",
+      started.err === undefined && ep.publishes.length === 1,
+      { err: started.err?.message, publishes: ep.publishes.length },
+    );
+  }
+
   // ── NEGATIVE CONTROL: sibling text survives; a dropped shape stays dropped ───────────────────
   {
     const map: RecordMapper<{ kind: "mixed" | "drop"; text?: string; result?: string }> = (rec) => {
@@ -780,7 +874,7 @@ try {
     );
   }
 
-  const EXPECTED = 45;
+  const EXPECTED = 48;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });

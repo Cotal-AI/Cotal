@@ -65,7 +65,7 @@
       "file": "extensions/connector-core/src/agui.ts",
       "find": "    try {\n      parseAguiFrame(part);\n    } catch {\n      unreadable = true;\n    }",
       "replace": "    try {\n      void part;\n    } catch {\n      unreadable = true;\n    }",
-      "expectRed": "envelope:a wrong protocol version is unreadable, not clean"
+      "expectRed": "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes"
     }
   ]
 }
