@@ -3,7 +3,7 @@
     "implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts"
   ],
   "guard": "stock cotal supervise validates retained authority at resume and commit, then refuses hosted terminal retirement before requester issuance while the alias remains held",
-  "command": "COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm probe:hosted-retirement-stock-supervise",
+  "command": "pnpm --filter @cotal-ai/manager build && COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm probe:hosted-retirement-stock-supervise",
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/hosted-retirement-stock-supervise.json",
   "why": [
     "This owner-native acceptance starts the real cotal supervise CLI, an authenticated broker, registry-pinned HTTPS authority, and a retained child from a registry-only participant root.",
@@ -16,7 +16,8 @@
       "find": "      const contractArtifacts = [artifacts.document, artifacts.manifest];",
       "replace": "      const contractArtifacts = [...(await import(\"./manager-service-contract.js\")).managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];",
       "expectRed": "stock cotal supervise reaches manager ready through remote prepare and activate",
-      "cell": "stock cotal supervise reaches manager ready through remote prepare and activate"
+      "cell": "stock cotal supervise reaches manager ready through remote prepare and activate",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "stock supervision silently accepts hosted release without a host composition",
@@ -24,7 +25,8 @@
       "find": "        prepareAgentRetirement: async () => {\n          // The stock remote participant path has no hosted storage lifecycle. A composition that\n          // manages hosted agents must inject its revoke + resumable-release operation here rather\n          // than letting consumer deprovision masquerade as terminal retirement.\n          throw new Error(\"remote participant supervision cannot terminally retire a hosted managed agent without a host release composition\");\n        },",
       "replace": "        prepareAgentRetirement: async () => {},",
       "expectRed": "stock hosted deprovision fails closed at the explicit host-release refusal",
-      "cell": "stock hosted deprovision fails closed at the explicit host-release refusal"
+      "cell": "stock hosted deprovision fails closed at the explicit host-release refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "resume commit skips its fresh retained-authority validation",
@@ -32,7 +34,8 @@
       "find": "    const authority = await Promise.all(inventory.agents.map(async (entry) => {\n      try {\n        await this.validateRetainedAuthority(entry);\n        return undefined;",
       "replace": "    const authority = await Promise.all(inventory.agents.map(async (entry) => {\n      try {\n        void entry;\n        return undefined;",
       "expectRed": "stock resume commit fresh-validates retained authority through registry-pinned HTTPS",
-      "cell": "stock resume commit fresh-validates retained authority through registry-pinned HTTPS"
+      "cell": "stock resume commit fresh-validates retained authority through registry-pinned HTTPS",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }
