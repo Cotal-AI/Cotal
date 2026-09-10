@@ -19,7 +19,13 @@
     "",
     "SIX CARRIERS ARE SIX CELLS. A mutation that reopens only ARGS must red an args cell, not a shared",
     "'no marks' cell. T-ARGS deletes TOOL_CALL_ARGS from the forbidden set; T-RESULT deletes",
-    "TOOL_CALL_RESULT; T-RETRY deletes the attempt() refusal."
+    "TOOL_CALL_RESULT; T-RETRY deletes the attempt() refusal.",
+    "",
+    "T-ARGS/T-RESULT/T-RETRY are all MORE PERMISSIVE, so they cannot grade liveness. T-LIVENESS adds",
+    "TEXT_MESSAGE_CONTENT to the forbidden set and must red the sibling-text cell. That is the decoy",
+    "that proves the suite would notice if the policy started refusing everything. A TOOL_CALL_START",
+    "decoy is not used: dropping START makes END fail the batch validator, so the first red would be",
+    "the channel-control cell (empty publish) rather than a START/END control."
   ],
   "mutations": [
     {
@@ -44,6 +50,14 @@
       "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
       "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,",
       "expectRed": "carrier:claude-result mark is absent from the recorded publish",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-LIVENESS the forbidden set also drops TEXT_MESSAGE_CONTENT, so sibling text never publishes",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
+      "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,\n  AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT,",
+      "expectRed": "control:sibling TEXT_MESSAGE_CONTENT reaches the recorded publish (lifecycle survived the policy)",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     }
   ]
