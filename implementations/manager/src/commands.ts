@@ -36,7 +36,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -188,6 +188,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed remote retained-agent validation protocol`);
       if (!provider.scanRemoteManagerGoalIndex)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager goal-index scan protocol`);
+      if (!provider.authorizeRemoteManagerAdmin)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager admin authorization protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
@@ -320,6 +322,21 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             request,
           });
           return remoteManagerGoalIndexEntries(result, request, material.owner);
+        },
+        authorizeAdmin: async (caller) => {
+          const request = remoteManagerAdminAuthorizationRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            caller,
+          );
+          const result = await provider.authorizeRemoteManagerAdmin!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          return remoteManagerAdminAuthorized(result, request, material.owner);
         },
       };
     } catch (e) {

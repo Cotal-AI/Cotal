@@ -55,7 +55,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -67,6 +67,7 @@ import { calloutPermissions } from "./permissions.js";
 import { issueRemoteManagerAuthority } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
+import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
@@ -153,6 +154,11 @@ export interface AuthAuthorityPlane {
     scope: string[];
     request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest;
   }) => Promise<import("@cotal-ai/core").RemoteManagerGoalIndexScanResult>;
+  authorizeManagerAdmin: (args: {
+    owner: string;
+    scope: string[];
+    request: RemoteManagerAdminAuthorizationRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagerAdminAuthorizationResult>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -614,6 +620,21 @@ export async function openAuthAuthorityPlane(opts: {
       });
       return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
     },
+    authorizeManagerAdmin: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      return authorizeRemoteManagerAdmin({
+        managerOwner: owner,
+        managerScope: scope,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        dir: opts.dir,
+        request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+    },
     fenced,
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
@@ -823,6 +844,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     managerServiceAuthority: plane.issueManagerServiceAuthority,
     validateRetainedAgent: plane.validateRetainedAgent,
     scanManagerGoalIndex: plane.scanManagerGoalIndex,
+    authorizeManagerAdmin: plane.authorizeManagerAdmin,
     secrets,
     retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
     cap,
@@ -918,6 +940,7 @@ interface HandlerCtx {
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
   validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
   scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
+  authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   cap: string;
@@ -933,7 +956,7 @@ interface HandlerCtx {
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "validateRetainedAgent" | "scanManagerGoalIndex">,
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin">,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -961,6 +984,8 @@ export async function dispatchManagerAuthorityRequest(
   }
   if (request.kind === "manager-goal-index-scan")
     return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
+  if (request.kind === "manager-admin-authorization")
+    return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
   return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
 }
 

@@ -128,6 +128,7 @@ export {
   remoteManagerCurrentRegistrationProof,
   type AuthorizeRemoteRetainedAgentValidationArgs,
 } from "./retained-manager-validation.js";
+export { parseRemoteManagerAdminAuthorizationRequest, authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT

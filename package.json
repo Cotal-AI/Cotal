@@ -267,6 +267,7 @@
     "probe:remote-manager-executor-authority": "tsx implementations/auth/smoke/remote-manager-executor-authority.probe.ts",
     "smoke:owned-child-cleanup": "tsx implementations/auth/smoke/owned-child-cleanup.smoke.ts",
     "smoke:manager-goal-index": "tsx implementations/auth/smoke/manager-goal-index.smoke.ts",
+    "smoke:manager-admin-authorization": "tsx implementations/auth/smoke/manager-admin-authorization.smoke.ts",
     "probe:manager-goal-index-scanner": "tsx implementations/auth/smoke/manager-goal-index-scanner.native.ts",
     "probe:remote-manager-security": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm probe:manager-goal-index-scanner && pnpm probe:remote-manager-executor-authority",
     "smoke:remote-authority-operations": "tsx implementations/manager/smoke/remote-authority-operations.smoke.ts",

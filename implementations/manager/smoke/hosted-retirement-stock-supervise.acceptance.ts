@@ -152,6 +152,7 @@ import {
   establishIdpSession,
   findManagedActor,
   grantActor,
+  revokeActor,
   loadAuthServiceInfo,
   loadCalloutAuth,
 } from "@cotal-ai/auth";
@@ -261,6 +262,7 @@ let deliveryOutput = "";
 let prepareRequests = 0;
 let activateRequests = 0;
 let validationRequests = 0;
+let adminAuthorizationRequests = 0;
 let retirementRequests = 0;
 
 try {
@@ -373,6 +375,7 @@ try {
         try {
           const parsed = JSON.parse(body.toString("utf8")) as { request?: { kind?: string; operation?: string } };
           if (parsed.request?.kind === "manager-retained-agent-validation") validationRequests++;
+          else if (parsed.request?.kind === "manager-admin-authorization") adminAuthorizationRequests++;
           else if (parsed.request?.operation === "prepare") prepareRequests++;
           else if (parsed.request?.operation === "activate") activateRequests++;
           else if (parsed.request?.operation === "retire") retirementRequests++;
@@ -407,6 +410,7 @@ try {
   await establishIdpSession({ dir: home, idpUrl, clientId, onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode) });
   const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: [], allowPublish: [] });
+  grantActor(hostDir, { owner, actor: "admin_requester", scope: ["admin"], allowSubscribe: [], allowPublish: [] });
   const callout = await loadCalloutAuth(hostStore, space);
   if (!callout) throw new Error("host callout material is missing");
   persistRemoteUserEntry(space, server, participantRoot, {
@@ -518,13 +522,13 @@ registry.register({
     { ready: supervisorOutput.includes("manager up"), exitCode: supervisor.exitCode, prepareRequests, activateRequests, output: supervisorOutput.slice(-1200) });
   if (!supervisorOutput.includes("manager up")) throw new Error("stock supervisor did not become ready");
 
-  const operatorMaterial = await cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "cli" });
+  const operatorMaterial = await cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "admin_requester" });
   const operatorPayload = JSON.parse(Buffer.from(operatorMaterial.bearer.split(".")[1]!, "base64url").toString("utf8")) as {
     sub: string; act: { actor: string; lifecycleUid: string };
   };
   endpoint = new CotalEndpoint({
     space, servers: server,
-    bearer: () => cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "cli" }).then((value) => value.bearer),
+    bearer: () => cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "admin_requester" }).then((value) => value.bearer),
     sentinelCreds: operatorMaterial.sentinelCreds, lifecycleUid: operatorPayload.act.lifecycleUid,
     channels: [], consume: false, watchChannels: false,
     card: { owner: operatorPayload.sub, actor: operatorPayload.act.actor, name: "stock-operator", kind: "endpoint" },
@@ -534,19 +538,42 @@ registry.register({
 
   const resumed = await endpoint.invokeService("manager", "resume-preserved", { attemptId: "stock_restore", inventory });
   check("stock manager resumes the exact retained actor after two registry-pinned HTTPS validations",
-    resumed.reply.ok === true && validationRequests === 2,
-    { ok: resumed.reply.ok, error: resumed.reply.error?.message, validationRequests });
+    resumed.reply.ok === true && validationRequests === 2 && adminAuthorizationRequests === 1,
+    { ok: resumed.reply.ok, error: resumed.reply.error?.message, validationRequests, adminAuthorizationRequests });
   if (!resumed.reply.ok) throw new Error("stock retained resume failed");
   const committed = await endpoint.invokeService("manager", "commit-resume", { attemptId: "stock_restore" });
   const commitData = committed.reply.data as { durableCommitToken?: string } | undefined;
   check("stock resume commit fresh-validates retained authority through registry-pinned HTTPS",
-    committed.reply.ok === true && validationRequests === 3 && typeof commitData?.durableCommitToken === "string",
-    { ok: committed.reply.ok, error: committed.reply.error?.message, validationRequests, hasToken: typeof commitData?.durableCommitToken === "string" });
+    committed.reply.ok === true && validationRequests === 3 && adminAuthorizationRequests === 2 && typeof commitData?.durableCommitToken === "string",
+    { ok: committed.reply.ok, error: committed.reply.error?.message, validationRequests, adminAuthorizationRequests, hasToken: typeof commitData?.durableCommitToken === "string" });
   if (!committed.reply.ok || !commitData?.durableCommitToken) throw new Error("stock retained commit failed");
   const finalized = await endpoint.invokeService("manager", "finalize-resume", {
     attemptId: "stock_restore", durableCommitToken: commitData.durableCommitToken,
   });
   check("stock resumed actor reaches active service state", finalized.reply.ok === true, finalized.reply.error?.message);
+  check("all three admin lifecycle operations fresh-authorize through the host and never a participant ledger",
+    adminAuthorizationRequests === 3 && hasUserAuthState(participantRoot, space) === false,
+    { adminAuthorizationRequests, participantHostingMarker: hasUserAuthState(participantRoot, space) });
+
+  const validationsBeforeDenials = validationRequests;
+  grantActor(hostDir, { owner, actor: "admin_requester", lifecycleUid: operatorPayload.act.lifecycleUid, scope: [], allowSubscribe: [], allowPublish: [] });
+  const narrowed = await endpoint.invokeService("manager", "commit-resume", { attemptId: "must_not_run" });
+  check("narrowed host admin scope refuses before the manager operation runs",
+    narrowed.reply.ok === false && narrowed.reply.error?.code === "permission-denied" && validationRequests === validationsBeforeDenials,
+    { ok: narrowed.reply.ok, code: narrowed.reply.error?.code, validationRequests, adminAuthorizationRequests });
+
+  grantActor(hostDir, { owner, actor: "admin_requester", scope: ["admin"], allowSubscribe: [], allowPublish: [] });
+  const lifecycleDrift = await endpoint.invokeService("manager", "commit-resume", { attemptId: "must_not_run" });
+  check("stale caller lifecycle refuses without a reason oracle or manager operation",
+    lifecycleDrift.reply.ok === false && lifecycleDrift.reply.error?.code === "permission-denied" && validationRequests === validationsBeforeDenials,
+    { ok: lifecycleDrift.reply.ok, code: lifecycleDrift.reply.error?.code, validationRequests, adminAuthorizationRequests });
+
+  revokeActor(hostDir, owner, "admin_requester");
+  const revoked = await endpoint.invokeService("manager", "commit-resume", { attemptId: "must_not_run" });
+  check("revoked host row refuses before the manager operation runs",
+    revoked.reply.ok === false && revoked.reply.error?.code === "permission-denied" && validationRequests === validationsBeforeDenials,
+    { ok: revoked.reply.ok, code: revoked.reply.error?.code, validationRequests, adminAuthorizationRequests });
+  grantActor(hostDir, { owner, actor: "admin_requester", lifecycleUid: operatorPayload.act.lifecycleUid, scope: ["admin"], allowSubscribe: [], allowPublish: [] });
 
   const beforeRetirementRequests = retirementRequests;
   const stopped = await endpoint.invokeService("manager", "despawn", { graceful: false }, {

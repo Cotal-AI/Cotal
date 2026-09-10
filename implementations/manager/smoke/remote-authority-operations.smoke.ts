@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mintLifecycleUid, newIdentity, remoteManagerActors } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
-import { remoteManagerGoalIndexEntries } from "../src/remote-authority.js";
+import { remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerGoalIndexEntries } from "../src/remote-authority.js";
 
 const instanceId = mintLifecycleUid();
 const identities = {
@@ -27,6 +27,7 @@ const manager = new Manager({
     prepareAgentRetirement: async () => {},
     validateRetainedAgent: async () => { throw new Error("not used"); },
     scanGoalIndex: async () => { hostScans++; return []; },
+    authorizeAdmin: async () => false,
   },
 }) as unknown as {
   managerInstanceId: string;
@@ -74,6 +75,7 @@ const guarded = new Manager({
     mintSessionServing: async () => "", mintRetirementRequester: async () => "",
     prepareAgentRetirement: async () => {}, validateRetainedAgent: async () => { throw new Error("not used"); },
     scanGoalIndex: async () => [],
+    authorizeAdmin: async () => false,
   },
 }) as unknown as { withOpenServeConnection<T>(fn: unknown): Promise<T> };
 await assert.rejects(guarded.withOpenServeConnection(async () => undefined), /authenticated mesh must use the scoped endpoint-serve executor/);
@@ -100,4 +102,31 @@ assert.throws(() => remoteManagerGoalIndexEntries({ ...result, actor: "other" },
 assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, owner: `u_${"b".repeat(26)}` }] }, request, owner), /invalid entry 0/);
 assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, extra: true } as never] }, request, owner), /invalid entry 0/);
 
-console.log("remote authority operations: 8 passed, 0 failed");
+const state = { v: 1 as const, space: "demo", instanceId, lifecycleUid: request.managerLifecycleUid, identities };
+const caller = { owner, actor: "operator", lifecycleUid: mintLifecycleUid() };
+const adminRequest = remoteManagerAdminAuthorizationRequest(state, "cli", request.registrationProof, 7, caller);
+assert.deepEqual(adminRequest.caller, caller);
+const adminResult = { ...adminRequest, owner, authorized: true };
+assert.equal(remoteManagerAdminAuthorized(adminResult, adminRequest, owner), true);
+assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, extra: true } as never, adminRequest, owner), /non-closed result/);
+assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, caller: { ...caller, lifecycleUid: mintLifecycleUid() } }, adminRequest, owner), /different lifecycle/);
+assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, owner: `u_${"b".repeat(26)}` }, adminRequest, owner), /different lifecycle/);
+assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, authorized: "yes" } as never, adminRequest, owner), /different lifecycle/);
+
+let remoteChecks = 0;
+const remoteOnly = new Manager({
+  space: "demo", runtime: "pty",
+  remoteAuthority: {
+    owner, actors: remoteManagerActors(instanceId), instanceId, lifecycleUid: request.managerLifecycleUid, identities,
+    supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
+    serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
+    mintSessionServing: async () => "", mintRetirementRequester: async () => "", prepareAgentRetirement: async () => {},
+    validateRetainedAgent: async () => { throw new Error("not used"); }, scanGoalIndex: async () => [],
+    authorizeAdmin: async (seen) => { remoteChecks++; assert.deepEqual(seen, caller); return true; },
+  },
+}) as unknown as { userMode: boolean; epAdminReach(caller: { owner: string; actor: string; uid: string }): Promise<boolean> };
+remoteOnly.userMode = true;
+assert.equal(await remoteOnly.epAdminReach({ owner: caller.owner, actor: caller.actor, uid: caller.lifecycleUid }), true);
+assert.equal(remoteChecks, 1);
+
+console.log("remote authority operations: 17 passed, 0 failed");

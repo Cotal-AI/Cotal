@@ -163,6 +163,40 @@ export interface RemoteManagerGoalIndexScanResult {
   entries: import("./endpoint-action.js").GoalIndexEntry[];
 }
 
+/** Closed, non-transferable serve-time admin decision for one exact endpoint caller. */
+export interface RemoteManagerAdminAuthorizationRequest {
+  v: 1;
+  kind: "manager-admin-authorization";
+  space: string;
+  /** Interactive actor whose current `supervise` grant authorizes this manager lifecycle. */
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** Registered manager relay of the broker-authenticated endpoint caller tuple. */
+  caller: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/** Exact echo plus one host-derived boolean. No scope or ledger row crosses the seam. */
+export interface RemoteManagerAdminAuthorizationResult {
+  v: 1;
+  kind: "manager-admin-authorization";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  caller: RemoteManagerAdminAuthorizationRequest["caller"];
+  authorized: boolean;
+}
+
 export function remoteManagerActors(instanceId: string): RemoteManagerActors {
   return {
     supervisor: `manager_${instanceId}`,

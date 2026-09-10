@@ -831,6 +831,7 @@ try {
       return retainedAgentAuthority(result, request);
     },
     scanGoalIndex: async () => [],
+    authorizeAdmin: async () => { throw new Error("native retirement acceptance sends no admin command"); },
   };
 
   manager = new Manager({

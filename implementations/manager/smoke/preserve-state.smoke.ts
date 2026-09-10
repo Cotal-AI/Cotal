@@ -6,6 +6,7 @@ import {
   DEV_OWNER,
   createSpaceAuth,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   principalKey,
   registry,
@@ -181,7 +182,7 @@ const control = async (manager: Manager, _tier: string, op: string, args: Record
     opModels: (a: Record<string, unknown>) => Promise<Reply>;
     opStop: (a: Record<string, unknown>, caller: string, admin: boolean) => Promise<Reply>;
     list: (filter?: string) => unknown[];
-    psOwnerFilter: (caller: string, admin: boolean) => Promise<string | undefined>;
+    psOwnerFilter: (caller: { owner: string; actor: string; uid: string }, admin: boolean) => Promise<string | undefined>;
     admitControl: (caller: string) => { refusal?: string; release?: () => void };
   };
   if (op === "resumePreserved") return m.opResumePreserved(args);
@@ -194,7 +195,7 @@ const control = async (manager: Manager, _tier: string, op: string, args: Record
   try {
     if (op === "models") return await m.opModels(args);
     if (op === "stop") return await m.opStop(args, "local.operator", true);
-    if (op === "ps") return { ok: true, data: m.list(await m.psOwnerFilter("local.operator", true)) };
+    if (op === "ps") return { ok: true, data: m.list(await m.psOwnerFilter({ owner: "local", actor: "operator", uid: mintLifecycleUid() }, true)) };
     return { ok: false, error: `unknown op: ${op}` };
   } finally {
     admission.release?.();
