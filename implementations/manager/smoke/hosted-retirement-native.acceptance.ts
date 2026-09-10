@@ -943,12 +943,32 @@ try {
       () => validateRemote({ owner: wrongOwner, actor: "validation_negative", lifecycleUid: validationUid }),
       /authenticated owner/,
     ));
-  await cotalAuthProvider.revokeAgent({ dir: hostDir, owner, actor: "validation_negative" });
+  const revokeResult = await cotalAuthProvider.revokeAgent({ dir: hostDir, owner, actor: "validation_negative" });
+  const { findManagedActor } = await import("@cotal-ai/auth");
+  const rowAfterRevoke = findManagedActor(hostDir, owner, "validation_negative");
+  let revokedOutcome: "accepted" | "threw" = "accepted";
+  let revokedError: { name?: string; code?: string; message?: string } = {};
+  try {
+    await validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid });
+  } catch (error) {
+    revokedOutcome = "threw";
+    revokedError = error instanceof Error
+      ? { name: error.name, code: (error as Error & { code?: string }).code, message: error.message.slice(0, 512) }
+      : { message: String(error).slice(0, 512) };
+  }
   check("revoked retained authority is refused through registry-pinned HTTPS",
-    await refuses(
-      () => validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid }),
-      /no longer granted|not granted|missing/,
-    ));
+    revokedOutcome === "threw" && /no longer granted|not granted|missing/.test(revokedError.message ?? ""),
+    {
+      outcome: revokedOutcome,
+      errorName: revokedError.name,
+      errorCode: revokedError.code,
+      errorMessage: revokedError.message,
+      revokeResult: typeof revokeResult === "object" && revokeResult !== null
+        ? Object.fromEntries(Object.entries(revokeResult).filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean"))
+        : String(revokeResult),
+      rowPresentAfterRevoke: rowAfterRevoke !== undefined,
+      rowLifecycleUidAfterRevoke: rowAfterRevoke?.lifecycleUid,
+    });
   const restoredGrant = await cotalAuthProvider.grantAgent({
     store: hostStore, dir: hostDir, space, owner, actor: "validation_negative", lifecycleUid: validationUid,
     scope: [], allowSubscribe: [], allowPublish: [], parent: `${owner}.cli`,
