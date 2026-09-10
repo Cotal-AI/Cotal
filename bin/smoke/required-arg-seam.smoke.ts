@@ -306,10 +306,17 @@ const SEAMS: Seam[] = [
   // 128/94 -> 133/98: #774 adds one typechecked provisioner re-read before each static reconcile
   // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
   // observer, caller, and exact terminal gate inspection). Every site states tls: false.
-  // 133/98 -> 134/99: the publish-denial smoke dials a static-auth broker under a class-rail
+  // 133/98 -> 140/100: issued authority adds the issuer session's dial, the manager's admission
+  // reader, the local run mediator's two rail connections and the boot reconcile's own dial (all
+  // typechecked, inheriting the resolved TLS requirement), plus two run-host-live connections
+  // that prove a legacy-rail caller and a foreign admitter are refused (tls: false).
+  // 140/100 -> 141/101: the run-command smoke moves onto a static-auth broker and reads records
+  // and journals through a per-run run-operator credential of its own (one smoke-side call,
+  // tls: false); an admin credential holds no records read row on that mesh.
+  // 141/101 -> 142/102: the publish-denial smoke dials a static-auth broker under a class-rail
   // instrument to prove a refused instance-rail invoke is permission-denied (one smoke-side call,
   // tls: false).
-  { fn: "standaloneConnectOpts", key: "tls", sites: 134, untypecheckedSites: 99 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 142, untypecheckedSites: 102 },
 ];
 
 /**

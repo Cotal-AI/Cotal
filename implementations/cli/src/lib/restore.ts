@@ -40,6 +40,7 @@ import {
   type PersistentConsumerCheckpoint,
   createEndpointStreams,
   ensureArtifactStore,
+  hardenedAuthorityStreamNames,
 } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock,
@@ -538,9 +539,11 @@ async function createOmittedInfrastructure(
   const login = await broker.addLogin({
     profile: "infrastructure",
     streams: [...create, ...excluded],
-    // createEndpointStreams hardens a fresh records KV after KVM creates it. Keep this exact update
-    // grant separate from the wider create/info set so restored message streams remain immutable.
-    updateStreams: [`KV_${recordsBucket(space)}`],
+    // createEndpointStreams hardens each fresh authority store with one STREAM.UPDATE right after
+    // KVM creates it. Core names those stores in one list, so this login and the provisioner cannot
+    // disagree about which they are; the update grant stays separate from the wider create/info
+    // set so restored message streams remain immutable.
+    updateStreams: hardenedAuthorityStreamNames(space),
   });
   const nc = await connectIsolatedBroker(broker, login);
   try {

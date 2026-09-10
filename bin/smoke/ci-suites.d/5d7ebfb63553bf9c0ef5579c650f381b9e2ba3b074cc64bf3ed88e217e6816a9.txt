@@ -1,0 +1,2 @@
+# Pack and install the CLI closure from an assembled seat source tree with no dist output.
+smoke:seat-installed-dist

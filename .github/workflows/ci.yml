@@ -25,6 +25,12 @@ concurrency:
   # above: a PR keeps the default single slot and supersedes, main queues instead of evicting.
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
+# Linux x64 jobs run on Tenki (the org's runner provider; the Tenki GitHub App is installed on
+# Cotal-AI). `tenki-standard-medium-4c-8g` matches GitHub's ubuntu-latest core count at half the RAM;
+# if a smoke or reproof shard starts failing on memory, step that job to `tenki-standard-large-8c-16g`.
+# Windows and arm64 stay on GitHub-hosted runners: Tenki offers neither. Before this, every Linux job
+# shared the org's 20-concurrent-job cap with Windows and arm64, and on 2026-09-10 the queue reached
+# 151 jobs with ubuntu jobs waiting up to 29 minutes to start.
 # Same coverage as before, fanned across parallel jobs so wall-clock is the slowest job, not the sum:
 #   • unit  — typecheck + build + unit tests + the broker-free view/pack checks (fast).
 #   • smoke — the protocol/security suite (smoke:ci), round-robin sharded across runners by
@@ -35,7 +41,7 @@ concurrency:
 jobs:
   unit:
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@v6
         with:
@@ -100,7 +106,7 @@ jobs:
     # cancelled healthy runs (#1220 died at 40m18s). Sized at ~1.5x the slowest observed
     # success, which absorbs runner variance and lets the corpus grow before this binds again.
     timeout-minutes: 60
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     strategy:
       fail-fast: false
       matrix:
@@ -154,7 +160,7 @@ jobs:
 
   live:
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -232,7 +238,7 @@ jobs:
   seat-native-linux-x64:
     name: seat native (linux-x64)
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -275,7 +281,7 @@ jobs:
     name: seat pack (assembled)
     timeout-minutes: 20
     needs: [seat-native-linux-x64, seat-native-linux-arm64]
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -391,7 +397,7 @@ jobs:
     name: ci-ok (live outcome classified)
     if: always()
     needs: [unit, smoke, live, seat-pack, seat-linux-arm64]
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     permissions:
       actions: read
       contents: read

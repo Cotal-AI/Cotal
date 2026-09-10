@@ -91,6 +91,8 @@ type AgentRow = {
   status: string;
   uptimeMs: number;
   mesh: string;
+  /** The manager's own presence-view state when it built the row; absent from older managers. */
+  meshView?: "current" | "stale" | "unpopulated";
   authHealth?: string;
   authReason?: string;
   // #651 enrichment: present only when the manager recorded the fact (absent is real state:
@@ -232,6 +234,25 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
  *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
  *  or a seat that never joined. */
+/** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
+ *  own presence view as `stale` (its watch went silent past TTL) or `unpopulated` (its watch has not
+ *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
+ *  "mesh unknown" with the reason instead of a liveness word an operator, or a watchdog, would act
+ *  on. A row from a manager that predates `meshView` carries no field and renders as before. */
+export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView">): string {
+  if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
+  if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
+  return r.mesh === "absent"
+    ? c.yellow("not in roster")
+    : r.mesh === "offline"
+      ? c.dim("mesh offline")
+      : r.mesh === "working"
+        ? c.green("working · progress unknown")
+        : r.mesh === "waiting"
+          ? c.yellow("waiting")
+          : c.cyan(r.mesh);
+}
+
 function printAgentRow(r: AgentRow, indent = ""): void {
   const proc =
     r.status === "running"
@@ -239,16 +260,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
       : r.status === "exited"
         ? c.red("exited") + c.dim(" after " + fmtUptime(r.uptimeMs))
         : c.yellow(r.status) + c.dim(" " + fmtUptime(r.uptimeMs));
-  const mesh =
-    r.mesh === "absent"
-      ? c.yellow("not in roster")
-      : r.mesh === "offline"
-        ? c.dim("mesh offline")
-        : r.mesh === "working"
-          ? c.green("working · progress unknown")
-          : r.mesh === "waiting"
-            ? c.yellow("waiting")
-            : c.cyan(r.mesh);
+  const mesh = meshColumn(r);
   // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
   // triages "definitely broken" before "might be".
   const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;

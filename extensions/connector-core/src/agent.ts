@@ -358,6 +358,7 @@ export class MeshAgent extends EventEmitter {
       pass: config.pass,
       creds: config.creds,
       lifecycleUid: config.lifecycleUid,
+      acceptedToken: config.acceptedToken,
       // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
       // protocol lives entirely behind that command, this runtime just runs it and reads a line.
       bearer: config.userAuth ? () => execBearerCmd(config.userAuth!.bearerCmd) : undefined,

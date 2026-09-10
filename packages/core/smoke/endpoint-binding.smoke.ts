@@ -44,6 +44,7 @@ import {
   EP_ERROR_CODES, RESERVED_COMMANDS,
   type EpCaller, type RecordKindDef,
   assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT,
+  admissionBucket, admissionKey, acceptedBucket, issuedBucket, issuedEvidenceKey, openIssuedStore,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -681,6 +682,83 @@ try {
     try { await jsm.streams.purge(epcStreamName(SPACE)); purged = true; } catch { /* refused by the broker — the probe's expectation */ }
     c("a purge against EPC is refused BY THE BROKER (permanence is not configured-by-omission)", !purged);
   }
+  // The three caller-authority stores (SPEC 13.15, 14.8). Their rows are create-only and their
+  // markers permanent, and the profiles that write them hold plain `$KV.<bucket>.<key>` publish
+  // rows. A publish row carries a `Nats-Rollup` header, a plain replacement, a deletion marker and
+  // a per-key purge, none of which the create-only CAS or the deletion-marker read can see. So
+  // immutability is asserted against the config the broker holds, then exercised: each route a
+  // key holder could take is refused BY THE BROKER on the store the real provisioning path built.
+  const immutable = { allow_rollup_hdrs: false, deny_delete: true, deny_purge: true };
+  const writeOnce = { ...immutable, max_msgs_per_subject: 1, discard: "new", discard_new_per_subject: true };
+  const shapeOf = (c: Record<string, unknown>, want: Record<string, unknown>) => Object.fromEntries(Object.keys(want).map((k) => [k, c[k]]));
+  const sameShape = (c: Record<string, unknown>, want: Record<string, unknown>) => Object.entries(want).every(([k, v]) => c[k] === v);
+  const admission = await cfg(`KV_${admissionBucket(SPACE)}`) as unknown as Record<string, unknown>;
+  c("the admission store is write-once per key at the broker: no rollup, no delete, no purge, one message per subject under discard-new (SPEC 14.8)",
+    sameShape(admission, writeOnce), shapeOf(admission, writeOnce));
+  const accepted = await cfg(`KV_${acceptedBucket(SPACE)}`) as unknown as Record<string, unknown>;
+  c("the accepted store is write-once per key at the broker (SPEC 13.15)", sameShape(accepted, writeOnce), shapeOf(accepted, writeOnce));
+  const issued = await cfg(`KV_${issuedBucket(SPACE)}`) as unknown as Record<string, unknown>;
+  const appendOnly = { ...immutable, max_msgs_per_subject: -1 };
+  c("the evidence store is append-only at the broker: no rollup, no delete, no purge, unlimited per-key history (SPEC 13.15)",
+    sameShape(issued, appendOnly), shapeOf(issued, appendOnly));
+  {
+    // Live, over the harness's unrestricted connection: what the broker refuses here it refuses
+    // whoever holds the publish row, so a `run-admitter` with its own key gets the same answers.
+    const bucket = admissionBucket(SPACE);
+    const key = admissionKey("manager", "run-immutable");
+    const other = admissionKey("manager", "run-neighbour");
+    const store = await kvm.open(bucket);
+    const enc = new TextEncoder();
+    await store.create(key, enc.encode('{"seed":1}'));
+    await store.create(other, enc.encode('{"seed":2}'));
+    const refused = async (attempt: () => Promise<unknown>): Promise<string> => attempt().then(() => "ALLOWED", (e: Error) => `refused: ${e.message}`);
+    const rollup = async (mode: "sub" | "all"): Promise<string> => {
+      const h = headers();
+      h.set("Nats-Rollup", mode);
+      return refused(() => js.publish(`$KV.${bucket}.${key}`, enc.encode('{"widened":true}'), { headers: h }));
+    };
+    const sub = await rollup("sub");
+    c("a `Nats-Rollup: sub` publish onto an admission key is refused by the broker", sub.startsWith("refused"), sub);
+    const all = await rollup("all");
+    c("a `Nats-Rollup: all` publish onto an admission key is refused by the broker (no key holder empties the bucket)", all.startsWith("refused"), all);
+    const put = await refused(() => store.put(key, enc.encode('{"widened":true}')));
+    c("a plain second write onto an admission key is refused by the broker (write-once per key)", put.startsWith("refused"), put);
+    const del = await refused(() => store.delete(key));
+    c("a deletion marker onto an admission key is refused by the broker (the row is permanent, not merely detected)", del.startsWith("refused"), del);
+    const purge = await refused(() => store.purge(key));
+    c("a per-key purge of an admission key is refused by the broker", purge.startsWith("refused"), purge);
+    const wholesale = await refused(() => jsm.streams.purge(`KV_${bucket}`));
+    c("a stream purge of the admission store is refused by the broker", wholesale.startsWith("refused"), wholesale);
+    const read = async (k: string): Promise<string> => { const e = await store.get(k); return e === null ? "GONE" : new TextDecoder().decode(e.value); };
+    const first = await read(key);
+    const neighbour = await read(other);
+    c("after every refused route the admission row and its neighbour read exactly as created", first === '{"seed":1}' && neighbour === '{"seed":2}', { first, neighbour });
+  }
+  {
+    // The evidence store cannot be write-once (its attempt row advances by CAS), so a later write
+    // on an evidence key CAN land. Immutability there is the reader's: the FIRST message on the
+    // key is the evidence, and a shadow write after it changes nothing a resolver sees.
+    const space = SPACE;
+    const ref = { space, owner: "local", actor: "shadowed", uid: "u".repeat(26), generation: "a".repeat(32) };
+    const honest = { allow: { mode: "patterns", patterns: [`cotal.${space}.chat.local.shadowed.build`] }, deny: [] } as const;
+    const store = openIssuedStore(await kvm.open(issuedBucket(space)), jsm, space);
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+    const prepared = await store.stage({ version: 1, ref, sources: [], permissions: { publish: honest, subscribe: { allow: { mode: "none" }, deny: [] } }, expiresAt });
+    await store.release(prepared, async () => {});
+    const shadow = { version: 1, ref, sources: [], permissions: { publish: { allow: { mode: "all" }, deny: [] }, subscribe: { allow: { mode: "all" }, deny: [] } }, expiresAt };
+    const evidenceKv = await kvm.open(issuedBucket(space));
+    const landed = await evidenceKv.put(issuedEvidenceKey(ref), new TextEncoder().encode(JSON.stringify(shadow))).then(() => true, () => false);
+    c("a shadow write onto an evidence key lands (the store is append-only, not write-once: its attempt row advances by CAS)", landed);
+    // A reader that took the LAST message would see the shadow's ceiling, or refuse it on the
+    // attempt row's digest pin; either way it is not the created evidence, and the cell says which.
+    const resolved = await store.resolve(ref, async () => true).then((r) => ({ permissions: r.evidence.permissions }), (e: Error) => ({ refused: e.message }));
+    c("and the resolver still returns the evidence that was CREATED, not the shadow: the first message on the key is the row (SPEC 13.15)",
+      "permissions" in resolved && resolved.permissions.publish.allow.mode === "patterns" && resolved.permissions.subscribe.allow.mode === "none",
+      resolved);
+    const reused = await store.stage({ version: 1, ref, sources: [], permissions: shadow.permissions as never, expiresAt }).then(() => "staged", (e: Error) => e.message);
+    c("a generation whose evidence exists is refused a second stage, shadow or not", reused.includes("never reused"), reused);
+  }
+
   const wfj = await cfg(wfjStreamName(SPACE));
   // Both of these are load-bearing rather than tidy. A max_age would evict a sleeping run's journal
   // prefix, and an evicted prefix is not a shorter journal — it is a run that re-performs effects it

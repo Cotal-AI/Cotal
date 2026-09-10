@@ -243,8 +243,11 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     // (epGoalProgressGrantRow) so it can follow its spawn to the terminal — caller-triple-pinned.
     "cotal.d32m.epe.manager.*.*.goal.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu.>",
   ] },
+  // Both rails (SPEC 13.15): the versioned reply row spans one more token (the generation), and
+  // every served command takes the same three subscribe shapes on `ep.v1` beside `ep`.
   "serve-rows": { publish: [
     "cotal.d32m.ep.reply.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.*.*.*",
+    "cotal.d32m.ep.v1.reply.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.*.*.*.*",
     "cotal.d32m.epe.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.>",
     "cotal.d32m.ept.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.schedule",
     "cotal.d32m.epr.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.>",
@@ -252,9 +255,15 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.ep.one.manager.status.> manager",
     "cotal.d32m.ep.all.manager.status.>",
     "cotal.d32m.ep.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.status.>",
+    "cotal.d32m.ep.v1.one.manager.status.> manager",
+    "cotal.d32m.ep.v1.all.manager.status.>",
+    "cotal.d32m.ep.v1.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.status.>",
     "cotal.d32m.ep.one.manager.describe.> manager",
     "cotal.d32m.ep.all.manager.describe.>",
     "cotal.d32m.ep.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.describe.>",
+    "cotal.d32m.ep.v1.one.manager.describe.> manager",
+    "cotal.d32m.ep.v1.all.manager.describe.>",
+    "cotal.d32m.ep.v1.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.describe.>",
     "cotal.d32m.ept.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.fire",
   ] },
   "auth-writer": { publish: [
@@ -796,7 +805,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
   const cO = DEV_OWNER, cA = `wf_${h.slice(0, 12)}`, cU = h.slice(12, 38);
   c("the run-driver caller triple is the run id's own digest (owner local, actor wf_<12 hex>, uid <26 hex>)",
     JSON.stringify(runDriverCaller(RUN)) === JSON.stringify({ owner: cO, actor: cA, uid: cU }), runDriverCaller(RUN));
-  c("the run-mediator mint is EXACTLY its journal replay + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + its own manager rails + the store fetch, and nothing else",
+  c("the run-mediator mint is EXACTLY its journal replay + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + the admission read + its own manager rails + the store fetch, and nothing else",
     JSON.stringify(g) === JSON.stringify({
       publish: [
         `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
@@ -835,6 +844,9 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `cotal.${S}.ep.one.${EP}.turn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.despawn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`,
+        // SPEC 14.8: the run's admission and revocation state, leader-served, read before every
+        // channel effect. A read only; the writer is the per-run `run-admitter`.
+        `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`,
         "$JS.API.INFO",
       ],
       subscribe: [`cotal.${S}.ep.reply.*.*.*.${cO}.${cA}.${cU}.*`, `_INBOX_${CONN}.>`],
@@ -888,16 +900,17 @@ console.log("7. the run-operator profile (SPEC 14.3): a read form and an answeri
   ];
   c("a READ of one run is EXACTLY the records point read + that run's replay durable + INFO, and nothing it can write",
     JSON.stringify(read) === JSON.stringify({
-      publish: [`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, ...replay, "$JS.API.INFO"],
+      publish: [`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`, ...replay, "$JS.API.INFO"],
       subscribe: [`_INBOX_${CONN}.>`],
     }), read);
   const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
   c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
-    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, "$JS.API.INFO"]), list.publish);
+    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`, "$JS.API.INFO"]), list.publish);
   const ans = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } }, CONN);
   c("an ANSWER of one pause is EXACTLY the records point read + THAT token's answer record, checkpoint status and settle fact + the EPF fact read + INFO: no replay row, and no row that spans a second token",
     JSON.stringify(ans.publish) === JSON.stringify([
       `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+      `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`,
       `$KV.cotal_records_${S}.answer.${EP}.${TOKEN}.>`, `$KV.cotal_records_${S}.cp.${EP}.${TOKEN}.>`, `cotal.${S}.epf.${EP}.cp.${TOKEN}`, `$JS.API.STREAM.MSG.GET.EPF_${S}`,
       "$JS.API.INFO",
     ]), ans.publish);

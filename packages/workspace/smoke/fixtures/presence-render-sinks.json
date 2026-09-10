@@ -268,7 +268,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "er\")\n      : r.mesh === \"offline\"\n        ? c.dim(\"mesh o",
+      "anchor": "ster\")\n    : r.mesh === \"offline\"\n      ? c.dim(\"mesh off",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -286,7 +286,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "\n          : r.mesh === \"waiting\"\n            ? c.yellow(",
+      "anchor": "\")\n        : r.mesh === \"waiting\"\n          ? c.yellow(\"w",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -297,7 +297,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "\n            ? c.yellow(\"waiting\")\n            : c.cyan(r",
+      "anchor": "g\"\n          ? c.yellow(\"waiting\")\n          : c.cyan(r.m",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

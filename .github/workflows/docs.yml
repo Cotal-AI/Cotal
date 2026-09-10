@@ -29,9 +29,16 @@ on:
   release:
     types: [published]
 
+# A new push to a PR supersedes the preview build already running for it; main and release builds
+# queue behind each other, because a deploy result is the record for that commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
+
 jobs:
   docs:
-    runs-on: ubuntu-latest
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

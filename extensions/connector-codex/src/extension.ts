@@ -171,6 +171,7 @@ export const codexConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // The auto-submitted first turn. A prompt with no text in it cannot be submitted, so refuse the
     // launch rather than start a seat that quietly ignores what the operator passed.
     if (opts.prompt !== undefined) {

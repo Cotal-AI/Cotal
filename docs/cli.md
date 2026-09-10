@@ -685,8 +685,13 @@ facts per managed agent, because they answer different questions: the process fa
 own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
 from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
 no presence row at all: a seat that has not joined yet, or one that never did). A seat can be
-`running` and `mesh offline` at once: the process is alive and its presence has lapsed. On a user-auth
-mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
+`running` and `mesh offline` at once: the process is alive and its presence has lapsed. The mesh fact
+is only a verdict while the manager's own presence watch is fresh: when that watch has been silent past
+the liveness window, or has not replayed the bucket yet, every row prints `mesh unknown` with the reason
+instead (`--json` carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster`
+would then describe the manager's watch rather than the seat. The manager rebinds a watch that goes
+silent under a live connection on its own, so `mesh unknown` normally clears within a liveness window.
+On a user-auth mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
 
 **Mode split (chosen up front, never try-scatter-then-degrade):**
 

@@ -6,6 +6,8 @@
  *
  * Phase A is a JWT-auth broker: the caller is an `agent` credential carrying `capabilities: [run]`
  * and nothing else, so every reach the family needs is proven from the rows that capability mints.
+ * The credential is an ISSUANCE (SPEC 13.15): its rails carry a generation, and a hosted run is
+ * admitted under the ceiling that generation was issued for (SPEC 14.8).
  * Phase B is an open broker driven through the shipped `cotal run` client, the path a demo mesh
  * takes. Lives under bin/smoke because it composes the manager AND the runtime (implementations
  * never import each other; the composition root does).
@@ -27,8 +29,12 @@ const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
   openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
+  mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
+  issuedPermitsSubject, issuedPermitsPattern, chatSubject,
 } = await import("@cotal-ai/core");
+const { jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
+type EpServeContextT = import("@cotal-ai/core").EpServeContext;
 type ReplyT = import("@cotal-ai/core").EndpointReply;
 type RunStatusViewT = import("@cotal-ai/core").RunStatusView;
 type RunListRowT = import("@cotal-ai/core").RunListRow;
@@ -94,8 +100,14 @@ try {
 
   const id = newIdentity();
   const uid = mintLifecycleUid();
-  const caller: EpCallerT = { owner: DEV_OWNER, actor: id.id, uid };
-  const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"] });
+  // An issued caller: the mint stages and releases its evidence over an issuer session before the
+  // material exists, and the caller carries the generation so its requests ride `ep.v1`. The
+  // evidence names no lifecycle source (this credential has no ledger family), so its liveness
+  // is the credential's own expiry.
+  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const caller: EpCallerT = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation } as EpCallerT;
+  const creds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
+    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   nc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const service = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
@@ -123,6 +135,27 @@ try {
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
   }
 
+  console.log("A1b. a legacy-rail caller holding the same capability is refused run-start by name");
+  {
+    // The same `run` capability minted WITHOUT an issuance: its rows ride the legacy `ep` rail,
+    // which carries no generation, so nothing binds the run to an issued ceiling.
+    const legacyId = newIdentity();
+    const legacyUid = mintLifecycleUid();
+    const legacyCaller: EpCallerT = { owner: DEV_OWNER, actor: legacyId.id, uid: legacyUid };
+    const legacyNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, legacyId, "agent", { lifecycleUid: legacyUid, capabilities: ["run"] }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const legacyService = await resolveService(legacyNc, spaceA, "manager", legacyCaller, { deadlineMs: 10_000 });
+      const r = (await invokeCommand(legacyNc, spaceA, legacyService, "run-start", { source: PURE, file: "pure.cotal.js" }, { deadlineMs: 30_000, currentEpoch: async () => 0 })).reply;
+      const details = ((r.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; actor?: string }>;
+      c("run-start on the legacy rail is permission-denied with the unbound-caller-authority detail naming the caller",
+        r.ok === false && r.error?.code === "permission-denied" && details.some((d) => d.kind === EP_UNBOUND_CALLER_AUTHORITY && d.actor === legacyId.id), r.error);
+      const ps = (await invokeCommand(legacyNc, spaceA, legacyService, "run-ps", undefined, { deadlineMs: 30_000, currentEpoch: async () => 0 })).reply;
+      c("nothing was recorded for it, and the legacy rail still serves the reads", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+    } finally {
+      await legacyNc.drain().catch(() => legacyNc.close());
+    }
+  }
+
   console.log("A2. a pure program is started on the manager and runs to completion there");
   let pureId = "";
   {
@@ -131,6 +164,22 @@ try {
     c("run-start answers with a minted run id", r.ok === true && /^run-[0-9a-f]{32}$/.test(pureId), r);
     const first = await status(pureId);
     c("the run's record exists by the time run-start has answered", first?.status !== undefined && first.status.epoch === 1, first);
+    // The admission (SPEC 14.8), read leader-served under a one-shot mediator credential: written
+    // before the start answered, under the caller's issued generation, its ceiling the evidence's.
+    const admNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: { endpoint: "manager", runId: pureId, takeoverId: newTakeoverId(), instanceId: mintLifecycleUid(), epoch: 1 } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const view = await readRunAdmission(await jetstreamManager(admNc), spaceA, "manager", pureId);
+      const adm = view.admission;
+      c("the run was admitted under the CALLER's issued generation, with issued provenance, before run-start answered",
+        adm.caller.owner === DEV_OWNER && adm.caller.actor === id.id && adm.caller.uid === uid && adm.provenance.kind === "issued" && adm.provenance.ref.generation === issued.generation && view.revoked === undefined, adm);
+      // The ceiling is the credential's whole native permission set, verbatim; what the run may do
+      // in channels is the chat subjects that set admits, and this one admits none.
+      c("its channel ceiling is the credential's own: a `capabilities: [run]` agent with no channels can neither post to nor read any channel through the run",
+        !issuedPermitsSubject(adm.ceiling.publish, chatSubject(spaceA, DEV_OWNER, id.id, "build")) && !issuedPermitsPattern(adm.ceiling.subscribe, chatSubject(spaceA, "*", "*", "build"))
+          && adm.ceiling.publish.allow.mode === "patterns" && adm.ceiling.publish.allow.patterns.length > 0, adm.ceiling);
+    } finally {
+      await admNc.drain().catch(() => admNc.close());
+    }
     const done = await until(async () => { const v = await status(pureId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     // A `log`-only program performs no effect, so its journal is the activation alone.
     c("run-status reports it completed, its journal holding the hosted activation under epoch 1",
@@ -241,7 +290,14 @@ try {
       holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
     });
     const code = (e: unknown) => (e as { code?: string })?.code;
-    const early = await hosting.start({ source: PURE, file: "pure.cotal.js" }).then(() => undefined, (e: unknown) => e);
+    // The boot gate refuses before any admission is read, so the served context here only needs
+    // the shape: the issued caller on the versioned rail, as the manager's dispatcher hands it in.
+    const served: EpServeContextT = {
+      identity: { endpoint: "manager", instanceId: mintLifecycleUid(), epoch: 1 },
+      subject: { plane: "request", rail: "v1", route: "one", endpoint: "manager", command: "run-start", target: null, caller, nonce: "n".repeat(22) },
+      request: { v: 1, id: "i".repeat(22), op: { endpoint: "manager", command: "run-start" }, class: "ephemeral", replyExpected: true, from: { id: `${DEV_OWNER}.${id.id}`, name: id.id }, deadlineMs: 1000 },
+    };
+    const early = await hosting.start(served, { source: PURE, file: "pure.cotal.js" }).then(() => undefined, (e: unknown) => e);
     c("a start before the reconcile has returned is refused unavailable, never launched", code(early) === "unavailable" && hosting.liveCount === 0, early);
     const reconciling = hosting.reconcile();
     const during = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
@@ -272,6 +328,12 @@ try {
     }
     c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
       code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && hosting.liveCount === 0, { first: code(first), second: code(second), live: hosting.liveCount });
+    // Revocation through the host (SPEC 14.8): the marker is written under a per-run admitter and a
+    // hosted resume refuses by name, before any slot is spent on a drive.
+    await hosting.revoke(runId, "operator", "withdrawn after review");
+    const revokedResume = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    c("a hosted resume of a revoked run is permission-denied naming who revoked it and why, and no drive is launched",
+      code(revokedResume) === "permission-denied" && /revoked by operator \(withdrawn after review\)/.test(String((revokedResume as Error)?.message)) && hosting.liveCount === 0, revokedResume);
     await hosting.stop();
     // A user-auth mesh hosts no runs: the family is refused by name, and no host is stood up to
     // gate. The manager on a user-marked workspace, asked by a static caller holding `run`.
@@ -314,7 +376,8 @@ try {
     let localId = "", journal = "", answer = "", finished = "";
     try {
       // The drive holds this process until the pause is answered; it runs beside the answer below.
-      const driven = cli(["start"], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      // A local start names its own ceiling (SPEC 14.8): the operator's evidence, on the command line.
+      const driven = cli(["start"], { file, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
       for (let i = 0; i < 100 && localId === ""; i++) { await wait(100); localId = /starting run (run-[0-9a-f]+) on endpoint/.exec(LOGS.join("\n"))?.[1] ?? ""; }
       for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
       answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
@@ -327,6 +390,28 @@ try {
     c("a local journal read rides a one-shot run-operator READ credential", journal.includes("/checkpoint:approve#0  pending"), journal);
     c("a local answer rides the ANSWERING form and names the answerer with --by", answer.includes('"settle": "resumed"') && answer.includes('"answerId"'), answer);
     c("and the held local drive then completes", finished.includes(`run ${localId}: completed`), finished);
+    // A revoked run is not resumed: the marker is written from the folder's trust material, the
+    // resume refuses by name, and a second revoke is not an error.
+    let revoked = "", again = "", resumed = "";
+    // The CLI refuses through `console.error` + `process.exit(1)`; in-process, the exit is turned
+    // into a throw and the message captured, so the refusal is read rather than the suite ended.
+    const realError = console.error, realExit = process.exit;
+    console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
+    console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
+    process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
+    try {
+      revoked = await cli(["revoke", localId], { by: "dana", reason: "the review was withdrawn" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      again = await cli(["revoke", localId], { by: "dana", reason: "again" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      resumed = await cli(["resume", localId], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    } finally {
+      console.log = realLog;
+      console.error = realError;
+      process.exit = realExit;
+      process.exitCode = undefined;
+    }
+    c("`cotal run revoke --local` writes the revocation marker and says what it means", revoked.includes(`run ${localId} on manager: revoked by dana (the review was withdrawn)`), revoked);
+    c("a second revoke is idempotent and keeps the first marker's reason", again.includes("revoked by dana (the review was withdrawn)"), again);
+    c("a local resume of the revoked run is refused by name, before any drive", resumed.includes("threw:") && resumed.includes("revoked by dana"), resumed);
   }
 
   console.log("A8. the launch deadline a client uses outlives the manager's activation wait");
@@ -367,30 +452,31 @@ try {
   const LOGS: string[] = [];
   const realLog = console.log;
   console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
-  const cli = async (positionals: string[], values: Record<string, string> = {}): Promise<string> => {
+  const cli = async (positionals: string[], values: Record<string, string | boolean> = {}): Promise<string> => {
     LOGS.length = 0;
     await runWorkflow({ values: { server, space: spaceB, ...values }, positionals, raw: [] });
     return LOGS.join("\n");
   };
-  let out = "", runId = "";
+  // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
+  // no run and admits no local one: both refusals name the fact. The CLI refuses through
+  // `console.error` + `process.exit(1)`, captured here the way A7 captures them.
+  const realError = console.error, realExit = process.exit;
+  console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
+  process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
+  let hostedOut = "", localOut = "", ps = "";
   try {
-    out = await cli(["start"], { file });
-    runId = /started run (run-[0-9a-f]+) on the manager/.exec(out)?.[1] ?? "";
-    let journal = "";
-    for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", runId]); }
-    const answer = await cli(["answer", runId, "/checkpoint:approve#0"], { value: '"yes"' });
-    let done = "";
-    for (let i = 0; i < 50 && !done.includes("completed, holder"); i++) { await wait(200); done = await cli(["journal", runId]); }
-    const ps = await cli(["ps"]);
-    console.log = realLog;
-    c("B1. `cotal run start` hands the program to the open-mesh manager and prints the minted id", runId !== "", out);
-    c("B2. `cotal run journal` shows the open pause and its question", journal.includes("/checkpoint:approve#0  pending") && journal.includes("asks        Ship it?"), journal);
-    c("B3. `cotal run answer` resolves it through the manager", answer.includes('"answerId"'), answer);
-    c("B4. and the journal then reads completed", done.includes("completed, holder"), done);
-    c("B5. `cotal run ps` lists the run", ps.includes(runId), ps);
+    hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    localOut = await cli(["start"], { file, local: true, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    ps = await cli(["ps"]);
   } finally {
     console.log = realLog;
+    console.error = realError;
+    process.exit = realExit;
+    process.exitCode = undefined;
   }
+  c("B1. `cotal run start` on an open mesh is refused by the manager, naming the space and that runs need a static-auth mesh", hostedOut.includes("threw: exit 1") && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
+  c("B3. `cotal run ps` still reads there, and lists nothing", !ps.includes("run-"), ps);
   await mgr.stop();
   mgr = undefined;
 } catch (e) {
@@ -398,7 +484,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 45;
+const EXPECTED_CELLS = 51;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

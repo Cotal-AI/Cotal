@@ -7,7 +7,11 @@ import {
   isReachable,
   mintCreds,
   mintLifecycleUid,
+  mintGeneration,
+  mintAcceptedToken,
   newIdentity,
+  withIssuerSession,
+  type IssuedCaller,
   probeConnect,
   registry,
   type AuthProvider,
@@ -48,7 +52,7 @@ export interface ConnectFlags {
  *  and attempt, a `run-operator`'s endpoint and call) straight into `mintCreds`. */
 export interface ConnectOpts {
   instanceId?: string | string[];
-  mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator">;
+  mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
 }
 
 /** Raw NATS auth for an off-registry connection — a join link / --token / --user+--pass / --creds.
@@ -357,8 +361,39 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       const pinned = opts.instanceId !== undefined && role !== "deployer"
         ? instancePinnedInstrumentCapabilities(tier, opts.instanceId)
         : undefined;
-      creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid, ...(pinned ? { endpointCapabilities: pinned } : {}) });
-      epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
+      if (role === "deployer") {
+        // The deployer is NOT an issuance. It is the one instrument the profile table leaves
+        // unbounded (a deploy spans planning, launches and their readiness waits), and an issuance
+        // bound to no lifecycle gate must carry an expiry as its liveness (SPEC 13.15), so the mint
+        // would refuse it. Nothing it does needs the versioned rail: only `run-start` requires the
+        // binding, and a deploy starts no run. It rides the legacy rail under its own uid.
+        creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid });
+        epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
+      } else {
+        // A control-caller instrument is an ISSUANCE (SPEC 13.15): its rails carry a fresh
+        // generation, and its ceiling is recorded before the material exists. It depends on no
+        // lifecycle gate, so its evidence carries the credential's own five-minute expiry as its
+        // liveness.
+        const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+        try {
+          creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
+            mintCreds(target.auth!, identity, role, {
+              lifecycleUid: uid,
+              ...(pinned ? { endpointCapabilities: pinned } : {}),
+              issued,
+              issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
+            }),
+          );
+        } catch (e) {
+          // The issuer dial is now the first thing on this path to touch the broker. A mesh that
+          // is not there must still be reported in the preflight's classified words (and prune the
+          // stale entry as before), not as the raw transport error the dial throws. Anything the
+          // preflight does not explain is the issuer's own fault and surfaces as such.
+          await preflightOrThrow(target);
+          throw e;
+        }
+        epCaller = { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller;
+      }
     } else {
       creds = await mintCreds(target.auth, identity, role, opts.mint ?? {});
     }
