@@ -132,6 +132,14 @@
       "replace": "    if (false) throw new Error(`${file}: unknown pull_request activity type: ${unknown.join(\", \")}`);",
       "expectRed": "an unknown pull_request activity type fails closed",
       "cell": "an unknown pull_request activity type fails closed"
+    },
+    {
+      "name": "YAML merge keys in on are silently ignored",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  if (hasMergeKey(on)) throw new Error(`${file}: unsupported YAML merge key in the on mapping`);",
+      "replace": "  if (false) throw new Error(`${file}: unsupported YAML merge key in the on mapping`);",
+      "expectRed": "a merge key supplying the on event name fails closed",
+      "cell": "a merge key supplying the on event name fails closed"
     }
   ]
 }
