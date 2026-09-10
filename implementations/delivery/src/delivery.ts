@@ -127,8 +127,10 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
 }
 
 /** Where the daemon's pre-minted cred lives — exactly ONE source: an injected {@link SecretStore}
- *  (a hosted composition), an explicit `--creds <file>` (e.g. a read-only container mount) as an FS
- *  store over that exact file, or the default workstation location. `where` is the human label used
+ *  (a hosted composition), an explicit `--creds <file>` as an FS store over that exact file
+ *  (uninjected `--creds` must sit under the same workstation root as process cwd, because
+ *  membership-rw resolves via `findCotalRoot`; a container composition that cannot satisfy
+ *  that should inject a SecretStore instead), or the default workstation location. `where` is the human label used
  *  in error messages so a local operator still sees a path, not an abstract key.
  *
  *  Called AFTER {@link assertNoLocalCredSourceFlags} has settled the injected/local conflict, which
