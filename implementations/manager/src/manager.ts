@@ -891,6 +891,12 @@ export class Manager {
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
   private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; startedAt: number; lastError?: string; standingAuthorityLive?: boolean }>();
+  /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
+   *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
+   *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
+   *  unknown, current, or differently identified live row still refuses. A later retirement of the
+   *  same alias replaces its prior predecessor coordinate. */
+  private readonly confirmedRetiredPredecessors = new Map<string, { principal: string; lifecycleUid: string }>();
   /** SINGLE-FLIGHT guard for {@link requestRetirement} (audit #1): one in-flight rail round-trip per
    *  (name, lifecycleUid). The detached `deprovision` call and every same-name-spawn nudge for THAT
    *  lifecycle JOIN the same promise instead of stacking independent requests that dual-enter the
@@ -3229,23 +3235,7 @@ export class Manager {
         );
         const r = m as { ok: boolean; data?: unknown; error?: string };
         if (r.ok) {
-          // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
-          // lifecycle's - a late reply for a retired predecessor must never clear a successor's newer hold.
-          const cur = this.retiring.get(a.name);
-          if (cur && cur.lifecycleUid === a.lifecycleUid) {
-            if (cur.standingAuthorityLive) {
-              // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
-              // not yet revoked (a failed revoke). Freeing the name here would be a false terminal (a
-              // copied token could still mint), so keep the hold with its revoke-failure copy; a retry
-              // re-drives the full teardown (revoke included).
-              console.error(`despawn ${a.name}: the auth-plane lifecycle retired, but the standing mint authority is not yet revoked; the name stays held. ${cur.lastError ?? ""}`);
-            } else {
-              this.retiring.delete(a.name);
-              console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
-            }
-          } else {
-            console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
-          }
+          this.confirmRetirement(a);
         } else {
           // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
           // full-no-op statements included) - surface it INTACT, never flattened.
@@ -3259,6 +3249,29 @@ export class Manager {
       const copy = uncertain((e as Error).message);
       if (held) held.lastError = copy;
       console.error(`despawn ${a.name}: ${copy}`);
+    }
+  }
+
+  /** Apply one terminal retirement answer. The predecessor coordinate is recorded only when the
+   *  answer clears this exact lifecycle's hold, never for an ABA-late answer or an incomplete hosted
+   *  teardown whose standing authority still lives. */
+  private confirmRetirement(a: { id: string; name: string; lifecycleUid: string }): void {
+    // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
+    // lifecycle's. A late reply for a retired predecessor must never clear a successor's newer hold.
+    const cur = this.retiring.get(a.name);
+    if (cur && cur.lifecycleUid === a.lifecycleUid) {
+      if (cur.standingAuthorityLive) {
+        // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
+        // not yet revoked. A copied token could still mint, so neither free the alias nor classify
+        // its presence as a completed predecessor.
+        console.error(`despawn ${a.name}: the auth-plane lifecycle retired, but the standing mint authority is not yet revoked; the name stays held. ${cur.lastError ?? ""}`);
+      } else {
+        this.confirmedRetiredPredecessors.set(a.name, { principal: a.id, lifecycleUid: a.lifecycleUid });
+        this.retiring.delete(a.name);
+        console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
+      }
+    } else {
+      console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
     }
   }
 
@@ -4489,15 +4502,33 @@ export class Manager {
       const seen = new Set<string>();
       const principals = new Set<string>();
       await this.ep.waitForPresenceSnapshot();
-      const livePrincipals = new Set(this.ep.getRoster()
-        .filter((presence) => presence.status !== "offline")
-        .map((presence) => presence.card.id));
+      const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       if (this.agents.size + this.reserved.size + this.coolingCount() + inventory.agents.length > MAX_AGENTS)
         return { ok: false, agents: [], error: `resume inventory would exceed manager capacity (${MAX_AGENTS})` };
       for (const entry of inventory.agents) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
         seen.add(entry.name);
+        // A manager-local retirement hold is stronger and more precise than presence. The stopped
+        // predecessor can remain roster-live until its TTL/offline update lands, but that stale row
+        // must not hide the durable teardown state the manager already owns. Refuse and re-drive the
+        // exact held lifecycle before consulting generic principal liveness. A confirmed terminal has
+        // already removed the hold, so fresh-lifecycle resume still reaches the fail-closed roster gate.
+        const held = this.retiring.get(entry.name);
+        if (held) {
+          void this.deprovision({
+            id: held.agentId,
+            name: entry.name,
+            lifecycleUid: held.lifecycleUid,
+            userOwner: held.userOwner,
+            secretPaths: held.secretPaths,
+          }).catch(() => {});
+          return {
+            ok: false,
+            agents: [],
+            error: `retained agent "${entry.name}" is reserved pending retirement: its previous lifecycle ${held.lifecycleUid} still owns the alias${held.lastError ? ` (last attempt: ${held.lastError})` : ""}; retrying re-drives that exact teardown`,
+          };
+        }
         let principal: string;
         try {
           principal = entry.identity.mode === "user"
@@ -4509,7 +4540,16 @@ export class Manager {
         if (principals.has(principal))
           return { ok: false, agents: [], error: `resume inventory contains duplicate principal "${principal}"` };
         principals.add(principal);
-        if (livePrincipals.has(principal))
+        const confirmedPredecessor = this.confirmedRetiredPredecessors.get(entry.name);
+        const principalIsLive = liveRoster.some((presence) => {
+          if (presence.card.id !== principal) return false;
+          return confirmedPredecessor === undefined ||
+            confirmedPredecessor.principal !== principal ||
+            confirmedPredecessor.lifecycleUid !== presence.lifecycleUid ||
+            presence.card.name !== entry.name ||
+            entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;
+        });
+        if (principalIsLive)
           return { ok: false, agents: [], error: `retained principal "${principal}" is already live and this runtime cannot authoritatively adopt it` };
         if (this.agents.has(entry.name) || this.reserved.has(entry.name))
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };

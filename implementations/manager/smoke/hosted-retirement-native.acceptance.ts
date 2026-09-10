@@ -4,8 +4,8 @@
  * Starts a disposable authenticated broker, IdP, public auth service, real remote-authority Manager,
  * and real managed children. A real public `runDelivery` daemon supplies the retirement liveness
  * oracle. The only test collaborator is a private atomic host release journal.
- * These first two scoped cells cover release refusal and successful public terminal retirement.
- * Native cells 3-7 remain out of scope for this incremental gate and do not affect its result.
+ * The current scoped cells cover registry-pinned HTTPS retained validation, its stale/revoked/
+ * wrong-owner refusals, release failure, and successful public terminal retirement.
  *
  * All homes, workspace roots, the broker store, and IdP state are scratch. Requires nats-server.
  * Run: COTAL_OWNER_NATIVE_ACCEPTANCE=1 tsx implementations/manager/smoke/hosted-retirement-native.acceptance.ts
@@ -16,6 +16,43 @@ if (subcommand === "") {
   if (process.env.COTAL_OWNER_NATIVE_ACCEPTANCE !== "1")
     throw new Error("hosted retirement native acceptance is owner-only; set COTAL_OWNER_NATIVE_ACCEPTANCE=1 on the isolated native host");
   if (process.platform !== "linux") throw new Error("hosted retirement native acceptance requires Linux");
+  if (!process.env.COTAL_NATIVE_HTTPS_CA) {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { spawnSync } = await import("node:child_process");
+    const pki = mkdtempSync(join(tmpdir(), "cotal-retirement-ca-"));
+    const openssl = (args: string[]): void => {
+      const result = spawnSync("openssl", args, { stdio: "pipe", encoding: "utf8" });
+      if (result.status !== 0) throw new Error(`openssl fixture setup failed: ${result.stderr || result.stdout}`);
+    };
+    let childStatus = 1;
+    try {
+      openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
+        "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-native-retirement-ca",
+        "-addext", "basicConstraints=critical,CA:TRUE"]);
+      openssl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"),
+        "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost"]);
+      writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
+      openssl(["x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"),
+        "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"),
+        "-days", "2", "-extfile", join(pki, "leaf.ext")]);
+      const child = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...process.argv.slice(2)], {
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          COTAL_NATIVE_HTTPS_CA: join(pki, "ca.pem"),
+          COTAL_NATIVE_HTTPS_CERT: join(pki, "leaf.pem"),
+          COTAL_NATIVE_HTTPS_KEY: join(pki, "leaf.key"),
+          NODE_EXTRA_CA_CERTS: join(pki, "ca.pem"),
+        },
+      });
+      childStatus = child.status ?? 1;
+    } finally {
+      rmSync(pki, { recursive: true, force: true });
+    }
+    process.exit(childStatus);
+  }
 }
 
 // The auth daemon and managed child are real registered/public compositions dispatched by re-exec.
@@ -84,7 +121,7 @@ if (subcommand === "tls-probe") {
   }
 }
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
@@ -317,7 +354,6 @@ const server = `nats://127.0.0.1:${brokerPort}`;
 const clientId = "registered-manager-smoke";
 const hostDir = userAuthStateDir(hostRoot, space);
 const participantDir = userAuthStateDir(participantRoot, space);
-const managerAuthDir = hostDir;
 const hostStore = workspaceSecretStore(hostRoot);
 const participantStore = workspaceSecretStore(participantRoot);
 const authDiagnosticCap = 32 * 1024;
@@ -331,6 +367,8 @@ let authServiceSpawnError: Error | undefined;
 let broker: ChildProcess | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
 let exchangeProxy: ReturnType<typeof createHttpsServer> | undefined;
+let httpsExchangeRequests = 0;
+let httpsManagerAuthorityRequests = 0;
 let endpoint: CotalEndpoint | undefined;
 let manager: Manager | undefined;
 let observerNc: Awaited<ReturnType<typeof connect>> | undefined;
@@ -589,23 +627,13 @@ try {
   const service = await awaitAuthService(authService);
   check("host auth service exposes a public exchange", typeof service.publicUrl === "string" && service.publicUrl.startsWith("http://127.0.0.1:"), service);
 
-  const pki = join(hostRoot, "native-pki");
-  mkdirSync(pki, { recursive: true, mode: 0o700 });
-  const openssl = (args: string[]) => {
-    const result = spawnSync("openssl", args, { stdio: "pipe", encoding: "utf8" });
-    if (result.status !== 0) throw new Error(`openssl fixture setup failed: ${result.stderr || result.stdout}`);
-  };
-  openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
-    "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-native-retirement-ca",
-    "-addext", "basicConstraints=critical,CA:TRUE"]);
-  openssl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"),
-    "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost"]);
-  writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
-  openssl(["x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"),
-    "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"),
-    "-days", "2", "-extfile", join(pki, "leaf.ext")]);
-  childCaFile = join(pki, "ca.pem");
-  exchangeProxy = createHttpsServer({ cert: readFileSync(join(pki, "leaf.pem")), key: readFileSync(join(pki, "leaf.key")) }, (req, res) => {
+  childCaFile = process.env.COTAL_NATIVE_HTTPS_CA!;
+  exchangeProxy = createHttpsServer({
+    cert: readFileSync(process.env.COTAL_NATIVE_HTTPS_CERT!),
+    key: readFileSync(process.env.COTAL_NATIVE_HTTPS_KEY!),
+  }, (req, res) => {
+    if (req.url?.endsWith("/exchange")) httpsExchangeRequests++;
+    if (req.url?.endsWith("/manager-service-authority")) httpsManagerAuthorityRequests++;
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -661,19 +689,20 @@ try {
     userAuth: assertUserAuthInfo({
       provider: "cotal",
       idp: { url: idpUrl, issuer: origin, audience: origin },
-      endpoints: { url: service.publicUrl },
+      endpoints: { url: secureExchangeUrl },
     }),
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   check("participant registry entry is remote user mode", existsSync(participantDir));
   check("participant has no local hosting marker", hasUserAuthState(participantRoot, space) === false);
+  check("the registry-pinned HTTPS origin is not usable without its owned CA", untrustedProbe.code !== 0, untrustedProbe);
 
   // The existing provider seam is enough for an ordinary remote USER connection. This establishes
   // the control condition: the later denial is lack of manager service authority, not login/dial.
   console.log("\ncell 1/7: IdP-backed owner grant and bearer");
   const material = await cotalAuthProvider.userCredentials({
-    store: hostStore,
-    dir: managerAuthDir,
+    store: participantStore,
+    dir: participantDir,
     space,
     actor: "cli",
   });
@@ -684,7 +713,7 @@ try {
   endpoint = new CotalEndpoint({
     space,
     servers: server,
-    bearer: () => cotalAuthProvider.userCredentials({ store: hostStore, dir: managerAuthDir, space, actor: "cli" }).then((value: { bearer: string }) => value.bearer),
+    bearer: () => cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "cli" }).then((value: { bearer: string }) => value.bearer),
     sentinelCreds: material.sentinelCreds,
     lifecycleUid: payload.act.lifecycleUid,
     channels: [],
@@ -695,6 +724,7 @@ try {
   endpoint.on("error", () => {});
   await endpoint.start();
   check("existing provider bearer connects from the registry-only participant", endpoint.principal.owner === owner && endpoint.principal.actor === "cli", endpoint.principal);
+  check("participant bearer exchange traverses the registry-pinned HTTPS origin", httpsExchangeRequests > 0, httpsExchangeRequests);
 
   check("participant store has no issuer or callout private authority",
     await participantStore.get(authIssuerKey(space)) === undefined &&
@@ -705,7 +735,7 @@ try {
   console.log("\ncell 2/7: sealed remote-manager authority registration");
   const state = loadOrCreateRemoteManagerIdentity(participantRoot, space);
   const prepareRequest = remoteManagerAuthorityRequest(state, "cli", "prepare");
-  const prepare = await cotalAuthProvider.managerServiceAuthority!({ store: hostStore, dir: managerAuthDir, request: prepareRequest });
+  const prepare = await cotalAuthProvider.managerServiceAuthority!({ store: participantStore, dir: participantDir, request: prepareRequest });
   const actors = remoteManagerActors(state.instanceId);
   const registered = await registerRemoteManagerAuthority({
     space, server, owner, instanceId: state.instanceId, serveActor: actors.serve,
@@ -730,9 +760,11 @@ try {
     parsedActivate.contractArtifacts?.length === contractArtifacts.length && contractArtifacts.length > 0,
     { expected: contractArtifacts.length, parsed: parsedActivate.contractArtifacts?.length });
   const activate = await cotalAuthProvider.managerServiceAuthority!({
-    store: hostStore, dir: managerAuthDir,
+    store: participantStore, dir: participantDir,
     request: activateRequest,
   });
+  check("manager authority prepare and activate traverse the registry-pinned HTTPS origin",
+    httpsManagerAuthorityRequests === 2, httpsManagerAuthorityRequests);
   const retainedRegistrationProof = currentRegistrationProof(activate);
   const terminalProof = rawDigest(JSON.stringify({
     v: 1, space, owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, actors,
@@ -758,7 +790,7 @@ try {
     mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => {
       retirementMints++;
       const response = await cotalAuthProvider.managerServiceAuthority!({
-        store: hostStore, dir: managerAuthDir,
+        store: participantStore, dir: participantDir,
         request: remoteManagerAuthorityRequest(state, "cli", "retire", terminalProof, undefined, undefined, {
           id: identity.id, target, opId, serveEpoch,
         }),
@@ -792,8 +824,8 @@ try {
         sentinelCreds,
       );
       const result = await cotalAuthProvider.validateRemoteRetainedAgent!({
-        store: hostStore,
-        dir: managerAuthDir,
+        store: participantStore,
+        dir: participantDir,
         request,
       });
       return retainedAgentAuthority(result, request);
@@ -849,6 +881,7 @@ try {
   });
   const livenessDiagnostic = (actor: string, handle: ChildHandle) => {
     const principal = `${owner}.${actor}`;
+    const exit = handle.exitInfo();
     const roster = (manager as unknown as { ep: { getRoster(): Array<{
       card: { id: string; name: string };
       lifecycleUid?: string;
@@ -862,7 +895,13 @@ try {
         status: presence.status,
         ts: presence.ts,
       }));
-    return { principal, process: { pid: handle.pid, status: handle.status(), exit: handle.exitInfo() }, roster };
+    return {
+      processPid: handle.pid,
+      processStatus: handle.status(),
+      exitCode: exit?.code,
+      exitSignal: exit?.signal,
+      roster,
+    };
   };
   const awaitOwnedExit = async (actor: string, handle: ChildHandle): Promise<void> => {
     let timer: NodeJS.Timeout | undefined;
@@ -878,19 +917,86 @@ try {
     }
   };
 
-  console.log("\ncell 3/7: managed grant and lifecycle-keyed durables");
+  console.log("\ncell 3/7: retained validation rejects stale, foreign-owner, and revoked authority");
+  const validationUid = mintLifecycleUid();
+  const validationEntry = await provisionRetained("validation_negative", validationUid);
+  if (validationEntry.identity.mode !== "user") throw new Error("native validation entry is not user mode");
+  let validationActorToken = readFileSync(validationEntry.identity.actorToken.path, "utf8");
+  let validationSentinel = readFileSync(validationEntry.identity.sentinelCredential.path, "utf8");
+  const validateRemote = async (target: { owner: string; actor: string; lifecycleUid: string }, registration = retainedRegistrationProof) => {
+    const request = remoteRetainedAgentValidationRequest(
+      state, "cli", registration, registered.processEpoch, target, validationActorToken, validationSentinel,
+    );
+    return cotalAuthProvider.validateRemoteRetainedAgent!({ store: participantStore, dir: participantDir, request });
+  };
+  const refuses = async (fn: () => Promise<unknown>, pattern: RegExp): Promise<boolean> => {
+    try { await fn(); return false; }
+    catch (error) { return error instanceof Error && pattern.test(error.message); }
+  };
+  check("stale registration proof is refused through registry-pinned HTTPS",
+    await refuses(
+      () => validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid }, `sha256:${"f".repeat(64)}`),
+      /current host registration/,
+    ));
+  const wrongOwner = `u_${"b".repeat(26)}`;
+  check("wrong-owner retained validation is refused through registry-pinned HTTPS",
+    await refuses(
+      () => validateRemote({ owner: wrongOwner, actor: "validation_negative", lifecycleUid: validationUid }),
+      /authenticated owner/,
+    ));
+  const revokeResult = await cotalAuthProvider.revokeAgent({ dir: hostDir, owner, actor: "validation_negative" });
+  const { findManagedActor } = await import("@cotal-ai/auth");
+  const rowAfterRevoke = findManagedActor(hostDir, owner, "validation_negative");
+  let revokedOutcome: "accepted" | "threw" = "accepted";
+  let revokedError: { name?: string; code?: string; message?: string } = {};
+  try {
+    await validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid });
+  } catch (error) {
+    revokedOutcome = "threw";
+    revokedError = error instanceof Error
+      ? { name: error.name, code: (error as Error & { code?: string }).code, message: error.message.slice(0, 512) }
+      : { message: String(error).slice(0, 512) };
+  }
+  check("revoked retained authority is refused through registry-pinned HTTPS",
+    revokeResult === true && rowAfterRevoke === undefined && revokedOutcome === "threw" &&
+      /manager retained-agent validation was refused: agent exchange refused: unknown agent or wrong secret/.test(revokedError.message ?? ""),
+    {
+      outcome: revokedOutcome,
+      errorName: revokedError.name,
+      errorCode: revokedError.code,
+      errorMessage: revokedError.message,
+      revokeResult: typeof revokeResult === "object" && revokeResult !== null
+        ? Object.fromEntries(Object.entries(revokeResult).filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean"))
+        : String(revokeResult),
+      rowPresentAfterRevoke: rowAfterRevoke !== undefined,
+      rowLifecycleUidAfterRevoke: rowAfterRevoke?.lifecycleUid,
+    });
+  const restoredGrant = await cotalAuthProvider.grantAgent({
+    store: hostStore, dir: hostDir, space, owner, actor: "validation_negative", lifecycleUid: validationUid,
+    scope: [], allowSubscribe: [], allowPublish: [], parent: `${owner}.cli`,
+  });
+  validationActorToken = restoredGrant.actorToken;
+  validationSentinel = restoredGrant.sentinelCreds;
+  check("current retained authority validates through registry-pinned HTTPS after negative controls",
+    Boolean(await validateRemote({ owner, actor: "validation_negative", lifecycleUid: validationUid })));
+
+  console.log("\ncell 4/7: managed grant and lifecycle-keyed durables");
   const blockedUid = mintLifecycleUid();
   const blockedEntry = await provisionRetained("blocked", blockedUid);
-  console.log("\ncell 4/7: public resumePreserved launches agent-child");
+  console.log("\ncell 5/7: public resumePreserved launches agent-child");
   const beforeBlockedValidations = retainedValidations;
+  const beforeBlockedHttpsValidations = httpsManagerAuthorityRequests;
   const blockedResume = await manager.resumePreserved(inventoryOf(blockedEntry));
   check("public resumePreserved adopts the exact blocked lifecycle", blockedResume.ok,
     blockedResume.ok ? undefined : { reply: blockedResume, diagnostic: adoptionDiagnostic("blocked") });
   check("blocked adoption fresh-validates through the authenticated typed host route at preflight and spawn",
     retainedValidations === beforeBlockedValidations + 2,
     { before: beforeBlockedValidations, after: retainedValidations });
+  check("blocked adoption validation traverses the registry-pinned HTTPS origin twice",
+    httpsManagerAuthorityRequests === beforeBlockedHttpsValidations + 2,
+    { before: beforeBlockedHttpsValidations, after: httpsManagerAuthorityRequests });
   if (!blockedResume.ok) throw new Error("blocked lifecycle adoption failed before release-refusal coverage armed");
-  console.log("\ncell 5/7: public targeted despawn reaches host prepare and fails closed");
+  console.log("\ncell 6/7: public targeted despawn reaches host prepare and fails closed");
   failRelease.add("blocked");
   const beforeBlockedMints = retirementMints;
   const blockedStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
@@ -910,16 +1016,20 @@ try {
     liveness: livenessDiagnostic("blocked", blockedHandle),
   }));
 
-  console.log("\ncell 6/7: durable prepare, HTTP requester issuance, and terminal rail");
+  console.log("\ncell 7/7: durable prepare, HTTP requester issuance, and terminal rail");
   const retiredUid = mintLifecycleUid();
   const retiredEntry = await provisionRetained("retired", retiredUid);
   const beforeRetiredValidations = retainedValidations;
+  const beforeRetiredHttpsValidations = httpsManagerAuthorityRequests;
   const retiredResume = await manager.resumePreserved(inventoryOf(retiredEntry));
   check("public resumePreserved adopts the exact terminal lifecycle", retiredResume.ok,
     retiredResume.ok ? undefined : { reply: retiredResume, diagnostic: adoptionDiagnostic("retired") });
   check("terminal adoption independently fresh-validates through the authenticated typed host route at preflight and spawn",
     retainedValidations === beforeRetiredValidations + 2,
     { before: beforeRetiredValidations, after: retainedValidations });
+  check("terminal adoption validation traverses the registry-pinned HTTPS origin twice",
+    httpsManagerAuthorityRequests === beforeRetiredHttpsValidations + 2,
+    { before: beforeRetiredHttpsValidations, after: httpsManagerAuthorityRequests });
   if (!retiredResume.ok) throw new Error("terminal lifecycle adoption failed before release-success coverage armed");
   const beforeRetiredMints = retirementMints;
   const retiredStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
@@ -946,13 +1056,10 @@ try {
   const replacementEntry = await provisionRetained("retired", replacementUid);
   const aliasProbe = await manager.resumePreserved(inventoryOf(replacementEntry));
   check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, JSON.stringify({
-    reply: aliasProbe,
-    predecessorUid: retiredUid,
-    replacementUid,
+    error: aliasProbe.error,
+    agents: aliasProbe.agents.map(({ name, reply }) => ({ name, error: reply.error })),
     liveness: livenessDiagnostic("retired", retiredHandle),
   }));
-
-  console.log("\nremaining native cells 3-7: OUT OF SCOPE for this incremental two-cell gate");
 
 } catch (error) {
   fail++;
@@ -990,5 +1097,5 @@ try {
   console.error = originalConsoleError;
 }
 
-console.log(`\nHOSTED RETIREMENT NATIVE TWO-CELL ACCEPTANCE ${fail === 0 ? "GREEN" : "FAILED"} (${pass} passed, ${fail} failed; cells 3-7 out of scope; credentials logged: no)`);
+console.log(`\nHOSTED RETIREMENT NATIVE HTTPS VALIDATION ACCEPTANCE ${fail === 0 ? "GREEN" : "FAILED"} (${pass} passed, ${fail} failed; credentials logged: no)`);
 process.exitCode = fail === 0 ? 0 : 1;
