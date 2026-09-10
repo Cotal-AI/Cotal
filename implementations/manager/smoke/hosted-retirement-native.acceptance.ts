@@ -158,7 +158,14 @@ import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "@
 // Fixture assembly only: these reproduce the published supervisor composition around the package-root
 // Manager. The behavior under acceptance stays on public Manager.start/resumePreserved and endpoint
 // invokeService("manager", "despawn"). Lifecycle-registry internals below are read-only observation.
-import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "../src/remote-authority.js";
+import {
+  currentRegistrationProof,
+  loadOrCreateRemoteManagerIdentity,
+  materialCredential,
+  remoteManagerAuthorityRequest,
+  remoteRetainedAgentValidationRequest,
+  retainedAgentAuthority,
+} from "../src/remote-authority.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../auth/src/lifecycle-registry.js";
@@ -725,6 +732,7 @@ try {
     store: hostStore, dir: managerAuthDir,
     request: activateRequest,
   });
+  const retainedRegistrationProof = currentRegistrationProof(activate);
   const terminalProof = rawDigest(JSON.stringify({
     v: 1, space, owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, actors,
     identities: prepareRequest.identities, artifactDigests: [],
@@ -735,6 +743,7 @@ try {
   const journals = new Map<string, TestReleaseJournal>();
   const failRelease = new Set<string>();
   let retirementMints = 0;
+  let retainedValidations = 0;
   const remoteAuthority: NonNullable<ConstructorParameters<typeof Manager>[0]["remoteAuthority"]> = {
     owner, actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
     supervisorCreds: materialCredential(prepare, "supervisor", state.identities.supervisor),
@@ -770,11 +779,24 @@ try {
       const mode = (await import("node:fs")).statSync(journal.path).mode & 0o777;
       check("host release journal is private and terminally idempotent", mode === 0o600 && journal.row()?.state === "released", mode.toString(8));
     },
-    validateRetainedAgent: ({ owner: retainedOwner, actor, actorToken, sentinelCreds }) =>
-      cotalAuthProvider.validateRetainedAgent({
-        store: hostStore, dir: hostDir, space,
-        owner: retainedOwner, actor, actorToken, sentinelCreds,
-      }),
+    validateRetainedAgent: async ({ owner: retainedOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
+      retainedValidations++;
+      const request = remoteRetainedAgentValidationRequest(
+        state,
+        "cli",
+        retainedRegistrationProof,
+        registered.processEpoch,
+        { owner: retainedOwner, actor, lifecycleUid },
+        actorToken,
+        sentinelCreds,
+      );
+      const result = await cotalAuthProvider.validateRemoteRetainedAgent!({
+        store: hostStore,
+        dir: managerAuthDir,
+        request,
+      });
+      return retainedAgentAuthority(result, request);
+    },
   };
 
   manager = new Manager({
@@ -831,6 +853,7 @@ try {
   const blockedResume = await manager.resumePreserved(inventoryOf(blockedEntry));
   check("public resumePreserved adopts the exact blocked lifecycle", blockedResume.ok,
     blockedResume.ok ? undefined : { reply: blockedResume, diagnostic: adoptionDiagnostic("blocked") });
+  check("retained adoption crossed the authenticated typed host validation route", retainedValidations > 0, retainedValidations);
   if (!blockedResume.ok) throw new Error("blocked lifecycle adoption failed before release-refusal coverage armed");
   console.log("\ncell 5/7: public targeted despawn reaches host prepare and fails closed");
   failRelease.add("blocked");
