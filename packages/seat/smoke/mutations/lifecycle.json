@@ -70,7 +70,7 @@
       "note": "A live Unix socket after waitForExit keeps the manager event loop alive through spawn-detach teardown."
     },
     {
-      "name": "M5 never arm the post-exit linger",
+      "name": "M7 never arm the post-exit linger",
       "file": "packages/seat/src/custodian.ts",
       "find": "    resolveWaiters();\n    armExit();\n  };",
       "replace": "    resolveWaiters();\n  };",
@@ -80,7 +80,7 @@
       "note": "This is the pre-fix behavior: a custodian outlived every child forever."
     },
     {
-      "name": "M6 treat any live pid as the recorded process",
+      "name": "M8 treat any live pid as the recorded process",
       "file": "packages/seat/src/reap.ts",
       "find": "  return now !== undefined && now === start ? \"live\" : \"gone\";",
       "replace": "  return now !== undefined ? \"live\" : \"gone\";",
