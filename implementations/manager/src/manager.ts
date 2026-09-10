@@ -2657,10 +2657,11 @@ export class Manager {
    *  instruments). With admin=true (any-mode) any named target is allowed (operator). Otherwise
    *  a named target is allowed if it's the caller's OWN child (`spawner == caller`) — and, on a
    *  user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the caller's ledger row
-   *  holds `admin`, read fresh. The policy is the pure
-   *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
-   *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
-   *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
+   *  holds `admin`, read fresh. Local managers run the pure {@link authorizeNamedControl} policy
+   *  against their provider-backed ledger. Remote managers preserve own-child and owner-domain
+   *  decisions locally, then send only the residual cross-owner admin question through the registered
+   *  host callback with the full endpoint caller tuple. Error string when denied, `undefined` when
+   *  allowed; remote host-state faults throw rather than being collapsed into a denial. */
   private async authorizeNamed(target: ManagedAgent, caller: string, admin: boolean, epCaller?: EpCaller): Promise<string | undefined> {
     if (this.remoteAuthority && epCaller && !admin) {
       if (target.spawner === caller) return undefined;
