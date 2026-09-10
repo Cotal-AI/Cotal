@@ -967,7 +967,9 @@ terminalizes only its own durable static slots, verify-evicts the predecessor's 
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
 process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
 process start identity in its seat record, so a reused pid is never signalled), and only then
-retires the lifecycle and frees the alias. Missing or unverified broker evidence keeps the slot
+retires the lifecycle and frees the alias. A runtime that custodies its seats reserves that
+reference before it launches one, and the manager records it on the slot's first durable row, so a
+manager that dies part-way through a spawn also leaves a seat its successor can address. Missing or unverified broker evidence keeps the slot
 terminalizing, and so does a runtime that cannot reap by reference.
 
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A

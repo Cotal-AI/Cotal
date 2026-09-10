@@ -17,7 +17,13 @@ export interface LaunchSeatOpts {
   name: string;
   spec: SeatLaunchSpec;
   cwd: string;
+  /** A custody id the caller minted BEFORE this launch, so a durable record of the seat can exist
+   *  before its processes do. Omitted mints one here, as before. It names a directory under
+   *  `root`, so it must carry the seat-id shape and must not already hold a record. */
+  id?: string;
 }
+
+const SEAT_ID = /^[0-9a-f]{32}$/;
 
 function packageRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
@@ -44,10 +50,15 @@ function pidLive(pid: number | undefined): boolean {
 export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
   if (process.platform !== "linux") throw unsupportedTransport();
   mkdirSync(opts.root, { recursive: true, mode: 0o700 });
-  const id = seatId();
+  const id = opts.id ?? seatId();
+  if (!SEAT_ID.test(id))
+    throw new Error(`seat custody id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under ${opts.root}`);
   const token = capabilityToken();
   const socket = socketPath(opts.root, id);
   const recPath = recordPath(opts.root, id);
+  // A reserved id is spawned once. Reusing one would launch a second custodian over a live seat's
+  // record, and the reference the manager already recorded would then address the wrong processes.
+  if (existsSync(recPath)) throw new Error(`seat ${id} already holds a custody record at ${recPath}; a custody id is used for one launch`);
   mkdirSync(dirname(recPath), { recursive: true, mode: 0o700 });
   const logPath = join(dirname(recPath), "custodian.log");
   const payload = JSON.stringify({

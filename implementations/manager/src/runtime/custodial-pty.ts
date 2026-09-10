@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReapEvidence, RuntimeReference } from "@cotal-ai/core";
-import { adoptSeatSync, launchSeat, loadSeat, reapSeat, unsupportedTransport } from "@cotal-ai/seat";
+import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport } from "@cotal-ai/seat";
 
 function defaultCustodyRoot(): string {
   return join(homedir(), ".cotal", "seats");
@@ -22,13 +22,24 @@ export class CustodialPtyRuntime implements Runtime {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
   }
 
-  spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
+  /** Mint the custody id for a seat about to be launched. Nothing is written here: the id names a
+   *  directory the custodian creates at launch, so a reserved id that is never spawned reaps as
+   *  `absent`. The manager records this reference durably before it calls {@link spawn}. */
+  reserve(): RuntimeReference {
     if (process.platform !== "linux") throw unsupportedTransport();
+    return { kind: this.kind, id: seatId() };
+  }
+
+  spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle {
+    if (process.platform !== "linux") throw unsupportedTransport();
+    if (reference !== undefined && reference.kind !== "pty")
+      throw new Error(`cannot spawn under runtime kind "${reference.kind}" with pty`);
     const rec = launchSeat({
       root: this.root,
       name,
       spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm },
       cwd,
+      ...(reference ? { id: reference.id } : {}),
     });
     const seat = adoptSeatSync(rec);
     return { ...seat, release: () => seat.close() } as AgentHandle;
