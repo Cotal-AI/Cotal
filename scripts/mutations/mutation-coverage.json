@@ -3,7 +3,6 @@
   "suite": ["scripts/mutation-coverage.selftest.mjs"],
   "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
   "command": "node scripts/mutation-coverage.selftest.mjs",
-  "progressPattern": "^  ✓ ",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
   "why": [
     "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
