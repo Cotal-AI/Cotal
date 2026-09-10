@@ -214,25 +214,36 @@ try {
   check("zero failures without a total stays unparsed", result.status !== 0 && /UNPARSED zero-failed/.test(result.stderr), report(result));
 
   const ticks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED')")}`;
-  config("progress", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
-  result = run("progress");
-  check("anchored progress plus an explicit completion marker supplies a total", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
-
   config("progress-banner", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("progress-banner");
-  check("anchored progress plus its declared terminal banner supplies a total", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+  check(
+    "a declared terminal banner is not an executed-cell total",
+    result.status !== 0 && /UNPARSED progress-banner/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress");
+  check(
+    "a terminal banner without a printed number is unparsed",
+    result.status !== 0 && /UNPARSED progress/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr)
+      && /the instrument grades only a number the suite printed/.test(result.stderr),
+    report(result),
+  );
 
   const noCompletion = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three')")}`;
   config("unfinished-progress", { suite: ["bin/smoke/direct.smoke.ts"], command: noCompletion, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("unfinished-progress");
-  check("progress without completion is unparsed", result.status !== 0 && /UNPARSED unfinished-progress/.test(result.stderr), report(result));
+  check("progress without a printed number is unparsed", result.status !== 0 && /UNPARSED unfinished-progress/.test(result.stderr), report(result));
 
   config("progress-no-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("progress-no-marker");
   check(
     "progress without a declared completionMarker names why it is unparsed",
     result.status !== 0 && /UNPARSED progress-no-marker/.test(result.stderr)
-      && /the progress path could not confirm completion because completionMarker was not declared/.test(result.stderr),
+      && /progress ticks are not an executed-cell total/.test(result.stderr)
+      && /the instrument grades only a number the suite printed/.test(result.stderr),
     report(result),
   );
 
@@ -269,7 +280,7 @@ try {
   check(
     "progress with a non-terminal completionMarker names why it is unparsed",
     result.status !== 0 && /UNPARSED progress-marker-not-terminal/.test(result.stderr)
-      && /the declared completionMarker was not present on the final output line/.test(result.stderr),
+      && /progress ticks are not an executed-cell total/.test(result.stderr),
     report(result),
   );
 
@@ -285,11 +296,16 @@ try {
   const ticksNot = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nNOT FIXTURE PASSED')")}`;
   config("progress-not-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksNot, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("progress-not-marker");
-  check("a terminal line that contains and negates the marker is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+  check("a terminal line that contains and negates the marker is unparsed without a printed number", result.status !== 0 && /UNPARSED progress-not-marker/.test(result.stderr), report(result));
 
   const ticksPrefixed = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED')")}`;
   config("progress-prefixed-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixed, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("progress-prefixed-marker");
+  check("a prefixed completion marker without a printed number is unparsed (the #1464 must-accept pin was pinning banner-as-completion)", result.status !== 0 && /UNPARSED progress-prefixed-marker/.test(result.stderr), report(result));
+
+  const ticksPrefixedFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED 3/3')")}`;
+  config("progress-prefixed-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixedFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-prefixed-fraction");
   check("a prefixed completion marker still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   const ticksChecks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n  42 checks passed')")}`;
@@ -300,12 +316,22 @@ try {
   const ticksAnsi = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED\\u001b[0m')")}`;
   config("progress-ansi-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsi, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("progress-ansi-marker");
+  check("an ANSI-coloured banner without a printed number is unparsed (the #1464 must-accept pin was pinning banner-as-completion)", result.status !== 0 && /UNPARSED progress-ansi-marker/.test(result.stderr), report(result));
+
+  const ticksAnsiFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED 3/3\\u001b[0m')")}`;
+  config("progress-ansi-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsiFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-ansi-fraction");
   check("an ANSI-coloured completion banner still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   const ticksTrail = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED but cleanup failed')")}`;
   config("progress-trailing-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrail, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("progress-trailing-marker");
-  check("trailing text after the marker is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+  check("trailing text after the marker is unparsed without a printed number", result.status !== 0 && /UNPARSED progress-trailing-marker/.test(result.stderr), report(result));
+
+  const ticksTrailFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED 3/3 but cleanup failed')")}`;
+  config("progress-trailing-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrailFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-trailing-fraction");
+  check("trailing text after a complete fraction on the marker line is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("invalid-regex", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, progressPattern: "[", minTicks: 1, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
   result = run("invalid-regex", "fraction");

@@ -6,7 +6,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
   "why": [
     "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
-    "The continuation mutation restores the first-error abort. The subprocess mutation restores the false refusal for declared entrypoints. The two parser mutations restore the completed-but-ungraded outputs reproduced by real suites. The final mutation makes incomplete grading look green again."
+    "The continuation mutation restores the first-error abort. The subprocess mutation restores the false refusal for declared entrypoints. The fraction parser mutation restores a completed-but-ungraded N/N. The banner mutation restores presence-as-completion, which must stay unparsed. The final mutation makes incomplete grading look green again."
   ],
   "mutations": [
     {
@@ -58,12 +58,12 @@
       "cell": "a completed all-passed fraction supplies the executed total"
     },
     {
-      "name": "completed progress-marker suites are not parsed",
+      "name": "banner presence is restored as an executed-cell total",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };",
-      "replace": "    void completed; void executed;",
-      "expectRed": "anchored progress plus an explicit completion marker supplies a total",
-      "cell": "anchored progress plus an explicit completion marker supplies a total"
+      "find": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const fraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };\n  }\n  return undefined;\n};",
+      "replace": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const fraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };\n  }\n  if (typeof cfg.progressPattern === \"string\" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {\n    const terminal = output.trimEnd().split(/\\r?\\n/).at(-1) ?? \"\";\n    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);\n    const executed = (output.match(new RegExp(cfg.progressPattern, \"gm\")) ?? []).length;\n    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };\n  }\n  return undefined;\n};",
+      "expectRed": "a declared terminal banner is not an executed-cell total",
+      "cell": "a declared terminal banner is not an executed-cell total"
     },
     {
       "name": "incomplete aggregate grading exits successfully",
@@ -82,12 +82,12 @@
       "cell": "the audit summary names the exact checkout tree"
     },
     {
-      "name": "progress totals no longer require an explicit completion marker",
+      "name": "progress configs are unparsed without naming that ticks are not a total",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);",
-      "replace": "    const completed = true;",
-      "expectRed": "progress without completion is unparsed",
-      "cell": "progress without completion is unparsed"
+      "find": "      why += \"; progress ticks are not an executed-cell total; the instrument grades only a number the suite printed\";",
+      "replace": "      void why;",
+      "expectRed": "a terminal banner without a printed number is unparsed",
+      "cell": "a terminal banner without a printed number is unparsed"
     },
     {
       "name": "an invalid progress regex escapes per-config validation",

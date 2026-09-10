@@ -239,7 +239,6 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
 };
 
 const lastMatch = (output, re) => [...output.matchAll(re)].at(-1);
-const progressCount = (output, pattern) => (output.match(new RegExp(pattern, "gm")) ?? []).length;
 
 const parseSummary = (cfg, output) => {
   const tallied = lastMatch(output, /(\d+) passed, (\d+) failed/g);
@@ -250,21 +249,12 @@ const parseSummary = (cfg, output) => {
     if (checks[1] !== undefined && Number(checks[1]) !== executed) return undefined;
     return { executed, failures: 0 };
   }
+  // completionMarker locates the line that may carry a complete N/N
+  // fraction. Presence of the marker string is never itself a total.
   if (typeof cfg.completionMarker === "string") {
     const line = output.split(/\r?\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);
     const fraction = line?.match(/\b(\d+)\s*\/\s*(\d+)\b/);
     if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };
-  }
-  if (typeof cfg.progressPattern === "string" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {
-    const lines = output.trimEnd().split(/\r?\n/);
-    const terminal = lines.at(-1) ?? "";
-    // includes() on the terminal line. A local structural test cannot refuse
-    // "NOT <marker>" without also refusing real banners such as
-    // "ALL MEMBERSHIP TESTS PASSED" (marker "MEMBERSHIP TESTS"). Trailing text
-    // is required by 90 of 191 declared markers. See #1464.
-    const completed = typeof cfg.completionMarker === "string" && terminal.includes(cfg.completionMarker);
-    const executed = progressCount(output, cfg.progressPattern);
-    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };
   }
   return undefined;
 };
@@ -343,19 +333,13 @@ for (const path of configs) {
     unparsed++;
     const hasPattern = typeof cfg.progressPattern === "string";
     const hasTicks = Number.isInteger(cfg.minTicks) && cfg.minTicks > 0;
-    const hasMarker = typeof cfg.completionMarker === "string";
     let why = "command completed but printed no trustworthy executed-cell total";
     if (hasPattern && !hasTicks) {
       why += "; progressPattern is present and minTicks is absent, so the progress path could not produce a total";
     } else if (hasTicks && !hasPattern) {
       why += "; minTicks is present and progressPattern is absent, so the progress path cannot run at all because minTicks is only ever consumed by that path";
-    } else if (hasPattern && hasTicks && !hasMarker) {
-      why += "; the progress path could not confirm completion because completionMarker was not declared";
-    } else if (hasPattern && hasTicks && hasMarker) {
-      const terminal = output.trimEnd().split(/\r?\n/).at(-1) ?? "";
-      if (!terminal.includes(cfg.completionMarker)) {
-        why += "; the progress path could not confirm completion because the declared completionMarker was not present on the final output line";
-      }
+    } else if (hasPattern && hasTicks) {
+      why += "; progress ticks are not an executed-cell total; the instrument grades only a number the suite printed";
     }
     console.error(`UNPARSED ${path}: ${why}`);
     continue;
