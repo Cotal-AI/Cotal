@@ -46,7 +46,10 @@ A stale view under a live connection is not left to stand. The endpoint rebinds 
 from the bucket's current state once per liveness window and reports the rebind as a `warning`
 naming the silent interval; a held link's rebind fails or stays silent and the view stays stale. A
 rebind that is still awaiting the broker when the endpoint stops or rebuilds its connection installs
-nothing. `cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
+nothing. A rebind that lands on a bucket with no keys is current knowledge for an observer that
+does not register (nobody is present), and a wipe for one that does (its own key is missing too):
+the latter re-publishes itself and lets the delivery of that record make the view current.
+`cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
 manager reports a view that is not `current` ([cli.md](cli.md)).
 
 ## Three delivery modes

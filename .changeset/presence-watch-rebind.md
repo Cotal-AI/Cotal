@@ -23,9 +23,13 @@ delivered for a full window after the peer's last heartbeat, so an observer's ow
 emits one offline verdict per peer on the tick before the whole-bucket gate trips. A rebind that
 is still awaiting the broker when the endpoint stops or rebuilds its connection is retired: it
 installs nothing and reports nothing, so a stopped endpoint never regains a watch and a rebuilt
-one keeps the watch its fresh connection bound. A rebind that lands on a bucket with no keys
-retires every peer still in the roster and holds the view current until the first write, instead
-of reading its own silence as staleness and rebinding once per window while the mesh is empty.
+one keeps the watch its fresh connection bound. A rebind that lands on a bucket with no keys is
+read two ways. An observer that does not register (a probe) learns that nobody is present: it
+retires every peer still in its roster and holds the view current until the first write, instead of
+reading its own silence as staleness and rebinding once per window while the mesh is empty. An
+observer that registers (the manager) is one of the missing keys, so the bucket was wiped since its
+last heartbeat: it re-publishes its own record, the new watch delivers it, and every other peer is
+re-observed or aged out from that delivery. It never marks itself offline on a current view.
 
 Each `ps` row now carries the manager's presence-view state (`meshView`: `current`, `stale`, or
 `unpopulated`), and the CLI prints `mesh unknown` with the reason instead of `mesh offline` or
