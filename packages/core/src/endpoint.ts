@@ -3052,15 +3052,17 @@ export class CotalEndpoint extends EventEmitter {
           delivered++;
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
-              try { out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() }); } catch { /* skip undecodable */ }
+              const msg = historyMessageFromDelivery(m);
+              if (msg) out.push({ seq: m.seq, subject: m.subject, msg });
             }
             complete = true;
             break;
           }
-          try {
-            out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() });
+          const msg = historyMessageFromDelivery(m);
+          if (msg) {
+            out.push({ seq: m.seq, subject: m.subject, msg });
             if (out.length > limit) out.shift();
-          } catch { /* skip undecodable */ }
+          }
           if (delivered >= pending) { complete = true; break; }
         }
       } finally {
@@ -5086,16 +5088,63 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   }
 }
 
-/** Routing fields in the envelope are advisory. Surface a channel label only from the authenticated
- * chat subject, so connector attention cannot be bypassed with a mismatched payload `channel`. */
+/** Routing fields in the envelope are advisory. The broker forge-locks sender (and for DMs,
+ *  recipient) into the subject. Callers MUST already have rejected a missing `from`, an
+ *  unparseable subject, or `from.id !== parsed.sender` (SPEC §5). This derives the remaining
+ *  routing tokens from the subject for rows that survived — it does not rewrite a mismatched
+ *  `from.id`. Live tails, channel backfill, and channel recall skip the mismatch; history
+ *  does the same (#388). */
 function authenticatedMessage(msg: CotalMessage, parsed: ParsedSubject): CotalMessage {
-  return parsed.kind === "chat" ? authenticatedChannelMessage(msg, parsed.rest) : msg;
+  if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
+  if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
+  return msg;
 }
 
 function authenticatedChannelMessage(msg: CotalMessage, channel: string): CotalMessage {
   if (msg.channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
   const { to: _to, toService: _toService, ...base } = msg;
   return { ...base, channel } as CotalMessage;
+}
+
+function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
+  if (msg.to === to && msg.channel === undefined && msg.toService === undefined) return msg;
+  const { channel: _channel, toService: _toService, ...base } = msg;
+  return { ...base, to } as CotalMessage;
+}
+
+/** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
+ *  `from.id` equals the subject sender; on mismatch, a missing `from`, or an unparseable delivery
+ *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
+ *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
+ *  god-view history must include the viewer's own sends. */
+function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): CotalMessage | undefined {
+  let raw: unknown;
+  try {
+    raw = m.json();
+  } catch {
+    return undefined;
+  }
+  if (!isHistoryDrainEnvelope(raw)) return undefined;
+  const parsed = parseSubject(m.subject);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
+  if (raw.from.id !== parsed.sender) return undefined;
+  return authenticatedMessage(raw, parsed);
+}
+
+/**
+ * Narrow enough for the type checker and for fail-closed history: object envelope, usable `id`,
+ * object `from`. That is what lets `from.id !== parsed.sender` run without throwing, and what
+ * lets `authenticatedMessage` take the row without a cast.
+ *
+ * Does NOT verify SPEC §5 message shape. It does not require a string `from.id` (the SPEC §5
+ * comparison still rejects a mismatch), exactly one route key, a finite `ts`, a string
+ * `space`, a full EndpointRef `from` (`name`/`role`), or well-formed `parts`. Those belong
+ * to `isCotalMessage` (Plane-3). History must not use that guard: a public
+ * `unicast(..., { parts: [{ kind: "data", data: undefined }] })` serializes to `{kind:"data"}`
+ * and must still surface.
+ */
+function isHistoryDrainEnvelope(value: unknown): value is CotalMessage {
+  return isRecord(value) && isUsableMessageId(value.id) && isRecord(value.from);
 }
 
 function isPlane3DeliveryFrame(value: unknown): value is Plane3DeliveryFrame {

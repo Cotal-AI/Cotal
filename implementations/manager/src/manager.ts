@@ -116,6 +116,7 @@ import {
   epcredRowKey,
   epgateKey,
   parseEndpointGate,
+  readEndpointGateGeneration,
   registerServiceInstance,
   deregisterServiceInstance,
   type ServiceDeregistration,
@@ -5480,6 +5481,13 @@ export class Manager {
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       const { registrationRevision } = await registerServiceInstance(recordsKv, {
         space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+        // #1393: when a FOREIGN instance holds the endpoint governance slot, let core tell an
+        // in-flight registration from one abandoned by a predecessor that died between its
+        // slot-take and its spec publish. The read rides THIS executor's existing auth-bucket read
+        // grant (no new grant, no new writer); core refuses on anything but a gate provably
+        // reopened past the slot's stamp.
+        observeHolderGeneration: (holderInstanceId) =>
+          readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
       });
       // processEpoch comes from the GATE (checklist 4: never derived from the uid string); the
       // fence below is also the mint's §13.1 release CAS.

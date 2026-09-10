@@ -62,6 +62,33 @@ export async function markLedgerRowRevoked(kv: KV, key: string): Promise<"revoke
   throw new EpEnvelopeError("unavailable", `revoking the row ${key} kept losing its pin; retry the barrier (SPEC 13.1)`);
 }
 
+/** Read ONE instance's issuance-gate generation over a bound auth KV. A READ, never a freeze.
+ *
+ *  This is the observation seam {@link registerServiceInstance}'s `observeHolderGeneration` and
+ *  {@link deregisterServiceInstance}'s `observeGeneration` both want, shipped once so a caller does
+ *  not hand-roll a parse of an authority row. It is a plain reader and grants nothing: the caller's
+ *  own credential decides whether the row is readable, and an unreadable one THROWS, which both
+ *  seams classify as a refusal.
+ *
+ *  Its argument is an instanceId rather than a bound pair because the caller reading a FOREIGN
+ *  holder's gate knows that id only from the governance slot it just read. Absence throws for the
+ *  same reason a DEL marker does: a registration behind a gate that does not exist is not a state
+ *  this may reason about, so it fails closed rather than answering a number. */
+export async function readEndpointGateGeneration(
+  kv: KV,
+  args: { endpoint: string; instanceId: string },
+): Promise<number> {
+  const endpoint = endpointToken(args.endpoint);
+  const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
+  const key = epgateKey(endpoint, instanceId);
+  const entry = await kv.get(key);
+  if (!entry)
+    throw new EpEnvelopeError("failed-precondition", `no endpoint gate at ${key}; an instance's generation is read from its gate, and an absent gate is not a generation (SPEC 13.1)`);
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
+  return parseEndpointGate(entry.value, key).generation;
+}
+
 /** The §13.1 endpoint-serve MINT FENCE over a bound KV — the `EpIssuanceGate` core's serve mint
  *  (`mintCreds`, profile `endpoint-serve`) fences its release on: it stages the per-JWT `epcred.
  *  <endpoint>.<instanceId>.<credentialId>` row, then a revision-pinned identical-bytes TOUCH of the

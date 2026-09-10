@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type ConnectorSetupProvider } from "@cotal-ai/core";
 
@@ -69,14 +69,52 @@ function command(...args: string[]): { status: number | null; output: string } {
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
+/**
+ * A marketplace entry is an OBJECT carrying `source`, never a bare name. Claude Code validates the
+ * manifest either way, so the string form passes `plugin marketplace add`/`update` and then fails
+ * at resolution with `Plugin "cotal" not found in marketplace "cotal-mesh"` — a message that points
+ * at a stale local copy rather than at the manifest, so `marketplace update` looks like the remedy
+ * and changes nothing.
+ *
+ * `description` is read from each plugin's own `plugin.json` rather than written here, so the two
+ * files cannot drift into disagreeing about the same plugin.
+ */
+function marketplaceEntry(market: string, name: string): { name: string; source: string; description?: string } {
+  const manifest = JSON.parse(readFileSync(join(market, name, ".claude-plugin", "plugin.json"), "utf8")) as {
+    description?: unknown;
+  };
+  const description = typeof manifest.description === "string" ? manifest.description : undefined;
+  return { name, source: `./${name}`, ...(description ? { description } : {}) };
+}
+
+/** Exported so a suite can grade the manifest that is actually written, not a second copy of it. */
+export function marketplaceManifest(market: string): {
+  name: string;
+  description: string;
+  owner: { name: string };
+  plugins: { name: string; source: string; description?: string }[];
+} {
+  const plugins = ["cotal", "cotal-skills"]
+    .filter((name) => existsSync(join(market, name, ".claude-plugin", "plugin.json")))
+    .map((name) => marketplaceEntry(market, name));
+  return { name: MARKETPLACE, description: "Cotal for Claude Code", owner: { name: "Cotal" }, plugins };
+}
+
+/**
+ * The write half of `writeMarketplace`, split out from the `plugin marketplace add` that follows it
+ * so a suite can grade the bytes that reach disk without spawning `claude`. Returns the path so a
+ * caller reads back the file this wrote rather than one it rebuilt from the same inputs.
+ */
+export function writeMarketplaceManifest(market: string): string {
+  const path = join(market, ".claude-plugin", "marketplace.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(marketplaceManifest(market), null, 2) + "\n");
+  return path;
+}
+
 function writeMarketplace(): void {
   const market = marketplaceDir();
-  const plugins = ["cotal", "cotal-skills"].filter((name) => existsSync(join(market, name, ".claude-plugin", "plugin.json")));
-  mkdirSync(join(market, ".claude-plugin"), { recursive: true });
-  writeFileSync(
-    join(market, ".claude-plugin", "marketplace.json"),
-    JSON.stringify({ name: MARKETPLACE, description: "Cotal for Claude Code", owner: { name: "Cotal" }, plugins }, null, 2) + "\n",
-  );
+  writeMarketplaceManifest(market);
   const add = command("plugin", "marketplace", "add", market);
   if (add.status !== 0 && !/already (?:exists|added)/i.test(add.output)) throw new Error(`plugin marketplace add failed:\n${add.output}`);
   if (/already (?:exists|added)/i.test(add.output)) {
