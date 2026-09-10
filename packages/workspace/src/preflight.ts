@@ -92,12 +92,12 @@ export async function preflightTarget(
   if (probe.ok) return { ok: true };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
   // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
-  // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely, and
-  // the verdict here is destructive: a registry-sourced failure DELETES the entry, and re-writing
-  // one costs the operator either a `cotal up` or the exact `cotal meshes add` line again.
-  // The observed failure mode was exactly this — a live, reachable mesh reported as "no mesh
-  // running (stale registry entry - removed)" because the handshake needed more than a second.
-  // So a first failure only makes it a candidate; re-probe with a budget that fits a real network.
+  // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely.
+  // A liveness miss no longer deletes the record, but a mismatch still does, and a false
+  // unreachable still reports the mesh as down. The observed failure mode was a live mesh
+  // reported as "no mesh running (stale registry entry - removed)" because the handshake needed
+  // more than a second. A first failure only makes it a candidate; re-probe with a budget that
+  // fits a real network.
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return { ok: true };
 
@@ -190,8 +190,9 @@ async function readNatsInfoGreeting(
  * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
  * manager control commands) invoke it; `<TAB>` completion must not.
  *
- * Only `up`-written records are candidates at all: {@link pruneMesh} keeps an operator-registered
- * (`cotal meshes add`) one whatever the probe says, and this reports it as `offline` instead.
+ * A dead broker is never enough to delete a record: {@link pruneMesh} keeps both an
+ * operator-registered (`cotal meshes add`) mesh and an `up` / pre-origin one on a liveness miss,
+ * and this reports them as `offline` instead. Mismatch deletion is a different path.
  *
  * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive: a wrongly pruned mesh
  * costs the operator a re-`up` (or, for a remote one, the exact registration line again) and every
@@ -209,12 +210,12 @@ const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
 const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
 
 /** What one sweep did. `offline` is the entries whose broker is gone but whose record STAYS —
- *  operator-registered (`cotal meshes add`) meshes, which {@link pruneMesh} never deletes. A surface
- *  that lists meshes renders that as a state instead of probing every broker a second time. */
+ *  every origin, because a liveness miss is not a deletion. A surface that lists meshes renders
+ *  that as a state instead of probing every broker a second time. */
 export interface MeshSweep {
-  /** Spaces whose dead record was dropped. */
+  /** Spaces whose dead record was dropped. Empty after a liveness-only sweep. */
   pruned: string[];
-  /** Spaces kept despite a dead broker (operator-registered). */
+  /** Spaces kept despite a dead broker. */
   offline: string[];
 }
 
@@ -224,7 +225,7 @@ export async function pruneStaleMeshes(): Promise<MeshSweep> {
     loadMeshes().map(async (m) => {
       if (await isReachable(m.server)) return;
       if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
-      // pruneMesh, not removeMesh: an operator-registered record outlives its broker being down.
+      // pruneMesh, not removeMesh: a liveness miss keeps the record (manual and up alike).
       (pruneMesh(m.space) ? sweep.pruned : sweep.offline).push(m.space);
     }),
   );

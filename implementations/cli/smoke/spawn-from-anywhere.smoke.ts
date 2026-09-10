@@ -7,7 +7,7 @@
  * Covers every `resolveMeshTarget` source branch (0 / 1 / N+current / --space / local-project),
  * that completion lists the RESOLVED mesh's personas (not the cwd's) without opening the network,
  * that `current` wins inside another project, and that a dead registry entry probes `unreachable`
- * and is pruned.
+ * and is kept as offline.
  */
 import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -273,13 +273,13 @@ try {
   const dead = await probeConnect(DEAD, { timeoutMs: 500 });
   check("probeConnect(closed port) → unreachable", !dead.ok && dead.reason === "unreachable", dead);
 
-  // Stale prune: an entry whose broker is gone is dropped; live-looking ones are left to their probe.
+  // Stale prune: an entry whose broker is gone is kept as offline; live-looking ones are left to their probe.
   clearCurrent();
   removeMesh("teamA");
   removeMesh("teamB");
   recordMesh(entry("ghost", projA, DEAD));
   await pruneStaleMeshes();
-  check("pruneStaleMeshes drops the dead entry", loadMeshes().every((m) => m.space !== "ghost"), loadMeshes());
+  check("pruneStaleMeshes keeps the dead entry as offline", loadMeshes().some((m) => m.space === "ghost"), loadMeshes());
 
   console.log(`\nspawn-from-anywhere smoke: ${pass} checks passed`);
 } finally {

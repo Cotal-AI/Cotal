@@ -5,10 +5,10 @@
  *  • classifyPreflightFailure — the (source × reason × has-auth) decision tree. The load-bearing
  *    invariant: a NON-registry source (flag-server / local-space, or a raw `--creds`) is NEVER
  *    pruned — only the registry owns its entries, so a bad `--creds` can't delete a good record.
- *  • renderWorkspaceError — one canonical sentence per failure kind (+ the "stale entry — removed" suffix).
+ *  • renderWorkspaceError — one canonical sentence per failure kind (unreachable names the recorded root).
  *  • preflightTarget — probe a DEAD port and assert it classifies unreachable + prunes by source,
  *    WITHOUT mutating the registry (it returns the decision; the caller mutates).
- *  • pruneStaleMeshes — a registered entry whose broker is gone is dropped; an explicit call only.
+ *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
  *
  * Run: pnpm smoke:preflight
  */
@@ -32,6 +32,7 @@ const {
   pruneStaleMeshes,
   resolveMeshTarget,
   recordMesh,
+  removeMesh,
   loadMeshes,
   renderWorkspaceError,
 } = await import("@cotal-ai/workspace");
@@ -147,13 +148,13 @@ const T: MeshTarget = {
   mode: "open",
   tlsRequired: false,
 };
-check("message: unreachable names the server + `cotal up`", (() => {
+check("message: unreachable names the recorded mesh and root, not a bare `cotal up`", (() => {
   const m = preflightMessage("unreachable", T, false);
-  return m.includes(DEAD) && m.includes("cotal up") && !m.includes("removed");
+  return m.includes(`mesh "${T.space}" is recorded at ${T.root}`) && m.includes("cotal up") && m.includes("there to restart") && !m.includes("removed");
 })(), preflightMessage("unreachable", T, false));
-check("message: unreachable + pruned appends the 'stale registry entry - removed' note",
-  preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
-check("message: pruned-suffix is gated on the prune flag", preflightMessage("unreachable", T, true) !== preflightMessage("unreachable", T, false));
+check("message: unreachable + pruned still names the recorded root (liveness no longer deletes)",
+  preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
+check("message: prune flag does not change the unreachable sentence (record is kept)", preflightMessage("unreachable", T, true) === preflightMessage("unreachable", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);
@@ -193,24 +194,29 @@ const ovDead = await preflightTarget({ ...T, space: "team-ov", source: "flag-spa
 check("preflightTarget(dead override) → not-ok, NO prune (recorded entry is safe)", !ovDead.ok && ovDead.prune === false, ovDead);
 check("team-ov registry entry survives the override preflight", loadMeshes().some((m) => m.space === "team-ov"), loadMeshes());
 
-// ── pruneStaleMeshes: an explicit sweep drops dead entries (and leaves the registry empty here) ───
+// ── pruneStaleMeshes: an explicit sweep keeps dead entries as offline ────────────────────────────
+// Isolate this cell: earlier probes left other dead records, and they stay too.
+for (const m of loadMeshes()) removeMesh(m.space);
 recordMesh({ space: "ghost-2", server: "nats://127.0.0.1:14992", root: "/tmp/p2", mode: "open", ts: new Date(0).toISOString() });
 await pruneStaleMeshes();
-check("pruneStaleMeshes drops every dead entry", loadMeshes().length === 0, loadMeshes());
+check("pruneStaleMeshes keeps every dead entry as offline", loadMeshes().length === 1 && loadMeshes()[0]!.space === "ghost-2", loadMeshes());
 
-// ── ORIGIN: an automatic prune never deletes what an operator registered by hand ──────────────────
-// `cotal up` can always rewrite its own record; a `cotal meshes add` one usually describes a mesh on
-// another machine, so deleting it on a probe failure is unrecoverable here. Every auto-prune path
-// goes through pruneMesh for exactly this reason.
+// ── ORIGIN: a liveness prune never deletes; a mismatch prune still drops `up` ────────────────────
+// REVERSAL of the previous design (test-locked at preflight.smoke.ts:206-212): an `up` record whose
+// broker is dead used to be deleted, a `manual` one kept. Redness of those old assertions is
+// expected and intended. Mismatch (creds / mode / stale-auth-root) still deletes `up`.
 const DEAD_2 = "nats://127.0.0.1:14989";
 recordMesh({ space: "ours", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "up", ts: new Date(0).toISOString() });
 recordMesh({ space: "theirs", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
 const sweep = await pruneStaleMeshes();
-check("sweep prunes the `up` record", findMesh("ours") === undefined, loadMeshes());
+check("sweep KEEPS the `up` record", findMesh("ours") !== undefined, loadMeshes());
 check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
-check("sweep reports the split (pruned vs offline)", sweep.pruned.includes("ours") && sweep.offline.includes("theirs"), sweep);
-check("pruneMesh reports refusing to delete it", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
+check("sweep reports both as offline (none pruned)", sweep.pruned.length === 0 && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
+check("pruneMesh reports refusing to delete a manual record", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
+check("pruneMesh reports refusing to delete an `up` record on liveness", pruneMesh("ours") === false && findMesh("ours") !== undefined);
 check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);
+check("pruneMesh mismatch still drops an `up` record", pruneMesh("ours", "mismatch") === true && findMesh("ours") === undefined);
+check("pruneMesh mismatch still refuses a manual record", pruneMesh("theirs", "mismatch") === false && findMesh("theirs") !== undefined);
 // …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
 check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {

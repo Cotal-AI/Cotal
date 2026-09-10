@@ -546,20 +546,21 @@ export async function resolveTargetOrThrow(flags: {
  *  own trust material. */
 export async function preflightOrThrow(target: MeshTarget, probeCreds?: string): Promise<void> {
   // USER-mode targets are never credless-probed here: the callout denies a bare connect, the
-  // classifier reads that as a stale registry entry, and the PRUNE deletes a healthy mesh's
-  // record (found live: foreground `spawn` did exactly this and every later command fell into
-  // raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a user
-  // target is the user connect / bearer chain itself.
+  // classifier reads that as a stale-entry mismatch, and a mismatch prune would drop a healthy
+  // `up` record (found live: foreground `spawn` did exactly this and every later command fell
+  // into raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a
+  // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(`✗ mesh "${target.space}" at ${target.server} is not reachable - start it with \`cotal up\` from its project folder`);
+    throw new ConnectRefusal(`✗ mesh "${target.space}" is recorded at ${target.root} but not running - run \`cotal up\` there to restart`);
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
   // The classifier says whether this failure is a stale-entry signal; `pruneMesh` says whether the
-  // record is one an automatic sweep may delete (an operator-registered mesh is not). The message
-  // reports what ACTUALLY happened, so it never claims a removal that the registry refused.
-  const pruned = r.prune ? pruneMesh(target.space) : false;
+  // record is one an automatic sweep may delete. Liveness (`unreachable`) keeps an `up` record as
+  // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
+  // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
+  const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
   throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }));
 }
 

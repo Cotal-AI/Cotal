@@ -513,10 +513,11 @@ the entry's root; the registry records only the path.
 is the right verb, and `rm` says so unless you pass `--force`. A hand-added record is removed by
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
-Nothing that merely *infers* a record is stale touches it: an
-unreachable broker is listed `offline` and stays, and `cotal down` / `cotal clean all` leave it
-alone even when it shares a root with the project they are tearing down, because nothing on this
-machine could write it back.
+Nothing that merely *infers* a record is stale from a dead broker touches it: an
+unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
+wrote the record. `cotal down` / `cotal clean all` still drop an `up` record for the project
+they tear down; a hand-added one they leave alone even when it shares a root, because nothing
+on this machine could write it back.
 
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites

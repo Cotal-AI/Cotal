@@ -44,8 +44,8 @@ import { addWizard, canPrompt } from "./meshes-wizard.js";
  *
  * `up` and `down` still write and clear their own records; `add`/`rm` exist for the meshes they
  * cannot speak for — one running on another machine, a shared broker, a hosted space. Those records
- * are marked `manual` and are never auto-pruned (see `pruneMesh`), because this machine has no way
- * to write them back: a dead broker under one is reported `offline`, not deleted.
+ * are marked `manual`. A liveness miss never auto-prunes any origin (see `pruneMesh`): a dead
+ * broker is reported `offline`, not deleted. `cotal down` still drops an `up` record for this root.
  */
 
 const SUBCOMMANDS = ["list", "add", "rm", "remove"] as const;
@@ -78,9 +78,9 @@ export async function meshes(args: ParsedArgs): Promise<void> {
 // ---- list -----------------------------------------------------------------------------------
 
 /** The registered meshes, one per line, with a `*` on the `current` default. This is how you see
- *  what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first, so
- *  a mesh this machine started and lost is gone from the list; an operator-registered one whose
- *  broker is down stays, tagged `offline` — it is still the mesh you meant, just not up. */
+ *  what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first so a
+ *  dead broker is tagged `offline` rather than deleted: an `up` record is the restart authority for
+ *  that root, and a hand-registered one is still the mesh you meant, just not up. */
 async function listMeshes(): Promise<void> {
   const sweep = await pruneStaleMeshes();
   const all = loadMeshes();
