@@ -66,6 +66,26 @@ writeFileSync(
   'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n',
 );
 writeFileSync(
+  join(root, "bin/smoke/aliased-launcher.smoke.ts"),
+  'import { spawnSync as run } from "node:child_process";\n' +
+  'run(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n',
+);
+writeFileSync(
+  join(root, "bin/smoke/bound-entry.smoke.ts"),
+  'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+  "execFileSync(process.execPath, [ENTRY]);\n",
+);
+writeFileSync(
+  join(root, "bin/smoke/node-by-name.smoke.ts"),
+  'spawnSync("node", [join(ROOT, "scripts", "direct.mjs")]);\n',
+);
+writeFileSync(
+  join(root, "bin/smoke/bound-entry-unused.smoke.ts"),
+  'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+  'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+  "console.log(ENTRY);\n",
+);
+writeFileSync(
   join(root, "bin/smoke/mentions-script.smoke.ts"),
   'const note = "scripts/direct.mjs";\n',
 );
@@ -138,6 +158,34 @@ check(
   "a suite is gradable when it launches the exact mutated script path",
   r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
   (r.stderr || r.stdout).slice(-300),
+);
+
+// 4b-4d. THE SAME INVOCATION, SPELLED THE WAYS THE REPO SPELLS IT: an aliased launcher import,
+// a target bound to a name before the call, and "node" by name instead of process.execPath.
+for (const [name, label] of [
+  ["aliased-launcher", "a launcher imported under an alias still witnesses the script it runs"],
+  ["bound-entry", "a target bound to a const before the launcher call still witnesses it"],
+  ["node-by-name", "spawning \"node\" by name is the same witness as process.execPath"],
+]) {
+  writeConfig(`${name}.json`, {
+    suite: [`bin/smoke/${name}.smoke.ts`], command: TALLY,
+    mutations: [mutation("scripts/direct.mjs")],
+  });
+  r = runTool(`${name}.json`);
+  check(label, r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"), (r.stderr || r.stdout).slice(-300));
+}
+
+// 4e. A BOUND NAME OUTSIDE THE ARGUMENT LIST IS NOT AN INVOCATION: the launcher runs something
+// else and the name is only printed afterwards.
+writeConfig("bound-entry-unused.json", {
+  suite: ["bin/smoke/bound-entry-unused.smoke.ts"], command: TALLY,
+  mutations: [mutation("scripts/direct.mjs")],
+});
+r = runTool("bound-entry-unused.json");
+check(
+  "a name bound to the target but never passed to a launcher is still refused",
+  r.status !== 0 && /assembles/.test(r.stderr),
+  r.stderr.slice(-300),
 );
 
 // 5. A QUOTED PATH IS NOT AN INVOCATION: prose or a fixture string cannot license a mutation.
