@@ -4937,7 +4937,7 @@ export class CotalEndpoint extends EventEmitter {
         // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
         // from the same `info(true)` it used to place the isUpdate marker.
         const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
-        if (pending === 0) this.markPresenceBucketEmpty();
+        if (pending === 0) await this.onPresenceBucketEmpty();
         this.emit("warning", new Error(
           `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
         ));
@@ -4988,15 +4988,43 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The watch was just bound onto a bucket with no keys. Every peer still in the roster is
-   *  known gone (its key is not there to replay), so it is marked offline now rather than aged
-   *  out against a delivery that cannot come. The silence gate is disarmed (`lastPresenceWatchAt`
-   *  back to its never-delivered value) and the view reads current until the first write lands:
-   *  without this the empty-bucket view relapsed to stale one window later and rebound again on
-   *  every window, one consumer create and one warning per TTL for as long as the mesh was
-   *  empty. What this does NOT cover: a consumer that dies again while the bucket is still empty
-   *  is not detectable by silence, so the first write after that is missed until the observer
-   *  restarts; a registering observer (the manager) never sits on an empty bucket. */
+  /** The watch was just bound onto a bucket with no keys.
+   *
+   *  A NON-REGISTERING observer (a `cotal status` probe, a lease checker) has real knowledge:
+   *  nobody is present. Every peer still in its roster is known gone (its key is not there to
+   *  replay), so it is marked offline now rather than aged out against a delivery that cannot
+   *  come; the silence gate is disarmed and the view reads current until the first write lands.
+   *  Without that the empty-bucket view relapsed to stale one window later and rebound again on
+   *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
+   *
+   *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
+   *  empty bucket under it means the bucket was wiped since its last heartbeat (the netcup
+   *  recreation), and the same wipe took every peer's record: their absence says the bucket is
+   *  new, not that they left. rev-1421-gpt reproduced the previous behaviour at default timing:
+   *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
+   *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
+   *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
+   *  which the new watch delivers, and lets the ordinary per-peer age-out run from that delivery:
+   *  a peer that is still heartbeating rewrites its key within its own heartbeat interval and is
+   *  re-observed live; one that is gone ages out exactly as after a plain rebind. The roster is
+   *  not touched here and the view is not held; the delivery is what makes it current.
+   *
+   *  What neither branch covers: a consumer that dies again while the bucket is still empty is
+   *  not detectable by silence, so the first write after that is missed until the observer
+   *  restarts. */
+  private async onPresenceBucketEmpty(): Promise<void> {
+    if (this.doRegister) {
+      // Our own key is missing from a bucket we write to: put it back. publishPresence throws on
+      // a refused write; that surfaces through the rebind flight's error path with the epoch
+      // fence intact, and the view stays stale, which is the honest state for an observer that
+      // cannot even record itself.
+      await this.publishPresence();
+      return;
+    }
+    this.markPresenceBucketEmpty();
+  }
+
+  /** See {@link onPresenceBucketEmpty}: the non-registering branch. */
   private markPresenceBucketEmpty(): void {
     this.presenceWatchEmpty = true;
     this.lastPresenceWatchAt = 0;

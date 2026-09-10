@@ -21,9 +21,12 @@
  * with the connection up, rebind a watch from the bucket's current state, and report the
  * peers live again, without emitting a wholesale offline verdict and without a reconnect.
  *
- * Section 8 purges every key and kills the consumer so the rebind lands on an EMPTY bucket: the
- * bind-time pending count, not a delivery, is what makes that view current, retires the frozen
- * roster, and keeps the view current without a rebind per window while the mesh stays empty.
+ * Section 8 purges every key and kills the consumer so the rebind lands on an EMPTY bucket under
+ * a NON-REGISTERING observer: the bind-time pending count, not a delivery, is what makes that
+ * view current, retires the frozen roster, and keeps the view current without a rebind per
+ * window while the mesh stays empty. Section 9 is the same empty bind under a REGISTERING
+ * observer (the manager's shape): its own key is one of the missing ones, so it re-publishes
+ * itself and the view is current because that delivery landed, never on a hold.
  *
  * Sections 6 and 7 hold the return of the real kv.watch() so a rebind is mid-bind when stop() or
  * reconnect() lands: the late bind must install nothing (an epoch fence retires it).
@@ -240,11 +243,11 @@ try {
     return held;
   };
   const iterOf = (ep: CotalEndpoint) => (ep as unknown as { presenceWatchIter?: unknown }).presenceWatchIter;
-  const mkObserver = (name: string, registerPresence = true) => {
+  const mkObserver = (name: string, registerPresence = true, heartbeatMs = HEARTBEAT_MS) => {
     const ep = new CotalEndpoint({
       space, servers: SERVERS,
       channels: [], consume: false, registerPresence, watchPresence: true,
-      heartbeatMs: HEARTBEAT_MS, ttlMs: TTL_MS,
+      heartbeatMs, ttlMs: TTL_MS,
       card: { name, kind: "endpoint", role: "manager" },
     });
     const log = { warnings: [] as string[], errors: [] as string[] };
@@ -370,6 +373,58 @@ try {
       currentAgain === true && (await until(() => ep.getRoster().some((p) => p.card.name === "returner" && p.status !== "offline"), TTL_MS * 2)),
       { view: ep.presenceView(), rebinds: reboundCount(), roster: statusOf(ep) });
     await returner.stop();
+    await ep.stop();
+  }
+
+  // --- REGISTERING OBSERVER ON AN EMPTY BUCKET (rev-1421-gpt BLOCK on 2d8be7e3): the incident
+  // shape under a manager-shaped observer. The stream is deleted and recreated BETWEEN its
+  // heartbeats, so the rebind lands on zero keys. The observer's own key is one of the missing
+  // ones. It must not read the wipe as "everyone left, me included, and I am sure": it re-publishes
+  // itself, the new watch delivers that, and the view is current BECAUSE of a delivery.
+  {
+    // A long heartbeat so nothing repairs the bucket by accident before the rebind lands.
+    const { ep, log } = mkObserver("regmgr", true, 30_000);
+    const regTypes: string[] = [];
+    ep.on("presence", (e: { type: string; presence: { card: { name: string } } }) => regTypes.push(`${e.type}:${e.presence.card.name}`));
+    const bystander = new CotalEndpoint({
+      space, servers: SERVERS,
+      channels: [], consume: false, watchPresence: false, registerPresence: true,
+      heartbeatMs: 30_000, ttlMs: TTL_MS,
+      card: { name: "bystander", kind: "agent", role: "agent" },
+    });
+    bystander.on("error", () => { /* unused */ });
+    await bystander.start();
+    await ep.start();
+    const seeded = await until(() => ep.presenceView().state === "current" && live(ep).length === 2, 3_000);
+    ok("9.1 SETUP: a registering observer sees itself and a bystander, view current",
+      seeded === true, { view: ep.presenceView(), roster: statusOf(ep) });
+    const ownBefore = ep.getRoster().find((p) => p.card.name === "regmgr");
+    await jsm.streams.delete(stream);
+    await until(() => ep.presenceView().state === "stale", TTL_MS * 2 + 500);
+    ok("9.2 with the stream gone the view reads stale",
+      ep.presenceView().state === "stale", ep.presenceView());
+    await setupSpaceStreams({ servers: SERVERS, space });
+    const recovered = await until(() => ep.presenceView().state === "current", TTL_MS * 3);
+    ok("9.3 after the recreation the view returns to current (the rebind landed on the empty bucket)",
+      recovered === true, { view: ep.presenceView(), warnings: log.warnings.slice(-2), errors: log.errors.slice(-2) });
+    const own = ep.getRoster().find((p) => p.card.name === "regmgr");
+    ok("9.4 the observer's OWN row is live on the current view (it re-published itself; the new watch delivered it)",
+      own !== undefined && own.status !== "offline" && own.ts > (ownBefore?.ts ?? 0), { own, ownBefore });
+    ok("9.5 no offline verdict was emitted for the observer itself across the recreation",
+      !regTypes.includes("offline:regmgr"), regTypes);
+    ok("9.6 the view became current on a DELIVERY, not on a hold (the empty marker is not set for a registering observer)",
+      (ep as unknown as { presenceWatchEmpty: boolean }).presenceWatchEmpty === false);
+    // NEGATIVE CONTROL: the bystander's key was wiped too and it has not rewritten it; it ages
+    // out by the ordinary rule (the watch delivered a full window after its last heartbeat).
+    const bystanderAged = await until(() => ep.getRoster().find((p) => p.card.name === "bystander")?.status === "offline", TTL_MS * 3);
+    ok("9.7 CONTROL: a wiped peer that does not rewrite its key ages out on the ordinary per-peer rule",
+      bystanderAged === true && ep.presenceView().state === "current", { bystander: statusOf(ep).bystander, view: ep.presenceView() });
+    // POSITIVE CONTROL: a wiped peer that DOES write again is re-observed live on the new watch.
+    await bystander.setActivity("back");
+    const bystanderBack = await until(() => ep.getRoster().find((p) => p.card.name === "bystander")?.status !== "offline", 3_000);
+    ok("9.8 CONTROL: a wiped peer that writes again is re-observed live on the rebound watch",
+      bystanderBack === true, statusOf(ep));
+    await bystander.stop();
     await ep.stop();
   }
 

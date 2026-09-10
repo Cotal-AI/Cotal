@@ -70,6 +70,13 @@
       "find": "    this.lastPresenceWatchAt = Date.now();\n    this.presenceWatchEmpty = false;\n",
       "replace": "    this.lastPresenceWatchAt = Date.now();\n",
       "expectRed": "8.8 CONTROL: after a delivery on that watch, silence past TTL reads stale again (the empty-bucket hold does not outlive the first write)"
+    },
+    {
+      "name": "R11 a registering observer treats an empty bucket like a probe does (marks every peer and ITSELF offline, holds the view current), so cotal ps prints a false verdict for up to one heartbeat after a stream recreation (rev-1421-gpt BLOCK on 2d8be7e3)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      await this.publishPresence();\n      return;\n    }\n    this.markPresenceBucketEmpty();\n",
+      "replace": "    }\n    this.markPresenceBucketEmpty();\n",
+      "expectRed": "9.4 the observer's OWN row is live on the current view (it re-published itself; the new watch delivered it)"
     }
   ],
   "suite": [
