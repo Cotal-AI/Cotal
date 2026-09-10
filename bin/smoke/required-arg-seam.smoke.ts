@@ -313,7 +313,10 @@ const SEAMS: Seam[] = [
   // 140/100 -> 141/101: the run-command smoke moves onto a static-auth broker and reads records
   // and journals through a per-run run-operator credential of its own (one smoke-side call,
   // tls: false); an admin credential holds no records read row on that mesh.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 141, untypecheckedSites: 101 },
+  // 141/101 -> 142/102: the publish-denial smoke dials a static-auth broker under a class-rail
+  // instrument to prove a refused instance-rail invoke is permission-denied (one smoke-side call,
+  // tls: false).
+  { fn: "standaloneConnectOpts", key: "tls", sites: 142, untypecheckedSites: 102 },
 ];
 
 /**

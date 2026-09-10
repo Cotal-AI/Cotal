@@ -723,17 +723,24 @@ try {
   console.log("9. escalation negative: a spawn-cap-only agent cred is broker-refused on admin-class ep commands");
   {
     const S = await instrument([{ command: "spawn" }]); // spawn only - NO manager.admin capability
+    // A missing publish grant is refused BY THE BROKER: epCall watches the connection for the
+    // violation and names the refused subject, so the refusal is permission-denied carrying the
+    // broker's words. A handler refusal would carry the same code without them, and a dead
+    // responder would be unavailable or the deadline, so the words are what pin the tier.
     let refused: string | undefined;
+    let detail = "";
     try {
       const r = await epCall(S.nc, space, { mode: "one" }, {
         endpoint: MANAGER_ENDPOINT, command: "purge", contract: MANAGER_CONTRACTS.purge, caller: S.caller, args: {},
       }, { deadlineMs: 2500, currentEpoch: async () => 0 });
       refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+      detail = r.reply.ok === false ? r.reply.error?.message ?? "" : "";
     } catch (e) {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+      detail = (e as Error).message;
     }
-    check("purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: dropped by the broker, no reply)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+    check("purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: refused by the broker, naming the subject)",
+      refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { refused, detail: detail.slice(0, 200) });
     await S.nc.drain().catch(() => S.nc.close());
   }
 
@@ -772,20 +779,23 @@ try {
   console.log("12. any-mode is operator-policy-mintable ONLY: an agent cred's any-mode request never reaches the handler");
   {
     // B holds the spawn set's OWNER-mode despawn row. The ANY-mode form of the SAME command is a
-    // different subject its credential does not carry — the broker drops the publish (default
-    // deny), so the admin path is structurally unreachable from every agent-grade credential.
+    // different subject its credential does not carry, so the broker refuses the publish (default
+    // deny) and the admin path is structurally unreachable from every agent-grade credential.
     let refused: string | undefined;
+    let detail = "";
     try {
       const r = await epCall(B.nc, space, { mode: "one" }, {
         endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller: B.caller,
         args: { graceful: false }, target: { mode: "any", owner: DEV_OWNER, actor: B.caller.actor, lifecycleUid: B.caller.uid },
       }, { deadlineMs: 2500, currentEpoch: async () => 0 });
       refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+      detail = r.reply.ok === false ? r.reply.error?.message ?? "" : "";
     } catch (e) {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+      detail = (e as Error).message;
     }
-    check("a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+    check("a spawn-capable agent publishing the any-mode despawn subject is refused by the broker (permission-denied naming the subject, never served)",
+      refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { refused, detail: detail.slice(0, 200) });
   }
 
   }
