@@ -352,10 +352,13 @@ try {
   console.log("\n6. the tier boundary is the GRANT: an agent cred's any-mode input never reaches the handler");
   {
     // B holds the OWNER-mode input row. The any-mode form of the same command is a different
-    // subject its credential does not carry, so the broker drops the publish (default deny) and the
-    // admin path is structurally unreachable from every agent-grade credential: exactly the
+    // subject its credential does not carry, so the broker refuses the publish (default deny) and
+    // the admin path is structurally unreachable from every agent-grade credential: exactly the
     // property that lets `input` share `attach`'s row shape without inventing a second tier.
+    // epCall watches the connection for the violation, so the refusal is permission-denied in the
+    // broker's own words naming the subject; a handler refusal carries the code without them.
     let refused: string | undefined;
+    let detail = "";
     try {
       const r = await epCall(B.nc, space, { mode: "one" }, {
         endpoint: MANAGER_ENDPOINT, command: "input", contract: MANAGER_CONTRACTS.input, caller: B.caller,
@@ -363,11 +366,13 @@ try {
         target: { mode: "any", owner: DEV_OWNER, actor: typist.id, lifecycleUid: typist.lifecycleUid },
       }, { deadlineMs: 3_000, currentEpoch: async () => 0 });
       refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+      detail = r.reply.ok === false ? r.reply.error?.message ?? "" : "";
     } catch (e) {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+      detail = (e as Error).message;
     }
-    check("a spawn-capable agent publishing the ANY-mode input subject is broker-dropped (no reply, never served)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+    check("a spawn-capable agent publishing the ANY-mode input subject is refused by the broker (permission-denied naming the subject, never served)",
+      refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { refused, detail: detail.slice(0, 200) });
   }
 
   console.log("\n7. a seat that is not running refuses");
@@ -462,6 +467,7 @@ try {
     const S = await instrument([{ command: "inspect" }]); // capabilities: ["spawn"], NO input row
     for (const mode of ["owner", "any"] as const) {
       let refused: string | undefined;
+      let detail = "";
       try {
         const r = await epCall(S.nc, space, { mode: "one" }, {
           endpoint: MANAGER_ENDPOINT, command: "input", contract: MANAGER_CONTRACTS.input, caller: S.caller,
@@ -469,11 +475,13 @@ try {
           target: { mode, owner: DEV_OWNER, actor: typist.id, lifecycleUid: typist.lifecycleUid },
         }, { deadlineMs: 3_000, currentEpoch: async () => 0 });
         refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+        detail = r.reply.ok === false ? r.reply.error?.message ?? "" : "";
       } catch (e) {
         refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+        detail = (e as Error).message;
       }
-      check(`a credential holding ONLY the spawn capability is broker-dropped on the ${mode}-mode input subject`,
-        refused === "unavailable" || refused === "deadline-exceeded", { mode, refused });
+      check(`a credential holding ONLY the spawn capability is refused by the broker on the ${mode}-mode input subject (permission-denied naming the subject)`,
+        refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { mode, refused, detail: detail.slice(0, 200) });
     }
     // The control that stops the cell above passing vacuously: the SAME credential class reaches
     // the manager fine on a row it does hold, so the refusals are about the missing input row and
