@@ -271,6 +271,7 @@
     "probe:remote-manager-security": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm probe:manager-goal-index-scanner && pnpm probe:remote-manager-executor-authority",
     "smoke:remote-authority-operations": "tsx implementations/manager/smoke/remote-authority-operations.smoke.ts",
     "smoke:hosted-retirement-order": "tsx implementations/manager/smoke/hosted-retirement-order.smoke.ts",
+    "probe:hosted-retirement-stock-supervise": "tsx implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:pid-contract": "tsx packages/workspace/smoke/pid.smoke.ts",
