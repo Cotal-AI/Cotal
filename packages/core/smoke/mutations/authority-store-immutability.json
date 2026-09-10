@@ -15,7 +15,8 @@
     "replaced a `none` ceiling with `all` and dropped the revocation marker; `Nats-Rollup: all` on that one key",
     "purged the other run's row. Each mutation removes one part of the shape; the suite reads the shape back",
     "from the broker and exercises every route live, so the cell named is the one the broker stops refusing.",
-    "The ep-binding suite reads core through the binary's dist, so every mutation rebuilds core first."
+    "The ep-binding suite reads core through the binary's dist, so every mutation rebuilds core first.",
+    "The flags mutation is graded on the stream-purge cell: broker versions differ on whether write-once alone refuses a rollup header (2.12.x does, 2.14.x does not), and only `deny_purge` refuses a stream purge on both."
   ],
   "mutations": [
     {
@@ -33,10 +34,11 @@
       "file": "packages/core/src/issued-authority.ts",
       "find": "export const AUTHORITY_STORE_IMMUTABLE_FLAGS = Object.freeze({ allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });",
       "replace": "export const AUTHORITY_STORE_IMMUTABLE_FLAGS = Object.freeze({});",
-      "expectRed": "a `Nats-Rollup: sub` publish onto an admission key is refused by the broker",
-      "cell": "a `Nats-Rollup: sub` publish onto an admission key is refused by the broker",
+      "expectRed": "a stream purge of the admission store is refused by the broker",
+      "cell": "a stream purge of the admission store is refused by the broker",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Named on the stream purge, not the rollup: on nats-server 2.12.x a write-once bucket already refuses a rollup header with `maximum messages per subject exceeded`, so the rollup cell stays green there without the flags, while 2.14.x admits the rollup. A stream purge is refused only by `deny_purge` on both, so that cell reddens on every broker this repo supports."
     },
     {
       "name": "the evidence reader takes the LAST message on the key (a shadow write is what resolves)",

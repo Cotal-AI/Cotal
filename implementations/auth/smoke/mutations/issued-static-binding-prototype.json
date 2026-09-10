@@ -140,14 +140,9 @@
       "replace": "  acceptedKey(token);\n  return `$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.accepted.v1.*`;",
       "expectRed": "a client can read its accepted generation from its own row instead of the server view",
       "cell": "a client can read its accepted generation from its own row instead of the server view"
-    },
-    {
-      "name": "an accepted-row token can be redeemed twice",
-      "file": "packages/core/smoke/prototypes/issued-accepted-row.ts",
-      "find": "  await kv.create(acceptedKey(token), new TextEncoder().encode(canonicalJson({ version: 1, ref })));",
-      "replace": "  await kv.put(acceptedKey(token), new TextEncoder().encode(canonicalJson({ version: 1, ref })));",
-      "expectRed": "a client can read its accepted generation from its own row instead of the server view",
-      "cell": "a client can read its accepted generation from its own row instead of the server view"
     }
+  ],
+  "why": [
+    "The accepted store is write-once per key at the broker (SPEC 13.15, `ensureIssuedStores`), and this suite builds it through createEndpointStreams. A second write on a token's key is refused by the broker whether the writer uses create or put, so a mutation swapping the prototype's create for a put cannot redden the redeemed-once assertion; that property is proved at the store by packages/core/smoke/mutations/authority-store-immutability.json."
   ]
 }
