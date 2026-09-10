@@ -1279,16 +1279,30 @@ export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[]
 
 /**
  * Does this frozen body carry a forbidden kind? Used on retry, where the body is already on disk
- * and must not be rewritten. Reads `.events[].type` through {@link parseAguiFrame} when the part
- * is a frame (live object or JSON-round-tripped WAL body — the same shape). A part that is not a
- * frame is not this policy's to refuse.
+ * and must not be rewritten. A part that is not a frame is not this policy's to refuse.
+ *
+ * It reads `.events[].type` off the part directly rather than through {@link parseAguiFrame}, and
+ * it is total: no input makes it throw. Both of those are deliberate.
+ *
+ * `parseAguiFrame` validates a whole envelope — protocol, `threadId`, `runId`, `epoch`, `seq`, and
+ * every event `type` — and throws on any of them. This runs as the first statement of `attempt()`,
+ * on a body JSON-round-tripped out of a WAL that outlives the process which wrote it. Reading a
+ * frozen frame through the strict parser therefore raises a bare vocabulary error out of a machine
+ * whose every other abnormal outcome is a named halt, on the upgrade-across-a-pending-frame path
+ * the halt in `attempt()` claims to handle.
+ *
+ * A strict parse is also the wrong question. A frame too malformed to parse but still carrying
+ * `TOOL_CALL_RESULT` must be refused rather than thrown over, and one with no readable event list
+ * carries no readable tool bytes and publishes as it did before this policy existed. Asking only
+ * the forbidden-kind question makes the fence narrower and stronger at once.
  */
 export function frozenBodyViolatesEgressPolicy(body: readonly unknown[]): boolean {
   for (const part of body) {
     if (!isAguiFramePart(part)) continue;
-    const frame = parseAguiFrame(part);
-    for (const e of frame.events) {
-      if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return true;
+    const events = (part as { events?: unknown }).events;
+    if (!Array.isArray(events)) continue;
+    for (const e of events) {
+      if (isForbiddenEgressEventType((e as { type?: unknown } | null)?.type)) return true;
     }
   }
   return false;

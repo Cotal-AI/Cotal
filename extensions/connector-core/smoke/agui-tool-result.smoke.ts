@@ -533,7 +533,49 @@ try {
     );
   }
 
-  const EXPECTED = 22;
+  // ── THE FENCE IS TOTAL ──────────────────────────────────────────────────────────────────────
+  //
+  // PLACED LAST ON PURPOSE. `frozenBodyViolatesEgressPolicy` is what T-RESULT and T-ARGS mutate, so
+  // a cell asserting on it directly reddens under those mutations too. Sited earlier in the file it
+  // would steal FIRST RED from the carrier cells those mutations are meant to grade, and the
+  // fixture's expectRed names a carrier. Last, the carrier cells red first and these still red.
+  //
+  // What they grade: the fence is the first statement of `attempt()`, which runs on the retry path
+  // over a body JSON-round-tripped out of a WAL that outlives the process which wrote it. Reading
+  // such a body through the strict `parseAguiFrame` threw a bare AguiVocabularyError out of a
+  // machine whose every other abnormal outcome is a named halt, which is what reddened four
+  // agui-emitter cells on main at ee73e33c1. `isAguiFramePart` routes with a boolean and never
+  // throws, on the stated ground that a function taking `unknown` and throwing on some of it is a
+  // trap for its caller; this fence takes `readonly unknown[]` and now means it too.
+  {
+    const verdict = (body: readonly unknown[]): boolean | string => {
+      try {
+        return frozenBodyViolatesEgressPolicy(body);
+      } catch (e) {
+        return `THREW: ${(e as Error).message}`;
+      }
+    };
+    const malformed = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57", events: [{ type: "TOOL_CALL_RESULT" }] };
+    c(
+      "total:a frame too malformed to PARSE but carrying TOOL_CALL_RESULT is still refused",
+      verdict([malformed]) === true,
+      verdict([malformed]),
+    );
+    const noEventList = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" };
+    c(
+      "total:a frame-shaped body with NO event list does not violate and does not throw",
+      verdict([noEventList]) === false,
+      verdict([noEventList]),
+    );
+    const olderProtocol = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.1", threadId: THREAD, runId: "r", epoch: "e", seq: 1, events: [{ type: "TOOL_CALL_RESULT" }] };
+    c(
+      "total:a frame frozen under an OLDER protocol is read for kinds rather than thrown over",
+      verdict([olderProtocol]) === true,
+      verdict([olderProtocol]),
+    );
+  }
+
+  const EXPECTED = 25;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
