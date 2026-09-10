@@ -5,7 +5,6 @@
   ],
   "guard": "Remote retained-agent validation requires the current host registration proof and returns a closed non-secret result that the manager binds to its exact request and inventory target",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts && pnpm exec tsx implementations/manager/smoke/remote-retained-authority.smoke.ts",
-  "completionMarker": "remote retained authority smoke passed: 14/14",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/retained-manager-validation.json",
   "why": [
     "The host proof mutation removes the broker-observed registration revision from the host-issued digest. The host suite changes only that revision and requires the proof to fail, so a client-computable lifecycle-only proof cannot pass as current registration.",
@@ -20,6 +19,8 @@
       "file": "implementations/auth/src/retained-manager-validation.ts",
       "find": "    registrationRevision: current.registrationRevision,",
       "replace": "    registrationRevision: 0,",
+      "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
+      "completionMarker": "manager retained validation smoke failed: 17/18 passed, 1 failed",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: a superseded registration revision is refused",
       "cell": "a superseded registration revision is refused"
@@ -29,6 +30,8 @@
       "file": "implementations/auth/src/retained-manager-validation.ts",
       "find": "    authority,\n  };",
       "replace": "    authority,\n    actorToken: r.actorToken,\n  } as RemoteRetainedAgentValidationResult;",
+      "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
+      "completionMarker": "manager retained validation smoke failed: 16/18 passed, 2 failed",
       "expectRed": "FAIL: valid host validation returns only bound coordinates and non-secret authority",
       "cell": "valid host validation returns only bound coordinates and non-secret authority"
     },
@@ -37,6 +40,8 @@
       "file": "implementations/manager/src/remote-authority.ts",
       "find": "  if (result === null || typeof result !== \"object\" || Array.isArray(result) ||\n      Object.keys(result).sort().join(\",\") !== [\n        \"actor\", \"authority\", \"instanceId\", \"kind\", \"managerLifecycleUid\", \"owner\",\n        \"registrationProof\", \"requestId\", \"serveEpoch\", \"space\", \"target\", \"v\",\n      ].sort().join(\",\"))\n    throw new Error(\"manager retained-agent validation returned a non-closed result\");\n",
       "replace": "",
+      "command": "pnpm exec tsx implementations/manager/smoke/remote-retained-authority.smoke.ts",
+      "completionMarker": "remote retained authority smoke failed: 13/14 passed, 1 failed",
       "expectRed": "FAIL: unknown result fields are refused",
       "cell": "unknown result fields are refused"
     },
@@ -45,14 +50,18 @@
       "file": "implementations/manager/src/remote-authority.ts",
       "find": "  if (proof === material.registrationProof)\n    throw new Error(\"manager-service activation substituted the caller-computable activation proof for the host-authenticated current registration proof\");\n",
       "replace": "",
+      "command": "pnpm exec tsx implementations/manager/smoke/remote-retained-authority.smoke.ts",
+      "completionMarker": "remote retained authority smoke failed: 13/14 passed, 1 failed",
       "expectRed": "FAIL: the caller-computable activation proof cannot substitute for the host proof",
       "cell": "the caller-computable activation proof cannot substitute for the host proof"
     },
     {
       "name": "the retained client trusts an optional cross-origin manager authority URL",
       "file": "implementations/auth/src/provider.ts",
-      "find": "        throw new Error(`space \"${request.space}\" has no pinned remote manager-authority endpoint - re-register it with `cotal meshes add ${request.space} --from <url>``);\n      idpUrl = ua.idp.url;\n      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
-      "replace": "        throw new Error(`space \"${request.space}\" has no pinned remote manager-authority endpoint - re-register it with `cotal meshes add ${request.space} --from <url>``);\n      idpUrl = ua.idp.url;\n      endpoint = ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
+      "find": "      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
+      "replace": "      endpoint = ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
+      "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
+      "completionMarker": "manager retained validation smoke failed: 17/18 passed, 1 failed",
       "expectRed": "FAIL: remote provider derives the fixed authority path and refuses insecure exchange pins before fetch",
       "cell": "remote provider derives the fixed authority path and refuses insecure exchange pins before fetch"
     }
