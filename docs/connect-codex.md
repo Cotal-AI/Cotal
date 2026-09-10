@@ -206,14 +206,13 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   published now. A whole turn can sit in there, so the recovery path now covers a stretch of
   the session it previously lost. Nothing is sent twice in either case.
 
-  And the reader set is a requirement rather than a guarantee, which is the last thing to say
-  plainly. The grant does not enforce it, and it is worth being exact about what does. A spawn
-  through the manager gives a seat publish rights on its own event channel and nothing else, and a
-  spawn whose grant names a different agent's event channel is refused at the door. That fence is
-  the manager's, it reads the concrete form and leaves a pattern such as `events.<owner>.>` to
-  ordinary ACL authority, and a foreground `cotal spawn` on your own machine grants whatever you
-  name because it mints from your own signing material. [connect-claude.md](connect-claude.md#event-plane)
-  spells all three out. Who may READ a plane is minted separately and out of band either way, with
+  The grant still does not decide who may READ a plane. A spawn through the manager gives a seat
+  publish rights on its own event channel and nothing else, and a spawn whose grant names a
+  different agent's event channel is refused at the door. That fence is the manager's, it reads
+  the concrete form and leaves a pattern such as `events.<owner>.>` to ordinary ACL authority,
+  and a foreground `cotal spawn` on your own machine grants whatever you name because it mints
+  from your own signing material. [connect-claude.md](connect-claude.md#event-plane) spells all
+  three out. Who may READ a plane is minted separately and out of band either way, with
   `cotal actor grant` on a user-auth mesh and `cotal mint --profile agent --allow-subscribe` on a
   static one. Who may read the plane is still that mint, not the spawn grant.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
