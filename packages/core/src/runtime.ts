@@ -84,7 +84,24 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
-  spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
+  /**
+   * Mint the durable custody reference for a seat this runtime is ABOUT to spawn, before any
+   * process exists. The caller records it durably and then hands the SAME reference back to
+   * {@link spawn}, so the reference precedes the processes it addresses: a crash anywhere after
+   * the spawn leaves an orphan a successor can still address, never a live seat nobody can name.
+   * Minting the id inside `spawn` cannot give that ordering, because the processes are already
+   * running by the time it returns.
+   *
+   * OPTIONAL, and absent means this runtime has no durable custody to reserve (it also has no
+   * {@link reap}); the caller spawns without a reference, as before. A runtime that implements
+   * this MUST spawn the seat under exactly the reference it returned, and report it back on the
+   * handle: a spawn that quietly mints its own id would leave the recorded reference addressing
+   * nothing, which is worse than recording none.
+   */
+  reserve?(): RuntimeReference;
+  /** Spawn the agent. `reference` is a custody reference from {@link reserve}, and a runtime that
+   *  offers `reserve` must honour it exactly; it is absent for a runtime without durable custody. */
+  spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle;
   /**
    * Reattach this runtime to a handle it created previously. This is a local runtime operation,
    * not a mesh operation. OPTIONAL, and absent means REFUSE, never spawn a replacement: a runtime

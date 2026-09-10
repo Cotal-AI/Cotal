@@ -7,7 +7,8 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/orphan-seat-reap.mutations.json",
   "why": [
     "The suite runs a real manager on the custodial pty runtime, kills it with SIGKILL, proves the custodian and seat child survive, then boots the same logical successor and watches its startup terminal.",
-    "The mutation removes the reap step from the terminal's cleanup. Without it the successor verify-evicts the broker rails and retires the lifecycle while the seat process keeps running outside every manager, which is the leak this suite exists to end."
+    "The mutation removes the reap step from the terminal's cleanup. Without it the successor verify-evicts the broker rails and retires the lifecycle while the seat process keeps running outside every manager, which is the leak this suite exists to end.",
+    "The second mutation drops the custody reservation from the spawn intent, so the provisioning row is written with no reference. Scenario 1 still passes (its activation CAS records the reference once the spawn completes), which is why the crash-inside-the-spawn-window scenario has to exist: only it can see a slot that never reached activation."
   ],
   "mutations": [
     {
@@ -17,6 +18,14 @@
       "replace": "      await cleanup();",
       "expectRed": "successor reaps the orphan seat process before retiring the lifecycle",
       "cell": "successor reaps the orphan seat process before retiring the lifecycle"
+    },
+    {
+      "name": "write the spawn intent without the reserved custody reference",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "ownerInstanceId: this.managerInstanceId, runtime: custody }),",
+      "replace": "ownerInstanceId: this.managerInstanceId }),",
+      "expectRed": "a seat whose spawn never reached the slot activation is still reaped by its reserved reference",
+      "cell": "a seat whose spawn never reached the slot activation is still reaped by its reserved reference"
     }
   ]
 }
