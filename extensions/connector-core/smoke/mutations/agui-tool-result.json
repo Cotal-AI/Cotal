@@ -63,9 +63,10 @@
     {
       "name": "T-ENVELOPE the envelope check is reverted, so protocol/threadId/runId/epoch/seq defects publish again",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "    try {\n      parseAguiFrame(part);\n    } catch {\n      unreadable = true;\n    }",
-      "replace": "    try {\n      void part;\n    } catch {\n      unreadable = true;\n    }",
-      "expectRed": "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes"
+      "find": "      try {\n        parseAguiFrame(part);\n      } catch {\n        unreadable = true;\n      }",
+      "replace": "      try {\n        void part;\n      } catch {\n        unreadable = true;\n      }",
+      "expectRed": "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     }
   ]
 }
