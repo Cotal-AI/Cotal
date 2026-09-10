@@ -115,8 +115,8 @@
       "file": "scripts/pr-head-gate.mjs",
       "find": "    uniqueKeys: true,\n    merge: true,",
       "replace": "    uniqueKeys: true,",
-      "expectRed": "a merge-key on mapping includes pull_request in the expected set and is not green without that run",
-      "cell": "a merge-key on mapping includes pull_request in the expected set and is not green without that run"
+      "expectRed": "the shipped pr-head-gate command includes a merge-key pull_request workflow and is not green without its run",
+      "cell": "the shipped pr-head-gate command includes a merge-key pull_request workflow and is not green without its run"
     }
   ]
 }
