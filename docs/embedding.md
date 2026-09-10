@@ -47,7 +47,7 @@ are marked; import them with `import type`.
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
-| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. |
+| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including a required host-owned release prerequisite and a target-pinned retirement-requester callback. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 
 **Provisioning and minting** (all `@cotal-ai/core`)
@@ -221,6 +221,14 @@ custody problem. The other knobs are `workspaceRoot` and the process-global `COT
 > `loadSpaceAuth`). That is the single-machine composition, where the signer is on local disk by the
 > static-auth model; multi-tenant hosting runs **user mode**, which never mints from on-disk trust. The
 > store-injectable signer path is the hosted-server set: the manager, `remintDaemonCreds`, and delivery.
+
+The typed remote-manager authority contract includes a one-shot terminal phase. A host implements
+`remoteAuthority.prepareAgentRetirement` to revoke the managed grant and finish its resumable
+release while preserving the UID, then `remoteAuthority.mintRetirementRequester` returns the
+host-signed JWT for a fresh participant-owned nkey. The credential is pinned to the authenticated
+owner, server-derived manager serve principal, current instance epoch, and exact target lifecycle.
+The manager then uses the existing auth retirement rail with one stable operation id. A failure keeps
+the alias held. This does not expose the auth barrier or give the participant signer authority.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on

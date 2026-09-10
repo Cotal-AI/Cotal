@@ -250,6 +250,32 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           });
           return materialCredential(sessionMaterial, "sessionServing", session.identity);
         },
+        mintRetirementRequester: async ({ identity, target: retirementTarget, opId, serveEpoch }) => {
+          const retirementMaterial = await provider.managerServiceAuthority!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request: remoteManagerAuthorityRequest(state, "cli", "retire", rawDigest(JSON.stringify({
+              v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
+              actors, identities: request.identities, artifactDigests: [],
+            })), undefined, undefined, {
+              id: identity.id,
+              target: retirementTarget,
+              opId,
+              serveEpoch,
+            }),
+          });
+          if (retirementMaterial.retirement?.opId !== opId ||
+              JSON.stringify(retirementMaterial.retirement?.target) !== JSON.stringify(retirementTarget) ||
+              retirementMaterial.retirement?.serveEpoch !== serveEpoch)
+            throw new Error("manager-service retirement material does not echo the requested target, operation, and serve epoch");
+          return materialCredential(retirementMaterial, "retirementRequester", identity);
+        },
+        prepareAgentRetirement: async () => {
+          // The stock remote participant path has no hosted storage lifecycle. A composition that
+          // manages hosted agents must inject its revoke + resumable-release operation here rather
+          // than letting consumer deprovision masquerade as terminal retirement.
+          throw new Error("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition");
+        },
       };
     } catch (e) {
       console.error(c.red(

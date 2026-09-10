@@ -85,6 +85,7 @@ export function remoteManagerAuthorityRequest(
   registrationProof?: string,
   contractArtifacts?: unknown[],
   session?: RemoteManagerAuthorityRequest["session"],
+  retirement?: RemoteManagerAuthorityRequest["retirement"],
 ): RemoteManagerAuthorityRequest {
   const requestId = `${operation}${mintLifecycleUid()}`;
   return {
@@ -99,6 +100,7 @@ export function remoteManagerAuthorityRequest(
     ...(registrationProof ? { registrationProof } : {}),
     ...(contractArtifacts ? { contractArtifacts } : {}),
     ...(session ? { session } : {}),
+    ...(retirement ? { retirement } : {}),
     identities: {
       supervisor: { id: state.identities.supervisor.id },
       executor: { id: state.identities.executor.id },

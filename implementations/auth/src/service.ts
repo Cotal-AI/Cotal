@@ -149,6 +149,29 @@ export interface AuthAuthorityPlane {
   close(): Promise<void>;
 }
 
+type RemoteRetirementGate = { state: "open" | "frozen" | "retired"; principal: string; processEpoch: number };
+
+/** Package-internal policy step for the hosted retirement requester. The HTTP production door calls
+ * this after deriving the owner and manager actors; broker-free smokes exercise the same decision. */
+export function authorizeRemoteManagerRetirement(args: {
+  owner: string;
+  serveActor: string;
+  instanceId: string;
+  targetOwner: string;
+  serveEpoch: number;
+  gate: RemoteRetirementGate | null;
+}): void {
+  if (args.targetOwner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
+  if (!args.gate || args.gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
+  const servePrincipal = `${args.owner}.${args.serveActor}`;
+  if (args.gate.principal !== servePrincipal)
+    throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
+  if (args.gate.processEpoch !== args.serveEpoch)
+    throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+}
+
 /**
  * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
  * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
@@ -462,6 +485,34 @@ export async function openAuthAuthorityPlane(opts: {
                 lifecycleUid: r.managerLifecycleUid,
                 sessionServing: { endpoint: "manager", sessionId: session.sessionId, epoch: session.epoch },
                 expiresAt: exp,
+              },
+            );
+            return { credentials };
+          }
+          if (r.operation === "retire") {
+            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            if (r.registrationProof !== expectedProof)
+              throw new EpEnvelopeError("permission-denied", "manager-service retirement proof does not match this owner/lifecycle");
+            const retirement = r.retirement!;
+            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const observed = await gate.observe();
+            authorizeRemoteManagerRetirement({
+              owner, serveActor: actors.serve, instanceId: r.instanceId,
+              targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch, gate: observed,
+            });
+            credentials.retirementRequester = await mintPublicUserJwt(
+              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              retirement.id,
+              "retirement-requester",
+              {
+                principal: { owner, actor: actors.serve },
+                lifecycleUid: r.managerLifecycleUid,
+                retirementRequester: {
+                  owner,
+                  actor: actors.serve,
+                  uid: r.managerLifecycleUid,
+                  target: retirement.target,
+                },
               },
             );
             return { credentials };

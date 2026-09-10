@@ -354,6 +354,19 @@ export interface ManagerOptions {
     sessionLedgerCreds: string;
     serveGrant: EpServeGrant;
     mintSessionServing: (args: { identity: Identity; endpoint: string; sessionId: string; epoch: number; exp: number }) => Promise<string>;
+    mintRetirementRequester: (args: {
+      identity: Identity;
+      target: { owner: string; actor: string; lifecycleUid: string };
+      opId: string;
+      serveEpoch: number;
+    }) => Promise<string>;
+    /** Host-owned prerequisite for terminal retirement. It revokes the managed grant and completes
+     * the host's resumable release/sweep while preserving this UID. Success means the terminal auth
+     * barrier may start; failure keeps the alias held and is retried with the same operation id. */
+    prepareAgentRetirement: (args: {
+      target: { owner: string; actor: string; lifecycleUid: string };
+      opId: string;
+    }) => Promise<void>;
   };
 }
 
@@ -2985,7 +2998,7 @@ export class Manager {
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
   private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
-    if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
+    if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
     // outlive the hold-clear and delete a successor's row. A fresh trigger after settle re-drives.
@@ -3001,6 +3014,19 @@ export class Manager {
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
   private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+    if (this.remoteAuthority) {
+      // A hosted composition owns grant revocation and resumable footprint release. It calls this
+      // prerequisite before the terminal rail. The callback must preserve this UID and its pending
+      // state until the host decides terminal retirement, never map deprovisioning to suspension.
+      const target = parsePrincipalKey(a.id);
+      if (!target) throw new Error(`hosted retirement cannot derive the managed principal ${a.id}`);
+      await this.remoteAuthority.prepareAgentRetirement({
+        target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
+        opId: retireOpId(a.lifecycleUid),
+      });
+      await this.requestRetirement(a);
+      return;
+    }
     if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
     if (!this.userMode && !a.userOwner) {
       // Unit B: a STATIC lifecycle retires through the F1 terminal barrier — freeze → head
@@ -3097,7 +3123,7 @@ export class Manager {
 
   /** The rail round-trip for one retirement (wrapped by {@link requestRetirement}'s single-flight). */
   private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
-    if (!this.auth) return; // guaranteed by requestRetirement; re-checked for the type narrowing below
+    if (!this.auth && !this.remoteAuthority) return;
     const held = this.retiring.get(a.name);
     const target = parsePrincipalKey(a.id);
     if (!target) {
@@ -3137,10 +3163,18 @@ export class Manager {
       // mismatch in the owner half the moment a manager ran under a user-shaped identity. This is
       // also the more honest attribution: the authority being exercised is "I am the registered
       // serving instance", which is exactly what the gate records.
-      const caller = { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
-      const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
-        retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
-      });
+      const caller = this.remoteAuthority
+        ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
+        : { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
+      const requestIdentity = newIdentity();
+      const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
+      const opId = retireOpId(a.lifecycleUid);
+      const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
+      const creds = this.remoteAuthority
+        ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
+        : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
+            retirementRequester: { ...caller, target: retirementTarget },
+          });
       const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
       try {
         // §13.2 nonce: >=128 bits of CSPRNG entropy, base64url (the `endpoint-invoke` idiom).
@@ -3168,8 +3202,8 @@ export class Manager {
           // caller's own subject-derived principal. A superseded predecessor (same instanceId, OLD
           // epoch after a restart) is still refused by the epoch comparison.
           JSON.stringify({ id: requestId, op: "retireLifecycle", args: {
-            opId: retireOpId(a.lifecycleUid),
-            serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch: this.serviceServe?.grant.epoch ?? 0,
+            opId,
+            serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch,
           } }),
           20_000,
         );

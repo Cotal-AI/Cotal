@@ -9,7 +9,7 @@
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session";
+  operation: "prepare" | "activate" | "renew" | "session" | "retire";
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
@@ -21,6 +21,14 @@ export interface RemoteManagerAuthorityRequest {
   registrationProof?: string;
   /** Session only: one fresh caller-generated serving nkey and the exact session coordinates. */
   session?: { id: string; endpoint: string; sessionId: string; epoch: number; exp: number };
+  /** Retire only: one fresh requester nkey plus the exact terminal operation. The opId is stable
+   * across retries but is never bearer authority; the target is what the returned grant confines. */
+  retirement?: {
+    id: string;
+    target: { owner: string; actor: string; lifecycleUid: string };
+    opId: string;
+    serveEpoch: number;
+  };
   /** Activate only: the manager's canonical contract artifacts, already content-addressed by the
    * client. The host publishes exactly these after re-hashing and derives the registered surface;
    * arbitrary extra contracts are refused by closed artifact count/digest checks. */
@@ -62,6 +70,7 @@ export interface RemoteManagerAuthorityMaterial {
   lifecycleUid: string;
   requestId: string;
   registrationProof?: string;
+  retirement?: RemoteManagerAuthorityRequest["retirement"];
   issuedAt: number;
   expiresAt: number;
   actors: RemoteManagerActors;
@@ -77,6 +86,7 @@ export interface RemoteManagerAuthorityMaterial {
     goalWriter: RemoteManagerCredential;
     sessionLedger: RemoteManagerCredential;
     sessionServing: RemoteManagerCredential;
+    retirementRequester: RemoteManagerCredential;
   }>;
 }
 
