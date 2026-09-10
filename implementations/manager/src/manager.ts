@@ -7481,6 +7481,14 @@ export class Manager {
    *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
   private list(ownerFilter?: string) {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
+    // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
+    // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
+    // support "offline" or "absent" for anyone: netcup 2026-09-09 rendered every live seat as
+    // one of those for hours after the presence stream was recreated under a still-open watch.
+    // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
+    // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as
+    // `current`: that is exactly what every row meant before the field existed.
+    const view = typeof this.ep.presenceView === "function" ? this.ep.presenceView() : { state: "current" as const };
     return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
       // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
       // bearer command writes each attempt's outcome to the health file, and `ps` renders it
@@ -7502,6 +7510,9 @@ export class Manager {
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
         mesh: roster.get(a.name)?.status ?? "absent",
+        // `current` is the only state in which `mesh` is a verdict; the other two are the
+        // observer's own condition and travel on the row (older CLIs ignore the field).
+        meshView: view.state,
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,
