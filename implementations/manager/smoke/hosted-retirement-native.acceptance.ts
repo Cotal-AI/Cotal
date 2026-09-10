@@ -957,7 +957,8 @@ try {
       : { message: String(error).slice(0, 512) };
   }
   check("revoked retained authority is refused through registry-pinned HTTPS",
-    revokedOutcome === "threw" && /no longer granted|not granted|missing/.test(revokedError.message ?? ""),
+    revokeResult === true && rowAfterRevoke === undefined && revokedOutcome === "threw" &&
+      /manager retained-agent validation was refused: agent exchange refused: unknown agent or wrong secret/.test(revokedError.message ?? ""),
     {
       outcome: revokedOutcome,
       errorName: revokedError.name,
