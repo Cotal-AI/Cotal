@@ -15,22 +15,22 @@
     {
       "name": "a suite mutating its own directly executed source is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return;",
-      "replace": "  if (invokesFile(suiteSource, m.file)) return;",
+      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
+      "replace": "  if (invokesFile(suiteSource, m.file)) return true;",
       "expectRed": "a suite is gradable when it directly executes the file being mutated"
     },
     {
       "name": "a suite launching the exact mutated repo script is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return;",
-      "replace": "  if (m.file === suite) return;",
+      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
+      "replace": "  if (m.file === suite) return true;",
       "expectRed": "a suite is gradable when it launches the exact mutated script path"
     },
     {
       "name": "any quoted mutation path is treated as a direct execution witness",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return;",
-      "replace": "  if (m.file === suite || referencesRoot(suiteSource, m.file)) return;",
+      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
+      "replace": "  if (m.file === suite || referencesRoot(suiteSource, m.file)) return true;",
       "expectRed": "a quoted script path without an invocation is refused"
     }
   ]
