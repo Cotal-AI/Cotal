@@ -131,6 +131,7 @@ import {
   grantActor,
   loadAuthServiceInfo,
   loadCalloutAuth,
+  parseRemoteManagerAuthorityRequest,
 } from "@cotal-ai/auth";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
@@ -250,6 +251,8 @@ const authDiagnosticCap = 32 * 1024;
 const closedChildren = new WeakSet<ChildProcess>();
 let authService: ChildProcess | undefined;
 let delivery: ChildProcess | undefined;
+let deliveryDiagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+let deliverySpawnError: Error | undefined;
 let authServiceDiagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 let authServiceSpawnError: Error | undefined;
 let broker: ChildProcess | undefined;
@@ -274,6 +277,26 @@ function appendAuthDiagnostic(chunk: Buffer | string): void {
   // partial prefix keeps both the byte cap and the rendered diagnostic honest.
   while (start < combined.length && (combined[start]! & 0xc0) === 0x80) start++;
   authServiceDiagnostics = combined.subarray(start);
+}
+
+function appendDeliveryDiagnostic(chunk: Buffer | string): void {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const combined = deliveryDiagnostics.length === 0 ? bytes : Buffer.concat([deliveryDiagnostics, bytes]);
+  let start = Math.max(0, combined.length - authDiagnosticCap);
+  while (start < combined.length && (combined[start]! & 0xc0) === 0x80) start++;
+  deliveryDiagnostics = combined.subarray(start);
+}
+
+function deliveryFailure(child: ChildProcess, reason: string): Error {
+  const state = deliverySpawnError
+    ? `spawn error: ${deliverySpawnError.message}`
+    : child.exitCode !== null ? `exit ${child.exitCode}`
+      : child.signalCode !== null ? `signal ${child.signalCode}`
+        : child.pid === undefined ? "no pid" : `pid ${child.pid} still running`;
+  const diagnostics = deliveryDiagnostics.toString("utf8").trim()
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted credential block]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]");
+  return new Error(`${reason}; child ${state}${diagnostics === "" ? "" : `\ndelivery output (last ${authDiagnosticCap} bytes, credential-shaped values redacted):\n${diagnostics}`}`);
 }
 
 function authServiceFailure(child: ChildProcess, reason: string): Error {
@@ -434,17 +457,27 @@ try {
   await hostStore.put(membershipRwCredsKey(space, hosted), await mintCreds(auth, newIdentity(), "membership-rw"));
   await hostStore.put(membershipObserverCredsKey(space, hosted), await mintMembershipObserverCreds(auth, newIdentity()));
   await hostStore.put(connectionEvictorCredsKey(space, hosted), await mintConnectionEvictorCreds(auth, newIdentity()));
+  deliveryDiagnostics = Buffer.alloc(0);
+  deliverySpawnError = undefined;
   delivery = trackChild(spawn(process.execPath, [...process.execArgv, self, "delivery"], {
     cwd: hostRoot,
     env: { ...process.env, COTAL_NATIVE_HOST_ROOT: hostRoot, COTAL_SPACE: space, COTAL_SERVERS: server },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   }));
+  delivery.stdout?.on("data", appendDeliveryDiagnostic);
+  delivery.stderr?.on("data", appendDeliveryDiagnostic);
+  delivery.once("error", (error) => {
+    deliverySpawnError = error;
+    appendDeliveryDiagnostic(`[spawn error] ${error.message}\n`);
+  });
   const deliveryProbe = newIdentity();
   const deliveryReady = await waitForDeliveryLease({
     servers: server, space, creds: await mintCreds(auth, deliveryProbe, "delivery"),
     id: deliveryProbe.id, holder: undefined, timeoutMs: 30_000,
   });
-  check("real delivery daemon is ready before auth retirement", deliveryReady && delivery.exitCode === null);
+  if (!deliveryReady || delivery.exitCode !== null || delivery.signalCode !== null)
+    throw deliveryFailure(delivery, "real delivery daemon did not become ready before auth retirement");
+  check("real delivery daemon is ready before auth retirement", true);
 
   authService = spawnAuthService();
   const service = await awaitAuthService(authService);
@@ -538,9 +571,17 @@ try {
     identities: prepareRequest.identities,
     artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
   }));
+  const activateRequest = {
+    ...remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof),
+    contractArtifacts,
+  };
+  const parsedActivate = parseRemoteManagerAuthorityRequest(activateRequest);
+  check("activate request carries the complete canonical manager artifact set",
+    parsedActivate.contractArtifacts?.length === contractArtifacts.length && contractArtifacts.length > 0,
+    { expected: contractArtifacts.length, parsed: parsedActivate.contractArtifacts?.length });
   const activate = await cotalAuthProvider.managerServiceAuthority!({
     store: hostStore, dir: managerAuthDir,
-    request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
+    request: activateRequest,
   });
 
   const releaseDir = join(participantRoot, ".cotal", "native-retirement");
