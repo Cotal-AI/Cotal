@@ -1,6 +1,6 @@
 /** Closed remote manager-service authority policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { managedRetirementOpId, newIdentity, mintLifecycleUid, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
+import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
@@ -118,6 +118,23 @@ await cell("retirement-requester grants only its server-derived caller and exact
   assert.equal(rows.some((row) => row.includes(retirementTarget.lifecycleUid)), true);
   assert.equal(rows.some((row) => row === ">" || row.includes("$KV") || row.includes("STREAM.")), false);
   assert.equal(rows.some((row) => row.includes("another-worker")), false);
+});
+await cell("the closed public mint issues only the typed retirement-requester profile", async () => {
+  const actors = remoteManagerActors(instanceId);
+  const issued = await mintPublicUserJwt(await createSpaceAuth("demo"), retirement.id, "retirement-requester", {
+    principal: { owner: retirementTarget.owner, actor: actors.serve },
+    lifecycleUid,
+    retirementRequester: {
+      owner: retirementTarget.owner, actor: actors.serve, uid: lifecycleUid, target: retirementTarget,
+    },
+  });
+  const payload = JSON.parse(Buffer.from(issued.jwt.split(".")[1]!, "base64url").toString("utf8")) as {
+    nats: { pub: { allow: string[] }; sub: { allow: string[] } };
+  };
+  const rows = [...payload.nats.pub.allow, ...payload.nats.sub.allow];
+  assert.equal(rows.some((row) => row.includes(retirementTarget.lifecycleUid)), true);
+  assert.equal(rows.some((row) => row === ">" || row.includes("$KV") || row.includes("STREAM.")), false);
+  assert.equal(issued.exp > Math.floor(Date.now() / 1000), true);
 });
 const serveActor = remoteManagerActors(instanceId).serve;
 const currentGate = { state: "open" as const, principal: `${retirementTarget.owner}.${serveActor}`, processEpoch: retirement.serveEpoch };

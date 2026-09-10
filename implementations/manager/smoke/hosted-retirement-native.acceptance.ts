@@ -69,11 +69,19 @@ if (subcommand === "auth-service" || subcommand === "agent-bearer") {
   process.exit(0);
 }
 if (subcommand === "tls-probe") {
-  const response = await fetch(process.env.COTAL_NATIVE_TLS_PROBE_URL!, {
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!response.ok) throw new Error(`TLS probe returned HTTP ${response.status}`);
-  process.exit(0);
+  try {
+    const response = await fetch(process.env.COTAL_NATIVE_TLS_PROBE_URL!, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`TLS probe returned HTTP ${response.status}`);
+    process.exit(0);
+  } catch (error) {
+    const cause = error instanceof Error && error.cause instanceof Error
+      ? error.cause as Error & { code?: string }
+      : undefined;
+    process.stderr.write(`TLS_CAUSE_CODE=${cause?.code ?? "unknown"}\n`);
+    process.exit(1);
+  }
 }
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -607,7 +615,8 @@ try {
   if (!proxyAddress || typeof proxyAddress === "string") throw new Error("HTTPS exchange proxy did not bind");
   const secureExchangeUrl = `https://127.0.0.1:${proxyAddress.port}`;
   const untrustedProbe = await probeHttpsFromFreshNode(`${secureExchangeUrl}/health`);
-  check("the owned HTTPS exchange rejects a fresh child without its CA", untrustedProbe.code !== 0, untrustedProbe);
+  check("the owned HTTPS exchange rejects a fresh child on certificate verification without its CA",
+    untrustedProbe.code !== 0 && /TLS_CAUSE_CODE=(SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE)/.test(untrustedProbe.diagnostic), untrustedProbe);
   const trustedProbe = await probeHttpsFromFreshNode(`${secureExchangeUrl}/health`, childCaFile);
   check("the owned CA lets a fresh child verify the HTTPS exchange certificate", trustedProbe.code === 0, trustedProbe);
 
@@ -827,9 +836,10 @@ try {
   failRelease.add("blocked");
   const beforeBlockedMints = retirementMints;
   const blockedStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
-    target: { mode: "any", owner, actor: "blocked", lifecycleUid: blockedUid },
+    target: { mode: "owner", owner, actor: "blocked", lifecycleUid: blockedUid },
   });
   check("public targeted despawn accepts the blocked lifecycle", blockedStop.reply.ok, blockedStop.reply);
+  if (!blockedStop.reply.ok) throw new Error("blocked lifecycle despawn was refused before release-failure coverage armed");
   await wait(300);
   check("release failure prevents terminal requester issuance", retirementMints === beforeBlockedMints, retirementMints);
   const blockedRetry = await manager.resumePreserved(inventoryOf(blockedEntry));
@@ -844,9 +854,10 @@ try {
   if (!retiredResume.ok) throw new Error("terminal lifecycle adoption failed before release-success coverage armed");
   const beforeRetiredMints = retirementMints;
   const retiredStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
-    target: { mode: "any", owner, actor: "retired", lifecycleUid: retiredUid },
+    target: { mode: "owner", owner, actor: "retired", lifecycleUid: retiredUid },
   });
   check("public targeted despawn accepts the terminal lifecycle", retiredStop.reply.ok, retiredStop.reply);
+  if (!retiredStop.reply.ok) throw new Error("terminal lifecycle despawn was refused before release-success coverage armed");
   observerNc = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
   const lifecycle = await openLifecycleRegistry(observerNc, space);
   let retiredHead: Awaited<ReturnType<typeof readLifecycleHeadForOperation>>;
