@@ -126,6 +126,8 @@ import {
   workspaceSecretStore,
 } from "@cotal-ai/workspace";
 import {
+  authCalloutKey,
+  authIssuerKey,
   cotalAuthProvider,
   establishIdpSession,
   grantActor,
@@ -247,6 +249,7 @@ const hostDir = userAuthStateDir(hostRoot, space);
 const participantDir = userAuthStateDir(participantRoot, space);
 const managerAuthDir = hostDir;
 const hostStore = workspaceSecretStore(hostRoot);
+const participantStore = workspaceSecretStore(participantRoot);
 const authDiagnosticCap = 32 * 1024;
 const closedChildren = new WeakSet<ChildProcess>();
 let authService: ChildProcess | undefined;
@@ -551,9 +554,14 @@ try {
   await endpoint.start();
   check("existing provider bearer connects from the registry-only participant", endpoint.principal.owner === owner && endpoint.principal.actor === "cli", endpoint.principal);
 
-  // The Manager itself receives only participant-owned nkey seeds and host-issued scoped JWTs.
-  // The co-located fixture keeps provider validation records and the signer in the host-owned store.
-  // No signer value enters remoteAuthority or child launch data.
+  // The participant Manager needs two provider continuity records to validate retained actor material:
+  // the public bearer issuer record and the callout/sentinel record. Copy only those provider-owned
+  // records into its signerless store. The broker/account signer stays exclusively in hostStore.
+  for (const key of [authCalloutKey(space), authIssuerKey(space)]) {
+    const value = await hostStore.get(key);
+    if (!value) throw new Error(`host continuity record ${key} is missing`);
+    await participantStore.put(key, value);
+  }
 
   console.log("\ncell 2/7: sealed remote-manager authority registration");
   const state = loadOrCreateRemoteManagerIdentity(participantRoot, space);
@@ -633,12 +641,12 @@ try {
   };
 
   manager = new Manager({
-    space, servers: server, runtime: "native-acceptance", workspaceRoot: hostRoot,
-    secretStore: hostStore, remoteAuthority,
+    space, servers: server, runtime: "native-acceptance", workspaceRoot: participantRoot,
+    secretStore: participantStore, remoteAuthority,
   });
   await manager.start();
 
-  const personaDir = join(hostRoot, ".cotal", "agents");
+  const personaDir = join(participantRoot, ".cotal", "agents");
   mkdirSync(personaDir, { recursive: true });
   const personaPath = join(personaDir, "native-retained.md");
   writeFileSync(personaPath, "---\nname: native-retained\nagent: native-acceptance\n---\nnative acceptance child\n");
@@ -657,11 +665,11 @@ try {
     await provisioner.start();
     try { await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: [] }); }
     finally { await provisioner.stop(); }
-    const files = agentLifecycleSecretFilePaths(hostRoot, space, actor, lifecycleUid);
-    await hostStore.put(agentSecretKeyForFile(files.actorToken, space), grant.actorToken);
-    await hostStore.put(agentSecretKeyForFile(files.sentinelCreds, space), grant.sentinelCreds);
-    await materializeSecretToFile(hostStore, agentSecretKeyForFile(files.actorToken, space), files.actorToken);
-    await materializeSecretToFile(hostStore, agentSecretKeyForFile(files.sentinelCreds, space), files.sentinelCreds);
+    const files = agentLifecycleSecretFilePaths(participantRoot, space, actor, lifecycleUid);
+    await participantStore.put(agentSecretKeyForFile(files.actorToken, space), grant.actorToken);
+    await participantStore.put(agentSecretKeyForFile(files.sentinelCreds, space), grant.sentinelCreds);
+    await materializeSecretToFile(participantStore, agentSecretKeyForFile(files.actorToken, space), files.actorToken);
+    await materializeSecretToFile(participantStore, agentSecretKeyForFile(files.sentinelCreds, space), files.sentinelCreds);
     return {
       space, name: actor, identity: {
         mode: "user", owner, actor, lifecycleUid,
@@ -669,7 +677,7 @@ try {
         sentinelCredential: { kind: "file", path: files.sentinelCreds, sha256: digest(files.sentinelCreds) },
         health: { kind: "file", path: files.health },
       },
-      launch: { connector: "native-acceptance", runtime: "native-acceptance", cwd: hostRoot,
+      launch: { connector: "native-acceptance", runtime: "native-acceptance", cwd: participantRoot,
         source: { kind: "persona", ref: "native-retained", configPath: personaPath, configSha256: digest(personaPath) },
         allowSubscribe: [], allowPublish: [], capabilities: [], events: false },
       dependencies: [personaPath], spawner: `${owner}.cli`, authorityParent: `${owner}.cli`, startedAt: new Date().toISOString(),
