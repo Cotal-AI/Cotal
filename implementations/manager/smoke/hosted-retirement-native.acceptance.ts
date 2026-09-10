@@ -901,13 +901,13 @@ try {
   if (!blockedHandle) throw new Error("blocked lifecycle child handle disappeared before exit proof");
   await awaitOwnedExit("blocked", blockedHandle);
   check("the failed-release retry observes the old blocked process exited first", blockedHandle.status() === "exited",
-    livenessDiagnostic("blocked", blockedHandle));
+    JSON.stringify(livenessDiagnostic("blocked", blockedHandle)));
   check("release failure prevents terminal requester issuance", retirementMints === beforeBlockedMints, retirementMints);
   const blockedRetry = await manager.resumePreserved(inventoryOf(blockedEntry));
-  check("release failure keeps the alias held", !blockedRetry.ok && /retir/.test(blockedRetry.error ?? ""), {
+  check("release failure keeps the alias held", !blockedRetry.ok && /retir/.test(blockedRetry.error ?? ""), JSON.stringify({
     error: blockedRetry.error,
     liveness: livenessDiagnostic("blocked", blockedHandle),
-  });
+  }));
 
   console.log("\ncell 6/7: durable prepare, HTTP requester issuance, and terminal rail");
   const retiredUid = mintLifecycleUid();
@@ -940,16 +940,16 @@ try {
   check("real auth barrier retires the exact lifecycle", retiredHead?.mapping.state === "retired" && retiredHead.mapping.lifecycleUid === retiredUid, retiredHead?.mapping);
   await awaitOwnedExit("retired", retiredHandle);
   check("the fresh-lifecycle probe observes the retired process exited first", retiredHandle.status() === "exited",
-    livenessDiagnostic("retired", retiredHandle));
+    JSON.stringify(livenessDiagnostic("retired", retiredHandle)));
   const replacementUid = mintLifecycleUid();
   const replacementEntry = await provisionRetained("retired", replacementUid);
   const aliasProbe = await manager.resumePreserved(inventoryOf(replacementEntry));
-  check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, {
+  check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, JSON.stringify({
     reply: aliasProbe,
     predecessorUid: retiredUid,
     replacementUid,
     liveness: livenessDiagnostic("retired", retiredHandle),
-  });
+  }));
 
   console.log("\nremaining native cells 3-7: OUT OF SCOPE for this incremental two-cell gate");
 
