@@ -4942,8 +4942,13 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw e;
     }
-    // A late SUCCESS is the same hazard mirrored: clearing here would erase a refusal the current
-    // epoch established from its own evidence.
+    // A late SUCCESS is the same hazard mirrored, and this fence answers only the cross-epoch half
+    // of it: a success belonging to a retired epoch cannot erase a refusal the current one
+    // established from its own evidence. It does NOT order puts within a single epoch, because it
+    // compares epoch identity rather than which put is the latest evidence, so an earlier put that
+    // succeeds late still clears a later put's refusal. Heartbeats run at 2s against a ~5s put
+    // timeout, so that overlap is routine rather than a corner, and the next failing put re-plants
+    // the record with a fresh `since`. Tracked in #1461, not repaired here.
     if (epoch !== this.presenceEpoch || this.stopped) return;
     this.clearPresenceWriteFailure();
   }
