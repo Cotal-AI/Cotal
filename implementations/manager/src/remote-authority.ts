@@ -9,6 +9,9 @@ import {
   type Identity,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
+  type RemoteRetainedAgentValidationRequest,
+  type RemoteRetainedAgentValidationResult,
+  type RetainedAgentAuthority,
 } from "@cotal-ai/core";
 
 interface RemoteManagerIdentityState {
@@ -109,6 +112,80 @@ export function remoteManagerAuthorityRequest(
       sessionLedger: { id: state.identities.sessionLedger.id },
     },
   };
+}
+
+export function remoteRetainedAgentValidationRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  target: { owner: string; actor: string; lifecycleUid: string },
+  actorToken: string,
+  sentinelCreds: string,
+): RemoteRetainedAgentValidationRequest {
+  return {
+    v: 1,
+    kind: "manager-retained-agent-validation",
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `validate${mintLifecycleUid()}`,
+    registrationProof,
+    serveEpoch,
+    identities: {
+      supervisor: { id: state.identities.supervisor.id },
+      executor: { id: state.identities.executor.id },
+      serve: { id: state.identities.serve.id },
+      goalWriter: { id: state.identities.goalWriter.id },
+      sessionLedger: { id: state.identities.sessionLedger.id },
+    },
+    target,
+    actorToken,
+    sentinelCreds,
+  };
+}
+
+/** Activation returns the only proof valid for later retained validation. The caller-computable
+ * activation proof is deliberately not accepted as a fallback. */
+export function currentRegistrationProof(material: RemoteManagerAuthorityMaterial): string {
+  const proof = material.nextRegistrationProof;
+  if (typeof proof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(proof))
+    throw new Error("manager-service activation returned no host-authenticated current registration proof");
+  if (proof === material.registrationProof)
+    throw new Error("manager-service activation substituted the caller-computable activation proof for the host-authenticated current registration proof");
+  return proof;
+}
+
+/** Bind a host result back to every request coordinate before Manager consumes its authority row. */
+export function retainedAgentAuthority(
+  result: RemoteRetainedAgentValidationResult,
+  request: RemoteRetainedAgentValidationRequest,
+): RetainedAgentAuthority {
+  if (result === null || typeof result !== "object" || Array.isArray(result) ||
+      Object.keys(result).sort().join(",") !== [
+        "actor", "authority", "instanceId", "kind", "managerLifecycleUid", "owner",
+        "registrationProof", "requestId", "serveEpoch", "space", "target", "v",
+      ].sort().join(","))
+    throw new Error("manager retained-agent validation returned a non-closed result");
+  if (result.v !== 1 || result.kind !== "manager-retained-agent-validation" ||
+      result.space !== request.space || result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch ||
+      JSON.stringify(result.target) !== JSON.stringify(request.target) || result.owner !== request.target.owner)
+    throw new Error("manager retained-agent validation returned different lifecycle or target coordinates");
+  const authority = result.authority;
+  if (!authority || typeof authority !== "object" || Array.isArray(authority) ||
+      Object.keys(authority).some((key) => !["owner", "actor", "lifecycleUid", "scope", "allowSubscribe", "allowPublish", "role", "parent"].includes(key)) ||
+      authority.owner !== request.target.owner || authority.actor !== request.target.actor ||
+      authority.lifecycleUid !== request.target.lifecycleUid || !Array.isArray(authority.scope) ||
+      !authority.scope.every((value) => typeof value === "string") ||
+      !Array.isArray(authority.allowSubscribe) || !authority.allowSubscribe.every((value) => typeof value === "string") ||
+      !Array.isArray(authority.allowPublish) || !authority.allowPublish.every((value) => typeof value === "string") ||
+      (authority.role !== undefined && typeof authority.role !== "string") ||
+      (authority.parent !== undefined && typeof authority.parent !== "string"))
+    throw new Error("manager retained-agent validation returned an invalid or replacement authority");
+  return authority;
 }
 
 /** Combine a host-signed JWT with the participant's private seed, after exact identity checks. */

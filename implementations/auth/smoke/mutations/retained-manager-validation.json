@@ -1,0 +1,60 @@
+{
+  "suite": [
+    "implementations/auth/smoke/retained-manager-validation.smoke.ts",
+    "implementations/manager/smoke/remote-retained-authority.smoke.ts"
+  ],
+  "guard": "Remote retained-agent validation requires the current host registration proof and returns a closed non-secret result that the manager binds to its exact request and inventory target",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts && pnpm exec tsx implementations/manager/smoke/remote-retained-authority.smoke.ts",
+  "completionMarker": "remote retained authority smoke passed: 14/14",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/retained-manager-validation.json",
+  "why": [
+    "The host proof mutation removes the broker-observed registration revision from the host-issued digest. The host suite changes only that revision and requires the proof to fail, so a client-computable lifecycle-only proof cannot pass as current registration.",
+    "The result mutation reintroduces secret reflection. The host suite serializes the production result and names the exact assertion that both retained secrets stay absent.",
+    "The participant mutation removes the closed result parser. The manager suite supplies an unknown field and names the refusal, proving an HTTP response cannot grow a second authority channel beside RetainedAgentAuthority.",
+    "The activation-receipt mutation substitutes the caller-computable proof for the host receipt. The manager suite names that substitution and refuses it without fallback.",
+    "The remote-origin mutation restores the optional managerAuthorityUrl redirect. The client suite records an evil cross-origin value and requires the request to stay on the verified exchange origin."
+  ],
+  "mutations": [
+    {
+      "name": "the host-issued proof omits the current registration revision",
+      "file": "implementations/auth/src/retained-manager-validation.ts",
+      "find": "    registrationRevision: current.registrationRevision,",
+      "replace": "    registrationRevision: 0,",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FAIL: a superseded registration revision is refused",
+      "cell": "a superseded registration revision is refused"
+    },
+    {
+      "name": "the host result reflects the retained actor token",
+      "file": "implementations/auth/src/retained-manager-validation.ts",
+      "find": "    authority,\n  };",
+      "replace": "    authority,\n    actorToken: r.actorToken,\n  } as RemoteRetainedAgentValidationResult;",
+      "expectRed": "FAIL: valid host validation returns only bound coordinates and non-secret authority",
+      "cell": "valid host validation returns only bound coordinates and non-secret authority"
+    },
+    {
+      "name": "the manager accepts unknown top-level result fields",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "  if (result === null || typeof result !== \"object\" || Array.isArray(result) ||\n      Object.keys(result).sort().join(\",\") !== [\n        \"actor\", \"authority\", \"instanceId\", \"kind\", \"managerLifecycleUid\", \"owner\",\n        \"registrationProof\", \"requestId\", \"serveEpoch\", \"space\", \"target\", \"v\",\n      ].sort().join(\",\"))\n    throw new Error(\"manager retained-agent validation returned a non-closed result\");\n",
+      "replace": "",
+      "expectRed": "FAIL: unknown result fields are refused",
+      "cell": "unknown result fields are refused"
+    },
+    {
+      "name": "the manager accepts the caller activation proof as the host registration receipt",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "  if (proof === material.registrationProof)\n    throw new Error(\"manager-service activation substituted the caller-computable activation proof for the host-authenticated current registration proof\");\n",
+      "replace": "",
+      "expectRed": "FAIL: the caller-computable activation proof cannot substitute for the host proof",
+      "cell": "the caller-computable activation proof cannot substitute for the host proof"
+    },
+    {
+      "name": "the retained client trusts an optional cross-origin manager authority URL",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "        throw new Error(`space \"${request.space}\" has no pinned remote manager-authority endpoint - re-register it with `cotal meshes add ${request.space} --from <url>``);\n      idpUrl = ua.idp.url;\n      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
+      "replace": "        throw new Error(`space \"${request.space}\" has no pinned remote manager-authority endpoint - re-register it with `cotal meshes add ${request.space} --from <url>``);\n      idpUrl = ua.idp.url;\n      endpoint = ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
+      "expectRed": "FAIL: remote provider derives the fixed authority path and refuses insecure exchange pins before fetch",
+      "cell": "remote provider derives the fixed authority path and refuses insecure exchange pins before fetch"
+    }
+  ]
+}

@@ -10,8 +10,8 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
-  rawDigest,
   remoteManagerActors,
+  remoteManagerRegistrationProof,
   resolveAuthProvider,
   standaloneConnectOpts,
   DEFAULT_SERVER,
@@ -36,7 +36,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -181,6 +181,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       const provider = resolveAuthProvider();
       if (!provider.managerServiceAuthority)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
+      if (!provider.validateRemoteRetainedAgent)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement the typed remote retained-agent validation protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
       const material = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
@@ -206,21 +208,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         artifacts.document,
         artifacts.manifest,
       ];
-      const registrationProof = rawDigest(JSON.stringify({
-        v: 1,
-        space,
-        owner: material.owner,
-        instanceId: state.instanceId,
-        lifecycleUid: state.lifecycleUid,
-        actors,
-        identities: request.identities,
-        artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
-      }));
+      const registrationProof = remoteManagerRegistrationProof(material.owner,
+        remoteManagerAuthorityRequest(state, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts));
       const activate = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
         dir: join(findCotalRoot(), ".cotal", "auth", space),
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
+      const retainedRegistrationProof = currentRegistrationProof(activate);
       remoteAuthority = {
         owner: material.owner,
         actors,
@@ -237,10 +232,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const sessionMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "session", rawDigest(JSON.stringify({
-              v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
-              actors, identities: request.identities, artifactDigests: [],
-            })), undefined, {
+            request: remoteManagerAuthorityRequest(state, "cli", "session", remoteManagerRegistrationProof(material.owner,
+              remoteManagerAuthorityRequest(state, "cli", "session", `sha256:${"0".repeat(64)}`)), undefined, {
               id: session.identity.id,
               endpoint: session.endpoint,
               sessionId: session.sessionId,
@@ -254,10 +247,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const retirementMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "retire", rawDigest(JSON.stringify({
-              v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
-              actors, identities: request.identities, artifactDigests: [],
-            })), undefined, undefined, {
+            request: remoteManagerAuthorityRequest(state, "cli", "retire", remoteManagerRegistrationProof(material.owner,
+              remoteManagerAuthorityRequest(state, "cli", "retire", `sha256:${"0".repeat(64)}`, undefined, undefined, {
+                id: identity.id,
+                target: retirementTarget,
+                opId,
+                serveEpoch,
+              })), undefined, undefined, {
               id: identity.id,
               target: retirementTarget,
               opId,
@@ -276,10 +272,22 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           // than letting consumer deprovision masquerade as terminal retirement.
           throw new Error("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition");
         },
-        validateRetainedAgent: async () => {
-          // The stock remote participant has no host continuity RPC yet. A hosted composition supplies
-          // this beside its release callback; never copy issuer/callout private records client-side.
-          throw new Error("remote participant supervision cannot resume a hosted managed agent without a host retained-authority validation composition");
+        validateRetainedAgent: async ({ owner: targetOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
+          const request = remoteRetainedAgentValidationRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            { owner: targetOwner, actor, lifecycleUid },
+            actorToken,
+            sentinelCreds,
+          );
+          const result = await provider.validateRemoteRetainedAgent!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          return retainedAgentAuthority(result, request);
         },
       };
     } catch (e) {
