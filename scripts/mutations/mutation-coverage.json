@@ -1,5 +1,6 @@
 {
   "grades": "tool",
+  "suite": ["scripts/mutation-coverage.selftest.mjs"],
   "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
   "command": "node scripts/mutation-coverage.selftest.mjs",
   "progressPattern": "^  ✓ ",
@@ -20,8 +21,8 @@
     {
       "name": "declared subprocess entrypoints are ignored",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (executedWitness(cfg.suite, source, cfg.command, mutation, cfg.executes ?? [])) return;",
-      "replace": "  void executedWitness(cfg.suite, source, cfg.command, mutation, cfg.executes ?? []);",
+      "find": "    if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;",
+      "replace": "    void executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? []);",
       "expectRed": "a spawned repo entrypoint plus target-package build is gradable",
       "cell": "a spawned repo entrypoint plus target-package build is gradable"
     },
