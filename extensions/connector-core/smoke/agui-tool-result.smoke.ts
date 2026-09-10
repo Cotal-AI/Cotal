@@ -43,7 +43,8 @@ import {
   AguiEmitterHalted,
   aguiFrame,
   applyAguiEgressPolicy,
-  frozenBodyViolatesEgressPolicy,
+  frozenBodyEgressVerdict,
+  type FrozenBodyEgressVerdict,
   isAguiFramePart,
   parseAguiFrame,
   runStarted,
@@ -226,7 +227,7 @@ try {
     );
     c(
       "chokepoint:CONTROL-a-frame-with-only-lifecycle-does-not-violate",
-      frozenBodyViolatesEgressPolicy([
+      frozenBodyEgressVerdict([
         aguiFrame({
           threadId: THREAD,
           runId: "run-eq-2",
@@ -234,7 +235,7 @@ try {
           seq: 1,
           events: [runStarted({ threadId: THREAD, runId: "run-eq-2", timestamp: 1 })],
         }),
-      ]) === false,
+      ]) === "clean",
     );
   }
 
@@ -468,6 +469,68 @@ try {
     );
   }
 
+  // ── RECOVERY: a frozen body whose EVENT LIST CANNOT BE READ ──────────────────────────────────
+  //
+  // The shape a reviewer used to defeat the earlier fail-open fence, reproduced here as a
+  // regression guard at the coordinate where it actually leaked. `events` IS the tool bytes, so a
+  // scan of `.events[].type` looks in exactly the right place and finds no array. It survives a
+  // JSON round-trip, `EventWal` admits any non-empty `pending.body`, and the old fence published it
+  // verbatim onto a channel with a different read ACL. Renderers declining to fold it is not the
+  // boundary; the wire is.
+  //
+  // NOT built with `aguiFrame()`, deliberately: that constructor enforces a non-empty events ARRAY
+  // at runtime and would refuse this. A body like it can only be frozen by something other than
+  // this version's writer, which is the upgrade-across-a-pending-frame case the halt names.
+  {
+    const { wal, walPath, source } = await fresh("recover-unreadable");
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
+    const unreadable = {
+      kind: "ag-ui.frame",
+      protocol: "ag-ui/0.0.57",
+      threadId: THREAD,
+      runId: "run-unreadable",
+      epoch: wal.epoch,
+      seq: 1,
+      events: `TOOL_CALL_RESULT: ${RECOVER_RESULT}`,
+    };
+    await wal.beginSend({
+      id: "frozen-unreadable-695",
+      E: 0,
+      seq: 1,
+      sourceCursor: "1:2:0:0000000000000000",
+      body: [JSON.parse(JSON.stringify(unreadable)) as Part],
+      brackets: { run: "run-unreadable", text: [], reasoning: [], tools: [] },
+    });
+    const wal2 = await EventWal.open(walPath, {
+      space: SPACE,
+      threadId: THREAD,
+      principal: PRINCIPAL_KEY,
+      subjectMayExist: true,
+    });
+    const ep = new FakeEndpoint();
+    const started = await attempt(() =>
+      AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: sf, source, map: () => null }),
+    );
+    const wire = publishedWire(ep);
+    const halted = started.err instanceof AguiEmitterHalted ? started.err : undefined;
+    c(
+      "recover:an UNREADABLE frozen event list HALTS by name rather than publishing opaque bytes",
+      halted?.reason === "egress-unreadable" && ep.publishes.length === 0,
+      { reason: halted?.reason, publishes: ep.publishes.length, err: started.err?.message },
+    );
+    c(
+      "recover:the tool bytes carried in that event list never reached the wire",
+      !wire.includes(RECOVER_RESULT),
+      { wire: wire.slice(0, 200) },
+    );
+    c(
+      "recover:CONTROL the halt is NOT the generic egress-policy one, so the diagnosis is specific",
+      halted?.reason !== "egress-policy",
+      halted?.reason,
+    );
+  }
+
   // ── NEGATIVE CONTROL: sibling text survives; a dropped shape stays dropped ───────────────────
   {
     const map: RecordMapper<{ kind: "mixed" | "drop"; text?: string; result?: string }> = (rec) => {
@@ -533,49 +596,106 @@ try {
     );
   }
 
-  // ── THE FENCE IS TOTAL ──────────────────────────────────────────────────────────────────────
+  // ── THE FENCE IS TOTAL, AND FAILS CLOSED ────────────────────────────────────────────────────
   //
-  // PLACED LAST ON PURPOSE. `frozenBodyViolatesEgressPolicy` is what T-RESULT and T-ARGS mutate, so
-  // a cell asserting on it directly reddens under those mutations too. Sited earlier in the file it
-  // would steal FIRST RED from the carrier cells those mutations are meant to grade, and the
-  // fixture's expectRed names a carrier. Last, the carrier cells red first and these still red.
+  // PLACED LAST ON PURPOSE. `frozenBodyEgressVerdict` is what T-ARGS and T-RESULT mutate, so a cell
+  // asserting on it directly reddens under those mutations too. Sited earlier it would steal FIRST
+  // RED from the carrier cells those mutations are meant to grade, and the fixture's expectRed names
+  // a carrier. Last, the carrier cells red first and these still red.
   //
-  // What they grade: the fence is the first statement of `attempt()`, which runs on the retry path
-  // over a body JSON-round-tripped out of a WAL that outlives the process which wrote it. Reading
-  // such a body through the strict `parseAguiFrame` threw a bare AguiVocabularyError out of a
-  // machine whose every other abnormal outcome is a named halt, which is what reddened four
-  // agui-emitter cells on main at ee73e33c1. `isAguiFramePart` routes with a boolean and never
-  // throws, on the stated ground that a function taking `unknown` and throwing on some of it is a
-  // trap for its caller; this fence takes `readonly unknown[]` and now means it too.
+  // WHY THREE ANSWERS AND NOT A BOOLEAN. A frozen body whose event list cannot be read has to go
+  // somewhere, and both boolean answers were wrong. Reading it through the strict parser threw a
+  // bare vocabulary error out of a machine whose every other abnormal outcome is a named halt.
+  // Skipping it PUBLISHED it, and the string case below is not hypothetical: those bytes reached a
+  // recorded publish through AguiEmitter.start over a real reopened WAL. The boundary is the wire,
+  // not what a renderer folds.
   {
-    const verdict = (body: readonly unknown[]): boolean | string => {
+    const verdict = (body: readonly unknown[]): FrozenBodyEgressVerdict | string => {
       try {
-        return frozenBodyViolatesEgressPolicy(body);
+        return frozenBodyEgressVerdict(body);
       } catch (e) {
         return `THREW: ${(e as Error).message}`;
       }
     };
-    const malformed = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57", events: [{ type: "TOOL_CALL_RESULT" }] };
+    const frame = (extra: Record<string, unknown>) => ({
+      kind: "ag-ui.frame",
+      protocol: "ag-ui/0.0.57",
+      ...extra,
+    });
+
+    const malformed = frame({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] });
     c(
-      "total:a frame too malformed to PARSE but carrying TOOL_CALL_RESULT is still refused",
-      verdict([malformed]) === true,
+      "total:a frame too malformed to PARSE but carrying TOOL_CALL_RESULT is forbidden-kind",
+      verdict([malformed]) === "forbidden-kind",
       verdict([malformed]),
     );
-    const noEventList = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" };
+
+    // The shape that made fail-open untenable. `events` IS the tool bytes, so the scan looks in
+    // exactly the place the bytes live and finds no array. It survives a JSON round-trip intact.
+    const eventsIsAString = frame({ events: `TOOL_CALL_RESULT: ${RECOVER_RESULT}` });
     c(
-      "total:a frame-shaped body with NO event list does not violate and does not throw",
-      verdict([noEventList]) === false,
+      "total:a frame whose events is a BARE STRING of tool bytes is unreadable, not published",
+      verdict([eventsIsAString]) === "unreadable",
+      verdict([eventsIsAString]),
+    );
+    c(
+      "total:...and it survives a JSON round-trip, so the WAL cannot launder it",
+      verdict([JSON.parse(JSON.stringify(eventsIsAString))]) === "unreadable",
+    );
+
+    const noEventList = frame({});
+    c(
+      "total:a frame-shaped body with NO event list is unreadable rather than clean",
+      verdict([noEventList]) === "unreadable",
       verdict([noEventList]),
     );
-    const olderProtocol = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.1", threadId: THREAD, runId: "r", epoch: "e", seq: 1, events: [{ type: "TOOL_CALL_RESULT" }] };
+
+    const olderProtocol = frame({
+      protocol: "ag-ui/0.0.1",
+      threadId: THREAD,
+      runId: "r",
+      epoch: "e",
+      seq: 1,
+      events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }],
+    });
     c(
       "total:a frame frozen under an OLDER protocol is read for kinds rather than thrown over",
-      verdict([olderProtocol]) === true,
+      verdict([olderProtocol]) === "forbidden-kind",
       verdict([olderProtocol]),
     );
+
+    // "No input makes it throw" has to survive an accessor, or it is not a promise. These cannot
+    // come off a WAL, since JSON has no getters, but the exported signature takes `readonly
+    // unknown[]` and a function that accepts unknown and throws on some of it traps its caller.
+    const eventsGetter = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57", get events(): unknown { throw new Error("events getter ran"); } };
+    c("total:an events GETTER that throws does not escape the fence", verdict([eventsGetter]) === "unreadable", verdict([eventsGetter]));
+    const typeGetter = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57", events: [{ get type(): unknown { throw new Error("type getter ran"); } }] };
+    c("total:an event TYPE getter that throws does not escape the fence", verdict([typeGetter]) === "unreadable", verdict([typeGetter]));
+
+    // An element the vocabulary does not define cannot be classified, only refused. The strict read
+    // this replaced rejected an unrecognised `type` outright; treating one as harmless publishes
+    // tool bytes hung under a nested `events`, or under a case-variant spelling, as clean. Both
+    // shapes survive a JSON round-trip.
+    const nested = frame({ events: [{ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] }] });
+    c(
+      "total:tool bytes under a NESTED events are unreadable rather than clean",
+      verdict([nested]) === "unreadable",
+      verdict([nested]),
+    );
+    const caseVariant = frame({ events: [{ type: "tool_call_result", content: RECOVER_RESULT }] });
+    c(
+      "total:a CASE-VARIANT event type is unreadable rather than clean",
+      verdict([caseVariant]) === "unreadable",
+      verdict([caseVariant]),
+    );
+
+    // Precedence: a body carrying both must report the more specific diagnosis, because the halts
+    // are graded on carrying the right one.
+    const both = [frame({}), frame({ events: [{ type: "TOOL_CALL_ARGS", delta: CLAUDE_ARGS }] })];
+    c("total:forbidden-kind wins over unreadable when a body carries both", verdict(both) === "forbidden-kind", verdict(both));
   }
 
-  const EXPECTED = 25;
+  const EXPECTED = 35;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });

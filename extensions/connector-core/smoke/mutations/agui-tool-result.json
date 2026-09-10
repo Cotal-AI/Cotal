@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-tool-result.smoke.ts"
   ],
-  "guard": "the events plane does not republish TOOL_CALL_ARGS or TOOL_CALL_RESULT, including on AguiEmitter.start recovery of a frozen pre-fix body; six carriers fail independently; sibling text still publishes",
+  "guard": "the events plane does not republish TOOL_CALL_ARGS or TOOL_CALL_RESULT, including on AguiEmitter.start recovery of a frozen pre-fix body, and a frozen body whose event list cannot be read is withheld rather than published opaque; six carriers fail independently; sibling text still publishes",
   "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:agui-tool-result",
   "completionMarker": "agui-tool-result smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-tool-result.json",
@@ -31,8 +31,8 @@
     {
       "name": "T-RETRY recover republishes a frozen TOOL_CALL_RESULT body because attempt() no longer refuses it",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "    if (frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
-      "replace": "    if (false && frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
+      "find": "    const egress = frozenBodyEgressVerdict(o.body);\n    if (egress === \"forbidden-kind\") {",
+      "replace": "    const egress = frozenBodyEgressVerdict(o.body);\n    if (false && egress === \"forbidden-kind\") {",
       "expectRed": "recover:AguiEmitter.start refuses a frozen TOOL_CALL_RESULT body rather than publishing it",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
