@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sameSecretStoreIdentity } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment } from "@cotal-ai/workspace";
-import { reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf } from "../src/delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf } from "../src/delivery.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -94,6 +94,21 @@ try {
   ok("wrong basename keeps dirname", fromWrongKind.root === dirname(resolve(wrongKind)));
   ok("correct space + delivery.creds still SAME", sameSecretStoreIdentity(canonicalArm, id(credsC)));
   ok("canonical arm still agrees", sameSecretStoreIdentity(canonicalArm, fromC));
+
+  assertUninjectedCredsSharesCwdRoot({ injected: false, identity: fromC, cwdRoot: resolve(workspaceC) });
+  ok("--creds canonical under the cwd root is accepted", true);
+  throws(
+    "--creds canonical under a different cwd is refused naming both roots",
+    () => assertUninjectedCredsSharesCwdRoot({ injected: false, identity: fromC, cwdRoot: resolve(workspaceA) }),
+    resolve(workspaceC),
+  );
+  throws(
+    "--creds vs cwd refusal also names the cwd root",
+    () => assertUninjectedCredsSharesCwdRoot({ injected: false, identity: fromC, cwdRoot: resolve(workspaceA) }),
+    resolve(workspaceA),
+  );
+  assertUninjectedCredsSharesCwdRoot({ injected: true, identity: fromC, cwdRoot: resolve(workspaceA) });
+  ok("injected composition is unaffected by a cwd mismatch", true);
 
   const prev = process.env.COTAL_SECRET_STORE;
   delete process.env.COTAL_SECRET_STORE;

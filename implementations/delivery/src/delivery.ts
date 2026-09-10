@@ -10,6 +10,8 @@ import {
   isReachable,
   mintCreds,
   newIdentity,
+  formatSecretStoreIdentity,
+  sameSecretStoreIdentity,
   standaloneConnectOpts,
   startTimerWriter,
   type MembershipFeedHandle,
@@ -83,6 +85,27 @@ export function reloadStoreIdentityFromCredsPath(credsPath: string, space: strin
   )
     return { kind: "fs", root: grand };
   return { kind: "fs", root: fileDir };
+}
+
+/**
+ * Uninjected `--creds` must name the same workstation root membership-rw will
+ * resolve: `startMembership` falls back to `findCotalRoot()` (cwd), not the
+ * `--creds` file. A challenge that certifies the delivery file while membership
+ * reads another root is a false same-store proof. Injected compositions skip
+ * this: both rails take the injected store. Never silently prefer either root.
+ */
+export function assertUninjectedCredsSharesCwdRoot(opts: {
+  injected: boolean;
+  identity: SecretStoreIdentity;
+  cwdRoot?: string;
+}): void {
+  if (opts.injected) return;
+  const cwdRoot = opts.cwdRoot ?? findCotalRoot();
+  const cwdIdentity: SecretStoreIdentity = { kind: "fs", root: cwdRoot };
+  if (sameSecretStoreIdentity(opts.identity, cwdIdentity)) return;
+  throw new Error(
+    `delivery: --creds reloads from ${formatSecretStoreIdentity(opts.identity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (process cwd). Pass both the same workstation root, or inject one SecretStore.`,
+  );
 }
 
 /**
@@ -246,6 +269,8 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
   const credsSrc = resolveCredsStore(v, space, store);
+  if (v.creds !== undefined)
+    assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, identity: credsSrc.identity });
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
