@@ -114,6 +114,7 @@ assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, owner: `u_${"
 assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, authorized: "yes" } as never, adminRequest, owner), /different lifecycle/);
 
 let remoteChecks = 0;
+let adminDecision: true | Error = true;
 const remoteOnly = new Manager({
   space: "demo", runtime: "pty",
   remoteAuthority: {
@@ -122,12 +123,24 @@ const remoteOnly = new Manager({
     serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
     mintSessionServing: async () => "", mintRetirementRequester: async () => "", prepareAgentRetirement: async () => {},
     validateRetainedAgent: async () => { throw new Error("not used"); }, scanGoalIndex: async () => [],
-    authorizeAdmin: async (seen) => { remoteChecks++; assert.deepEqual(seen, caller); return true; },
+    authorizeAdmin: async (seen) => {
+      remoteChecks++;
+      assert.deepEqual(seen, caller);
+      if (adminDecision instanceof Error) throw adminDecision;
+      return adminDecision;
+    },
   },
 }) as unknown as {
   userMode: boolean;
   epAdminReach(caller: { owner: string; actor: string; uid: string }): Promise<boolean>;
   authorizeNamed(target: { name: string; spawner: string; userOwner?: string }, principal: string, admin: boolean, caller: { owner: string; actor: string; uid: string }): Promise<string | undefined>;
+  managerServiceDefs(): Array<{ command: string; handler(ctx: unknown): Promise<unknown> | unknown }>;
+  serveGated<T>(ctx: unknown, fn: () => T | Promise<T>): Promise<T>;
+  findManagedByTarget(): unknown;
+  despawnAuthorized(): { ok: true; data: unknown };
+  attachAuthorized(): Promise<{ ok: true; data: unknown }>;
+  inputAuthorized(): unknown;
+  serveTurnGoal(): unknown;
 };
 remoteOnly.userMode = true;
 assert.equal(await remoteOnly.epAdminReach({ owner: caller.owner, actor: caller.actor, uid: caller.lifecycleUid }), true);
@@ -138,4 +151,33 @@ assert.equal(remoteChecks, 2);
 assert.equal(await remoteOnly.authorizeNamed({ name: "owned", spawner: "other.actor", userOwner: caller.owner }, `${caller.owner}.${caller.actor}`, false, epCaller), undefined);
 assert.equal(remoteChecks, 2);
 
-console.log("remote authority operations: 21 passed, 0 failed");
+// Drive the real typed handlers, not only their policy helper. Every changed owner-mode handler must
+// relay the exact subject caller to the host before its operation effect, and a host-state fault must
+// escape without running that effect.
+const foreignTarget = { name: "foreign", spawner: "other.actor", userOwner: `u_${"b".repeat(26)}` };
+const effects: string[] = [];
+remoteOnly.serveGated = async (_ctx, fn) => fn();
+remoteOnly.findManagedByTarget = () => foreignTarget;
+remoteOnly.despawnAuthorized = () => { effects.push("despawn"); return { ok: true, data: {} }; };
+remoteOnly.attachAuthorized = async () => { effects.push("attach"); return { ok: true, data: {} }; };
+remoteOnly.inputAuthorized = () => { effects.push("input"); return {}; };
+remoteOnly.serveTurnGoal = () => { effects.push("turn"); return {}; };
+const handlers = new Map(remoteOnly.managerServiceDefs().map((def) => [def.command, def.handler]));
+const handlerContext = {
+  subject: { caller: epCaller, target: { mode: "owner" } },
+  request: { args: {}, target: { owner: foreignTarget.userOwner, actor: "worker", lifecycleUid: mintLifecycleUid() } },
+};
+for (const command of ["despawn", "attach", "input", "turn"]) {
+  await handlers.get(command)!(handlerContext);
+}
+assert.deepEqual(effects, ["despawn", "attach", "input", "turn"]);
+assert.equal(remoteChecks, 6);
+adminDecision = new Error("host authority unavailable");
+effects.length = 0;
+for (const command of ["despawn", "attach", "input", "turn"]) {
+  await assert.rejects(Promise.resolve(handlers.get(command)!(handlerContext)), /host authority unavailable/);
+}
+assert.deepEqual(effects, []);
+assert.equal(remoteChecks, 10);
+
+console.log("remote authority operations: 31 passed, 0 failed");
