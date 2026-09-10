@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-tool-result.smoke.ts"
   ],
-  "guard": "the events plane does not republish TOOL_CALL_ARGS or TOOL_CALL_RESULT, including on AguiEmitter.start recovery of a frozen pre-fix body; six carriers fail independently; sibling text still publishes",
+  "guard": "the events plane does not republish TOOL_CALL_ARGS or TOOL_CALL_RESULT, including on AguiEmitter.start recovery of a frozen pre-fix body, and a frozen body whose event list cannot be read is withheld rather than published opaque; six carriers fail independently; sibling text still publishes",
   "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:agui-tool-result",
   "completionMarker": "agui-tool-result smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-tool-result.json",
@@ -25,14 +25,34 @@
     "TEXT_MESSAGE_CONTENT to the forbidden set and must red the sibling-text cell. That is the decoy",
     "that proves the suite would notice if the policy started refusing everything. A TOOL_CALL_START",
     "decoy is not used: dropping START makes END fail the batch validator, so the first red would be",
-    "the channel-control cell (empty publish) rather than a START/END control."
+    "the channel-control cell (empty publish) rather than a START/END control.",
+    "",
+    "T-PARSE -- This is the defect of rounds three through six in one line: answer the forbidden-kind",
+    "question by reading `events` off the part and skip the validator. It reopens the envelope",
+    "class AND the check/use split at once, because the single `parseAguiFrame` call is what",
+    "closes both. Measured first red is a WAL-boot recover cell driving AguiEmitter.start(),",
+    "not a direct call on the classifier, so the kill grades a reachable path rather than only",
+    "a dependence on the mutated line.",
+    "",
+    "T-READONCE -- The plausible improvement, and the one that must not pass. Snapshotting `events` once looks",
+    "safer than reading it repeatedly, and it is strictly WEAKER: a list that turns forbidden on",
+    "read two is refused by the strict read and published by the snapshot. Measured, it reds all",
+    "three representation cells -- own accessor, inherited accessor, and the Proxy whose",
+    "descriptor trap disagrees with its get trap -- which is the evidence that those cells grade",
+    "the read pattern rather than one object shape.",
+    "",
+    "A NEARBY MUTATION THAT SURVIVES, RECORDED SO NOBODY ADDS IT AS A FIFTH: replacing",
+    "`frame.events` with `(part as ...).events` changes nothing, because `parseAguiFrame` ends in",
+    "`return part as AguiFrame` and hands back the caller's own object. Measured 55 passed, 0",
+    "failed. The parse result is not a materialized copy, and a fixture built on the belief that",
+    "it is would grade nothing."
   ],
   "mutations": [
     {
       "name": "T-RETRY recover republishes a frozen TOOL_CALL_RESULT body because attempt() no longer refuses it",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "    if (frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
-      "replace": "    if (false && frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
+      "find": "    const egress = frozenBodyEgressVerdict(o.body);\n    if (egress === \"forbidden-kind\") {",
+      "replace": "    const egress = frozenBodyEgressVerdict(o.body);\n    if (false && egress === \"forbidden-kind\") {",
       "expectRed": "recover:AguiEmitter.start refuses a frozen TOOL_CALL_RESULT body rather than publishing it",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
@@ -58,6 +78,22 @@
       "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
       "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,\n  AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT,",
       "expectRed": "control:sibling TEXT_MESSAGE_CONTENT reaches the recorded publish (lifecycle survived the policy)",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-PARSE the part is no longer validated, so the scan reads events straight off it and every envelope defect -- protocol, threadId, runId, epoch, seq, an absent or empty event list -- publishes again",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "        if (!isAguiFramePart(part)) continue;\n        const frame = parseAguiFrame(part);\n        for (const e of frame.events) {",
+      "replace": "        if (!isAguiFramePart(part)) continue;\n        const frame = part as { events: readonly unknown[] };\n        for (const e of frame.events) {",
+      "expectRed": "recover:an UNREADABLE frozen event list HALTS by name rather than publishing opaque bytes",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-READONCE the scan uses a snapshot taken before the parse instead of the parse result, so the classifier reads events once where the strict read it replaced read four times",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "        const frame = parseAguiFrame(part);\n        for (const e of frame.events) {",
+      "replace": "        const events = (part as { events?: readonly unknown[] }).events ?? [];\n        parseAguiFrame(part);\n        for (const e of events) {",
+      "expectRed": "accessor:an OWN getter answers what the strict read answered, at every flip point",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     }
   ]
