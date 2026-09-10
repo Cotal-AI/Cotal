@@ -88,7 +88,7 @@ try {
   const evictedFirst = second.stderr().indexOf(`verified orphan seat principal gone: local.${ready.actor}`);
   const reapedAt = second.stderr().search(/orphan seat process custodian/);
   check("broker eviction and process reap are separate, ordered evidence (rails verified gone, then the process)", evictedFirst >= 0 && reapedAt > evictedFirst, { evictedFirst, reapedAt });
-  const retired = await until(() => second.stderr().includes("static reconcile 1/1") && !second.stderr().includes("static retirement worker ("), 30_000);
+  const retired = await until(() => /static reconcile completed: 1 attempted, 1 succeeded, 0 failed/.test(second.stderr()), 30_000);
   check("the lifecycle retires once the process is proved gone", retired && !/static retirement worker \(/.test(second.stderr()), second.stderr().split("\n").filter((l) => /static (reconcile|retirement)/.test(l)).join("\n"));
   const EXPECTED = 6;
   if (pass + fail !== EXPECTED) throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);
