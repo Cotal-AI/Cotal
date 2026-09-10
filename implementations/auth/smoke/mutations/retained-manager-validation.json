@@ -61,7 +61,7 @@
       "find": "      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
       "replace": "      endpoint = ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
       "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
-      "completionMarker": "manager retained validation smoke failed: 17/18 passed, 1 failed",
+      "completionMarker": "manager retained validation smoke failed: 16/18 passed, 1 failed",
       "expectRed": "FAIL: remote provider derives the fixed authority path and refuses insecure exchange pins before fetch",
       "cell": "remote provider derives the fixed authority path and refuses insecure exchange pins before fetch"
     }
