@@ -440,10 +440,6 @@ await h.waitForExit();
       cwd: process.cwd(),
     });
     handles.push(adoptSeatSync(rec));
-    const forged = { ...rec, custodianStart: "1", childStart: "1" };
-    writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(forged)}\n`);
-    const evidence = await reapSeat(root, rec.id);
-    check("a pid whose start identity differs from the record is treated as gone, never signalled", evidence.outcome === "reaped" && state(rec.childPid) !== "gone" && state(rec.custodianPid) !== "gone", { evidence, child: state(rec.childPid) });
     const bare = { ...rec };
     delete (bare as Partial<typeof rec>).custodianStart;
     delete (bare as Partial<typeof rec>).childStart;
@@ -455,6 +451,12 @@ await h.waitForExit();
       refused = (e as Error).message;
     }
     check("a record with no start identity refuses to signal", /no process start identity/.test(refused) && state(rec.childPid) !== "gone", refused);
+    // A forged identity proves the pids are not the recorded processes: nothing is signalled and
+    // the record is forgotten as already-gone custody.
+    const forged = { ...rec, custodianStart: "1", childStart: "1" };
+    writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(forged)}\n`);
+    const evidence = await reapSeat(root, rec.id);
+    check("a pid whose start identity differs from the record is treated as gone, never signalled", evidence.outcome === "reaped" && state(rec.childPid) !== "gone" && state(rec.custodianPid) !== "gone", { evidence, child: state(rec.childPid) });
   }
 
   {
