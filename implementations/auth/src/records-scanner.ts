@@ -464,14 +464,15 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
 }
 
 /**
- * The SEALED records scanner's credential grant on the RECORDS stream (SPEC 13.9): exactly the ONE
- * literal enumeration consumer's lifecycle (CREATE/INFO/NEXT/DELETE pinned to
- * {@link RECORDS_SCANNER_CONSUMER_NAME}, the CREATE filter confined to the `oblig.` subtree) + the
- * stream shape read + the scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE` on
- * `KV_cotal_records_<space>` for obligation enumeration; {@link openRecordsScannerCandidate} opens it for the
- * trusted process and it is NEVER registered as an external/mintable profile. The bucket is DERIVED
- * from the validated space and the name is the module constant, so no caller-supplied token forms a
- * privileged subject.
+ * The SEALED records scanner's credential grant on the RECORDS stream (SPEC 13.9): exactly two
+ * literal consumers' lifecycles. CREATE/INFO/NEXT/DELETE are pinned to
+ * {@link RECORDS_SCANNER_CONSUMER_NAME} for the `oblig.` subtree and to
+ * {@link MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME} for the manager `goalidx` subtree, plus the stream
+ * shape read and scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE` on
+ * `KV_cotal_records_<space>` for either enumeration. {@link openRecordsScannerCandidate} opens it for
+ * the trusted process and it is NEVER registered as an external/mintable profile. The bucket is
+ * DERIVED from the validated space and both names are module constants, so no caller-supplied token
+ * forms a privileged subject.
  */
 export function recordsScannerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const bucket = recordsBucket(space);
