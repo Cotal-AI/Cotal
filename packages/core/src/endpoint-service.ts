@@ -388,6 +388,14 @@ export async function registerServiceInstance(
      *  was the subset-narrowing escape (guarded-only wiring silently un-tracks priced), the
      *  `previous:null` class one notch smaller. */
     readClusterArtifact: (digest: string) => Promise<unknown> | unknown;
+    /** OPTIONAL observation seam for a FOREIGN instance's issuance-gate generation, consulted only
+     *  when another instance holds the endpoint's provisional governance slot (§13.7). It is a READ,
+     *  never a freeze, and it mirrors {@link deregisterServiceInstance}'s `observeGeneration`: core
+     *  holds this instance's own barrier and the RECORDS store, so it has no handle that reaches a
+     *  foreign `epgate` row, and a caller wires it with a credential already scoped for that read.
+     *  ABSENT = today's unconditional refusal, so no caller silently gains a reclaim it did not ask
+     *  for. See the orphan predicate at the slot-take below. */
+    observeHolderGeneration?: (holderInstanceId: string) => Promise<number> | number;
   },
 ): Promise<{ registrationRevision: number }> {
   if (typeof args.readClusterArtifact !== "function")
@@ -476,14 +484,14 @@ export async function registerServiceInstance(
     // ORIGINAL coordinate: a slot-take CAS loss is a raced endpoint registration (`conflict`);
     // an AMBIGUOUS slot-take is also safe to reopen because a committed-but-unacked slot is
     // stamped with the generation this reopen advances PAST — the stale stamp marks it orphaned,
-    // this instance's own retry replaces it, and a foreign registration refuses on it until then
-    // (fail-closed, reclaimed by retry or by the D13 reconciler; predicate: the stamped gate
-    // coordinate is not frozen at that generation).
+    // this instance's own retry replaces it, and a foreign registration reclaims it once it can
+    // OBSERVE that stamp to be behind the holder's live gate ({@link assertForeignSlotIsOrphaned};
+    // fail-closed without that observation).
     const gov = await readEndpointGovernance(kv, spec.endpoint);
     if (gov.provisional) {
       if (gov.provisional.instanceId !== args.instanceId)
-        throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" (instance "${gov.provisional.instanceId}") holds the governance slot through its spec publication; re-read and re-decide; if its holder aborted pre-publish its stale-generation slot is reclaimed by that instance's retry or by reconciliation (SPEC 13.7/13.8)`);
-      if (gov.provisional.generation >= obs.generation)
+        await assertForeignSlotIsOrphaned(gov.provisional, spec.endpoint, args.observeHolderGeneration);
+      else if (gov.provisional.generation >= obs.generation)
         throw new EpEnvelopeError("internal", `the governance slot for endpoint "${spec.endpoint}" is held by this very instance at generation ${gov.provisional.generation} while its gate is frozen at ${obs.generation}; a live slot under a re-frozen gate cannot exist (every retry freezes at an advanced generation); reconcile the head before registering (SPEC 13.7)`);
       // else: this instance's OWN orphan from an aborted earlier attempt (the gate has reopened
       // past its stamp since) — the slot-take below replaces it.
@@ -689,6 +697,64 @@ export async function completeFrozenRegistrationFromSpec(
   }
   await releaseHeldGovernance(recordsKv, args.endpoint, args.instanceId, args.gate.generation);
   return { completed: true, registrationRevision: specEntry.revision, processEpoch };
+}
+
+/** THE FOREIGN-SLOT ORPHAN PREDICATE (§13.7). A registration whose endpoint governance slot is held
+ *  by ANOTHER instance either waits for a live registration to finish or reclaims a dead one, and
+ *  this decides which. It refuses unless the slot is PROVABLY dead.
+ *
+ *  WHY A STAMP BEHIND THE HOLDER'S LIVE GATE IS DEAD, and not merely old. The slot is stamped with
+ *  the generation of the gate its holder had FROZEN when it took the slot, and
+ *  {@link promoteHeldGovernance} promotes only when the slot's generation EQUALS the frozen gate's
+ *  generation. A freeze preserves the generation; only a token-pinned reopen advances it, and a
+ *  reopen releases the freeze. So a holder gate reading a generation ABOVE the stamp proves no
+ *  barrier holds a freeze at the stamped generation, which proves the equality promote requires can
+ *  never again hold for that slot. It is unpromotable by its holder, by a reconciler, and by anyone
+ *  else, so it binds nothing and never will, and the slot-take may replace it.
+ *
+ *  RECLAIMING ONE CANNOT LAUNDER GOVERNANCE. The slot-take rewrites `provisional` and carries
+ *  `commands` (the BINDING map) forward from the same fresh read. Impositions become binding only in
+ *  {@link promoteHeldGovernance}, after a spec publish commits. So what a reclaim discards is
+ *  provisional declarations that never published, which is the phantom-obligation orphan the slot
+ *  exists to prevent, and never a published descriptor's impositions.
+ *
+ *  EVERY OTHER OBSERVATION FAILS CLOSED, because the cost is asymmetric: refusing a dead slot is a
+ *  wait, reclaiming a live one is two registrations publishing against one linearization point.
+ *    - no seam wired          → refuse (a caller that cannot observe gets today's behaviour)
+ *    - the read throws        → refuse (unreadable, not absent)
+ *    - not an unsigned int    → refuse (garbled; never coerced)
+ *    - live === stamp         → refuse: genuinely IN FLIGHT, the holder still holds that freeze
+ *    - live  <  stamp         → refuse: the observation is BEHIND the stamp, so it is stale or
+ *                               garbled, and an ahead-of-us reading never licenses a reclaim
+ *    - live  >  stamp         → the ONLY permissive answer, and the proof above is what it rests on
+ *
+ *  `live === stamp` is deliberately the refusal that covers the operator's frozen residue while the
+ *  holder is still up: it is exactly the coordinate a live in-flight registration presents, and no
+ *  liveness probe is consulted here because the gate coordinate is the durable, CAS-enforced fact
+ *  and a probe is a point-in-time guess. Reopening that gate (a holder retry, its boot heal, or
+ *  `cotal reconcile-gate`) is what advances the generation and makes the slot reclaimable. */
+async function assertForeignSlotIsOrphaned(
+  slot: { instanceId: string; generation: number },
+  endpoint: string,
+  observeHolderGeneration?: (holderInstanceId: string) => Promise<number> | number,
+): Promise<void> {
+  const held = `a concurrent registration for endpoint "${endpoint}" (instance "${slot.instanceId}") holds the governance slot through its spec publication`;
+  if (typeof observeHolderGeneration !== "function")
+    throw new EpEnvelopeError("conflict", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);
+  let observed: unknown;
+  try {
+    observed = await observeHolderGeneration(slot.instanceId);
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (!wireInt(observed))
+    throw new EpEnvelopeError("unavailable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
+  if (observed < slot.generation)
+    throw new EpEnvelopeError("unavailable", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
+  if (observed === slot.generation)
+    throw new EpEnvelopeError("conflict", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
+  // observed > slot.generation: the holder's gate has reopened past the stamp, so the slot can
+  // never satisfy the promote's generation equality. It is dead, and the slot-take replaces it.
 }
 
 /** Merge the held provisional declarations into binding WITHOUT clearing the slot. The

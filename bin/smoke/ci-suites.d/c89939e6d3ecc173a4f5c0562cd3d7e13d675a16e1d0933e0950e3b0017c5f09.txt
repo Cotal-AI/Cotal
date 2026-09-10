@@ -1,0 +1,4 @@
+# An endpoint governance slot held by an instance that stopped before publishing its spec must not
+# block the endpoint's registrations forever. The holder's reopened gate is what proves the slot
+# abandoned, and a slot still at its holder's frozen generation must keep refusing.
+smoke:governance-slot-orphan

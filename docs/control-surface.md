@@ -212,6 +212,24 @@ affirmatively gone under a complete CONNZ sweep (the same composition as
 same freeze; only a definite no-commit abort-reopens and then runs the normal takeover.
 It does not invent a TTL and it does not start a new freeze over a still-held one.
 
+That residue has a second half, and it is the endpoint governance slot rather than the gate. Every
+registration takes the endpoint-wide slot before it publishes its spec and holds it until its own
+gate reopens, which is what serializes registration for the endpoint. An instance that stopped
+between those two points leaves the slot held with no registration behind it, so the endpoint
+refuses new registrations while nothing is actually in flight. The slot is stamped with the
+generation of the gate its holder had frozen when it took it, and a slot is promoted only at that
+same generation. So once the holder's gate has reopened past the stamp, the slot can never be
+promoted by anyone, and the next registration for that endpoint replaces it. That reclaim is part of
+an ordinary start and needs no operator step.
+
+A slot whose holder's gate is still at the stamped generation is a registration that is genuinely in
+flight, and it keeps refusing. The two states read differently only in the holder's gate coordinate,
+so reopening that gate is what separates them: the holder's own restart heals it on boot, and
+[`cotal reconcile-gate`](cli.md#reconcile-gate) is the operator's route when the boot path cannot
+run. The registration path is the slot's only writer, and neither repair command writes it.
+A registration that cannot read the holder's gate at all refuses, because an unreadable gate does
+not distinguish the two states either.
+
 For the instance that cannot cooperate, an operator names it:
 `cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
 record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
