@@ -161,6 +161,19 @@ await cell("host issuer grant has no signer or generic profile endpoint", () => 
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id);
   assert.equal(grants.publish.some((row) => row === ">" || row === "$JS.>" || row === "$KV.>"), false);
 });
+await cell("host issuer alone owns the manager endpoint gate and credential write families", () => {
+  const grants = remoteManagerIssuerGrants("demo", newIdentity().id).publish;
+  assert.equal(grants.includes("$KV.cotal_auth_demo.epgate.manager.>"), true);
+  assert.equal(grants.includes("$KV.cotal_auth_demo.epcred.manager.>"), true);
+  assert.equal(grants.some((row) => row.includes("epgate.") && !row.includes("epgate.manager.")), false);
+  assert.equal(grants.some((row) => row.includes("epcred.") && !row.includes("epcred.manager.")), false);
+  const participant = permissionsFor("remote-manager", "demo", {
+    owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: `manager_${instanceId}`, connId: newIdentity().id, lifecycleUid,
+  }, { remoteManager: { instanceId, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: `manager_${instanceId}` } }) as { pub: { allow: string[] } };
+  const participantRows = participant.pub.allow.filter((row) => row.includes("epgate.") || row.includes("epcred."));
+  assert.equal(participantRows.length > 0, true);
+  assert.equal(participantRows.every((row) => row.includes(`.manager.${instanceId}`) && !row.endsWith(".manager.>")), true);
+});
 await cell("manager actors are fixed by the server-selected instance coordinate", () => {
   assert.deepEqual(remoteManagerActors(instanceId), {
     supervisor: `manager_${instanceId}`,

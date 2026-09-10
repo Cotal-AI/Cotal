@@ -90,6 +90,14 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
   return {
     publish: [
       ...base.publish,
+      // The typed activation phase mints the manager instance's endpoint-serve credential through
+      // serveIssuanceGateKv. That fence stages one `epcred.manager.<instance>.<credential>` row and
+      // revision-touches the matching `epgate.manager.<instance>` row. The host issuer serves many
+      // manager instances, so the instance tail is necessarily open, but the endpoint label stays
+      // fixed to `manager`: no participant credential receives these rows, and no other endpoint's
+      // issuance family is reachable through this server-side connection.
+      `$KV.${epAuthBucket(space)}.epgate.manager.>`,
+      `$KV.${epAuthBucket(space)}.epcred.manager.>`,
     ],
     subscribe: base.subscribe,
   };
