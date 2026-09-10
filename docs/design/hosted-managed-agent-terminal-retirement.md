@@ -26,7 +26,7 @@ The host derives the authenticated owner from the IdP proof and the manager acto
 - the exact target lifecycle,
 - the auth retirement request and caller reply rails.
 
-The manager uses the existing auth endpoint retirement request. The target stays on the broker-enforced subject. The request carries the lifecycle-derived operation ID and the current registered instance ID and serve epoch. No barrier executor, lifecycle head writer, gate writer, signer, profile selector, generic permissions object, or caller-supplied principal crosses the public seam.
+The manager uses the existing auth endpoint retirement request. The target stays on the broker-enforced subject. The request carries the lifecycle-derived operation ID and the current registered instance ID and serve epoch. The auth rail recomputes the operation ID from the broker-pinned target before any gate, head, intent, or barrier access, so mint-time validation is not the terminal authorization boundary. No barrier executor, lifecycle head writer, gate writer, signer, profile selector, generic permissions object, or caller-supplied principal crosses the public seam.
 
 ## Required ordering
 

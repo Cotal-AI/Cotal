@@ -4,6 +4,7 @@ import { managedRetirementOpId, newIdentity, mintLifecycleUid, permissionsFor, r
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
+import { authorizeRetirementOperation } from "../src/auth-admin.js";
 
 let pass = 0;
 let fail = 0;
@@ -80,6 +81,8 @@ await rejects("retire requires its closed operation object", () => parseRemoteMa
 await rejects("retire refuses unknown operation fields", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, profile: "admin" } }), /exactly/);
 await rejects("retire requires a stable lifecycle opId", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, opId: "not-valid" } }), /opId/);
 await rejects("retire refuses a different valid opId for the same lifecycle", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, opId: mintLifecycleUid() } }), /derived terminal operation id/);
+await rejects("the terminal rail refuses a different valid opId for the broker-pinned target", () => authorizeRetirementOperation(retirementTarget.lifecycleUid, mintLifecycleUid()), /not the derived terminal operation .* nothing was applied/);
+await cell("the terminal rail accepts the target lifecycle's derived operation", () => authorizeRetirementOperation(retirementTarget.lifecycleUid, retirement.opId));
 await rejects("retire requires a non-negative safe serve epoch", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, serveEpoch: -1 } }), /serveEpoch/);
 await rejects("retire requires a derived target owner", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, owner: "local" } } }), /derived owner/);
 await rejects("retire requires a subject-safe target actor", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, actor: "bad.actor" } } }), /single NATS-safe token/);

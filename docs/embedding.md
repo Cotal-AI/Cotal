@@ -228,7 +228,8 @@ release while preserving the UID, then `remoteAuthority.mintRetirementRequester`
 host-signed JWT for a fresh participant-owned nkey. The credential is pinned to the authenticated
 owner, server-derived manager serve principal, current instance epoch, and exact target lifecycle.
 The manager then uses the existing auth retirement rail with the operation id derived from the target
-lifecycle UID. A failure keeps
+lifecycle UID. The rail independently recomputes that id from its broker-pinned target before any
+gate, head, intent, or barrier access, so mint-time validation is not the terminal boundary. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime

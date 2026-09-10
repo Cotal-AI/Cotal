@@ -249,7 +249,8 @@ coordinate; the host writes its credential ledger row and finalizes the gate bef
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
 credential pinned to that target. The manager sends it on the existing auth retirement rail with the
-operation id derived from the target lifecycle UID. A caller cannot substitute another valid operation
+operation id derived from the target lifecycle UID. The terminal rail recomputes it from the
+broker-pinned target before any durable access. A caller cannot substitute another valid operation
 identity for the same target, and retries plus auth-service boot recovery finish the same terminal
 barrier. It never exposes the barrier executor or a general mint surface.
 

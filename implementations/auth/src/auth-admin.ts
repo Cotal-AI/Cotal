@@ -62,6 +62,7 @@ import {
   assertCommandToken,
   spacePrefix,
   mintLifecycleUid,
+  managedRetirementOpId,
   parseEpSubject,
   principalKey,
   retirementFrontierStreams,
@@ -170,6 +171,15 @@ function parseRetireArgs(raw: unknown): RetireArgs {
     serveInstanceId: assertLifecycleToken(a.serveInstanceId, "serveInstanceId"),
     serveEpoch: a.serveEpoch,
   };
+}
+
+/** The terminal rail's operation-identity authorization. The requester credential pins the target
+ * in the subject, while this check binds the body operation to that broker-authenticated target.
+ * Run it before any gate/head read so a foreign operation id is a full no-op. */
+export function authorizeRetirementOperation(targetLifecycleUid: string, opId: string): void {
+  const expected = managedRetirementOpId(targetLifecycleUid);
+  if (opId !== expected)
+    throw new EpEnvelopeError("permission-denied", `retireLifecycle operation ${opId} is not the derived terminal operation ${expected} for lifecycle ${targetLifecycleUid}; nothing was applied`);
 }
 
 export interface AuthAdminListener {
@@ -289,6 +299,10 @@ export async function openAuthAdminListener(opts: {
     if (req.op !== "retireLifecycle")
       return { ok: false, error: `op "${String(req.op)}" not supported on the auth admin service` };
     const args = parseRetireArgs(req.args);
+    // TARGET comes from the broker-authorized subject. Bind the body's opId to it BEFORE the serve
+    // gate, lifecycle head, intent, or barrier is touched, so mint-time validation is not the only
+    // fence and the same target can never start a second durable terminal operation.
+    authorizeRetirementOperation(target.lifecycleUid, args.opId);
 
     // THE RAIL-TIME REGISTRATION RE-CHECK (fresh, leader-served, fail-closed) — P2 item 3 (3b-3):
     // the requesting manager instance's SERVE GRANT must be current. Read the serve-issuance gate
