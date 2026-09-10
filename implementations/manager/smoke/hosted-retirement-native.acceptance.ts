@@ -1,0 +1,672 @@
+/**
+ * Owner-only native hosted retirement acceptance.
+ *
+ * Starts a disposable authenticated broker, IdP, public auth service, real remote-authority Manager,
+ * and real managed children. The only test collaborator is a private atomic host release journal.
+ * Seven named cells cover grant, durables, sealed authority, public resume, public targeted despawn,
+ * host preparation, HTTP issuance, and the terminal rail. The unavailable deterministic crash seam
+ * is reported as an explicit failing acceptance-blocked cell rather than simulated through internals.
+ *
+ * All homes, workspace roots, the broker store, and IdP state are scratch. Requires nats-server.
+ * Run: COTAL_OWNER_NATIVE_ACCEPTANCE=1 tsx implementations/manager/smoke/hosted-retirement-native.acceptance.ts
+ */
+
+const subcommand = process.argv[2] ?? "";
+if (subcommand === "") {
+  if (process.env.COTAL_OWNER_NATIVE_ACCEPTANCE !== "1")
+    throw new Error("hosted retirement native acceptance is owner-only; set COTAL_OWNER_NATIVE_ACCEPTANCE=1 on the isolated native host");
+  if (process.platform !== "linux") throw new Error("hosted retirement native acceptance requires Linux");
+}
+
+// The auth daemon and managed child are real registered/public compositions dispatched by re-exec.
+if (subcommand === "agent-child") {
+  const { CotalEndpoint } = await import("@cotal-ai/core");
+  const { readFileSync } = await import("node:fs");
+  const { execFile } = await import("node:child_process");
+  const bearerCommand = JSON.parse(process.env.COTAL_BEARER_CMD!) as string[];
+  const bearer = () => new Promise<string>((resolve, reject) => execFile(bearerCommand[0]!, bearerCommand.slice(1), (error, stdout, stderr) => {
+    if (error) reject(new Error(stderr.trim() || error.message));
+    else resolve(stdout.trim());
+  }));
+  const child = new CotalEndpoint({
+    space: process.env.COTAL_SPACE!, servers: process.env.COTAL_SERVERS!, bearer,
+    sentinelCreds: readFileSync(process.env.COTAL_SENTINEL_CREDS!, "utf8"),
+    lifecycleUid: process.env.COTAL_LIFECYCLE_UID!, channels: [], consume: false,
+    card: { owner: process.env.COTAL_OWNER!, actor: process.env.COTAL_ACTOR!, name: process.env.COTAL_NAME!, kind: "agent" },
+  });
+  child.on("error", () => {});
+  await child.start();
+  await new Promise(() => {});
+}
+if (subcommand === "auth-service" || subcommand === "agent-bearer") {
+  await import("@cotal-ai/auth");
+  const { registry } = await import("@cotal-ai/core");
+  type Command = import("@cotal-ai/core").Command;
+  const rest = process.argv.slice(3);
+  const values: Record<string, string | boolean | undefined> = {};
+  const positionals: string[] = [];
+  for (let index = 0; index < rest.length; index++) {
+    const value = rest[index]!;
+    if (!value.startsWith("--")) { positionals.push(value); continue; }
+    const key = value.slice(2);
+    const next = rest[index + 1];
+    if (next !== undefined && !next.startsWith("--")) { values[key] = next; index++; }
+    else values[key] = true;
+  }
+  const command = registry.all<Command>("command").find((candidate) => candidate.name === subcommand);
+  if (!command) throw new Error("auth-service command was not registered");
+  await command.run({ values, positionals, raw: rest });
+  process.exit(0);
+}
+
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, existsSync, fsyncSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+const betterAuthRoot = new URL("../../auth/node_modules/better-auth/", import.meta.url);
+const { betterAuth } = await import(new URL("dist/index.mjs", betterAuthRoot).href);
+const { memoryAdapter } = await import(new URL("dist/adapters/memory-adapter/index.mjs", betterAuthRoot).href);
+const { jwt } = await import(new URL("dist/plugins/jwt/index.mjs", betterAuthRoot).href);
+const { deviceAuthorization } = await import(new URL("dist/plugins/device-authorization/index.mjs", betterAuthRoot).href);
+const { bearer: betterAuthBearer } = await import(new URL("dist/plugins/bearer/index.mjs", betterAuthRoot).href);
+const { toNodeHandler } = await import(new URL("dist/integrations/node.mjs", betterAuthRoot).href);
+import {
+  CotalEndpoint,
+  createSpaceAuth,
+  managedRetirementOpId,
+  mintCreds,
+  mintLifecycleUid,
+  newIdentity,
+  principalKey,
+  provisionAgentDurables,
+  rawDigest,
+  recordsBucket,
+  remoteManagerActors,
+  serverConfig,
+  setupSpaceStreams,
+  standaloneConnectOpts,
+  registry,
+  type AgentHandle,
+  type AttachSession,
+  type Connector,
+  type LaunchSpec,
+  type Runtime,
+  type RuntimeProvider,
+} from "@cotal-ai/core";
+import {
+  agentLifecycleSecretFilePaths,
+  agentSecretKeyForFile,
+  assertUserAuthInfo,
+  authDir,
+  hasUserAuthState,
+  materializeSecretToFile,
+  userAuthStateDir,
+  workspaceSecretStore,
+} from "@cotal-ai/workspace";
+import {
+  cotalAuthProvider,
+  establishIdpSession,
+  grantActor,
+  loadAuthServiceInfo,
+  loadCalloutAuth,
+} from "@cotal-ai/auth";
+import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
+import { pickFreePort } from "../../auth/smoke/_free-port.js";
+import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
+import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "../src/remote-authority.js";
+import { registerRemoteManagerAuthority } from "../src/remote-register.js";
+import { managerAuthorityContractSource, managerClusterArtifacts } from "../src/manager-service-contract.js";
+import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../auth/src/lifecycle-registry.js";
+
+const self = process.argv[1]!;
+const participantHome = mkdtempSync(join(tmpdir(), "cotal-registered-manager-home-"));
+const hostRoot = mkdtempSync(join(tmpdir(), "cotal-registered-manager-host-"));
+const participantRoot = mkdtempSync(join(tmpdir(), "cotal-registered-manager-participant-"));
+const previousHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = participantHome;
+
+let pass = 0;
+let fail = 0;
+const check = (name: string, condition: boolean, extra?: unknown): void => {
+  if (condition) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    fail++;
+    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
+  }
+};
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type RetirementTarget = { owner: string; actor: string; lifecycleUid: string };
+type ReleaseRow = { target: RetirementTarget; opId: string; state: "pending" | "released" };
+
+class TestReleaseJournal {
+  constructor(readonly path: string) {}
+  private read(): ReleaseRow | undefined {
+    if (!existsSync(this.path)) return undefined;
+    return JSON.parse(readFileSync(this.path, "utf8")) as ReleaseRow;
+  }
+  private write(row: ReleaseRow): void {
+    const tmp = `${this.path}.${process.pid}.${randomBytes(6).toString("hex")}`;
+    writeFileSync(tmp, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+    const fd = openSync(tmp, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(tmp, this.path);
+    const dirfd = openSync(join(this.path, ".."), "r");
+    try { fsyncSync(dirfd); } finally { closeSync(dirfd); }
+  }
+  release(target: RetirementTarget, opId: string): void {
+    const previous = this.read();
+    if (previous && (JSON.stringify(previous.target) !== JSON.stringify(target) || previous.opId !== opId))
+      throw new Error("release journal target or operation mismatch");
+    if (previous?.state === "released") return;
+    this.write({ target, opId, state: "pending" });
+    this.write({ target, opId, state: "released" });
+  }
+  row(): ReleaseRow | undefined { return this.read(); }
+}
+
+class ChildHandle implements AgentHandle {
+  readonly kind = "native-acceptance";
+  private exited = false;
+  private readonly closed: Promise<void>;
+  constructor(readonly name: string, private readonly child: ChildProcess) {
+    this.closed = new Promise((resolve) => child.once("close", () => { this.exited = true; resolve(); }));
+  }
+  status(): "running" | "exited" { return this.exited ? "exited" : "running"; }
+  stop(): void { if (!this.exited) this.child.kill("SIGTERM"); }
+  waitForExit(): Promise<void> { return this.closed; }
+  interrupt(): void { if (!this.exited) this.child.kill("SIGINT"); }
+  attach(): AttachSession {
+    return { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
+  }
+}
+
+const childRuntime: Runtime = {
+  kind: "native-acceptance",
+  spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
+    return new ChildHandle(name, trackChild(spawn(spec.command, spec.args, {
+      cwd, env: { ...process.env, ...spec.env }, stdio: "ignore",
+    })));
+  },
+};
+const runtimeProvider: RuntimeProvider = {
+  kind: "runtime", name: "native-acceptance", available: () => true, create: () => childRuntime,
+};
+const connector: Connector = {
+  kind: "connector", name: "native-acceptance", readinessTimeoutMs: 20_000,
+  buildLaunch(opts) {
+    if (!opts.userAuth || !opts.lifecycleUid) throw new Error("native acceptance requires retained user authority");
+    return {
+      command: process.execPath,
+      args: [...process.execArgv, self, "agent-child"],
+      env: {
+        COTAL_SPACE: opts.space, COTAL_SERVERS: opts.servers!, COTAL_NAME: opts.name,
+        COTAL_OWNER: opts.userAuth.owner, COTAL_ACTOR: opts.userAuth.actor,
+        COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
+        COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd), COTAL_LIFECYCLE_UID: opts.lifecycleUid,
+      },
+    };
+  },
+};
+registry.register(runtimeProvider);
+registry.register(connector);
+
+const space = `registered-manager-${Math.random().toString(36).slice(2, 10)}`;
+const brokerPort = await pickFreePort();
+const server = `nats://127.0.0.1:${brokerPort}`;
+const clientId = "registered-manager-smoke";
+const hostDir = userAuthStateDir(hostRoot, space);
+const participantDir = userAuthStateDir(participantRoot, space);
+const managerAuthDir = hostDir;
+const hostStore = workspaceSecretStore(hostRoot);
+const authDiagnosticCap = 32 * 1024;
+const closedChildren = new WeakSet<ChildProcess>();
+let authService: ChildProcess | undefined;
+let authServiceDiagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+let authServiceSpawnError: Error | undefined;
+let broker: ChildProcess | undefined;
+let idpServer: ReturnType<typeof createServer> | undefined;
+let endpoint: CotalEndpoint | undefined;
+let manager: Manager | undefined;
+let observerNc: Awaited<ReturnType<typeof connect>> | undefined;
+let storeDir: string | undefined;
+
+function trackChild(child: ChildProcess): ChildProcess {
+  child.once("close", () => closedChildren.add(child));
+  return child;
+}
+
+function appendAuthDiagnostic(chunk: Buffer | string): void {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const combined = authServiceDiagnostics.length === 0
+    ? bytes
+    : Buffer.concat([authServiceDiagnostics, bytes]);
+  let start = Math.max(0, combined.length - authDiagnosticCap);
+  // Never begin the retained suffix in the middle of a valid UTF-8 code point. Dropping the
+  // partial prefix keeps both the byte cap and the rendered diagnostic honest.
+  while (start < combined.length && (combined[start]! & 0xc0) === 0x80) start++;
+  authServiceDiagnostics = combined.subarray(start);
+}
+
+function authServiceFailure(child: ChildProcess, reason: string): Error {
+  const state = authServiceSpawnError
+    ? `spawn error: ${authServiceSpawnError.message}`
+    : child.exitCode !== null
+      ? `exit ${child.exitCode}`
+      : child.signalCode !== null
+        ? `signal ${child.signalCode}`
+        : child.pid === undefined
+          ? "no pid"
+          : `pid ${child.pid} still running`;
+  const diagnostics = authServiceDiagnostics.toString("utf8").trim();
+  return new Error(`${reason}; child ${state}${diagnostics === "" ? "" : `\nauth-service output (last ${authDiagnosticCap} bytes):\n${diagnostics}`}`);
+}
+
+function spawnAuthService(): ChildProcess {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  env.COTAL_HOME = participantHome;
+  authServiceDiagnostics = Buffer.alloc(0);
+  authServiceSpawnError = undefined;
+  const child = spawn(process.execPath, [...process.execArgv, self, "auth-service", "--space", space, "--server", server, "--exchange-public-port", "0"], {
+    cwd: hostRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.on("data", appendAuthDiagnostic);
+  child.stderr?.on("data", appendAuthDiagnostic);
+  child.once("error", (error) => {
+    authServiceSpawnError = error;
+    appendAuthDiagnostic(`[spawn error] ${error.message}\n`);
+  });
+  return trackChild(child);
+}
+
+async function awaitAuthService(child: ChildProcess, timeoutMs = 60_000): Promise<{ url: string; publicUrl?: string; pid: number }> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (authServiceSpawnError || child.exitCode !== null || child.signalCode !== null)
+      throw authServiceFailure(child, "auth service exited before readiness");
+    const info = loadAuthServiceInfo(hostDir);
+    if (info) {
+      try {
+        process.kill(info.pid, 0);
+        const remaining = Math.max(1, end - Date.now());
+        if ((await fetch(`${info.url}/health`, { signal: AbortSignal.timeout(Math.min(1_000, remaining)) })).ok) return info;
+      } catch { /* still booting */ }
+    }
+    await wait(100);
+  }
+  throw authServiceFailure(child, `auth service did not become ready at ${hostDir} within ${timeoutMs}ms`);
+}
+
+async function awaitChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (closedChildren.has(child)) return true;
+  return new Promise((resolve) => {
+    const onClose = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => { child.off("close", onClose); resolve(false); }, timeoutMs);
+    child.once("close", onClose);
+  });
+}
+
+async function stopChild(child: ChildProcess | undefined): Promise<boolean> {
+  if (!child || closedChildren.has(child)) return true;
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  }
+  if (await awaitChildClose(child, 3_000)) return true;
+  try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  return awaitChildClose(child, 3_000);
+}
+
+try {
+  const asciiHead = "ascii-head-marker";
+  const asciiTail = "ascii-tail-marker";
+  appendAuthDiagnostic(Buffer.from(`${asciiHead}${"a".repeat(authDiagnosticCap * 2)}${asciiTail}`));
+  const asciiDiagnostic = authServiceDiagnostics.toString("utf8");
+  check("diagnostic retention is capped in bytes for ASCII output",
+    authServiceDiagnostics.length <= authDiagnosticCap && !asciiDiagnostic.includes(asciiHead) && asciiDiagnostic.includes(asciiTail));
+
+  authServiceDiagnostics = Buffer.alloc(0);
+  const utf8Head = "utf8-head-marker";
+  const utf8Tail = "utf8-tail-marker";
+  appendAuthDiagnostic(Buffer.from(`${utf8Head}${"€".repeat(authDiagnosticCap)}${utf8Tail}`));
+  const utf8Diagnostic = authServiceDiagnostics.toString("utf8");
+  check("diagnostic retention is capped in bytes for multibyte UTF-8 output",
+    authServiceDiagnostics.length <= authDiagnosticCap &&
+      Buffer.byteLength(utf8Diagnostic) <= authDiagnosticCap &&
+      !utf8Diagnostic.includes(utf8Head) && utf8Diagnostic.includes(utf8Tail));
+  authServiceDiagnostics = Buffer.alloc(0);
+
+  mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
+  mkdirSync(join(participantRoot, ".cotal"), { recursive: true });
+
+  // Real local host authority: only this root has account signer + auth service state.
+  const auth = await createSpaceAuth(space);
+  const { saveSpaceAuth } = await import("@cotal-ai/workspace");
+  saveSpaceAuth(authDir(hostRoot), auth);
+  // Bring up the IdP before provider preparation, rather than hand-writing auth state or
+  // bypassing the provider seam.
+  let handler: ReturnType<typeof toNodeHandler> | undefined;
+  idpServer = createServer((request, response) => handler!(request, response));
+  await new Promise<void>((resolve) => idpServer!.listen(0, "127.0.0.1", resolve));
+  const address = idpServer.address();
+  if (address === null || typeof address === "string") throw new Error("IdP did not bind a TCP port");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const idpUrl = `${origin}/api/auth`;
+  const idp = betterAuth({
+    baseURL: origin,
+    secret: "registered-manager-smoke-secret-0123456789",
+    database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }),
+    emailAndPassword: { enabled: true },
+    plugins: [
+      jwt({ jwt: { issuer: origin, audience: origin } }),
+      deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id: string) => id === clientId }),
+      betterAuthBearer(),
+    ],
+  });
+  handler = toNodeHandler(idp);
+  const preparedHost = await cotalAuthProvider.prepareServer({
+    space,
+    operatorSeed: auth.operator.seed,
+    account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    store: hostStore,
+    dir: hostDir,
+    idpUrl,
+  });
+  check("host provider prepared user-auth state against the real IdP", Boolean(preparedHost));
+
+  storeDir = mkdtempSync(join(tmpdir(), "cotal-registered-manager-js-"));
+  writeFileSync(join(hostRoot, "server.conf"), serverConfig(auth, [auth], {
+    transport: { kind: "plaintext" },
+    port: brokerPort,
+    storeDir,
+    extraAccounts: preparedHost.extraAccounts,
+  }));
+  broker = trackChild(spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" }));
+  let brokerReady = false;
+  for (let tries = 0; tries < 50 && broker.exitCode === null; tries++) {
+    try {
+      const nc = await connect({
+        servers: server,
+        ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }),
+        maxReconnectAttempts: 0,
+        timeout: 300,
+      });
+      await nc.close();
+      brokerReady = true;
+      break;
+    } catch { await wait(100); }
+  }
+  check("user-auth broker is running", brokerReady && broker.exitCode === null);
+  await setupSpaceStreams({ servers: server, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+
+  authService = spawnAuthService();
+  const service = await awaitAuthService(authService);
+  check("host auth service exposes a public exchange", typeof service.publicUrl === "string" && service.publicUrl.startsWith("http://127.0.0.1:"), service);
+
+  const signup = await idp.api.signUpEmail({
+    body: { email: "participant@example.test", password: "correct-horse-battery", name: "Participant" },
+    returnHeaders: true,
+  });
+  const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
+  const approve = async (userCode: string): Promise<void> => {
+    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
+    const response = await fetch(`${idpUrl}/device/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie, origin },
+      body: JSON.stringify({ userCode }),
+    });
+    if (!response.ok) throw new Error(`device approval failed: HTTP ${response.status}`);
+  };
+  const { sub } = await establishIdpSession({
+    dir: participantHome,
+    idpUrl,
+    clientId,
+    onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode),
+  });
+  const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
+  check("participant login is established", typeof sub === "string" && sub.length > 0);
+  grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
+
+  const callout = await loadCalloutAuth(hostStore, space);
+  if (!callout) throw new Error("host callout material is missing after preparation");
+  persistRemoteUserEntry(space, server, participantRoot, {
+    space,
+    server,
+    tlsRequired: false,
+    userAuth: assertUserAuthInfo({
+      provider: "cotal",
+      idp: { url: idpUrl, issuer: origin, audience: origin },
+      endpoints: { url: service.publicUrl },
+    }),
+    sentinelCreds: callout.sentinelCreds,
+  }, false, false);
+  check("participant registry entry is remote user mode", existsSync(participantDir));
+  check("participant has no local hosting marker", hasUserAuthState(participantRoot, space) === false);
+
+  // The existing provider seam is enough for an ordinary remote USER connection. This establishes
+  // the control condition: the later denial is lack of manager service authority, not login/dial.
+  console.log("\ncell 1/7: IdP-backed owner grant and bearer");
+  const material = await cotalAuthProvider.userCredentials({
+    store: hostStore,
+    dir: managerAuthDir,
+    space,
+    actor: "cli",
+  });
+  const payload = JSON.parse(Buffer.from(material.bearer.split(".")[1]!, "base64url").toString("utf8")) as {
+    sub: string;
+    act: { actor: string; lifecycleUid: string };
+  };
+  endpoint = new CotalEndpoint({
+    space,
+    servers: server,
+    bearer: () => cotalAuthProvider.userCredentials({ store: hostStore, dir: managerAuthDir, space, actor: "cli" }).then((value: { bearer: string }) => value.bearer),
+    sentinelCreds: material.sentinelCreds,
+    lifecycleUid: payload.act.lifecycleUid,
+    channels: [],
+    consume: false,
+    watchChannels: false,
+    card: { owner: payload.sub, actor: payload.act.actor, name: "registered-participant", kind: "endpoint" },
+  });
+  endpoint.on("error", () => {});
+  await endpoint.start();
+  check("existing provider bearer connects from the registry-only participant", endpoint.principal.owner === owner && endpoint.principal.actor === "cli", endpoint.principal);
+
+  // The Manager itself receives only participant-owned nkey seeds and host-issued scoped JWTs.
+  // The co-located fixture keeps provider validation records and the signer in the host-owned store.
+  // No signer value enters remoteAuthority or child launch data.
+
+  console.log("\ncell 2/7: sealed remote-manager authority registration");
+  const state = loadOrCreateRemoteManagerIdentity(participantRoot, space);
+  const prepareRequest = remoteManagerAuthorityRequest(state, "cli", "prepare");
+  const prepare = await cotalAuthProvider.managerServiceAuthority!({ store: hostStore, dir: managerAuthDir, request: prepareRequest });
+  const actors = remoteManagerActors(state.instanceId);
+  const registered = await registerRemoteManagerAuthority({
+    space, server, owner, instanceId: state.instanceId, serveActor: actors.serve,
+    prepareCreds: materialCredential(prepare, "executor", state.identities.executor), tlsRequired: false,
+  });
+  const artifacts = managerClusterArtifacts();
+  const contractArtifacts = [...managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];
+  const registrationProof = rawDigest(JSON.stringify({
+    v: 1, space, owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, actors,
+    identities: prepareRequest.identities,
+    artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
+  }));
+  const activate = await cotalAuthProvider.managerServiceAuthority!({
+    store: hostStore, dir: managerAuthDir,
+    request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
+  });
+
+  const releaseDir = join(participantRoot, ".cotal", "native-retirement");
+  mkdirSync(releaseDir, { recursive: true, mode: 0o700 });
+  const journals = new Map<string, TestReleaseJournal>();
+  const failRelease = new Set<string>();
+  let retirementMints = 0;
+  const remoteAuthority: NonNullable<ConstructorParameters<typeof Manager>[0]["remoteAuthority"]> = {
+    owner, actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
+    supervisorCreds: materialCredential(prepare, "supervisor", state.identities.supervisor),
+    executorCreds: materialCredential(prepare, "executor", state.identities.executor),
+    serveCreds: materialCredential(activate, "serve", state.identities.serve),
+    goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
+    sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
+    serveGrant: registered.serveGrant,
+    mintSessionServing: async () => { throw new Error("native retirement acceptance opens no terminal sessions"); },
+    mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => {
+      retirementMints++;
+      const response = await cotalAuthProvider.managerServiceAuthority!({
+        store: hostStore, dir: managerAuthDir,
+        request: remoteManagerAuthorityRequest(state, "cli", "retire", registrationProof, undefined, undefined, {
+          id: identity.id, target, opId, serveEpoch,
+        }),
+      });
+      return materialCredential(response, "retirementRequester", identity);
+    },
+    prepareAgentRetirement: async ({ target, opId }) => {
+      check("host callback receives the exact lifecycle-derived operation", opId === managedRetirementOpId(target.lifecycleUid), { target, opId });
+      const key = `${target.owner}.${target.actor}.${target.lifecycleUid}`;
+      if (failRelease.has(target.actor)) throw new Error("injected host release failure");
+      await cotalAuthProvider.revokeAgent({ dir: hostDir, owner: target.owner, actor: target.actor });
+      let journal = journals.get(key);
+      if (!journal) {
+        journal = new TestReleaseJournal(join(releaseDir, `${createHash("sha256").update(key).digest("hex")}.json`));
+        journals.set(key, journal);
+      }
+      journal.release(target, opId);
+      journal.release(target, opId);
+      const mode = (await import("node:fs")).statSync(journal.path).mode & 0o777;
+      check("host release journal is private and terminally idempotent", mode === 0o600 && journal.row()?.state === "released", mode.toString(8));
+    },
+  };
+
+  manager = new Manager({
+    space, servers: server, runtime: "native-acceptance", workspaceRoot: hostRoot,
+    secretStore: hostStore, remoteAuthority,
+  });
+  await manager.start();
+
+  const personaDir = join(hostRoot, ".cotal", "agents");
+  mkdirSync(personaDir, { recursive: true });
+  const personaPath = join(personaDir, "native-retained.md");
+  writeFileSync(personaPath, "---\nname: native-retained\nagent: native-acceptance\n---\nnative acceptance child\n");
+  const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+
+  async function provisionRetained(actor: string, lifecycleUid: string): Promise<ManagerResumeAgent> {
+    const grant = await cotalAuthProvider.grantAgent({
+      store: hostStore, dir: hostDir, space, owner, actor, scope: [], allowSubscribe: [], allowPublish: [],
+      parent: `${owner}.cli`, lifecycleUid,
+    });
+    const provisioner = new CotalEndpoint({
+      space, servers: server, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [],
+      consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+      card: { name: "native-provisioner", kind: "endpoint" },
+    });
+    await provisioner.start();
+    try { await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: [] }); }
+    finally { await provisioner.stop(); }
+    const files = agentLifecycleSecretFilePaths(hostRoot, space, actor, lifecycleUid);
+    await hostStore.put(agentSecretKeyForFile(files.actorToken, space), grant.actorToken);
+    await hostStore.put(agentSecretKeyForFile(files.sentinelCreds, space), grant.sentinelCreds);
+    await materializeSecretToFile(hostStore, agentSecretKeyForFile(files.actorToken, space), files.actorToken);
+    await materializeSecretToFile(hostStore, agentSecretKeyForFile(files.sentinelCreds, space), files.sentinelCreds);
+    return {
+      space, name: actor, identity: {
+        mode: "user", owner, actor, lifecycleUid,
+        actorToken: { kind: "file", path: files.actorToken, sha256: digest(files.actorToken) },
+        sentinelCredential: { kind: "file", path: files.sentinelCreds, sha256: digest(files.sentinelCreds) },
+        health: { kind: "file", path: files.health },
+      },
+      launch: { connector: "native-acceptance", runtime: "native-acceptance", cwd: hostRoot,
+        source: { kind: "persona", ref: "native-retained", configPath: personaPath, configSha256: digest(personaPath) },
+        allowSubscribe: [], allowPublish: [], capabilities: [], events: false },
+      dependencies: [personaPath], spawner: `${owner}.cli`, authorityParent: `${owner}.cli`, startedAt: new Date().toISOString(),
+    };
+  }
+  const inventoryOf = (agent: ManagerResumeAgent): ManagerResumeInventory => ({
+    version: "cotal-manager-resume/v1", space, createdAt: new Date().toISOString(), agents: [agent],
+  });
+
+  console.log("\ncell 3/7: managed grant and lifecycle-keyed durables");
+  const blockedUid = mintLifecycleUid();
+  const blockedEntry = await provisionRetained("blocked", blockedUid);
+  console.log("\ncell 4/7: public resumePreserved launches agent-child");
+  const blockedResume = await manager.resumePreserved(inventoryOf(blockedEntry));
+  check("public resumePreserved adopts the exact blocked lifecycle", blockedResume.ok, blockedResume);
+  console.log("\ncell 5/7: public targeted despawn reaches host prepare and fails closed");
+  failRelease.add("blocked");
+  const beforeBlockedMints = retirementMints;
+  const blockedStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
+    target: { mode: "any", owner, actor: "blocked", lifecycleUid: blockedUid },
+  });
+  check("public targeted despawn accepts the blocked lifecycle", blockedStop.reply.ok, blockedStop.reply);
+  await wait(300);
+  check("release failure prevents terminal requester issuance", retirementMints === beforeBlockedMints, retirementMints);
+  const blockedRetry = await manager.resumePreserved(inventoryOf(blockedEntry));
+  check("release failure keeps the alias held", !blockedRetry.ok && /retir/.test(blockedRetry.error ?? ""), blockedRetry.error);
+
+  console.log("\ncell 6/7: durable prepare, HTTP requester issuance, and terminal rail");
+  const retiredUid = mintLifecycleUid();
+  const retiredEntry = await provisionRetained("retired", retiredUid);
+  const retiredResume = await manager.resumePreserved(inventoryOf(retiredEntry));
+  check("public resumePreserved adopts the exact terminal lifecycle", retiredResume.ok, retiredResume);
+  const beforeRetiredMints = retirementMints;
+  const retiredStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
+    target: { mode: "any", owner, actor: "retired", lifecycleUid: retiredUid },
+  });
+  check("public targeted despawn accepts the terminal lifecycle", retiredStop.reply.ok, retiredStop.reply);
+  observerNc = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
+  const lifecycle = await openLifecycleRegistry(observerNc, space);
+  let retiredHead: Awaited<ReturnType<typeof readLifecycleHeadForOperation>>;
+  for (let tries = 0; tries < 200; tries++) {
+    retiredHead = await readLifecycleHeadForOperation(lifecycle, owner, "retired");
+    if (retiredHead?.mapping.state === "retired") break;
+    await wait(100);
+  }
+  check("host release resolves before one real requester is issued", retirementMints === beforeRetiredMints + 1, retirementMints);
+  check("real auth barrier retires the exact lifecycle", retiredHead?.mapping.state === "retired" && retiredHead.mapping.lifecycleUid === retiredUid, retiredHead?.mapping);
+  const replacementUid = mintLifecycleUid();
+  const replacementEntry = await provisionRetained("retired", replacementUid);
+  const aliasProbe = await manager.resumePreserved(inventoryOf(replacementEntry));
+  check("terminal confirmation releases the Manager alias for a fresh lifecycle", aliasProbe.ok, aliasProbe);
+
+  console.log("\ncell 7/7: deterministic crash boundary");
+  fail++;
+  console.log("  ✗ ACCEPTANCE-BLOCKED: no production failpoint can deterministically terminate this process after gate retirement and before head retirement; private Manager calls and simulated state are intentionally refused");
+
+} catch (error) {
+  fail++;
+  console.log("  ✗ FAIL: harness threw", error instanceof Error ? error.stack ?? error.message : String(error));
+} finally {
+  await endpoint?.stop().catch(() => {});
+  await manager?.stop().catch(() => {});
+  await observerNc?.drain().catch(() => observerNc?.close());
+  const authStopped = await stopChild(authService);
+  const brokerStopped = await stopChild(broker);
+  idpServer?.closeAllConnections();
+  await new Promise<void>((resolve) => {
+    if (!idpServer) { resolve(); return; }
+    idpServer.close(() => resolve());
+  });
+  check("teardown stops both owned daemons before removing scratch state", authStopped && brokerStopped, {
+    auth: { exitCode: authService?.exitCode, signalCode: authService?.signalCode },
+    broker: { exitCode: broker?.exitCode, signalCode: broker?.signalCode },
+  });
+  if (authStopped && brokerStopped) {
+    rmSync(participantHome, { recursive: true, force: true });
+    rmSync(participantRoot, { recursive: true, force: true });
+    rmSync(hostRoot, { recursive: true, force: true });
+    if (storeDir) rmSync(storeDir, { recursive: true, force: true });
+  }
+  if (previousHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = previousHome;
+}
+
+console.log(`\nHOSTED RETIREMENT NATIVE ACCEPTANCE ${fail === 0 ? "GREEN" : "BLOCKED/FAILED"} (${pass} passed, ${fail} failed; credentials logged: no)`);
+process.exitCode = fail === 0 ? 0 : 1;
