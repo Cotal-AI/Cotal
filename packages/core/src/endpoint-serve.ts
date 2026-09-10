@@ -19,7 +19,7 @@ import type { ValidateFunction } from "ajv";
 import { spacePrefix } from "./subjects.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, epClassQueueGroup,
-  deriveReplySubject, parseEpSubject,
+  deriveReplySubject, parseEpSubject, EP_RAIL_V1,
   type EpCaller, type ParsedEpRequest,
 } from "./endpoint-subjects.js";
 import {
@@ -548,9 +548,14 @@ export function serveEndpoint(
       pending.add(run);
       void run.finally(() => pending.delete(run));
     };
-    subs.push(nc.subscribe(`${p}.ep.one.${e}.${cmd}.>`, { queue: epClassQueueGroup(identity.endpoint), callback: cb }));
-    subs.push(nc.subscribe(`${p}.ep.all.${e}.${cmd}.>`, { callback: cb }));
-    subs.push(nc.subscribe(`${p}.ep.inst.${e}.${iId}.${cmd}.>`, { callback: cb }));
+    // Both rails per command (SPEC 13.15): the legacy `ep` and the issued `ep.v1`, each with the
+    // same three shapes. The parsed subject carries which one a request rode; the handler reads
+    // it off `ctx.subject.rail`, never off the body.
+    for (const rail of ["ep", `ep.${EP_RAIL_V1}`]) {
+      subs.push(nc.subscribe(`${p}.${rail}.one.${e}.${cmd}.>`, { queue: epClassQueueGroup(identity.endpoint), callback: cb }));
+      subs.push(nc.subscribe(`${p}.${rail}.all.${e}.${cmd}.>`, { callback: cb }));
+      subs.push(nc.subscribe(`${p}.${rail}.inst.${e}.${iId}.${cmd}.>`, { callback: cb }));
+    }
   }
 
   return {

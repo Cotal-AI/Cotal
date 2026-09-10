@@ -24,6 +24,9 @@ export interface AgentConfig {
    *  endpoint binds its lifecycle-keyed dm/dlv/chathist durables by it — the same exact names its
    *  credential pins, so a mismatch fails at the broker, never silently. */
   lifecycleUid?: string;
+  /** The accepted-row token of a static credential's issuance (SPEC 13.15, `COTAL_ACCEPTED_TOKEN`):
+   *  the endpoint reads the issuer-bound generation under it and pins its caller rails. */
+  acceptedToken?: string;
   /** USER-MODE launch (a spawned agent on a user-auth mesh): the agent's owner+actor principal,
    *  the sentinel creds content it presents alongside its bearers, and the argv it EXECS for a
    *  fresh bearer (initial connect + every refresh — the exchange protocol stays behind that
@@ -324,6 +327,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // only die later at the endpoint's fail-before-presence gate with a worse operator signal.
   // Open mode stays uid-less here (the endpoint self-mints its per-session identity).
   const lifecycleUid = env.COTAL_LIFECYCLE_UID?.trim() || undefined;
+  const acceptedToken = env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
+  if (acceptedToken && !credsPath)
+    throw new Error("COTAL config: COTAL_ACCEPTED_TOKEN names a static issuance and needs COTAL_CREDS beside it (a broken launcher, not a mode)");
   if ((credsPath || userSet === 4) && !lifecycleUid)
     throw new Error(
       "COTAL config: an authed launch (COTAL_CREDS or user-mode) requires COTAL_LIFECYCLE_UID - the launcher mints it at provision time (a broken launcher, not a mode)",
@@ -349,6 +355,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: credsId ?? declaredId,
     lifecycleUid,
+    acceptedToken,
     creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
     userAuth,
     name,

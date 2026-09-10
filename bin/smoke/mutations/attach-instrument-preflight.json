@@ -1,0 +1,38 @@
+{
+  "suite": ["implementations/manager/smoke/attach-reconnect.smoke.ts"],
+  "guard": "a first attach against a mesh that is not there is refused in the preflight's classified words, not in the issuer dial's raw transport error",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
+  "completionMarker": "F. the four classifications the loop turns on",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-instrument-preflight.json",
+  "why": [
+    "The control-caller instrument mint became an issuance, and the issuer session dials the broker",
+    "BEFORE the preflight runs. Against a mesh that is not there that dial throws the transport's own",
+    "words, which is what cell G of attach-reconnect saw: a raw `connection refused` where the",
+    "classified `no mesh running at ... - run `cotal up`` sentence (and its registry prune) used to be.",
+    "The catch in `connectOrThrow` runs the preflight on the dial failure so the classified refusal is",
+    "what escapes; delete it and the raw error is the refusal again, end to end through the real binary.",
+    "",
+    "THIS IS ITS OWN FIXTURE, not a fourteenth entry in attach-reconnect.json, because of the specifier",
+    "boundary that fixture's own notes describe. Every mutation there lands in",
+    "`implementations/cli/src/commands/agents.ts` and builds `@cotal-ai/cli`. This one lands in",
+    "`packages/workspace/src/connect.ts`, which the binary reads through `@cotal-ai/workspace`'s",
+    "`dist/`, and a CLI build does not rebuild that package. Measured at 40169db43 with the mutant",
+    "applied and only the CLI built: cell G stayed green and the grader reported UNGRADABLE, the",
+    "mutation applied and nothing ran it. With the workspace built first the same mutant reddened",
+    "cell G on the named line (54 passed, 18 failed against 55/17 for the same tree unmutated, the",
+    "one extra red being that line). The command here builds the workspace and the CLI, and restores",
+    "both, because `dist/` is gitignored and git cannot be the recovery for it."
+  ],
+  "mutations": [
+    {
+      "name": "the issuer dial's transport error escapes as the first attach's refusal",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "          await preflightOrThrow(target);\n          throw e;",
+      "replace": "          throw e;",
+      "expectRed": "...saying the mesh is not there, in the CLI's own words",
+      "cell": "...saying the mesh is not there, in the CLI's own words",
+      "note": "Cell G pins an instance with `--on`, so this connect is the first thing that touches the broker, and the link is severed under it. Unmutated, the preflight classifies the dead link and the CLI prints `no mesh running at`; mutated, the issuer dial's `connection refused` is what the operator reads. The other three checks in cell G (non-zero exit, a single failure mark, no reconnect banner) stay green under this mutant, so a kill here is a claim about the refusal's WORDS specifically, which is the whole finding.",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

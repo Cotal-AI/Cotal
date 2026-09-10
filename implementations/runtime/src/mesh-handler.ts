@@ -70,6 +70,10 @@ import {
   type GoalResultFact,
   type Presence,
   type ResolvedService,
+  type RunAdmissionView,
+  assertAdmittedPublish,
+  assertAdmittedSubscribe,
+  assertNotRevoked,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
 import { migrationSeats } from "./migrate.js";
@@ -113,6 +117,13 @@ export interface RunMeshServices {
   readonly pauses: RunPauseHost;
   readonly waits: RunWaitHost;
   readonly authority: RunScopeAuthority;
+  /**
+   * The run's ADMISSION (SPEC 14.8), re-read leader-served at every channel effect this handler
+   * performs on its own connection: a conclave's registration and membership writes, checked
+   * AFTER a generated channel name is derived. The wait host holds the same reader for the
+   * channel reads it mediates. A mediated run with no reader admits no channel effect.
+   */
+  readonly admission: () => Promise<RunAdmissionView>;
 }
 
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
@@ -1824,6 +1835,19 @@ export class MeshHandler {
    *  cursor forward (the members were mid-conversation when the host died), and a row the world
    *  moved past (an independent leave or rejoin) is theirs, not this conclave's. */
   private async executeConclavePlan(plan: ConclavePlan): Promise<void> {
+    if (this.services) {
+      // SPEC 14.8: registering a room and writing third-party memberships are management writes
+      // the run performs as its own principal, so the admitted ceiling must cover the channel in
+      // BOTH directions. A program-named room the run merely borrows is held to the same rule: a
+      // conclave is a channel effect whichever way the name was chosen.
+      // The publish row an agent's credential carries names the AGENT's triple, so the ceiling
+      // is checked under the caller the run was admitted for, never under the run-driver principal
+      // this handler runs as: that principal holds no chat row and would deny every conclave the
+      // starting caller may in fact hold.
+      const view = await this.services.admission();
+      assertAdmittedPublish(view, plan.channel, view.admission.caller);
+      assertAdmittedSubscribe(view, plan.channel);
+    }
     if (plan.registered) {
       await writeChannelConfig(await this.channelRegistry(), plan.channel, {
         description: `a workflow conclave of run ${this.binding.runId}`,
@@ -1864,6 +1888,11 @@ export class MeshHandler {
    *  tolerant of exactly one foreign move — a NEWER generation on a row (the member left and
    *  rejoined on its own), which the stale-write guard reports and this leave must not evict. */
   private async releaseConclave(plan: ConclavePlan): Promise<void> {
+    // A release is owed cleanup of resources this run created (recorded in the plan), which a
+    // revocation does not cancel: the tombstones and the registry delete undo the run's own
+    // writes and grant nothing new. The admission must still be READABLE, so an unreachable store
+    // refuses here too rather than proceeding on nothing.
+    if (this.services) await this.services.admission();
     const joined = plan.members.filter((m) => m.joined);
     if (joined.length > 0) {
       const membersKv = await this.membersRegistry();

@@ -16,7 +16,7 @@
     "(MC7), and the re-execute guard that keeps a landed row's join cursor still (MC8).",
     "",
     "All mutants live in ../src/mesh-handler.ts, imported by the suite through the relative source",
-    "path — no build sits between the mutation and the run."
+    "path \u2014 no build sits between the mutation and the run."
   ],
   "mutations": [
     {
@@ -35,7 +35,7 @@
       "replace": "  const matches = rows.filter((p) => p.card?.name === name && typeof p.card?.id === \"string\");",
       "expectRed": "a failed resolve bound no plan and wrote no row",
       "cell": "a failed resolve bound no plan and wrote no row",
-      "note": "The handle pins one lifecycle; matching the name alone joins whatever seat currently wears it — a different incarnation than the run holds. Measured 2026-09-02: two reds (the stale-uid member resolves instead of failing L4002, and a row is written for it); 37 passed."
+      "note": "The handle pins one lifecycle; matching the name alone joins whatever seat currently wears it \u2014 a different incarnation than the run holds. Measured 2026-09-02: two reds (the stale-uid member resolves instead of failing L4002, and a row is written for it); 37 passed."
     },
     {
       "name": "every member is planned joined-by-us, residents included",
@@ -44,13 +44,13 @@
       "replace": "          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,\n          joined: true,",
       "expectRed": "the close left the resident's membership open at its own generation",
       "cell": "the close left the resident's membership open at its own generation",
-      "note": "The discrimination dropped: a pre-existing membership on a pinned channel is claimed by the conclave and evicted at close — a durable membership the run merely borrowed, destroyed. Measured 2026-09-02: two reds (the plan claims the resident, and the close tombstones its generation-3 row); 37 passed."
+      "note": "The discrimination dropped: a pre-existing membership on a pinned channel is claimed by the conclave and evicted at close \u2014 a durable membership the run merely borrowed, destroyed. Measured 2026-09-02: two reds (the plan claims the resident, and the close tombstones its generation-3 row); 37 passed."
     },
     {
       "name": "the close releases nothing",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "  private async releaseConclave(plan: ConclavePlan): Promise<void> {\n    const joined = plan.members.filter((m) => m.joined);",
-      "replace": "  private async releaseConclave(plan: ConclavePlan): Promise<void> {\n    const joined: ConclavePlanMember[] = [];",
+      "find": "    if (this.services) await this.services.admission();\n    const joined = plan.members.filter((m) => m.joined);",
+      "replace": "    if (this.services) await this.services.admission();\n    const joined: ConclavePlanMember[] = [];",
       "expectRed": "both membership rows were committed and then tombstoned by the close",
       "cell": "both membership rows were committed and then tombstoned by the close",
       "note": "\"Has them leave\" removed: every conclave leaves its members durably joined forever. Measured 2026-09-02: six reds across the close and discharge blocks (both cells of block 1, block 2's close, block 3's visitor, block 5's discharge, block 7's re-entered close); 33 passed."
@@ -62,7 +62,7 @@
       "replace": "      if (e.kind === \"conclave\") {\n        continue;\n      }",
       "expectRed": "the discharge tombstoned the loser's membership row",
       "cell": "the discharge tombstoned the loser's membership row",
-      "note": "Spec §7.5's recovery path removed: a cancelled conclave never closes itself, so with no discharge arm its membership lives on with nobody in the room. Measured 2026-09-02: two reds (the loser's row stays open and the minted registry row survives); 37 passed."
+      "note": "Spec \u00a77.5's recovery path removed: a cancelled conclave never closes itself, so with no discharge arm its membership lives on with nobody in the room. Measured 2026-09-02: two reds (the loser's row stays open and the minted registry row survives); 37 passed."
     },
     {
       "name": "a minted channel's registry row is never torn down",

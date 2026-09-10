@@ -17,7 +17,7 @@ import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node"
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { spacePrefix } from "./subjects.js";
 import {
-  epRequestSubject, parseEpSubject, callerTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner,
+  epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
@@ -206,7 +206,7 @@ export async function epProbeInstanceInterest(
   // The SAME reserved sentinel `epCall` uses, for the same reason: no responder holds a publish
   // grant for the `_nr._nr._nr` reply subject (§13.9), so a 503 arriving there is the broker's own
   // control frame and cannot be forged by a recipient that knows the nonce.
-  const noRespReplyTo = `${spacePrefix(space)}.ep.reply._nr._nr._nr.${callerTokens(caller).join(".")}.${n}`;
+  const noRespReplyTo = noRespondersReplyTo(space, caller, n);
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -256,7 +256,14 @@ const registryReadDetail = (op: EpVerbOp): EpRegistryReadFailedDetail => ({ kind
 /** The caller's per-request reply subscription: its own rail narrowed to exactly this request's
  *  nonce (contained in the §13.9 reply-read grant), so concurrent calls never see each other. */
 function replySubjectFor(space: string, caller: EpCaller, n: string): string {
-  return `${spacePrefix(space)}.ep.reply.*.*.*.${callerTokens(caller).join(".")}.${n}`;
+  return `${spacePrefix(space)}.${epPlaneTokens(caller).join(".")}.reply.*.*.*.${callerRailTokens(caller).join(".")}.${n}`;
+}
+
+/** The reserved no-responders sentinel on the caller's OWN rail (SPEC 13.5/13.9): no responder
+ *  holds a publish grant for `_nr._nr._nr`, so only the broker's control frame reaches it. On the
+ *  versioned rail the sentinel carries the generation too, inside the caller's read filter. */
+function noRespondersReplyTo(space: string, caller: EpCaller, n: string): string {
+  return `${spacePrefix(space)}.${epPlaneTokens(caller).join(".")}.reply._nr._nr._nr.${callerRailTokens(caller).join(".")}.${n}`;
 }
 
 /** One attributed reply: the structural attribution comes from the reply SUBJECT (§13.2), never
@@ -384,7 +391,7 @@ export async function epCall(
   // inbox prefix needed): responders answer on the DERIVED rail, so this sentinel only ever carries
   // the broker's no-responders 503, which our rail subscription observes and disposes with everything
   // else in the finally — no ghost request/subscription/timer survives a successful call.
-  const noRespReplyTo = `${spacePrefix(space)}.ep.reply._nr._nr._nr.${callerTokens(op.caller).join(".")}.${req.n}`;
+  const noRespReplyTo = noRespondersReplyTo(space, op.caller, req.n);
   const started = Date.now();
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;

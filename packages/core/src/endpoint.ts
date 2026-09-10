@@ -21,8 +21,9 @@ import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
-import type { EpCaller } from "./endpoint-subjects.js";
-import { assertIdToken } from "./endpoint-subjects.js";
+import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
+import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
+import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
@@ -184,6 +185,13 @@ export interface EndpointOptions {
    *  lifecycle-keyed messaging durables (`dm_…-<uid>`, `dlv_…-<uid>`, `chathist_…-<uid>`) — an
    *  endpoint without one (a pure operator/daemon connection) can not consume DM/chat history. */
   lifecycleUid?: string;
+  /** The accepted-row token of this credential's issuance (SPEC 13.15). Set when the launcher
+   *  minted the credential as an issuance: after connecting, the endpoint reads the generation the
+   *  ISSUER bound under this token (a broker-enforced per-key read) and pins it into every caller
+   *  rail it forms. A token that resolves to no row, or to another incarnation's reference, fails
+   *  the connect: the rails would be refused at the broker anyway, and a silent legacy fallback is
+   *  exactly what the versioned rail exists to rule out. */
+  acceptedToken?: string;
   servers?: string;
   /** Connection token (soft-shared auth). Mutually exclusive with user/pass. */
   token?: string;
@@ -558,6 +566,9 @@ export class CotalEndpoint extends EventEmitter {
   readonly actorIsEphemeral: boolean;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
+  private readonly acceptedToken?: string;
+  /** The issuer-bound generation, learned once per connection from the accepted row. */
+  private issuedGeneration?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
@@ -681,6 +692,10 @@ export class CotalEndpoint extends EventEmitter {
         : this.authed
           ? undefined
           : mintLifecycleUid();
+    if (opts.acceptedToken !== undefined) {
+      if (!opts.creds) throw new Error("EndpointOptions.acceptedToken names a static issuance and needs creds beside it (SPEC 13.15)");
+      this.acceptedToken = assertGeneration(opts.acceptedToken, "acceptedToken");
+    }
     // `card.id` is the principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries;
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
@@ -1034,6 +1049,19 @@ export class CotalEndpoint extends EventEmitter {
     });
     this.watchStatus();
     this.js = jetstream(this.nc);
+
+    // Discovery of the issued generation (SPEC 13.15): the ISSUER wrote the accepted reference
+    // under the token this launch was handed; the broker admits the read only under this
+    // connection's own per-key grant. What comes back must name this incarnation, and a fresh
+    // connection re-reads it: the generation is bound to the credential the transport presented,
+    // never to a file that may have been replaced under it.
+    if (this.acceptedToken !== undefined) {
+      const ref = await readAcceptedRow(this.nc, this.space, this.acceptedToken);
+      const uid = this.requireLifecycleUid("an issued endpoint");
+      if (ref.owner !== this.owner || ref.actor !== this.actor || ref.uid !== uid)
+        throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
+      this.issuedGeneration = ref.generation;
+    }
 
     if (this.doWatch || this.doRegister) {
       const kvm = new Kvm(this.nc);
@@ -1954,7 +1982,10 @@ export class CotalEndpoint extends EventEmitter {
    *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
-    return { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+    const triple = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+    if (this.acceptedToken === undefined) return triple;
+    if (this.issuedGeneration === undefined) throw new Error("invokeService: the issued generation is not yet discovered on this connection");
+    return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
