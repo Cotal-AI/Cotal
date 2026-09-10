@@ -4,7 +4,6 @@
   ],
   "guard": "the events plane does not republish TOOL_CALL_ARGS or TOOL_CALL_RESULT, including on AguiEmitter.start recovery of a frozen pre-fix body; six carriers fail independently; sibling text still publishes",
   "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:agui-tool-result",
-  "afterRestore": "pnpm --filter @cotal-ai/connector-core... build",
   "completionMarker": "agui-tool-result smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-tool-result.json",
   "why": [
@@ -15,8 +14,8 @@
     "live entry point reached them. This fixture's recover mutation is the one #1415 lacked: it drives",
     "AguiEmitter.start() against a sent_unacked TOOL_CALL_RESULT body.",
     "",
-    "CONNECTOR-CORE EXPORTS RESOLVE TO dist/. The command AND afterRestore rebuild, or the mutant is",
-    "read by nothing and reports a false SURVIVED.",
+    "CONNECTOR-CORE EXPORTS RESOLVE TO dist/. The command AND each mutation's afterRestore rebuild, or",
+    "the mutant is read by nothing and a poisoned dist survives the restore.",
     "",
     "SIX CARRIERS ARE SIX CELLS. A mutation that reopens only ARGS must red an args cell, not a shared",
     "'no marks' cell. T-ARGS deletes TOOL_CALL_ARGS from the forbidden set; T-RESULT deletes",
@@ -28,21 +27,24 @@
       "file": "extensions/connector-core/src/agui.ts",
       "find": "    if (frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
       "replace": "    if (false && frozenBodyViolatesEgressPolicy(o.body)) {\n      throw this.halt(\n        \"egress-policy\",",
-      "expectRed": "recover:AguiEmitter.start refuses a frozen TOOL_CALL_RESULT body rather than publishing it"
+      "expectRed": "recover:AguiEmitter.start refuses a frozen TOOL_CALL_RESULT body rather than publishing it",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
     {
       "name": "T-ARGS the forbidden set no longer includes TOOL_CALL_ARGS, reopening the three args carriers",
       "file": "extensions/connector-core/src/agui.ts",
       "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
       "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
-      "expectRed": "carrier:claude-args mark is absent from the recorded publish"
+      "expectRed": "carrier:claude-args mark is absent from the recorded publish",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
     {
       "name": "T-RESULT the forbidden set no longer includes TOOL_CALL_RESULT, reopening the three result carriers",
       "file": "extensions/connector-core/src/agui.ts",
       "find": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,",
       "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,",
-      "expectRed": "carrier:claude-result mark is absent from the recorded publish"
+      "expectRed": "carrier:claude-result mark is absent from the recorded publish",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     }
   ]
 }
