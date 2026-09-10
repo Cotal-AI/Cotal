@@ -268,13 +268,9 @@ export async function openAuthAdminListener(opts: {
   // resume racing the rail) share ONE runAgentRetirementBarrier, so the barrier body never dual-executes
   // (dual contain/drain mutating past a frontier the other task closes). A joiner awaits the same result.
   //
-  // The flight is BOUND to its operation coordinates (owner, actor, lifecycleUid). opId is caller-supplied
-  // at this generic rail (`retireOpId(uid)` is a manager convention, NOT a broker- or barrier-enforced
-  // bind), so a coordinate-BLIND join would let an ACTIVE lifecycle B reuse A's in-flight opId, skip the
-  // barrier's durable intent-coordinate check (retirement-barrier.ts), and receive A's `ok:true` naming B
-  // — freeing B's alias over a still-live principal (the exact alias-reuse class #1 exists to close). So a
-  // same-opId join whose coordinates differ is REFUSED as a full no-op; only a coordinate-IDENTICAL
-  // request (the intended nudge/retry) joins the in-flight barrier.
+  // The flight remains BOUND to its operation coordinates (owner, actor, lifecycleUid) as defense in
+  // depth. The rail now derives one opId per target before this map, so different lifecycles cannot
+  // collide here. A coordinate-identical nudge, retry, or boot race still joins the one barrier run.
   const barrierFlight = new Map<string, { owner: string; actor: string; lifecycleUid: string; promise: ReturnType<typeof runAgentRetirementBarrier> }>();
 
   const handle = async (request: ParsedEpRequest, body: Uint8Array): Promise<{ ok: boolean; id?: string; data?: unknown; error?: string }> => {
