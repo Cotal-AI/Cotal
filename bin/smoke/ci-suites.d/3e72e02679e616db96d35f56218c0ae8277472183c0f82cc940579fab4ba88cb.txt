@@ -1,0 +1,2 @@
+# The events plane must not republish tool-call args or results (#695).
+smoke:agui-tool-result

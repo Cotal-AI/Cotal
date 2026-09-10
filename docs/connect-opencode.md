@@ -93,7 +93,8 @@ The generic tool surface and the inbound-message model are shared across connect
 ## Event plane
 
 A session launched with `cotal spawn --events` publishes a structured account of what it did: run
-boundaries per turn, assistant text, and each tool call with its arguments, its end, and its result.
+boundaries per turn, assistant text, and each tool call with its start and its end. Tool
+arguments and tool results are not republished onto this channel.
 The channel is `events.<owner>.<actor>`, named after the session's principal, and the rules for it
 are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for the
 channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
