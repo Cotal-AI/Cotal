@@ -79,6 +79,8 @@ try {
   process.kill(ready.managerPid, "SIGKILL"); await new Promise((resolve) => first.child.once("exit", resolve));
   await wait(1_000);
   check("instrument: manager SIGKILL leaves the custodian and the seat child live", live(record.custodianPid) && live(record.childPid), { custodian: state(record.custodianPid), child: state(record.childPid) });
+  // The dead manager's liveness lease must lapse before the same logical instance can start again.
+  await wait(20_000);
   const second = await startManager("successor", false);
   const reaped = await until(() => /static retirement worker: orphan seat process custodian \d+ (signalled|gone), child \d+ (signalled|gone)/.test(second.stderr()), 60_000);
   check("successor reaps the orphan seat process before retiring the lifecycle", reaped && !live(record.childPid) && !live(record.custodianPid), { stderr: second.stderr().split("\n").filter((l) => l.includes("static retirement")).join("\n"), custodian: state(record.custodianPid), child: state(record.childPid) });
