@@ -180,8 +180,9 @@ into it, and the daemon adopts each generation on a preflight-proven 75% timer. 
 cross-host composition cannot satisfy that by writing one filesystem and fingerprinting another:
 `Manager.start()` and every later remint challenge the daemon's `reloadStoreIdentity` and a
 divergent pair is refused naming both stores. The identity is the store the daemon actually
-reloads: an injected coordinate, the workspace that contains a `--creds` file, or the
-workstation root, never the process cwd when those differ. No bound daemon is not a named
+reloads: an injected coordinate, the directory of a `--creds` file (the FsSecretStore
+constructed over that path, never an ancestor workspace), or the workstation root,
+never the process cwd when those differ. No bound daemon is not a named
 store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
 An injected store names its coordinate in
 `COTAL_SECRET_STORE` on both processes. It never throws: it

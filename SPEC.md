@@ -4151,8 +4151,8 @@ single-function profiles, each granting only the verbs its function needs and no
   step of standing credential renewal (the daemon re-reads its re-signed creds file, pins the
   identity, swaps its connection, and reconnects the membership feed's rw connection, replying
   with the adopted JWT windows); `reloadStoreIdentity`, the store-identity challenge that
-  names the SecretStore the daemon reloads from (the `--creds` file's workspace, an injected
-  coordinate, or the workstation root, never a cwd that differs from that reload store) so a
+  names the SecretStore the daemon reloads from (the directory of a `--creds` file, an injected
+  coordinate, or the workstation root, never an ancestor workspace or a cwd that differs from that reload store) so a
   manager whose remint store diverges is refused before that remint, including a daemon that
   bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on

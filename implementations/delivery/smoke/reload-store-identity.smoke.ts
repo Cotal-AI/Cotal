@@ -1,13 +1,14 @@
 /**
- * The #773 reload-store identity is the store the daemon actually reloads, not the
- * process cwd. A `--creds` file under workspace B, with cwd at workspace A, must
- * name B. Naming findCotalRoot() (cwd) would certify the two-root defect.
+ * The #773 reload-store identity is the store the daemon actually reloads.
+ * A `--creds` file in a subdirectory of workspace B must name that directory
+ * (the FsSecretStore root), never findCotalRoot() of cwd or of the file.
+ * Naming the enclosing workspace would certify a two-root composition.
  *
  * Run: pnpm smoke:reload-store-identity  (no broker)
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { findCotalRoot } from "@cotal-ai/workspace";
 import { reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf } from "../src/delivery.js";
 
@@ -35,11 +36,14 @@ try {
   mkdirSync(join(workspaceB, ".cotal", "space.aa"), { recursive: true });
   const credsB = join(workspaceB, ".cotal", "space.aa", "delivery.creds");
   writeFileSync(credsB, "x");
+  const storeDir = dirname(credsB);
 
   const fromCreds = reloadStoreIdentityFromCredsPath(credsB);
-  ok("--creds under B names workspace B", fromCreds.kind === "fs" && fromCreds.root === workspaceB, fromCreds);
+  ok("--creds names the file's directory (the FsSecretStore root)", fromCreds.kind === "fs" && fromCreds.root === storeDir, fromCreds);
+  ok("--creds identity is not the enclosing workspace", fromCreds.root !== workspaceB);
+  ok("--creds identity is not findCotalRoot of the file", fromCreds.root !== findCotalRoot(dirname(credsB)));
   ok("--creds identity is not cwd A", fromCreds.root !== workspaceA);
-  ok("cwd A is a different findCotalRoot from the --creds file", findCotalRoot(workspaceA) === workspaceA && findCotalRoot(workspaceA) !== fromCreds.root);
+  ok("enclosing workspace B is a different findCotalRoot from the --creds store", findCotalRoot(workspaceB) === workspaceB && findCotalRoot(workspaceB) !== fromCreds.root);
 
   const prev = process.env.COTAL_SECRET_STORE;
   delete process.env.COTAL_SECRET_STORE;
@@ -54,7 +58,7 @@ try {
   if (prev === undefined) delete process.env.COTAL_SECRET_STORE;
   else process.env.COTAL_SECRET_STORE = prev;
 
-  ok("non-injected identity is the recorded fs root", reloadStoreIdentityOf({ injected: false, identity: { kind: "fs", root: workspaceB } }).root === workspaceB);
+  ok("non-injected identity is the recorded fs root", reloadStoreIdentityOf({ injected: false, identity: { kind: "fs", root: storeDir } }).root === storeDir);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -35,10 +35,10 @@ type CredsSource = { store: SecretStore; key: string; where: string; injected: b
 
 /**
  * The store identity THIS daemon will re-read on `reloadCreds`. It is the same store
- * `resolveCredsStore` returns: an injected coordinate, the workspace that contains a
- * `--creds` file, or the workstation root. Naming `findCotalRoot()` (cwd) here while
- * `--creds` reloads a different directory would certify the two-root defect as a
- * same-store proof.
+ * `resolveCredsStore` returns: an injected coordinate, the directory of a `--creds`
+ * file (the FsSecretStore constructed over that path), or the workstation root.
+ * Naming an ancestor workspace while `--creds` reloads a subdirectory would certify
+ * a two-root composition as a same-store proof.
  */
 export function reloadStoreIdentityOf(src: Pick<CredsSource, "injected" | "identity">): SecretStoreIdentity {
   if (src.injected) {
@@ -52,9 +52,9 @@ export function reloadStoreIdentityOf(src: Pick<CredsSource, "injected" | "ident
   return src.identity;
 }
 
-/** Workspace the manager names, derived from the `--creds` file the daemon actually reloads. */
+/** Directory the daemon actually reloads: the FsSecretStore root over `--creds`, not an ancestor workspace. */
 export function reloadStoreIdentityFromCredsPath(credsPath: string): SecretStoreIdentity {
-  return { kind: "fs", root: findCotalRoot(dirname(resolve(credsPath))) };
+  return { kind: "fs", root: dirname(resolve(credsPath)) };
 }
 
 /**
@@ -95,7 +95,9 @@ function resolveCredsStore(v: Values, space: string, injected?: SecretStore): Cr
       key,
       where: `secret-store key "${key}"`,
       injected: true,
-      identity: reloadStoreIdentityOf({ injected: true, identity: { kind: "injected", coordinate: "" } }),
+      // Coordinate is named AFTER the cred is found. An absent key must still be
+      // the absent-key error, never a COTAL_SECRET_STORE throw that masks it.
+      identity: { kind: "injected", coordinate: process.env.COTAL_SECRET_STORE ?? "" },
     };
   }
   if (v.creds !== undefined) {
