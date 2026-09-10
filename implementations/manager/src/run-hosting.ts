@@ -44,7 +44,7 @@
 import { randomBytes } from "node:crypto";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import type { KV } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
 import {
   COTAL_LANG_RUN_HOST,
   DEFAULT_SERVER,
@@ -57,6 +57,16 @@ import {
   mintCreds,
   newIdentity,
   newTakeoverId,
+  admissionBucket,
+  createRunAdmission,
+  readRunAdmission,
+  revokeRunAdmission,
+  withIssuerSession,
+  isIssuedCaller,
+  EP_UNBOUND_CALLER_AUTHORITY,
+  type EpServeContext,
+  type RunAdmission,
+  type RunAdmissionView,
   openRecordsBucket,
   readRunProgram,
   readRunRecord,
@@ -135,8 +145,15 @@ export class RunHosting {
       throw new EpEnvelopeError("unavailable", "the manager is still taking back the workflow runs a predecessor was driving; retry shortly (SPEC 14.3)");
   }
 
-  /** `run-start`: validate, mint the id, launch the drive, answer. The drive continues off-handler. */
-  async start(args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {
+  /** `run-start`: validate, mint the id, ADMIT the run under the caller's issued authority
+   *  (SPEC 14.8), launch the drive, answer. The drive continues off-handler.
+   *
+   *  Admission is what confines the run: the caller's request rode the versioned rail, so the
+   *  broker pinned its generation; the evidence the issuer recorded for that generation is
+   *  resolved (active, source live, linearized by a second read) and its ceiling becomes the
+   *  run's channel ceiling. A legacy arrival carries no binding and is refused by name, never
+   *  routed through the host's own authority. */
+  async start(ctx: EpServeContext, args: { source: string; file?: string; timeout?: string }): Promise<{ runId: string }> {
     this.assertReconciled();
     const host = this.host();
     const verdict = host.validate(args.source, args.file);
@@ -154,6 +171,7 @@ export class RunHosting {
     // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
     // 128 bits, the width the spec's other minted identifiers carry.
     const runId = `run-${randomBytes(16).toString("hex")}`;
+    const admission = await this.admit(ctx, runId);
     await this.launch(host, {
       mode: "new",
       runId,
@@ -162,8 +180,74 @@ export class RunHosting {
       epoch: 1,
       fencingToken: 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
+      admission,
     });
     return { runId };
+  }
+
+  /** Resolve the caller's issued authority and write the run's admission record, create-only,
+   *  BEFORE the driver is launched and before the start reply. The ceiling is the evidence's,
+   *  verbatim; nothing is read from a mutable ledger or an agent file. */
+  private async admit(ctx: EpServeContext, runId: string): Promise<RunAdmissionView> {
+    const caller = ctx.subject.caller;
+    const auth = this.ctx.auth;
+    if (auth === undefined)
+      throw new EpEnvelopeError("unimplemented", `an open mesh issues no caller authority and keeps no admission, so it hosts no run in space ${this.ctx.space}; runs need a static-auth mesh (SPEC 14.8)`);
+    if (ctx.subject.rail !== "v1" || !isIssuedCaller(caller))
+      throw new EpEnvelopeError(
+        "permission-denied",
+        `run-start binds a run to the caller's issued authority, and this request rode the legacy rail with none; re-mint the credential as an issuance and call on the versioned rail (SPEC 13.15, 14.8)`,
+        [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }],
+      );
+    const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+    const resolved = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, (s) =>
+      s.store.resolve(ref, s.sourceIsLive));
+    const admission: RunAdmission = {
+      version: 1,
+      space: this.ctx.space,
+      endpoint: this.ctx.endpoint,
+      runId,
+      instanceId: this.ctx.instanceId,
+      caller,
+      ceiling: resolved.evidence.permissions,
+      provenance: { kind: "issued", ref, resolvedRevision: resolved.revision },
+      admittedAt: Date.now(),
+    };
+    await this.withAdmitter(runId, (kv) => createRunAdmission(kv, admission));
+    return { admission, revoked: undefined };
+  }
+
+  /** One admission-store write over an ephemeral `run-admitter` credential pinned to this run. */
+  private async withAdmitter<T>(runId: string, fn: (kv: KV) => Promise<T>): Promise<T> {
+    const auth = this.ctx.auth;
+    if (auth === undefined) throw new EpEnvelopeError("unimplemented", "an open mesh admits no hosted run (SPEC 14.8)");
+    const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
+      servers: this.ctx.servers ?? DEFAULT_SERVER,
+      ...standaloneConnectOpts({
+        creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: this.ctx.endpoint, runId } }),
+        /* not yet wired to a recorded transport */ tls: false,
+      }),
+      maxReconnectAttempts: 0,
+    });
+    try {
+      return await fn(await new Kvm(nc).open(admissionBucket(this.ctx.space)));
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
+  /** The admission a resume, takeover or reconcile continues under: the ORIGINAL record, with
+   *  its current revocation state. A new requester cannot widen it; a run with none was admitted
+   *  before SPEC 14.8 or by a host that never admitted it, and is not resumed here. */
+  private async admitted(runId: string): Promise<RunAdmissionView> {
+    return await this.withOperator({ runId }, (planes) => readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId));
+  }
+
+  /** Revoke a hosted run (SPEC 14.8): the marker is create-only and independent of the immutable
+   *  admission; every later channel effect of the run refuses on reading it, and a drive parked in
+   *  a wait ends within one poll. Idempotent. */
+  async revoke(runId: string, by: string, reason: string): Promise<void> {
+    await this.withAdmitter(runId, (kv) => revokeRunAdmission(kv, this.ctx.endpoint, { version: 1, runId, by, reason, revokedAt: Date.now() }));
   }
 
   /** `run-resume`: take a recorded run over under a fresh takeover and continue it from its journal.
@@ -174,13 +258,18 @@ export class RunHosting {
     this.assertReconciled();
     const host = this.host();
     const slot = this.claim(args.runId);
-    let found: { status: RunStatusValue | undefined; program: RunProgramValue | undefined } | undefined;
+    let found: { status: RunStatusValue | undefined; program: RunProgramValue | undefined; admission: RunAdmissionView } | undefined;
     try {
-      found = await this.withOperator({ runId: args.runId }, async (_planes, kv) => {
+      found = await this.withOperator({ runId: args.runId }, async (planes, kv) => {
         const record = await readRunRecord(kv, this.ctx.endpoint, args.runId);
         if (record === undefined) return undefined;
         const program = await readRunProgram(kv, this.ctx.endpoint, args.runId);
-        return { status: record.status?.value, program };
+        // The ORIGINAL admission, with its current revocation state (SPEC 14.8): a resume never
+        // re-admits under the resuming caller, and a revoked run is not continued.
+        const admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, args.runId);
+        if (admission.revoked !== undefined)
+          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed (SPEC 14.8)`);
+        return { status: record.status?.value, program, admission };
       });
       if (found === undefined)
         throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
@@ -197,6 +286,7 @@ export class RunHosting {
       runId: args.runId,
       source: found.program.source,
       ...(found.program.file !== undefined ? { file: found.program.file } : {}),
+      admission: found.admission,
       epoch: (found.status?.epoch ?? 0) + 1,
       fencingToken: (found.status?.fencingToken ?? 0) + 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
@@ -266,9 +356,9 @@ export class RunHosting {
   }
 
   private async takeBack(): Promise<void> {
-    let inherited: { runId: string; epoch: number; fencingToken: number; source: string; file?: string }[] = [];
+    let inherited: { runId: string; epoch: number; fencingToken: number; source: string; file?: string; admission: RunAdmissionView }[] = [];
     try {
-      inherited = await this.withOperator({}, async (_planes, kv) => {
+      inherited = await this.withOperator({}, async (planes, kv) => {
         const out: typeof inherited = [];
         for (const e of await walkKvEntries(kv, `run.${this.ctx.endpoint}.*.spec`)) {
           const runId = e.key.split(".")[2];
@@ -281,7 +371,20 @@ export class RunHosting {
             this.ctx.log(`! run ${runId} is recorded running with no recorded program; it cannot be taken back here - resume it from a terminal with \`cotal run resume ${runId} --local --file <program>\``);
             continue;
           }
-          out.push({ runId, epoch: status.epoch + 1, fencingToken: status.fencingToken + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}) });
+          // A run whose admission is missing, unreadable or revoked is NOT taken back (SPEC 14.8):
+          // it stays parked, named in the log, until an operator admits or revokes it explicitly.
+          let admission: RunAdmissionView;
+          try {
+            admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId);
+          } catch (e) {
+            this.ctx.log(`! run ${runId} stays parked: ${(e as Error).message}`);
+            continue;
+          }
+          if (admission.revoked !== undefined) {
+            this.ctx.log(`! run ${runId} stays parked: revoked by ${admission.revoked.by} (${admission.revoked.reason})`);
+            continue;
+          }
+          out.push({ runId, epoch: status.epoch + 1, fencingToken: status.fencingToken + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
         }
         return out;
       });
@@ -293,7 +396,7 @@ export class RunHosting {
     const host = this.host();
     for (const r of inherited) {
       try {
-        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT });
+        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission });
       } catch (e) {
         this.ctx.log(`! run ${r.runId} could not be taken back: ${(e as Error).message}`);
       }
@@ -371,7 +474,7 @@ export class RunHosting {
    *  including the two before a drive is attempted, frees a slot whose drive never started. */
   private async launch(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView },
     claimed?: HostedRun,
   ): Promise<void> {
     const slot = claimed ?? this.claim(req.runId);
@@ -395,7 +498,7 @@ export class RunHosting {
 
   private async drive(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView },
     slot: HostedRun,
   ): Promise<void> {
     const { takeoverId, identity, mediatorIdentity } = slot;
@@ -460,6 +563,7 @@ export class RunHosting {
         instanceId: this.ctx.instanceId,
         epoch: req.epoch,
         defaultCheckpointTimeout: req.timeout,
+        admission: req.admission,
         // The broker's own max_payload, minus headroom for the record envelope around the entry.
         ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
       }, mediator);

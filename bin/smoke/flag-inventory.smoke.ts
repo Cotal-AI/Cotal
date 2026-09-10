@@ -226,8 +226,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // flag; resume/journal/answer name an existing run positionally.
   run: {
     flags: [
-      "artifact:string", "by:string", "creds:string", "endpoint:string", "file:string:f",
-      "local:boolean", "server:string", "space:string", "timeout:string", "value:string",
+      "admit-publish:string", "admit-read:string", "artifact:string", "by:string", "creds:string",
+      "endpoint:string", "file:string:f", "local:boolean", "reason:string", "server:string", "space:string",
+      "timeout:string", "value:string",
     ],
     positionals: true,
   },

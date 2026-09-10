@@ -35,6 +35,8 @@ import type { RecordKindDef } from "./endpoint-records.js";
 import { AUTHORITY_KIND_DEFS, callerReadableRecordKind } from "./endpoint-records.js";
 import { epjStreamName, epfStreamName, canonDurable, IDEMPOTENCY_HORIZON_MS_DEFAULT, RESULT_RETENTION_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
+import { ensureIssuedStores, issuedStoreStreamNames } from "./issued-authority.js";
+import { admissionBucket, ensureAdmissionStore } from "./run-admission.js";
 
 // Re-exported so the binding module presents the complete §13.12 name table even though the
 // journal/records helpers own the definitions their own logic is written against.
@@ -123,7 +125,18 @@ export function endpointPlaneStreamNames(space: string): string[] {
     `KV_${recordsBucket(space)}`,
     `KV_${epAuthBucket(space)}`,
     `KV_${sessionsBucket(space)}`,
+    ...issuedStoreStreamNames(space),
+    `KV_${admissionBucket(space)}`,
   ];
+}
+
+/** The stores {@link createEndpointStreams} HARDENS with a one-time `STREAM.UPDATE` right after
+ *  creation (the records store, the two issued-authority stores and the run admission store).
+ *  Every credential that runs the creation seam needs an UPDATE row on exactly these and no other
+ *  stream; the provisioner and the restore-side infrastructure login both read this list, so a
+ *  store added to the hardening step cannot leave one of them without the grant. */
+export function hardenedAuthorityStreamNames(space: string): string[] {
+  return [`KV_${recordsBucket(space)}`, ...issuedStoreStreamNames(space), `KV_${admissionBucket(space)}`];
 }
 
 // ---- §13.12 retention knobs (documented defaults, overridable per space policy) ----
@@ -348,6 +361,11 @@ export async function createEndpointStreams(
   });
   await ensureContractStore(jsm, space);
   await ensureAuthorityStores(jsm, kvm, space);
+  // The issued-authority stores (SPEC 13.15) and the run admission store (SPEC 14.8) join the
+  // authority stores here: every mesh that ensures the endpoint streams has them, and each is
+  // create-or-verify with a fail-loud drift check of its own.
+  await ensureIssuedStores(jsm, kvm, space);
+  await ensureAdmissionStore(jsm, kvm, space);
   // P2 item 6: the DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
   // uncaptured (above), but the `session.<id>` ledger rows are a captured authority KV — kept in
   // their own bucket so the manager's standing session-ledger cred's bucket-blind STREAM.MSG.GET reads

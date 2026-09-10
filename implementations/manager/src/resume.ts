@@ -20,7 +20,15 @@ const fileRef = z.strictObject({ kind: z.literal("file"), path, sha256: digest }
 const lifecycleUid = z.string().regex(/^[a-z0-9]{26,32}$/, "must be a lifecycle uid token");
 const identity = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("open"), id: token, lifecycleUid }),
-  z.strictObject({ mode: z.literal("static"), id: token, lifecycleUid, credential: fileRef }),
+  z.strictObject({
+    mode: z.literal("static"),
+    id: token,
+    lifecycleUid,
+    credential: fileRef,
+    // The SPEC 13.15 issuance the credential was minted under; a resumed static agent renews
+    // under this generation, and a pre-issuance inventory carries none (its renewal refuses).
+    issued: z.strictObject({ generation: z.string().regex(/^[a-f0-9]{32}$/), acceptedToken: z.string().regex(/^[a-f0-9]{32}$/) }).optional(),
+  }),
   z.strictObject({
     mode: z.literal("user"),
     owner: token,

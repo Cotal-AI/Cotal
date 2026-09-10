@@ -26,6 +26,13 @@ import {
   personaCatalogReadable,
   loadCotalConfig,
   mintCreds,
+  mintGeneration,
+  mintAcceptedToken,
+  openIssuedStore,
+  acceptedBucket,
+  issuedBucket,
+  type IssuanceSeam,
+  type IssuedStore,
   mintLifecycleUid,
   managedRetirementOpId,
   mkSecretDir,
@@ -406,7 +413,7 @@ export type ManagerResumeIdentity =
   // must recover it, not mint a fresh one, or a later teardown would orphan the real durables. It is
   // recorded here (from the live ManagedAgent) so recovery is uniform across all three modes.
   | { mode: "open"; id: string; lifecycleUid: string }
-  | { mode: "static"; id: string; lifecycleUid: string; credential: { kind: "file"; path: string; sha256: string } }
+  | { mode: "static"; id: string; lifecycleUid: string; credential: { kind: "file"; path: string; sha256: string }; issued?: { generation: string; acceptedToken: string } }
   | {
       mode: "user";
       owner: string;
@@ -603,6 +610,10 @@ interface ManagedAgent {
   /** Private nkey seed, kept so a later step can mint matching creds for this id. Static auth
    *  only — a user-mode agent has no static identity (its credential is its bearer). */
   seed?: string;
+  /** The SPEC 13.15 issuance of a static agent's credential: the generation its rails carry and
+   *  the accepted-row token its endpoint discovers it by. A renewal keeps both (the ceiling is
+   *  unchanged by construction); absent on a user-mode or open agent. */
+  issued?: { generation: string; acceptedToken: string };
   /** Set for a USER-MODE agent: its derived owner. Marks the slot for user-mode teardown (ledger
    *  revoke + token/sentinel/health file removal) and the auth-health read in {@link list}. */
   userOwner?: string;
@@ -1887,7 +1898,7 @@ export class Manager {
         ? (() => {
             if (!files?.creds)
               throw new Error(`managed agent ${a.name} is static-auth but its credential path was not recorded`);
-            return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) } };
+            return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) }, ...(a.issued ? { issued: a.issued } : {}) };
           })()
         : { mode: "open", id: principal.actor, lifecycleUid: a.lifecycleUid };
     const dependencies = [a.launch.source.configPath];
@@ -2577,7 +2588,7 @@ export class Manager {
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
       // The workflow-run family (SPEC 14.3): the manager hosts the driver. Reach is the broker's
       // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
-      runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(args(ctx) as { source: string; file?: string; timeout?: string })),
+      runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
       runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
       runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, this.runAnswerer(ctx))),
       runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),
@@ -4184,6 +4195,7 @@ export class Manager {
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
       let credsPath: string | undefined;
+      let issued: ManagedAgent["issued"];
       let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
       let userOwner: string | undefined;
       if (this.userMode) {
@@ -4224,25 +4236,28 @@ export class Manager {
         // for the provisioning window, never as a standing grant on the always-on daemon (residual 2).
         // F5(b): the credential is BOUNDED (`expiresAt`) — the manager push-renews it ahead of expiry.
         const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
-        const creds = await this.withProvisioner((prov) =>
-          provisionAgent(prov, this.auth!, identity, {
-            subscribe,
-            allowSubscribe,
-            allowPublish,
-            role,
-            capabilities,
-            lifecycleUid,
-            expiresAt: exp,
-          }),
+        // The credential is an ISSUANCE (SPEC 13.15): its caller rails carry a fresh generation
+        // and its ceiling is recorded as evidence bound to this incarnation's ledger family. The
+        // §13.1 ledger append (ledger BEFORE materialization) is the release's finalizer, so the
+        // evidence activates only once the row exists, and the row exists only after the evidence
+        // was staged. The agent learns the generation by reading the accepted row under its token.
+        issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+        const issuedAgent = { name, id: identity.id, lifecycleUid };
+        const creds = await this.withIssuer((i) =>
+          this.withProvisioner((prov) =>
+            provisionAgent(prov, this.auth!, identity, {
+              subscribe,
+              allowSubscribe,
+              allowPublish,
+              role,
+              capabilities,
+              lifecycleUid,
+              expiresAt: exp,
+              issued,
+              issuance: this.issuanceSeam(i, "issue", issuedAgent, exp),
+            }),
+          ),
         );
-        // Ledger BEFORE materialization (§13.1): record the credentialId on the slot, append the
-        // `cred.<uid>.<credId>` row, and only then write the credential where anything can read
-        // it — a credential is never materialized before its ledger row exists.
-        const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
-        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, async (t) => {
-          await recordSlotCredential(t, DEV_OWNER, name, lifecycleUid, credentialId);
-          await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });
-        });
         // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
         // file path, so the cred must exist as a file regardless of the store behind the seam. The
         // manager's ONE store (injected for hosted, workstation FS locally).
@@ -4285,6 +4300,7 @@ export class Manager {
         // chathist durables by this exact value (its creds pin the same names, so a mismatch fails
         // at the broker, never silently).
         lifecycleUid,
+        acceptedToken: issued?.acceptedToken,
         servers: this.servers,
         configPath,
         model,
@@ -4325,6 +4341,7 @@ export class Manager {
         // recorded truth teardown/preservation/health consume, never re-derived by name.
         secretPaths: provisioned?.secretPaths,
         ...(userLaunch ? { userOwner } : { seed: identity.seed }),
+        ...(issued ? { issued } : {}),
         spawner: spawner ?? this.ep.ref().id,
         authorityParent: userLaunch && spawner && parsePrincipalKey(spawner) ? spawner : undefined,
         startedAt: Date.now(),
@@ -4807,6 +4824,7 @@ export class Manager {
           // with no COTAL_LIFECYCLE_UID: static/user fail the connector auth gate and open self-mints a
           // fresh uid that orphans the preserved durables and never matches the readiness fence.
           lifecycleUid: entry.identity.lifecycleUid,
+          acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
           servers: this.servers,
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,
@@ -4864,6 +4882,7 @@ export class Manager {
         agent: entry.launch.connector,
         id: entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id,
         seed: adoptedSeed,
+        ...(entry.identity.mode === "static" && entry.identity.issued ? { issued: entry.identity.issued } : {}),
         // Recover the ORIGINAL incarnation uid the durables are keyed by (never a fresh mint on resume).
         lifecycleUid: entry.identity.lifecycleUid,
         // Adopt the INVENTORY's recorded family (possibly a pre-split name-keyed layout) — the
@@ -5196,6 +5215,42 @@ export class Manager {
     } finally {
       await nc.drain().catch(() => nc.close());
     }
+  }
+
+  /** Run one SPEC 13.15 issuance operation over an ephemeral `issuer` connection: the evidence
+   *  stage/release of one mint, or the retirement walk of one lifecycle's issuances. The store
+   *  handle and the accepted-row KV live only for this window; the standing supervisor holds no
+   *  grant on either bucket. */
+  private async withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> {
+    if (!this.auth) throw new Error("withIssuer: no space auth (an open mesh issues nothing)");
+    const creds = await mintCreds(this.auth, newIdentity(), "issuer");
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const kvm = new Kvm(nc);
+      const store = openIssuedStore(await kvm.open(issuedBucket(this.space)), await jetstreamManager(nc), this.space);
+      return await fn({ store, accepted: await kvm.open(acceptedBucket(this.space)) });
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
+  /** The issuance seam of ONE static credential mint (SPEC 13.15): the evidence is bound to the
+   *  incarnation's own `cred.<uid>` ledger family, so the family's revocation (the static
+   *  terminal) retires every issuance that named it. The finalizer is the §13.1 ledger append
+   *  (slot credentialId + `cred.<uid>.<credId>` row); release runs it, then activates. */
+  private issuanceSeam(i: { store: IssuedStore; accepted: KV }, mode: "issue" | "renew", a: { name: string; id: string; lifecycleUid: string }, exp: number): IssuanceSeam {
+    return {
+      mode,
+      store: i.store,
+      accepted: i.accepted,
+      sources: mode === "issue" ? [{ space: this.space, bucket: epAuthBucket(this.space), key: `cred.${a.lifecycleUid}` }] : [],
+      finalize: async (credentialId) => {
+        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
+          await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
+          await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
+        });
+      },
+    };
   }
 
   /** Run one §13.1 ENDPOINT-SERVE credential operation (P2 item 1, 1a-serve) over an ephemeral,
@@ -6758,6 +6813,12 @@ export class Manager {
       log: (line) => console.error(`static retirement ${a.name}: ${line}`),
     });
     const cleanup = async (): Promise<void> => {
+      // SPEC 13.15: every issuance bound to this incarnation's ledger family is retired here,
+      // inside the barrier and after the ledger rows were revoked (the source is frozen first,
+      // then the index is walked). A retirement that lost is surfaced, never skipped: an active
+      // attempt row on a retired lifecycle would authorize a run the credential no longer can.
+      const retired = await this.withIssuer((i) => i.store.retireSource({ space: this.space, bucket: epAuthBucket(this.space), key: `cred.${a.lifecycleUid}` }));
+      if (retired > 0) console.error(`static retirement ${a.name}: retired ${retired} issuance(s) bound to uid ${a.lifecycleUid}`);
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
       if (files.creds) {
@@ -6821,19 +6882,24 @@ export class Manager {
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
     // allowPublish/role/capabilities are the JWT-shaping inputs; `subscribe` (the active read
     // set) shapes durable membership only and is not a mint input.
-    const creds = await mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
-      allowSubscribe: a.launch.allowSubscribe,
-      allowPublish: a.launch.allowPublish,
-      role: a.role,
-      capabilities: a.launch.capabilities,
-      lifecycleUid: a.lifecycleUid,
-      expiresAt: exp,
-    });
-    const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
-    await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
-      await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
-      await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
-    });
+    if (!a.issued)
+      throw new Error(`renewManagedStaticCred: ${a.name} carries no issuance; a static credential minted before SPEC 13.15 is not renewed under an unbound generation - respawn the agent`);
+    // A RENEWAL keeps the generation (SPEC 13.15): the same JWT-shaping inputs produce the same
+    // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
+    // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
+    const issued = a.issued;
+    const creds = await this.withIssuer((i) =>
+      mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
+        allowSubscribe: a.launch.allowSubscribe,
+        allowPublish: a.launch.allowPublish,
+        role: a.role,
+        capabilities: a.launch.capabilities,
+        lifecycleUid: a.lifecycleUid,
+        expiresAt: exp,
+        issued,
+        issuance: this.issuanceSeam(i, "renew", a, exp),
+      }),
+    );
     const secrets = this.secrets;
     const credsPath = a.secretPaths!.creds!;
     await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
@@ -7516,6 +7582,14 @@ export class Manager {
    *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
   private list(ownerFilter?: string) {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
+    // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
+    // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
+    // support "offline" or "absent" for anyone: netcup 2026-09-09 rendered every live seat as
+    // one of those for hours after the presence stream was recreated under a still-open watch.
+    // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
+    // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as
+    // `current`: that is exactly what every row meant before the field existed.
+    const view = typeof this.ep.presenceView === "function" ? this.ep.presenceView() : { state: "current" as const };
     return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
       // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
       // bearer command writes each attempt's outcome to the health file, and `ps` renders it
@@ -7537,6 +7611,9 @@ export class Manager {
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
         mesh: roster.get(a.name)?.status ?? "absent",
+        // `current` is the only state in which `mesh` is a verdict; the other two are the
+        // observer's own condition and travel on the row (older CLIs ignore the field).
+        meshView: view.state,
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,

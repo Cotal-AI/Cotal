@@ -21,8 +21,9 @@ import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
-import type { EpCaller } from "./endpoint-subjects.js";
-import { assertIdToken } from "./endpoint-subjects.js";
+import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
+import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
+import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
@@ -184,6 +185,13 @@ export interface EndpointOptions {
    *  lifecycle-keyed messaging durables (`dm_…-<uid>`, `dlv_…-<uid>`, `chathist_…-<uid>`) — an
    *  endpoint without one (a pure operator/daemon connection) can not consume DM/chat history. */
   lifecycleUid?: string;
+  /** The accepted-row token of this credential's issuance (SPEC 13.15). Set when the launcher
+   *  minted the credential as an issuance: after connecting, the endpoint reads the generation the
+   *  ISSUER bound under this token (a broker-enforced per-key read) and pins it into every caller
+   *  rail it forms. A token that resolves to no row, or to another incarnation's reference, fails
+   *  the connect: the rails would be refused at the broker anyway, and a silent legacy fallback is
+   *  exactly what the versioned rail exists to rule out. */
+  acceptedToken?: string;
   servers?: string;
   /** Connection token (soft-shared auth). Mutually exclusive with user/pass. */
   token?: string;
@@ -501,6 +509,18 @@ export class CotalEndpoint extends EventEmitter {
   private lastPresenceWatchAt = 0;
   /** Last emitted presence-view state. Suppresses duplicate `presence-view` events. */
   private presenceViewState: PresenceView["state"] = "unpopulated";
+  /** A presence-watch rebind in flight (see {@link rebindStalePresenceWatch}); one at a time. */
+  private presenceRebind?: Promise<void>;
+  /** Bumped by every connection-scoped teardown and by {@link stop}. A presence bind that was
+   *  awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
+   *  iterator it got and installs nothing (see {@link startPresenceWatch}). */
+  private presenceEpoch = 0;
+  /** The current watch was bound onto a bucket with NO keys (see {@link markPresenceBucketEmpty}).
+   *  Such a watch cannot deliver until someone writes, so its silence is not staleness. */
+  private presenceWatchEmpty = false;
+  /** Wall-clock of the last rebind attempt, so a bucket that is silent because it is EMPTY (or a
+   *  broker that keeps refusing the consumer create) is retried once per TTL, not per sweep tick. */
+  private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
@@ -542,6 +562,9 @@ export class CotalEndpoint extends EventEmitter {
   readonly actorIsEphemeral: boolean;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
+  private readonly acceptedToken?: string;
+  /** The issuer-bound generation, learned once per connection from the accepted row. */
+  private issuedGeneration?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
@@ -665,6 +688,10 @@ export class CotalEndpoint extends EventEmitter {
         : this.authed
           ? undefined
           : mintLifecycleUid();
+    if (opts.acceptedToken !== undefined) {
+      if (!opts.creds) throw new Error("EndpointOptions.acceptedToken names a static issuance and needs creds beside it (SPEC 13.15)");
+      this.acceptedToken = assertGeneration(opts.acceptedToken, "acceptedToken");
+    }
     // `card.id` is the principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries;
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
@@ -1019,6 +1046,19 @@ export class CotalEndpoint extends EventEmitter {
     this.watchStatus();
     this.js = jetstream(this.nc);
 
+    // Discovery of the issued generation (SPEC 13.15): the ISSUER wrote the accepted reference
+    // under the token this launch was handed; the broker admits the read only under this
+    // connection's own per-key grant. What comes back must name this incarnation, and a fresh
+    // connection re-reads it: the generation is bound to the credential the transport presented,
+    // never to a file that may have been replaced under it.
+    if (this.acceptedToken !== undefined) {
+      const ref = await readAcceptedRow(this.nc, this.space, this.acceptedToken);
+      const uid = this.requireLifecycleUid("an issued endpoint");
+      if (ref.owner !== this.owner || ref.actor !== this.actor || ref.uid !== uid)
+        throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
+      this.issuedGeneration = ref.generation;
+    }
+
     if (this.doWatch || this.doRegister) {
       const kvm = new Kvm(this.nc);
       // The presence bucket is a JetStream stream. Open mode lazily creates it; auth mode
@@ -1143,6 +1183,8 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     this.streamMsgs.length = 0;
+    this.presenceEpoch++;
+    this.presenceRebind = undefined;
     try {
       this.presenceWatchIter?.stop();
     } catch {
@@ -1167,6 +1209,8 @@ export class CotalEndpoint extends EventEmitter {
     this.confirmingChatSubs.clear();
     this.roster.clear();
     this.lastPresenceWatchAt = 0;
+    this.presenceRebindAt = 0;
+    this.presenceWatchEmpty = false;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
     this.joinSeq.clear();
@@ -1441,9 +1485,14 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The presence epoch moves first: a bind still awaiting the broker must find it moved
+   *  before any await below gives it a window to install a watch on a stopped endpoint
+   *  (see {@link startPresenceWatch}). */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.presenceEpoch++;
+    this.presenceRebind = undefined;
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
@@ -1903,7 +1952,10 @@ export class CotalEndpoint extends EventEmitter {
    *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
-    return { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+    const triple = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+    if (this.acceptedToken === undefined) return triple;
+    if (this.issuedGeneration === undefined) throw new Error("invokeService: the issued generation is not yet discovered on this connection");
+    return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
@@ -2113,6 +2165,7 @@ export class CotalEndpoint extends EventEmitter {
   presenceView(): PresenceView {
     if (!this.doWatch) return { state: "current", fresh: true };
     if (!this.presenceSnapshotPopulated) return { state: "unpopulated", fresh: false };
+    if (this.presenceWatchEmpty) return { state: "current", fresh: true };
     const staleSince = this.lastPresenceWatchAt + this.ttlMs;
     if (Date.now() < staleSince) return { state: "current", fresh: true };
     return { state: "stale", fresh: false, staleSince };
@@ -4841,15 +4894,31 @@ export class CotalEndpoint extends EventEmitter {
     await this.kv.put(this.card.id, JSON.stringify(record));
   }
 
-  private async startPresenceWatch(): Promise<void> {
-    if (!this.kv) return;
+  /** Bind a presence watch on the current connection. Resolves true when the watch was
+   *  installed, false when the endpoint stopped or rebuilt while the bind was in flight: that
+   *  bind's iterator is released here and nothing is installed, because the epoch that asked
+   *  for it is gone and the epoch that replaced it binds its own watch through
+   *  {@link connectAndBind}. Without this fence a bind that completes after {@link stop} would
+   *  resurrect a watch on a stopped endpoint, and one that completes after a rebuild would
+   *  overwrite the fresh epoch's watch with a dead-connection iterator. */
+  private async startPresenceWatch(): Promise<boolean> {
+    if (!this.kv) return false;
+    const epoch = this.presenceEpoch;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
+    if (epoch !== this.presenceEpoch) {
+      try { iter.stop(); } catch { /* its connection may already be gone */ }
+      hydrated();
+      return false;
+    }
     this.presenceWatchIter = iter;
     void (async () => {
       let ready = false;
       for await (const e of iter) {
+        // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
+        // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
+        if (this.presenceWatchIter !== iter) break;
         this.handleKvEntry(e);
         // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
         if (!ready && e.isUpdate) {
@@ -4861,6 +4930,58 @@ export class CotalEndpoint extends EventEmitter {
       }
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
+    return true;
+  }
+
+  /**
+   * Replace a presence watch that has gone silent past TTL while the connection is up. The new
+   * ordered consumer starts from the bucket's current last-per-subject state, so a peer that is
+   * heartbeating is re-observed within one replay and a peer that is gone is aged out by the
+   * next sweep exactly as if the watch had never stalled. Rate-limited to one attempt per TTL
+   * per observer, never overlapping, never on a stopped or rebuilding endpoint (those own their
+   * watch through {@link connectAndBind}). A stop or rebuild that lands while the bind is in
+   * flight retires it: {@link startPresenceWatch} releases the late iterator and reports
+   * nothing, since the epoch that was silent no longer exists. A failed bind is reported and
+   * the view stays stale.
+   */
+  private rebindStalePresenceWatch(now: number): void {
+    if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
+    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;
+    this.presenceRebindAt = now;
+    const old = this.presenceWatchIter;
+    const epoch = this.presenceEpoch;
+    this.presenceRebind = (async () => {
+      try {
+        const silentMs = now - this.lastPresenceWatchAt;
+        // Bind the replacement FIRST. A rebind the broker refuses (stream gone, create denied) or
+        // one a held link never answers must leave the old watch in place: on a plain stall that
+        // watch is the one that recovers by itself, and its replay is still guarded against
+        // expired PUTs. Only a successfully bound watch retires its predecessor.
+        const installed = await this.startPresenceWatch();
+        // Retired mid-bind (stop or rebuild moved the epoch): the late iterator is already
+        // released and the old watch was torn down by whoever moved the epoch. Nothing to
+        // retire, nothing to report.
+        if (!installed) return;
+        if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
+        // A bucket with no keys replays nothing, so the new watch cannot refresh
+        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. Read
+        // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
+        // from the same `info(true)` it used to place the isUpdate marker.
+        const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
+        if (pending === 0) await this.onPresenceBucketEmpty();
+        this.emit("warning", new Error(
+          `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
+        ));
+      } catch (e) {
+        // A bind the epoch swap itself rejected (connection drained under it) is not a fault of
+        // the epoch that replaced it; only a refusal on a still-current epoch is reported.
+        if (epoch === this.presenceEpoch) this.emit("error", e as Error);
+      } finally {
+        // An epoch swap already disowned this flight (and may own a successor's by now); only
+        // a flight still in its own epoch clears the slot. Within one epoch there is one flight.
+        if (epoch === this.presenceEpoch) this.presenceRebind = undefined;
+      }
+    })();
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
@@ -4898,8 +5019,61 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The watch was just bound onto a bucket with no keys.
+   *
+   *  A NON-REGISTERING observer (a `cotal status` probe, a lease checker) has real knowledge:
+   *  nobody is present. Every peer still in its roster is known gone (its key is not there to
+   *  replay), so it is marked offline now rather than aged out against a delivery that cannot
+   *  come; the silence gate is disarmed and the view reads current until the first write lands.
+   *  Without that the empty-bucket view relapsed to stale one window later and rebound again on
+   *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
+   *
+   *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
+   *  empty bucket under it means the bucket was wiped since its last heartbeat (the netcup
+   *  recreation), and the same wipe took every peer's record: their absence says the bucket is
+   *  new, not that they left. rev-1421-gpt reproduced the previous behaviour at default timing:
+   *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
+   *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
+   *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
+   *  which the new watch delivers, and lets the ordinary per-peer age-out run from that delivery:
+   *  a peer that is still heartbeating rewrites its key within its own heartbeat interval and is
+   *  re-observed live; one that is gone ages out exactly as after a plain rebind. The roster is
+   *  not touched here and the view is not held; the delivery is what makes it current.
+   *
+   *  What neither branch covers: a consumer that dies again while the bucket is still empty is
+   *  not detectable by silence, so the first write after that is missed until the observer
+   *  restarts. */
+  private async onPresenceBucketEmpty(): Promise<void> {
+    if (this.doRegister) {
+      // Our own key is missing from a bucket we write to: put it back. publishPresence throws on
+      // a refused write; that surfaces through the rebind flight's error path with the epoch
+      // fence intact, and the view stays stale, which is the honest state for an observer that
+      // cannot even record itself.
+      await this.publishPresence();
+      return;
+    }
+    this.markPresenceBucketEmpty();
+  }
+
+  /** See {@link onPresenceBucketEmpty}: the non-registering branch. */
+  private markPresenceBucketEmpty(): void {
+    this.presenceWatchEmpty = true;
+    this.lastPresenceWatchAt = 0;
+    let changed = false;
+    for (const [id, p] of this.roster) {
+      if (p.status === "offline") continue;
+      const offline = this.toOffline(p);
+      this.roster.set(id, offline);
+      this.emit("presence", { type: "offline", presence: offline });
+      changed = true;
+    }
+    if (changed) this.emit("roster", this.getRoster());
+    this.emitPresenceViewIfChanged();
+  }
+
   private handleKvEntry(e: KvEntry): void {
     this.lastPresenceWatchAt = Date.now();
+    this.presenceWatchEmpty = false;
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
@@ -5011,11 +5185,29 @@ export class CotalEndpoint extends EventEmitter {
     // watch freshness; surface the view as stale instead.
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
       this.emitPresenceViewIfChanged();
+      // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
+      // the transport is up and the watch's own consumer is what died. Measured on netcup
+      // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
+      // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
+      // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client
+      // never reset again, the iterator never closed, and the manager's roster stayed frozen at
+      // the pre-recreation snapshot for hours: `cotal ps` read every older seat "mesh offline"
+      // and every newer seat "not in roster" while all of them were heartbeating. The same
+      // end state follows a plain consumer delete (an operator, or the 5-minute inactive
+      // threshold after a long stall). Rebind the watch from the bucket's CURRENT state; a held
+      // link's rebind fails or stays silent and the view simply stays stale, as before.
+      this.rebindStalePresenceWatch(now);
       return;
     }
     let changed = false;
     for (const [id, p] of this.roster) {
-      if (p.status !== "offline" && now - p.ts > this.ttlMs) {
+      // A peer's own `ts` always trails the observer's last delivery, so "older than TTL by the
+      // wall clock" alone ages peers out on the tick just before the whole-bucket gate above
+      // trips (#1311's flap; measured as 3 offline verdicts per silence in the rebind suite).
+      // Require that the watch itself delivered for a full TTL after this peer's last heartbeat:
+      // then other peers were heard and this one was not, which is the only silence that is the
+      // peer's rather than the observer's.
+      if (p.status !== "offline" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {
         const offline = this.toOffline(p);
         this.roster.set(id, offline);
         this.emit("presence", { type: "offline", presence: offline });

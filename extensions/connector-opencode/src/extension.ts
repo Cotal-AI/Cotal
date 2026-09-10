@@ -189,6 +189,7 @@ export const opencodeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // The auto-submitted first turn (`cotal spawn --prompt`). It rides the child ENV, the same
     // carrier codex uses (COTAL_CODEX_PROMPT): the plugin runs inside `opencode serve`, which
     // inherits this env, so the text reaches the one component that can issue a turn without going

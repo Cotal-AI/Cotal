@@ -79,3 +79,6 @@ export * from "./run-migration.js";
 export * from "./run-program.js";
 export * from "./run-driver-grants.js";
 export * from "./run-host.js";
+export * from "./issued-authority.js";
+export * from "./run-admission.js";
+export * from "./issuer-session.js";

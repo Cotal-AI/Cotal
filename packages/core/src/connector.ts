@@ -23,6 +23,10 @@ export interface LaunchOpts {
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
   lifecycleUid?: string;
+  /** The accepted-row token of the credential's issuance (SPEC 13.15), chosen by the launcher at
+   *  mint. The connector forwards it (`COTAL_ACCEPTED_TOKEN`) so the session's endpoint reads the
+   *  generation the issuer bound and pins it into its caller rails. Static issued launches only. */
+  acceptedToken?: string;
   servers?: string;
   /** The agent's resolved access policy — the SAME read/post set the manager mints the agent's
    *  creds from. The connector forwards it (`COTAL_SUBSCRIBE` / `COTAL_ALLOW_SUBSCRIBE` /

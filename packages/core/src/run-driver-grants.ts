@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, assertInboxConnId, DEV_OWNER } from "./subjects.js";
 import { endpointToken, assertIdToken, assertLifecycleToken, epCallerReplyFilter, type EpCaller } from "./endpoint-subjects.js";
 import { recordsBucket } from "./endpoint-records.js";
+import { admissionBucket } from "./run-admission.js";
 import {
   runDriverJournalGrants,
   runJournalReplayGrants,
@@ -120,6 +121,9 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: caller.owner } }, caller),
     // The contract store fetch a resolve performs (the subject-scoped form every agent holds).
     `$JS.API.DIRECT.GET.${epcStreamName(space)}.${p}.epc.>`,
+    // The run's admission and revocation rows (SPEC 14.8): a leader-served read before every
+    // channel effect. READ only; the admitter writes them.
+    `$JS.API.STREAM.MSG.GET.KV_${admissionBucket(space)}`,
     "$JS.API.INFO",
   ];
   return { publish, subscribe: [epCallerReplyFilter(space, caller), `_INBOX_${assertInboxConnId(connId)}.>`] };
@@ -167,6 +171,9 @@ export function runOperatorGrants(space: string, args: RunOperatorGrantArgs, con
     // The run and program records of the endpoint, read through the leader-served point read and
     // the consumer-free walk.
     `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
+    // The run's admission and revocation rows (SPEC 14.8): a resume, takeback or served read
+    // decides on them before any drive. READ only; the admitter writes them.
+    `$JS.API.STREAM.MSG.GET.KV_${admissionBucket(space)}`,
     // The named run's journal replay, read-only, under this call's own takeover id.
     ...(args.runId === undefined ? [] : runJournalReplayGrants(space, args.runId, args.takeoverId)),
     // An ANSWER of one pause: its answer record (create-only), the checkpoint status a settle
