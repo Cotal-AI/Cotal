@@ -264,6 +264,7 @@
     "smoke:own-agent-control": "tsx implementations/manager/smoke/own-agent-control.smoke.ts",
     "smoke:views": "tsx implementations/auth/smoke/views.smoke.ts",
     "smoke:manager-service-authority": "tsx implementations/auth/smoke/manager-service-authority.smoke.ts",
+    "smoke:remote-authority-operations": "tsx implementations/manager/smoke/remote-authority-operations.smoke.ts",
     "smoke:hosted-retirement-order": "tsx implementations/manager/smoke/hosted-retirement-order.smoke.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
