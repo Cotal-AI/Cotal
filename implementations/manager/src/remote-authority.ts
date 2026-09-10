@@ -123,7 +123,13 @@ export function materialCredential(
   try { claims = JSON.parse(Buffer.from(credential.jwt.split(".")[1] ?? "", "base64url").toString("utf8")) as { sub?: unknown; exp?: unknown }; }
   catch { throw new Error(`manager-service ${name} credential is not a JWT`); }
   if (claims.sub !== identity.id) throw new Error(`manager-service ${name} JWT is for ${String(claims.sub)}, not the requested identity ${identity.id}`);
-  if (claims.exp !== credential.exp || credential.exp * 1000 > material.expiresAt + 1)
+  const envelopeExpiry = Math.min(...Object.values(material.credentials).map((item) => item!.exp * 1000));
+  // `expiresAt` is the envelope's earliest member expiry, not a ceiling on every member. Prepare
+  // deliberately returns a short registration executor beside a longer-lived supervisor, so
+  // requiring each credential to expire no later than the minimum makes the legitimate supervisor
+  // impossible to materialize. Recompute the envelope minimum and then bind this JWT to its own
+  // advertised expiry. A forged later envelope or a JWT/entry disagreement still fails closed.
+  if (claims.exp !== credential.exp || !Number.isFinite(envelopeExpiry) || material.expiresAt !== envelopeExpiry || credential.exp * 1000 < material.expiresAt)
     throw new Error(`manager-service ${name} expiry does not match the material envelope`);
   return credsFromJwt(credential.jwt, identity);
 }
