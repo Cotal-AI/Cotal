@@ -239,6 +239,16 @@ try {
     report(result),
   );
 
+  config("progress-minticks-no-pattern", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-minticks-no-pattern");
+  check(
+    "minTicks without progressPattern names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-minticks-no-pattern/.test(result.stderr)
+      && /minTicks is present and progressPattern is absent/.test(result.stderr)
+      && /the progress path cannot run at all/.test(result.stderr),
+    report(result),
+  );
+
   const markerOffTerminal = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nhost pins the seat binary against background self-update\\nJCODE HOST SMOKE PASSED (85 checks)')")}`;
   config("progress-marker-not-terminal", {
     suite: ["bin/smoke/direct.smoke.ts"],

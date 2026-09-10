@@ -312,6 +312,8 @@ for (const path of configs) {
     let why = "command completed but printed no trustworthy executed-cell total";
     if (hasPattern && !hasTicks) {
       why += "; progressPattern is present and minTicks is absent, so the progress path could not produce a total";
+    } else if (hasTicks && !hasPattern) {
+      why += "; minTicks is present and progressPattern is absent, so the progress path cannot run at all because minTicks is only ever consumed by that path";
     } else if (hasPattern && hasTicks && !hasMarker) {
       why += "; the progress path could not confirm completion because completionMarker was not declared";
     } else if (hasPattern && hasTicks && hasMarker) {
