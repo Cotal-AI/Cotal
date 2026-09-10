@@ -37,13 +37,13 @@ const COMMAND_TIMEOUT_MS = 900_000;
 
 function usage(message) {
   if (message) console.error(message);
-  console.error("usage: node scripts/mutation-reproof.mjs --base <commit> [--head <commit>] [--root <dir>] [--all] [--shard <index>/<count>]");
+  console.error("usage: node scripts/mutation-reproof.mjs --base <commit> [--head <commit>] [--root <dir>] [--all] [--shard <index>/<count> | --list-shards <count>]");
   process.exit(2);
 }
 
 function args(argv) {
   const out = {};
-  const known = new Set(["base", "head", "root", "all", "shard"]);
+  const known = new Set(["base", "head", "root", "all", "shard", "list-shards"]);
   for (let i = 0; i < argv.length; i++) {
     if (!argv[i].startsWith("--")) usage(`unexpected argument: ${argv[i]}`);
     const key = argv[i].slice(2);
@@ -173,6 +173,10 @@ if (!a.all && !a.base) usage("--base is required unless --all is set");
 const shard = a.shard === undefined ? undefined : a.shard.match(/^(\d+)\/(\d+)$/);
 if (a.shard !== undefined && (!shard || Number(shard[2]) < 1 || Number(shard[1]) >= Number(shard[2])))
   usage(`invalid --shard ${a.shard}; use <index>/<count>`);
+const listShards = a["list-shards"] === undefined ? undefined : Number(a["list-shards"]);
+if (listShards !== undefined && (!Number.isInteger(listShards) || listShards < 1))
+  usage(`invalid --list-shards ${a["list-shards"]}; use a shard count of at least 1`);
+if (listShards !== undefined && shard) usage("--list-shards and --shard are exclusive: one plans the fan-out, the other runs one shard of it");
 
 if (!a.all) {
   try {
@@ -256,6 +260,18 @@ if (dangling.length) {
   console.error(`mutation reproof: UNMEASURED — ${dangling.length} dangling fixture(s); a guarded source was deleted or renamed away and the proof is unrunnable:`);
   for (const { path, missing } of dangling) console.error(`  ${path} -> missing: ${missing.join(", ")}`);
   process.exit(1);
+}
+
+// The plan: which shards of a fan-out would hold at least one selected fixture. Runs the same
+// selector, the same UNMEASURED refusals and the same dangling check as a shard run, so a plan that
+// prints is a plan whose selection a shard would also have made; only the proof is skipped. The last
+// line is the JSON a workflow reads; an empty list is printed, not turned into exit 0 with no output,
+// so a caller that fans out on it can tell "nothing to prove" from "nothing was said".
+if (listShards !== undefined) {
+  const shards = [...new Set(selected.map(({ path }) => shardOf(path, listShards)))].sort((x, y) => x - y);
+  console.log(`shard plan: ${shards.length} of ${listShards} shard(s) hold a selected fixture${shards.length ? `: ${shards.join(", ")}` : ""}`);
+  console.log(JSON.stringify({ shards }));
+  process.exit(0);
 }
 
 // A zero after filtering means either no diff match or no assignment to this shard.
