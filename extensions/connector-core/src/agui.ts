@@ -1287,17 +1287,43 @@ export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable";
  * Classify a frozen body for egress. Used on retry, where the body is already on disk and must not
  * be rewritten. A part that is not a frame is not this policy's to judge.
  *
- * THREE ANSWERS, BECAUSE TWO WERE NOT ENOUGH. A boolean forced every frame whose event list could
- * not be read into one of two wrong buckets. Reading it through the strict {@link parseAguiFrame}
- * made an unreadable frame throw a bare vocabulary error out of a machine whose every other
- * abnormal outcome is a named halt. Skipping it instead PUBLISHED the frame: measured, a body whose
- * `events` is the string `"TOOL_CALL_RESULT: <bytes>"` survives a JSON round-trip, carries the bytes
- * as its event list, and reaches the wire. The confidentiality boundary is the wire, not what a
- * renderer folds, so an event list this policy cannot interpret is `unreadable` and the caller
- * halts on it by name.
+ * THREE ANSWERS, BECAUSE TWO WERE NOT ENOUGH. A boolean forced every frame this policy could not
+ * read into one of two wrong buckets. Reading it through the strict {@link parseAguiFrame} made an
+ * unreadable frame throw a bare vocabulary error out of a machine whose every other abnormal
+ * outcome is a named halt. Skipping it instead PUBLISHED the frame: measured, a body whose `events`
+ * is the string `"TOOL_CALL_RESULT: <bytes>"` survives a JSON round-trip, carries the bytes as its
+ * event list, and reaches the wire. The confidentiality boundary is the wire, not what a renderer
+ * folds, so a frame this policy cannot interpret is `unreadable` and the caller halts on it by name.
  *
- * `forbidden-kind` wins over `unreadable` when a body has both, because it is the more specific
- * diagnosis and the halts are graded on carrying the right one.
+ * THE INVARIANT, AND IT IS THE WHOLE DESIGN: this function's READ PATTERN IS ITS PREDECESSOR'S. It
+ * validates the part through the same `parseAguiFrame` and scans the events of that call's result,
+ * in that order, exactly as the strict read it replaces did. Every difference between them is a
+ * throw becoming a named answer. Nothing else moved, so no input can make this weaker than the code
+ * it replaced — not a malformed envelope, not a stateful accessor, not a representation nobody has
+ * thought of. Equivalence is structural here rather than enumerated, and that is the point.
+ *
+ * WHY IT IS WRITTEN THIS WAY AND NOT AS A DIRECT SCAN. Four repairs tried to answer the forbidden-
+ * kind question by reading `events` off the part itself and validating separately. Each one shipped
+ * a classifier that was weaker than the strict read on some input the author had not pictured: a
+ * non-array `events` that used to throw (`1698fe253`), an empty array the scan looped over zero
+ * times (`350b8eb7a`), an envelope whose `protocol`, `threadId`, `runId`, `epoch` and `seq` were
+ * never checked at all (`071233483`), and a check/use split where the scan and the validator read
+ * `events` at different times and could disagree (`6502b213e`). The last of those tried to close the
+ * split by DETECTING the objects that could exhibit it, which held for an own accessor and lost
+ * immediately to an inherited one and to a Proxy reporting a data descriptor while its `get` trap
+ * returned something else. A guard that enumerates representations loses to the next representation.
+ * Reading the way the predecessor read cannot lose that way, because there is no second reader whose
+ * answer could differ.
+ *
+ * ORDERING, STATED BECAUSE IT IS OBSERVABLE. The parse runs before the scan, so a frame that both
+ * fails to parse and carries a forbidden event answers `unreadable`, not `forbidden-kind`. That is
+ * the predecessor's order too — it threw before it ever reached its scan — so this is equivalence,
+ * not a new preference. Both answers halt the publish and neither claims a cause it did not see.
+ * `forbidden-kind` still wins over `unreadable` ACROSS parts: an earlier unparseable part does not
+ * stop a later part's forbidden event from being named as the more specific diagnosis.
+ *
+ * A part whose `kind` is not `AGUI_FRAME_KIND` is skipped, as it was before. That is the
+ * pre-existing non-frame gap and this function neither widens nor closes it.
  *
  * TOTAL: no input makes this throw. That covers iterating `body` itself, not only reading a part's
  * properties: a Proxy whose `Symbol.iterator` traps, or an array with a throwing index accessor,
@@ -1308,89 +1334,27 @@ export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable";
  */
 export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgressVerdict {
   let unreadable = false;
-  // Iterating `body` is itself a read that can throw: a Proxy whose `Symbol.iterator` traps, or an
-  // array with a throwing index accessor, raises before any per-part catch below can see it. Those
-  // cannot come off a WAL, which is JSON, but the exported signature takes `readonly unknown[]` and
-  // a function that accepts unknown and throws on some of it is a trap for its next caller. Aborting
-  // mid-iteration is fail-closed: a forbidden part already seen has returned, and anything unseen is
-  // unread rather than assumed harmless. The promise was still false at `bd7593f3a`, where the
-  // only catch was the per-part one below.
+  // The outer catch covers the ITERATION. A Proxy whose `Symbol.iterator` traps, or an array with a
+  // throwing index accessor, raises before the per-part catch below can see it. Neither can come off
+  // a WAL, which is JSON, but the exported signature takes `readonly unknown[]` and has to mean it.
+  // Aborting mid-iteration is fail-closed: a forbidden part already seen has returned, and anything
+  // unseen is unread rather than assumed harmless.
   try {
     for (const part of body) {
-      if (!isAguiFramePart(part)) continue;
-      // A second catch around the whole per-part read, because an element accessor or Proxy trap can
-      // throw from the `for..of` over `events` itself; the innermost `try` wraps only the `.type`
-      // read and never covered that.
-      try {
-        // A frozen body is DATA, and `events` is the one property this function reads TWICE: once
-        // for the scan below and once inside `parseAguiFrame` further down. An accessor can answer
-        // differently on each, so policy meaning is attached to the first read while later reads are
-        // consumed as structure, and a frame whose events turn forbidden after the scan parses as
-        // valid and returns `clean`. The strict read this replaced refused such a frame, having seen
-        // the later value.
-        //
-        // No single-read implementation can be equivalent to that predecessor here. A getter that
-        // turns forbidden on read 2 and one that turns forbidden on read 5 are BYTE-IDENTICAL on
-        // read 1, and the predecessor answers REFUSE for the first and ALLOW for the second; it
-        // separates them only by reading four times. So this is not a choice to be stricter, it is
-        // the only sound answer: an object that will not hold still cannot be classified, and
-        // `unreadable` fails closed where `clean` publishes.
-        //
-        // STRICTER THAN THE PREDECESSOR, deliberately and only here: an accessor that would only
-        // ever have yielded clean events was allowed before and is withheld now. Nothing shipped is
-        // affected — a WAL body is JSON, where `events` is a data property.
-        const eventsDescriptor = Object.getOwnPropertyDescriptor(part as object, "events");
-        if (eventsDescriptor !== undefined && typeof eventsDescriptor.get === "function") {
-          unreadable = true;
-          continue;
-        }
-        const events: unknown = (part as { events?: unknown }).events;
-        // Emptiness is checked alongside arrayness because `aguiFrame()` refuses an empty list at
-        // construction (`!Array.isArray(opts.events) || opts.events.length === 0`) and
-        // `parseAguiFrame` refuses it on the way back in, so no shipped writer can produce
-        // `events: []`. A frozen part carrying zero events is a malformed frame, not a frame that
-        // happens to carry nothing forbidden, and the strict read this replaced threw on it. Testing
-        // only `Array.isArray` would let the empty envelope through with whatever its siblings carry.
-        if (!Array.isArray(events) || events.length === 0) {
-          unreadable = true;
-        } else {
-          for (const e of events) {
-            let type: unknown;
-            try {
-              type = (e as { type?: unknown } | null)?.type;
-            } catch {
-              unreadable = true;
-              continue;
-            }
-            if (isForbiddenEgressEventType(type)) return "forbidden-kind";
-            // An element this policy cannot IDENTIFY is not evidence of absence. `parseAguiFrame`
-            // refuses an unrecognised `type` outright, and the strict read this replaced inherited
-            // that refusal; classifying such an element as harmless would publish
-            // `events: [{ events: [ …tool bytes… ] }]` and a case-variant `"tool_call_result"` as
-            // clean, both of which the strict read rejected.
-            if (typeof type !== "string" || !KNOWN_AGUI_EVENT_TYPES.has(type)) unreadable = true;
-          }
-        }
-      } catch {
-        unreadable = true;
-      }
-      // The ENVELOPE has to parse as well, and this runs AFTER the event scan so `forbidden-kind`
-      // still wins over `unreadable` for a malformed frame that also carries a forbidden event.
-      //
-      // Scanning `events` answers "does this frame carry a forbidden kind" and says nothing about
-      // `protocol`, `threadId`, `runId`, `epoch` or `seq`. The strict read this replaced called
-      // `parseAguiFrame(part)`, which validates all of them and throws, so every envelope defect
-      // used to halt the publish; reading `.events` directly turned all of them into `clean`.
-      // Routing the envelope back through the same validator restores exactly the predecessor's
-      // refusal set without re-widening it — a frame carrying unknown sibling properties still
-      // parses, so this does not change the pre-existing sibling-property gap (#1432).
-      //
-      // The catch is the point: `0492bcd11` stopped calling `parseAguiFrame` so an old-protocol or
-      // replayed-WAL frame would be EVALUATED rather than die on a bare `AguiVocabularyError`. That
-      // rationale is about not throwing, not about publishing. Such a frame now gets the named
+      // The per-part catch is what turns the predecessor's throw into a named answer, and it is the
+      // ONLY difference between the two functions. `parseAguiFrame` throws on every envelope defect
+      // it knows -- protocol, threadId, runId, epoch, seq, an absent or empty event list, an
+      // unrecognised event type -- and each of those used to escape as a bare `AguiVocabularyError`.
+      // `0492bcd11` stopped calling it so an old-protocol or replayed-WAL frame would be EVALUATED
+      // rather than die on one. That rationale is about not throwing; it is not about publishing,
+      // and collapsing the two is what let three regressions ship. Such a frame now takes the named
       // `egress-unreadable` halt instead of either outcome.
       try {
-        parseAguiFrame(part);
+        if (!isAguiFramePart(part)) continue;
+        const frame = parseAguiFrame(part);
+        for (const e of frame.events) {
+          if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return "forbidden-kind";
+        }
       } catch {
         unreadable = true;
       }

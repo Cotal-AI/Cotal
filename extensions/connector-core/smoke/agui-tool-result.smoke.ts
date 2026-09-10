@@ -717,10 +717,15 @@ try {
       ...extra,
     });
 
+    // A frame that BOTH fails to parse AND carries a forbidden event answers `unreadable`, because
+    // the parse runs before the scan. That is the strict read's order too - it threw before it ever
+    // reached its own scan - so this is equivalence rather than a new preference, and the halt is
+    // named either way. Reporting `forbidden-kind` here would claim a diagnosis off an envelope the
+    // validator refused to read.
     const malformed = frame({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] });
     c(
-      "total:a frame too malformed to PARSE but carrying TOOL_CALL_RESULT is forbidden-kind",
-      verdict([malformed]) === "forbidden-kind",
+      "total:a frame too malformed to PARSE, even carrying TOOL_CALL_RESULT, is unreadable",
+      verdict([malformed]) === "unreadable",
       verdict([malformed]),
     );
 
@@ -752,9 +757,14 @@ try {
       seq: 1,
       events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }],
     });
+    // The production upgrade path, and the reason `0492bcd11` stopped calling the strict parser at
+    // all: a frame frozen under an older protocol used to escape `attempt()` as a bare
+    // `AguiVocabularyError` out of a machine whose every other abnormal outcome is a named halt. It
+    // now takes `egress-unreadable`. What that commit got wrong was concluding that not throwing
+    // meant publishing; this cell grades the halt, not the verdict word.
     c(
-      "total:a frame frozen under an OLDER protocol is read for kinds rather than thrown over",
-      verdict([olderProtocol]) === "forbidden-kind",
+      "total:a frame frozen under an OLDER protocol takes a NAMED halt, not a bare throw",
+      verdict([olderProtocol]) === "unreadable",
       verdict([olderProtocol]),
     );
 
@@ -785,7 +795,13 @@ try {
 
     // Precedence: a body carrying both must report the more specific diagnosis, because the halts
     // are graded on carrying the right one.
-    const both = [frame({}), frame({ events: [{ type: "TOOL_CALL_ARGS", delta: CLAUDE_ARGS }] })];
+    // The forbidden part has to be WELL-FORMED, or this grades two unreadable parts and passes for
+    // the wrong reason. Precedence is across PARTS: an earlier part the validator refused does not
+    // stop a later part's forbidden event being named as the more specific diagnosis.
+    const both = [
+      frame({}),
+      frame({ threadId: THREAD, runId: "both-run", epoch: "both-epoch", seq: 2, events: [{ type: "TOOL_CALL_ARGS", delta: CLAUDE_ARGS }] }),
+    ];
     c("total:forbidden-kind wins over unreadable when a body carries both", verdict(both) === "forbidden-kind", verdict(both));
 
     // An EMPTY event list passes `Array.isArray` and makes the scan loop a no-op, so a fence that
@@ -856,14 +872,23 @@ try {
       verdict([envelope({ seq: -1 })]) === "unreadable",
       verdict([envelope({ seq: -1 })]),
     );
-    // Precedence has to survive the envelope check, which runs after the event scan for this reason:
-    // a malformed frame that also carries a forbidden event must still report the specific
-    // diagnosis, because the halts are graded on carrying the right one.
+    // THE ONE DELIBERATE BEHAVIOUR CHANGE OF THIS ROUND, recorded with the answer rather than
+    // suppressed. Within a single part the parse now runs first, so a frame that is both malformed
+    // and carrying a forbidden event answers `unreadable`, where the previous head answered
+    // `forbidden-kind`. Against the strict read this replaced it is neither weaker nor stricter:
+    // that read threw here, and both outcomes halt the publish without claiming a cause the
+    // validator never got to see. The sibling cell below keeps the well-formed forbidden frame
+    // pinned, so a fix that quietly turned every forbidden frame into `unreadable` still reds.
     const badEnvelopeForbidden = envelope({ seq: -1, events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] });
     c(
-      "envelope:forbidden-kind still wins over a malformed envelope",
-      verdict([badEnvelopeForbidden]) === "forbidden-kind",
+      "envelope:a malformed envelope is unreadable even when it carries a forbidden event",
+      verdict([badEnvelopeForbidden]) === "unreadable",
       verdict([badEnvelopeForbidden]),
+    );
+    c(
+      "envelope:a WELL-FORMED frame carrying a forbidden event is still forbidden-kind",
+      verdict([envelope({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] })]) === "forbidden-kind",
+      verdict([envelope({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] })]),
     );
     // A well-formed frame must stay publishable, or the fence is just refusing everything and the
     // cells above prove nothing.
@@ -914,56 +939,78 @@ try {
       );
     }
 
-    // STATEFUL ACCESSOR CLASS. Four regressions of one family reached this fence before any cell
-    // existed that could catch one, and every one was found by a person running a probe. The family
-    // is: policy meaning is attached to the first read while later reads are consumed as structure.
-    // `events` is the only property read twice - once by the scan, once inside `parseAguiFrame` - so
-    // a getter can be scanned clean and validated forbidden, and the frame publishes.
+    // STATEFUL ACCESSOR CLASS, ACROSS REPRESENTATIONS. Five regressions of one family reached this
+    // fence, and the fifth was a guard that DETECTED the objects able to exhibit it. That guard
+    // inspected an own getter descriptor, held for the shape its author had in mind, and lost the
+    // same hour to an inherited getter and to a Proxy reporting a data descriptor while its `get`
+    // trap returned something else. Enumerating representations is what keeps losing, so these
+    // cells enumerate them instead of the code doing it: each asserts the fence answers exactly
+    // what the strict read it replaced answered, at every flip point, whatever the object is made
+    // of. A cell built from one representation certifies its author's imagination, which is what
+    // the previous head's cell did.
     {
       const CLEAN_EVENTS = [{ type: "RUN_STARTED", threadId: THREAD, runId: "envelope-run" }];
       const FORBIDDEN_EVENTS = [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }];
-      /** A frame whose `events` turns forbidden after `flipAfter` reads. */
-      const flipping = (flipAfter: number): unknown => {
+      // What the strict read answers at flipAfter 0..4. It reads `events` four times - three inside
+      // the validator, once in its own scan - so a list that turns forbidden on or before read four
+      // is refused and one that turns on read five is allowed. This fence reads the same four times
+      // in the same order, which is why it can be pinned to this vector at all.
+      const PREDECESSOR = ["forbidden-kind", "forbidden-kind", "forbidden-kind", "forbidden-kind", "clean"];
+      const nextEvents = (state: { reads: number }, flipAfter: number): unknown =>
+        ++state.reads > flipAfter ? FORBIDDEN_EVENTS : CLEAN_EVENTS;
+
+      /** `events` is an OWN accessor on the frame. */
+      const ownGetter = (flipAfter: number): unknown => {
         const f: Record<string, unknown> = { ...envelope({}) };
-        let reads = 0;
+        const state = { reads: 0 };
         delete f.events;
         Object.defineProperty(f, "events", {
-          get() {
-            reads += 1;
-            return reads > flipAfter ? FORBIDDEN_EVENTS : CLEAN_EVENTS;
-          },
+          get: () => nextEvents(state, flipAfter),
           enumerable: true,
           configurable: true,
         });
         return f;
       };
-      // NOT `forbidden-kind`. The accessor is refused before its first read, so the forbidden
-      // event is never observed and claiming that diagnosis would assert something unmeasured.
-      // `unreadable` and `forbidden-kind` both halt the publish; only the halt reason differs.
-      c(
-        "accessor:a getter already forbidden on its first read is unreadable, not forbidden-kind",
-        verdict([flipping(0)]) === "unreadable",
-        verdict([flipping(0)]),
-      );
-      for (const flipAfter of [1, 2, 3]) {
-        // The regression itself: scanned clean, validated as structurally valid, published.
-        const name =
-          flipAfter === 1
-            ? "accessor:a getter that turns forbidden after 1 read is unreadable, not clean"
-            : flipAfter === 2
-              ? "accessor:a getter that turns forbidden after 2 reads is unreadable, not clean"
-              : "accessor:a getter that turns forbidden after 3 reads is unreadable, not clean";
-        c(name, verdict([flipping(flipAfter)]) === "unreadable", verdict([flipping(flipAfter)]));
+
+      /** `events` is an accessor on the PROTOTYPE, so there is no own descriptor to inspect. */
+      const inheritedGetter = (flipAfter: number): unknown => {
+        const state = { reads: 0 };
+        const proto = {
+          get events(): unknown {
+            return nextEvents(state, flipAfter);
+          },
+        };
+        const f = Object.create(proto) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(envelope({}))) if (k !== "events") f[k] = v;
+        return f;
+      };
+
+      /** A Proxy whose descriptor trap reports plain DATA while its `get` trap returns state. */
+      const lyingProxy = (flipAfter: number): unknown => {
+        const state = { reads: 0 };
+        const target: Record<string, unknown> = { ...envelope({}) };
+        return new Proxy(target, {
+          get: (t, p, r) => (p === "events" ? nextEvents(state, flipAfter) : Reflect.get(t, p, r)),
+          getOwnPropertyDescriptor: (t, p) =>
+            p === "events"
+              ? { value: CLEAN_EVENTS, writable: true, enumerable: true, configurable: true }
+              : Reflect.getOwnPropertyDescriptor(t, p),
+        });
+      };
+
+      const representations: readonly (readonly [string, (n: number) => unknown])[] = [
+        ["an OWN getter", ownGetter],
+        ["an INHERITED getter, which leaves no own descriptor to inspect", inheritedGetter],
+        ["a PROXY whose descriptor trap disagrees with its get trap", lyingProxy],
+      ];
+      for (const [label, make] of representations) {
+        const got = [0, 1, 2, 3, 4].map((flipAfter) => String(verdict([make(flipAfter)])));
+        c(
+          `accessor:${label} answers what the strict read answered, at every flip point`,
+          got.join(",") === PREDECESSOR.join(","),
+          `got ${got.join(",")} want ${PREDECESSOR.join(",")}`,
+        );
       }
-      // STRICTER THAN THE PREDECESSOR, and named so a reader meets it here rather than in the wild.
-      // The predecessor read four times, saw only clean events, and ALLOWed this. It cannot be
-      // matched: this getter and the one above are byte-identical on read 1, and no single-read
-      // implementation can answer them differently. Fail-closed is the only sound side.
-      c(
-        "accessor:STRICTER a getter that only ever yields clean events is withheld, not published",
-        verdict([flipping(4)]) === "unreadable",
-        verdict([flipping(4)]),
-      );
       // Without this, every cell above passes on a policy that refuses each and every frame.
       c(
         "accessor:CONTROL a plain data-property events list is still clean",
@@ -973,7 +1020,7 @@ try {
     }
   }
 
-  const EXPECTED = 55;
+  const EXPECTED = 54;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });

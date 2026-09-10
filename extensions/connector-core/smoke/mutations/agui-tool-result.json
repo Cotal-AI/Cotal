@@ -61,20 +61,42 @@
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
     {
-      "name": "T-ENVELOPE the envelope check is reverted, so protocol/threadId/runId/epoch/seq defects publish again",
+      "name": "T-PARSE the part is no longer validated, so the scan reads events straight off it and every envelope defect -- protocol, threadId, runId, epoch, seq, an absent or empty event list -- publishes again",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "      try {\n        parseAguiFrame(part);\n      } catch {\n        unreadable = true;\n      }",
-      "replace": "      try {\n        void part;\n      } catch {\n        unreadable = true;\n      }",
-      "expectRed": "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+      "find": "        if (!isAguiFramePart(part)) continue;\n        const frame = parseAguiFrame(part);\n        for (const e of frame.events) {",
+      "replace": "        if (!isAguiFramePart(part)) continue;\n        const frame = part as { events: readonly unknown[] };\n        for (const e of frame.events) {",
+      "expectRed": "recover:an UNREADABLE frozen event list HALTS by name rather than publishing opaque bytes",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build",
+      "why": [
+        "This is the defect of rounds three through six in one line: answer the forbidden-kind",
+        "question by reading `events` off the part and skip the validator. It reopens the envelope",
+        "class AND the check/use split at once, because the single `parseAguiFrame` call is what",
+        "closes both. Measured first red is a WAL-boot recover cell driving AguiEmitter.start(),",
+        "not a direct call on the classifier, so the kill grades a reachable path rather than only",
+        "a dependence on the mutated line."
+      ]
     },
     {
-      "name": "T-ACCESSOR the events accessor check is removed, so a getter scanned clean and validated forbidden publishes again",
+      "name": "T-READONCE the scan uses a snapshot taken before the parse instead of the parse result, so the classifier reads events once where the strict read it replaced read four times",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "        const eventsDescriptor = Object.getOwnPropertyDescriptor(part as object, \"events\");\n        if (eventsDescriptor !== undefined && typeof eventsDescriptor.get === \"function\") {\n          unreadable = true;\n          continue;\n        }",
-      "replace": "        const eventsDescriptor = Object.getOwnPropertyDescriptor(part as object, \"events\");\n        void eventsDescriptor;",
-      "expectRed": "accessor:a getter already forbidden on its first read is unreadable, not forbidden-kind",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+      "find": "        const frame = parseAguiFrame(part);\n        for (const e of frame.events) {",
+      "replace": "        const events = (part as { events?: readonly unknown[] }).events ?? [];\n        parseAguiFrame(part);\n        for (const e of events) {",
+      "expectRed": "accessor:an OWN getter answers what the strict read answered, at every flip point",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build",
+      "why": [
+        "The plausible improvement, and the one that must not pass. Snapshotting `events` once looks",
+        "safer than reading it repeatedly, and it is strictly WEAKER: a list that turns forbidden on",
+        "read two is refused by the strict read and published by the snapshot. Measured, it reds all",
+        "three representation cells -- own accessor, inherited accessor, and the Proxy whose",
+        "descriptor trap disagrees with its get trap -- which is the evidence that those cells grade",
+        "the read pattern rather than one object shape.",
+        "",
+        "A NEARBY MUTATION THAT SURVIVES, RECORDED SO NOBODY ADDS IT AS A FIFTH: replacing",
+        "`frame.events` with `(part as ...).events` changes nothing, because `parseAguiFrame` ends in",
+        "`return part as AguiFrame` and hands back the caller's own object. Measured 55 passed, 0",
+        "failed. The parse result is not a materialized copy, and a fixture built on the belief that",
+        "it is would grade nothing."
+      ]
     }
   ]
 }
