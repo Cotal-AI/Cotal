@@ -9,8 +9,9 @@
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/pr-head-gate.json",
   "why": [
     "The guard and its smoke are repository tools rather than a published package boundary, so this",
-    "config grades them as a tool. The smoke imports scripts/pr-head-gate.mjs directly, and two cells",
-    "also execute the shipped pnpm pr-head-gate command against deterministic GitHub API responses."
+    "config grades them as a tool. The smoke imports scripts/pr-head-gate.mjs directly, and three cells",
+    "also execute the shipped pnpm pr-head-gate command against deterministic GitHub API responses,",
+    "including a merge-key pull_request declared via YAML <<."
   ],
   "mutations": [
     {
@@ -108,6 +109,14 @@
       "replace": "  const expected = [];",
       "expectRed": "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green",
       "cell": "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green"
+    },
+    {
+      "name": "YAML merge keys hide pull_request again",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    uniqueKeys: true,\n    merge: true,",
+      "replace": "    uniqueKeys: true,",
+      "expectRed": "a merge-key on mapping includes pull_request in the expected set and is not green without that run",
+      "cell": "a merge-key on mapping includes pull_request in the expected set and is not green without that run"
     }
   ]
 }

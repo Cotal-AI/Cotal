@@ -40,6 +40,7 @@ function pullRequestDeclaration(file, text) {
     strict: true,
     stringKeys: true,
     uniqueKeys: true,
+    merge: true,
   });
   const problem = document.errors[0] ?? document.warnings[0];
   if (problem) throw new Error(`${file}: invalid YAML: ${problem.message}`);

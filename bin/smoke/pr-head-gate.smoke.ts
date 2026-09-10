@@ -199,7 +199,7 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-function shippedCommand(mode: "success" | "missing") {
+function shippedCommand(mode: "success" | "missing" | "merge-key") {
   // The shipped gate reads GitHub credentials (GH_TOKEN/GITHUB_TOKEN/GITHUB_REPOSITORY) and no
   // COTAL_ name at all, so an ambient copy would hand a live credential and broker URL to a child
   // that has no use for either. Strip the prefix.
@@ -229,8 +229,47 @@ check(
   shippedMissing.status === 1 && shippedMissing.stdout.includes("missing: Hidden") && shippedMissing.stdout.includes("verdict: NOT GREEN"),
   `${shippedMissing.stdout}${shippedMissing.stderr}`,
 );
+const shippedMergeKey = shippedCommand("merge-key");
+check(
+  "the shipped pr-head-gate command includes a merge-key pull_request workflow and is not green without its run",
+  shippedMergeKey.status === 1 &&
+    shippedMergeKey.stdout.includes("expected: CI, Merge") &&
+    shippedMergeKey.stdout.includes("missing: Merge") &&
+    shippedMergeKey.stdout.includes("verdict: NOT GREEN"),
+  `${shippedMergeKey.stdout}${shippedMergeKey.stderr}`,
+);
+const mergeKeyWorkflows = {
+  "ci.yml": "name: CI\non: [pull_request]\n",
+  "merge.yml": "name: Merge\ndefaults: &d\n  pull_request:\non:\n  <<: *d\n  push:\n",
+};
+const mergeKeyExpected = expectedPullRequestWorkflows(mergeKeyWorkflows, ["package.json"]);
+check(
+  "a YAML merge-key pull_request is included in the expected set",
+  JSON.stringify(mergeKeyExpected) === '["CI","Merge"]',
+  mergeKeyExpected,
+);
+const mergeKeyHead = classifyPullRequestHead({
+  pr: 1396,
+  headSha: "a".repeat(40),
+  expected: mergeKeyExpected,
+  runs: [{
+    id: 1,
+    name: "CI",
+    event: "pull_request",
+    head_sha: "a".repeat(40),
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-09-10T00:00:00Z",
+    pull_requests: [{ number: 1396 }],
+  }],
+});
+check(
+  "a missing merge-key pull_request workflow keeps the exact head not green",
+  JSON.stringify(mergeKeyHead.missing) === '["Merge"]' && !mergeKeyHead.green,
+  mergeKeyHead,
+);
 
-const EXPECTED = 34;
+const EXPECTED = 37;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

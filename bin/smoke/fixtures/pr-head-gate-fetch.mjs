@@ -1,6 +1,14 @@
 const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const workflow = "name: Hidden\non: [push, pull_request] # ordinary YAML comment\n";
-const run = {
+const hidden = "name: Hidden\non: [push, pull_request] # ordinary YAML comment\n";
+const ci = "name: CI\non: [pull_request]\n";
+const mergeKey = `name: Merge
+defaults: &d
+  pull_request:
+on:
+  <<: *d
+  push:
+`;
+const hiddenRun = {
   id: 1,
   name: "Hidden",
   event: "pull_request",
@@ -10,6 +18,17 @@ const run = {
   created_at: "2026-08-30T00:00:00Z",
   pull_requests: [{ number: 1098 }],
 };
+const ciRun = {
+  id: 2,
+  name: "CI",
+  event: "pull_request",
+  head_sha: sha,
+  status: "completed",
+  conclusion: "success",
+  created_at: "2026-09-10T00:00:00Z",
+  pull_requests: [{ number: 1098 }],
+};
+const mergeKeyMode = process.env.PR_HEAD_GATE_FIXTURE === "merge-key";
 
 const json = (value) => new Response(JSON.stringify(value), {
   status: 200,
@@ -20,15 +39,29 @@ globalThis.fetch = async (input, init = {}) => {
   const url = new URL(String(input));
   const accept = new Headers(init.headers).get("accept") ?? "";
   if (url.pathname === "/repos/Cotal-AI/Cotal/pulls/1098") return json({ head: { sha } });
-  if (url.pathname === "/repos/Cotal-AI/Cotal/pulls/1098/files") return json([]);
+  if (url.pathname === "/repos/Cotal-AI/Cotal/pulls/1098/files") {
+    return json(mergeKeyMode ? [{ filename: "package.json" }] : []);
+  }
   if (url.pathname === "/repos/Cotal-AI/Cotal/contents/.github/workflows") {
-    return json([{ type: "file", name: "hidden.yml", path: ".github/workflows/hidden.yml" }]);
+    return json(mergeKeyMode
+      ? [
+        { type: "file", name: "ci.yml", path: ".github/workflows/ci.yml" },
+        { type: "file", name: "merge.yml", path: ".github/workflows/merge.yml" },
+      ]
+      : [{ type: "file", name: "hidden.yml", path: ".github/workflows/hidden.yml" }]);
   }
   if (url.pathname === "/repos/Cotal-AI/Cotal/contents/.github/workflows/hidden.yml" && accept.includes("raw")) {
-    return new Response(workflow, { status: 200 });
+    return new Response(hidden, { status: 200 });
+  }
+  if (url.pathname === "/repos/Cotal-AI/Cotal/contents/.github/workflows/ci.yml" && accept.includes("raw")) {
+    return new Response(ci, { status: 200 });
+  }
+  if (url.pathname === "/repos/Cotal-AI/Cotal/contents/.github/workflows/merge.yml" && accept.includes("raw")) {
+    return new Response(mergeKey, { status: 200 });
   }
   if (url.pathname === "/repos/Cotal-AI/Cotal/actions/runs") {
-    return json({ workflow_runs: process.env.PR_HEAD_GATE_FIXTURE === "missing" ? [] : [run] });
+    if (mergeKeyMode) return json({ workflow_runs: [ciRun] });
+    return json({ workflow_runs: process.env.PR_HEAD_GATE_FIXTURE === "missing" ? [] : [hiddenRun] });
   }
   return new Response(`unexpected fixture request: ${url}`, { status: 500 });
 };
