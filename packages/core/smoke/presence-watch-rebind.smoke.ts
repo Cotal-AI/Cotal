@@ -41,7 +41,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -376,6 +376,8 @@ try {
   await admin.drain();
 } finally {
   releaseBroker();
+  broker.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\npresence watch rebind smoke: ${cells - failed} passed, ${failed} failed`);
