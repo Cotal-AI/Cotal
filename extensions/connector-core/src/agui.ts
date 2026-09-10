@@ -1314,7 +1314,13 @@ export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgr
       unreadable = true;
       continue;
     }
-    if (!Array.isArray(events)) {
+    // Emptiness is checked alongside arrayness because `aguiFrame()` refuses an empty list at
+    // construction (`!Array.isArray(opts.events) || opts.events.length === 0`) and `parseAguiFrame`
+    // refuses it on the way back in, so no shipped writer can produce `events: []`. A frozen part
+    // carrying zero events is a malformed frame, not a frame that happens to carry nothing
+    // forbidden, and the strict read this replaced threw on it. Testing only `Array.isArray` would
+    // let the empty envelope through with whatever its sibling properties carry.
+    if (!Array.isArray(events) || events.length === 0) {
       unreadable = true;
       continue;
     }

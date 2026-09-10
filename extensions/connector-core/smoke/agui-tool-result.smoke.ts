@@ -693,9 +693,35 @@ try {
     // are graded on carrying the right one.
     const both = [frame({}), frame({ events: [{ type: "TOOL_CALL_ARGS", delta: CLAUDE_ARGS }] })];
     c("total:forbidden-kind wins over unreadable when a body carries both", verdict(both) === "forbidden-kind", verdict(both));
+
+    // An EMPTY event list passes `Array.isArray` and makes the scan loop a no-op, so a fence that
+    // tests only arrayness reports `clean` on it. `aguiFrame()` refuses an empty list at
+    // construction and `parseAguiFrame` refuses it on the way back in, so a frozen `events: []` is
+    // a malformed frame and the strict read this replaced threw on it. Publishing it is therefore
+    // strictly weaker than the predecessor, and the two sibling cases below carry real bytes while
+    // doing it — which is NOT the pre-existing sibling-property gap (#1432), because there the
+    // predecessor published too. Reported by rev-1429-grok against 350b8eb7a.
+    const emptyEvents = frame({ events: [] });
+    c(
+      "total:an EMPTY events list is unreadable rather than clean",
+      verdict([emptyEvents]) === "unreadable",
+      verdict([emptyEvents]),
+    );
+    const emptyWithPayloadSibling = { ...frame({ events: [] }), payload: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] };
+    c(
+      "total:an empty events list carrying tool bytes on a sibling is withheld, not published",
+      verdict([emptyWithPayloadSibling]) === "unreadable",
+      verdict([emptyWithPayloadSibling]),
+    );
+    const emptyWithRecoverySibling = { ...frame({ events: [] }), recovery: { events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] } };
+    c(
+      "total:an empty events list with a nested recovery sibling is withheld, not published",
+      verdict([emptyWithRecoverySibling]) === "unreadable",
+      verdict([emptyWithRecoverySibling]),
+    );
   }
 
-  const EXPECTED = 35;
+  const EXPECTED = 38;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
