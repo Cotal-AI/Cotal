@@ -1313,7 +1313,8 @@ export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgr
   // cannot come off a WAL, which is JSON, but the exported signature takes `readonly unknown[]` and
   // a function that accepts unknown and throws on some of it is a trap for its next caller. Aborting
   // mid-iteration is fail-closed: a forbidden part already seen has returned, and anything unseen is
-  // unread rather than assumed harmless. Reported by rev-1429-glm against bd7593f3a.
+  // unread rather than assumed harmless. The promise was still false at `bd7593f3a`, where the
+  // only catch was the per-part one below.
   try {
     for (const part of body) {
       if (!isAguiFramePart(part)) continue;

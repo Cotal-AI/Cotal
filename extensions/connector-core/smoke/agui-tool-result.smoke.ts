@@ -794,7 +794,7 @@ try {
     // a malformed frame and the strict read this replaced threw on it. Publishing it is therefore
     // strictly weaker than the predecessor, and the two sibling cases below carry real bytes while
     // doing it — which is NOT the pre-existing sibling-property gap (#1432), because there the
-    // predecessor published too. Reported by rev-1429-grok against 350b8eb7a.
+    // predecessor published too. This shape regressed at `350b8eb7a` and is guarded here.
     const emptyEvents = frame({ events: [] });
     c(
       "total:an EMPTY events list is unreadable rather than clean",
