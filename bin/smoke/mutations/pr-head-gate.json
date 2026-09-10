@@ -108,6 +108,30 @@
       "replace": "  const expected = [];",
       "expectRed": "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green",
       "cell": "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green"
+    },
+    {
+      "name": "a types filter that drops synchronize is expected anyway",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    if (!types.includes(\"opened\") || !types.includes(\"synchronize\")) {",
+      "replace": "    if (false) {",
+      "expectRed": "a types filter that drops synchronize fails closed instead of expecting a run that is never minted",
+      "cell": "a types filter that drops synchronize fails closed instead of expecting a run that is never minted"
+    },
+    {
+      "name": "a types filter that drops opened is expected anyway",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    if (!types.includes(\"opened\") || !types.includes(\"synchronize\")) {",
+      "replace": "    if (!types.includes(\"synchronize\")) {",
+      "expectRed": "a types filter that drops opened fails closed instead of expecting a run at the first head",
+      "cell": "a types filter that drops opened fails closed instead of expecting a run at the first head"
+    },
+    {
+      "name": "an unknown activity type is silently accepted",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    if (unknown.length) throw new Error(`${file}: unknown pull_request activity type: ${unknown.join(\", \")}`);",
+      "replace": "    if (false) throw new Error(`${file}: unknown pull_request activity type: ${unknown.join(\", \")}`);",
+      "expectRed": "an unknown pull_request activity type fails closed",
+      "cell": "an unknown pull_request activity type fails closed"
     }
   ]
 }
