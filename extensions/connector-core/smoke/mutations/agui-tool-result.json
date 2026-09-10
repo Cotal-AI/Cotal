@@ -59,6 +59,13 @@
       "replace": "  AGUI_EVENT_TYPE.TOOL_CALL_ARGS,\n  AGUI_EVENT_TYPE.TOOL_CALL_RESULT,\n  AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT,",
       "expectRed": "control:sibling TEXT_MESSAGE_CONTENT reaches the recorded publish (lifecycle survived the policy)",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-ENVELOPE the envelope check is reverted, so protocol/threadId/runId/epoch/seq defects publish again",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    try {\n      parseAguiFrame(part);\n    } catch {\n      unreadable = true;\n    }",
+      "replace": "    try {\n      void part;\n    } catch {\n      unreadable = true;\n    }",
+      "expectRed": "envelope:a wrong protocol version is unreadable, not clean"
     }
   ]
 }

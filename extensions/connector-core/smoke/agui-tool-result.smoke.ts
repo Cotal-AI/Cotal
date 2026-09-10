@@ -719,9 +719,68 @@ try {
       verdict([emptyWithRecoverySibling]) === "unreadable",
       verdict([emptyWithRecoverySibling]),
     );
+
+    // ENVELOPE. Scanning `events` answers "does this carry a forbidden kind" and says nothing about
+    // the envelope around it. The strict read this replaced called `parseAguiFrame(part)`, which
+    // validates `protocol`, `threadId`, `runId`, `epoch` and `seq` and throws, so every one of these
+    // used to halt the publish; reading `.events` directly turned all of them into `clean`. A cell
+    // per field, because a single representative would have passed while the other four regressed —
+    // that is how this class shipped three times. No CI shard covers any of these shapes.
+    const goodEvents = [{ type: "RUN_STARTED", threadId: THREAD, runId: "envelope-run" }];
+    const envelope = (over: Record<string, unknown>) => ({
+      kind: "ag-ui.frame",
+      protocol: "ag-ui/0.0.57",
+      threadId: THREAD,
+      runId: "envelope-run",
+      epoch: "envelope-epoch",
+      seq: 1,
+      events: goodEvents,
+      ...over,
+    });
+    c(
+      "envelope:a wrong protocol version is unreadable, not clean",
+      verdict([envelope({ protocol: "ag-ui/0.0.1" })]) === "unreadable",
+      verdict([envelope({ protocol: "ag-ui/0.0.1" })]),
+    );
+    c(
+      "envelope:a missing threadId is unreadable, not clean",
+      verdict([envelope({ threadId: undefined })]) === "unreadable",
+      verdict([envelope({ threadId: undefined })]),
+    );
+    c(
+      "envelope:a missing runId is unreadable, not clean",
+      verdict([envelope({ runId: undefined })]) === "unreadable",
+      verdict([envelope({ runId: undefined })]),
+    );
+    c(
+      "envelope:an empty epoch is unreadable, not clean",
+      verdict([envelope({ epoch: "" })]) === "unreadable",
+      verdict([envelope({ epoch: "" })]),
+    );
+    c(
+      "envelope:a negative seq is unreadable, not clean",
+      verdict([envelope({ seq: -1 })]) === "unreadable",
+      verdict([envelope({ seq: -1 })]),
+    );
+    // Precedence has to survive the envelope check, which runs after the event scan for this reason:
+    // a malformed frame that also carries a forbidden event must still report the specific
+    // diagnosis, because the halts are graded on carrying the right one.
+    const badEnvelopeForbidden = envelope({ seq: -1, events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] });
+    c(
+      "envelope:forbidden-kind still wins over a malformed envelope",
+      verdict([badEnvelopeForbidden]) === "forbidden-kind",
+      verdict([badEnvelopeForbidden]),
+    );
+    // A well-formed frame must stay publishable, or the fence is just refusing everything and the
+    // cells above prove nothing.
+    c(
+      "envelope:a well-formed frame is still clean",
+      verdict([envelope({})]) === "clean",
+      verdict([envelope({})]),
+    );
   }
 
-  const EXPECTED = 38;
+  const EXPECTED = 45;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
