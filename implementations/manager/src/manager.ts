@@ -891,8 +891,8 @@ export class Manager {
   /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
    *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
    *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
-   *  unknown, current, or differently identified live row still refuses. One entry per alias keeps the
-   *  index bounded, and a later retirement replaces the prior predecessor coordinate. */
+   *  unknown, current, or differently identified live row still refuses. A later retirement of the
+   *  same alias replaces its prior predecessor coordinate. */
   private readonly confirmedRetiredPredecessors = new Map<string, { principal: string; lifecycleUid: string }>();
   /** SINGLE-FLIGHT guard for {@link requestRetirement} (audit #1): one in-flight rail round-trip per
    *  (name, lifecycleUid). The detached `deprovision` call and every same-name-spawn nudge for THAT

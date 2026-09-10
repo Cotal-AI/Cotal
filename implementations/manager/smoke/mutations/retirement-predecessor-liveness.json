@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "implementations/manager/smoke/preserve-state.smoke.ts"
+  ],
+  "guard": "resume holds an unresolved retirement before retained-principal liveness and bypasses presence only for an exact terminal-confirmed predecessor when adopting a different lifecycle",
+  "command": "pnpm smoke:preserve-state",
+  "completionMarker": "PRESERVE-STATE SMOKE OK",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/retirement-predecessor-liveness.json",
+  "why": [
+    "The regression enters Manager.resumePreserved through its public method and drives terminal classification through Manager.confirmRetirement, the helper called only from a successful retirement rail reply.",
+    "The negative cells keep unresolved holds, unconfirmed outcomes, missing lifecycle UIDs, wrong lifecycle UIDs, and the retired lifecycle itself fail-closed."
+  ],
+  "mutations": [
+    {
+      "name": "resume consults roster liveness before an unresolved retirement hold",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const held = this.retiring.get(entry.name);",
+      "replace": "        const held = undefined;",
+      "expectRed": "resume refuses an unresolved retirement hold before launch",
+      "cell": "resume refuses an unresolved retirement hold before launch"
+    },
+    {
+      "name": "terminal confirmation does not record the predecessor coordinate",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.confirmedRetiredPredecessors.set(a.name, { principal: a.id, lifecycleUid: a.lifecycleUid });",
+      "replace": "        this.confirmedRetiredPredecessors.delete(a.name);",
+      "expectRed": "resume ignores only a terminal-confirmed exact predecessor row for a fresh lifecycle",
+      "cell": "resume ignores only a terminal-confirmed exact predecessor row for a fresh lifecycle"
+    },
+    {
+      "name": "the predecessor bypass also accepts the retired lifecycle itself",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;",
+      "replace": "            false;",
+      "expectRed": "resume still refuses a live row for the requested terminal-confirmed lifecycle",
+      "cell": "resume still refuses a live row for the requested terminal-confirmed lifecycle"
+    },
+    {
+      "name": "the predecessor bypass ignores which live lifecycle the roster row names",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            confirmedPredecessor.lifecycleUid !== presence.lifecycleUid ||",
+      "replace": "            false ||",
+      "expectRed": "resume refuses a live lifecycle not named by the terminal predecessor confirmation",
+      "cell": "resume refuses a live lifecycle not named by the terminal predecessor confirmation"
+    }
+  ]
+}
