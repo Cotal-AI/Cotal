@@ -124,9 +124,18 @@ const remoteOnly = new Manager({
     validateRetainedAgent: async () => { throw new Error("not used"); }, scanGoalIndex: async () => [],
     authorizeAdmin: async (seen) => { remoteChecks++; assert.deepEqual(seen, caller); return true; },
   },
-}) as unknown as { userMode: boolean; epAdminReach(caller: { owner: string; actor: string; uid: string }): Promise<boolean> };
+}) as unknown as {
+  userMode: boolean;
+  epAdminReach(caller: { owner: string; actor: string; uid: string }): Promise<boolean>;
+  authorizeNamed(target: { name: string; spawner: string; userOwner?: string }, principal: string, admin: boolean, caller: { owner: string; actor: string; uid: string }): Promise<string | undefined>;
+};
 remoteOnly.userMode = true;
 assert.equal(await remoteOnly.epAdminReach({ owner: caller.owner, actor: caller.actor, uid: caller.lifecycleUid }), true);
 assert.equal(remoteChecks, 1);
+const epCaller = { owner: caller.owner, actor: caller.actor, uid: caller.lifecycleUid };
+assert.equal(await remoteOnly.authorizeNamed({ name: "foreign", spawner: "other.actor", userOwner: `u_${"b".repeat(26)}` }, `${caller.owner}.${caller.actor}`, false, epCaller), undefined);
+assert.equal(remoteChecks, 2);
+assert.equal(await remoteOnly.authorizeNamed({ name: "owned", spawner: "other.actor", userOwner: caller.owner }, `${caller.owner}.${caller.actor}`, false, epCaller), undefined);
+assert.equal(remoteChecks, 2);
 
-console.log("remote authority operations: 17 passed, 0 failed");
+console.log("remote authority operations: 21 passed, 0 failed");
