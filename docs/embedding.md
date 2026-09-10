@@ -242,6 +242,10 @@ non-secret authority shape. Do not copy the provider's `issuer.json` or `callout
 participant store. Both contain private signing or exchange authority. The stock remote supervisor
 refuses retained adoption until its composition supplies this host check.
 
+The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinned public auth-service
+base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
+not select the local `--dir` arm, which depends on a host-only auth-service process record.
+
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
 the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference

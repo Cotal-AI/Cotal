@@ -661,6 +661,7 @@ try {
     goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
     sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
     serveGrant: registered.serveGrant,
+    agentBearerExchangeUrl: service.publicUrl!,
     mintSessionServing: async () => { throw new Error("native retirement acceptance opens no terminal sessions"); },
     mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => {
       retirementMints++;

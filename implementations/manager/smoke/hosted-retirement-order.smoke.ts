@@ -26,6 +26,7 @@ const base = {
   identities,
   supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
   serveGrant: {} as never,
+  agentBearerExchangeUrl: "https://auth.example.test",
   mintSessionServing: async () => "",
   mintRetirementRequester: async () => "",
   validateRetainedAgent: async () => { throw new Error("not used by retirement ordering smoke"); },

@@ -378,6 +378,9 @@ export interface ManagerOptions {
       actorToken: string;
       sentinelCreds: string;
     }) => Promise<import("@cotal-ai/core").RetainedAgentAuthority>;
+    /** Pinned public auth-service base used by retained managed children for fresh bearers. The
+     * signerless Manager must select `agent-bearer --exchange-url`, never the local `--dir` arm. */
+    agentBearerExchangeUrl: string;
   };
 }
 
@@ -4693,7 +4696,9 @@ export class Manager {
             ...process.execArgv,
             process.argv[1],
             provider.agentBearerCommand,
-            "--dir", userAuthStateDir(this.workspaceRoot, this.space),
+            ...(this.remoteAuthority
+              ? ["--exchange-url", this.remoteAuthority.agentBearerExchangeUrl]
+              : ["--dir", userAuthStateDir(this.workspaceRoot, this.space)]),
             "--space", this.space,
             "--owner", entry.identity.owner,
             "--actor", entry.identity.actor,

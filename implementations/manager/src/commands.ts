@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
+  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, loadMeshes, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -182,6 +182,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       if (!provider.managerServiceAuthority)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
+      const remoteEntry = loadMeshes().find((entry) => entry.space === space && entry.mode === "user" && entry.userAuth?.remote === true);
+      const agentBearerExchangeUrl = remoteEntry?.mode === "user" ? remoteEntry.userAuth?.endpoints?.url : undefined;
+      if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
+        throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
       const material = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
         dir: join(findCotalRoot(), ".cotal", "auth", space),
@@ -233,6 +237,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
         sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
         serveGrant: registered.serveGrant,
+        agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
           const sessionMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
