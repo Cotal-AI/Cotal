@@ -69,7 +69,7 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "    this.lastPresenceWatchAt = Date.now();\n    this.presenceWatchEmpty = false;\n",
       "replace": "    this.lastPresenceWatchAt = Date.now();\n",
-      "expectRed": "2.1 within ~TTL of silence the view reads stale (the observer noticed its own deafness)"
+      "expectRed": "8.8 CONTROL: after a delivery on that watch, silence past TTL reads stale again (the empty-bucket hold does not outlive the first write)"
     }
   ],
   "suite": [

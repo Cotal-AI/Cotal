@@ -357,6 +357,18 @@ try {
     const returned = await until(() => ep.getRoster().some((p) => p.card.name === "returner" && p.status !== "offline"), 3_000);
     ok("8.7 CONTROL: a peer joining the empty bucket is observed live on the rebound watch",
       returned === true && ep.presenceView().state === "current", { roster: statusOf(ep), view: ep.presenceView() });
+    // NEGATIVE CONTROL: once that watch has delivered, its silence is staleness again. Kill the
+    // observer's consumer while the returner keeps heartbeating: the view must read stale within
+    // ~TTL (the empty-bucket hold ended at the first delivery), then rebind and read current.
+    const staleBefore = emptyViews.filter((v) => v === "stale").length;
+    await killConsumersExcept([]);
+    const staleAfterDelivery = await until(() => emptyViews.filter((v) => v === "stale").length > staleBefore, TTL_MS * 2 + 500);
+    ok("8.8 CONTROL: after a delivery on that watch, silence past TTL reads stale again (the empty-bucket hold does not outlive the first write)",
+      staleAfterDelivery === true, { views: emptyViews, view: ep.presenceView() });
+    const currentAgain = await until(() => ep.presenceView().state === "current" && reboundCount() === 2, TTL_MS * 3);
+    ok("8.9 CONTROL: and that silence is repaired by a second rebind (the returner is heard again)",
+      currentAgain === true && (await until(() => ep.getRoster().some((p) => p.card.name === "returner" && p.status !== "offline"), TTL_MS * 2)),
+      { view: ep.presenceView(), rebinds: reboundCount(), roster: statusOf(ep) });
     await returner.stop();
     await ep.stop();
   }
