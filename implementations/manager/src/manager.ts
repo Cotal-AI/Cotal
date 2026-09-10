@@ -7059,6 +7059,18 @@ export class Manager {
     }
   }
 
+  /** The terminal's process step: an orphan (no live handle in THIS process) is reaped by the custody
+   *  reference the slot recorded, before its footprint goes. A successor must never retire a
+   *  lifecycle and free its alias while the predecessor's seat process is still running outside
+   *  every manager. The runtime verifies the process identity against its own record and proves the
+   *  exit; a runtime that cannot reap refuses by name and the lifecycle stays terminalizing. A row
+   *  with no recorded reference has nothing this manager can address. */
+  private async reapOrphanSeat(a: { name: string; runtime?: RuntimeReference }): Promise<void> {
+    if (a.runtime === undefined) return;
+    const evidence = await requireRuntimeReap(this.runtime, a.runtime);
+    console.error(`static retirement ${a.name}: orphan seat process ${evidence.outcome === "absent" ? `already forgotten by runtime "${a.runtime.kind}" (${a.runtime.id})` : evidence.detail}`);
+  }
+
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
    *  sequence to the shared core saga over the executor transport; the footprint teardown (creds
    *  file + broker durables/ACL) runs INSIDE the barrier as its cleanup step. On completion the
@@ -7094,13 +7106,18 @@ export class Manager {
       }
       await this.deprovisionBroker(a);
     };
+    // The process goes before its footprint: reap the orphan seat by reference, then tear down.
+    const reapThenCleanup = async (): Promise<void> => {
+      await this.reapOrphanSeat(a);
+      await cleanup();
+    };
     try {
       await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
         const slot = await readStaticSlot(t, DEV_OWNER, a.name);
         if (slot === undefined || slot.row.lifecycleUid !== a.lifecycleUid) {
           // No durable registration for THIS incarnation: a pre-Unit-B spawn (or a slot already
           // replaced by a successor — then this stale teardown must not touch the registry at all).
-          await cleanup();
+          await reapThenCleanup();
           return;
         }
         await runStaticTerminal(
@@ -7109,7 +7126,7 @@ export class Manager {
             owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
             managerInstance: this.managerInstanceId, managerProcessUid: this.managerLifecycleUid,
           },
-          { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
+          { cleanup: reapThenCleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
       this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);

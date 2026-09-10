@@ -13,8 +13,8 @@
     {
       "name": "retire the lifecycle without reaping the orphan process",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.runtime !== undefined) {\n        const evidence = await requireRuntimeReap(this.runtime, a.runtime);\n        console.error(`static retirement ${a.name}: orphan seat process ${evidence.outcome === \"absent\" ? `already forgotten by runtime \"${a.runtime.kind}\" (${a.runtime.id})` : evidence.detail}`);\n      }",
-      "replace": "      void requireRuntimeReap;",
+      "find": "      await this.reapOrphanSeat(a);\n      await cleanup();",
+      "replace": "      await cleanup();",
       "expectRed": "successor reaps the orphan seat process before retiring the lifecycle",
       "cell": "successor reaps the orphan seat process before retiring the lifecycle"
     }
