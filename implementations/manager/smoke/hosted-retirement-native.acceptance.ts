@@ -68,11 +68,20 @@ if (subcommand === "auth-service" || subcommand === "agent-bearer") {
   await command.run({ values, positionals, raw: rest });
   process.exit(0);
 }
+if (subcommand === "tls-probe") {
+  const response = await fetch(process.env.COTAL_NATIVE_TLS_PROBE_URL!, {
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error(`TLS probe returned HTTP ${response.status}`);
+  process.exit(0);
+}
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { request as httpRequest } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -250,13 +259,19 @@ class ChildHandle implements AgentHandle {
 const childRuntime: Runtime = {
   kind: "native-acceptance",
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
+    const env = { ...process.env, ...spec.env };
+    // This acceptance owns a private CA and gives its public certificate to the child explicitly.
+    // Never let a caller environment turn the proof into an insecure NODE_TLS_REJECT_UNAUTHORIZED=0
+    // connection while the fixture still reports a successful remote bearer exchange.
+    delete env.NODE_TLS_REJECT_UNAUTHORIZED;
     const handle = new ChildHandle(name, trackChild(spawn(spec.command, spec.args, {
-      cwd, env: { ...process.env, ...spec.env }, stdio: ["ignore", "pipe", "pipe"],
+      cwd, env, stdio: ["ignore", "pipe", "pipe"],
     })));
     childHandles.set(name, handle);
     return handle;
   },
 };
+let childCaFile: string | undefined;
 const runtimeProvider: RuntimeProvider = {
   kind: "runtime", name: "native-acceptance", available: () => true, create: () => childRuntime,
 };
@@ -272,6 +287,7 @@ const connector: Connector = {
         COTAL_OWNER: opts.userAuth.owner, COTAL_ACTOR: opts.userAuth.actor,
         COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
         COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd), COTAL_LIFECYCLE_UID: opts.lifecycleUid,
+        ...(childCaFile ? { NODE_EXTRA_CA_CERTS: childCaFile } : {}),
       },
     };
   },
@@ -298,6 +314,7 @@ let authServiceDiagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 let authServiceSpawnError: Error | undefined;
 let broker: ChildProcess | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
+let exchangeProxy: ReturnType<typeof createHttpsServer> | undefined;
 let endpoint: CotalEndpoint | undefined;
 let manager: Manager | undefined;
 let observerNc: Awaited<ReturnType<typeof connect>> | undefined;
@@ -320,6 +337,24 @@ const adoptionDiagnostic = (name: string) => ({
 function trackChild(child: ChildProcess): ChildProcess {
   child.once("close", () => closedChildren.add(child));
   return child;
+}
+
+function probeHttpsFromFreshNode(url: string, caFile?: string): Promise<{ code: number | null; diagnostic: string }> {
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_NATIVE_TLS_PROBE_URL: url };
+  delete env.NODE_EXTRA_CA_CERTS;
+  delete env.NODE_TLS_REJECT_UNAUTHORIZED;
+  if (caFile) env.NODE_EXTRA_CA_CERTS = caFile;
+  return new Promise((resolve) => {
+    const probe = spawn(process.execPath, [...process.execArgv, self, "tls-probe"], {
+      env, stdio: ["ignore", "ignore", "pipe"],
+    });
+    let diagnostic = "";
+    probe.stderr?.on("data", (chunk: Buffer | string) => {
+      diagnostic = `${diagnostic}${chunk.toString()}`.slice(-4 * 1024);
+    });
+    probe.once("error", (error) => resolve({ code: null, diagnostic: error.message }));
+    probe.once("close", (code) => resolve({ code, diagnostic: redactDiagnostics(diagnostic) }));
+  });
 }
 
 function appendAuthDiagnostic(chunk: Buffer | string): void {
@@ -538,6 +573,44 @@ try {
   const service = await awaitAuthService(authService);
   check("host auth service exposes a public exchange", typeof service.publicUrl === "string" && service.publicUrl.startsWith("http://127.0.0.1:"), service);
 
+  const pki = join(hostRoot, "native-pki");
+  mkdirSync(pki, { recursive: true, mode: 0o700 });
+  const openssl = (args: string[]) => {
+    const result = spawnSync("openssl", args, { stdio: "pipe", encoding: "utf8" });
+    if (result.status !== 0) throw new Error(`openssl fixture setup failed: ${result.stderr || result.stdout}`);
+  };
+  openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
+    "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-native-retirement-ca",
+    "-addext", "basicConstraints=critical,CA:TRUE"]);
+  openssl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"),
+    "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost"]);
+  writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
+  openssl(["x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"),
+    "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"),
+    "-days", "2", "-extfile", join(pki, "leaf.ext")]);
+  childCaFile = join(pki, "ca.pem");
+  exchangeProxy = createHttpsServer({ cert: readFileSync(join(pki, "leaf.pem")), key: readFileSync(join(pki, "leaf.key")) }, (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const upstreamUrl = new URL(service.publicUrl!);
+      const upstream = httpRequest({
+        host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: req.url,
+        method: req.method, headers: { ...req.headers, host: upstreamUrl.host },
+      }, (response) => { res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res); });
+      upstream.on("error", (error) => { res.statusCode = 502; res.end(error.message); });
+      upstream.end(Buffer.concat(chunks));
+    });
+  });
+  await new Promise<void>((resolve) => exchangeProxy!.listen(0, "127.0.0.1", resolve));
+  const proxyAddress = exchangeProxy.address();
+  if (!proxyAddress || typeof proxyAddress === "string") throw new Error("HTTPS exchange proxy did not bind");
+  const secureExchangeUrl = `https://127.0.0.1:${proxyAddress.port}`;
+  const untrustedProbe = await probeHttpsFromFreshNode(`${secureExchangeUrl}/health`);
+  check("the owned HTTPS exchange rejects a fresh child without its CA", untrustedProbe.code !== 0, untrustedProbe);
+  const trustedProbe = await probeHttpsFromFreshNode(`${secureExchangeUrl}/health`, childCaFile);
+  check("the owned CA lets a fresh child verify the HTTPS exchange certificate", trustedProbe.code === 0, trustedProbe);
+
   const signup = await idp.api.signUpEmail({
     body: { email: "participant@example.test", password: "correct-horse-battery", name: "Participant" },
     returnHeaders: true,
@@ -661,7 +734,7 @@ try {
     goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
     sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
     serveGrant: registered.serveGrant,
-    agentBearerExchangeUrl: service.publicUrl!,
+    agentBearerExchangeUrl: secureExchangeUrl,
     mintSessionServing: async () => { throw new Error("native retirement acceptance opens no terminal sessions"); },
     mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => {
       retirementMints++;
@@ -798,6 +871,11 @@ try {
   await endpoint?.stop().catch(() => {});
   await manager?.stop().catch(() => {});
   await observerNc?.drain().catch(() => observerNc?.close());
+  exchangeProxy?.closeAllConnections();
+  await new Promise<void>((resolve) => {
+    if (!exchangeProxy) { resolve(); return; }
+    exchangeProxy.close(() => resolve());
+  });
   const authStopped = await stopChild(authService);
   const deliveryStopped = await stopChild(delivery);
   const brokerStopped = await stopChild(broker);

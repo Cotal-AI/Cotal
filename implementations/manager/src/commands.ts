@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, loadMeshes, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
+  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -110,7 +110,7 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  * signer. Do not turn this into a partial startup that later fails on a broker permission error;
  * the public command owns the honest, actionable refusal below.
  */
-export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean } {
+export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean; agentBearerExchangeUrl?: string } {
   const localSpace = spaceFor(v, root);
   if (hasUserAuthState(root, localSpace)) {
     // Preserve the historical host path's missing/stale-registry diagnostics in Manager.start():
@@ -133,7 +133,10 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     if (target.mode === "user" && target.userAuth?.remote === true) {
       if (v.server !== undefined && v.server !== target.server)
         throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
-      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };
+      return {
+        space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired,
+        agentBearerExchangeUrl: target.userAuth.endpoints?.url,
+      };
     }
     // The marker is absent, but this is a local/static/open record or a malformed user entry. Let
     // the normal manager validation retain its mode-specific diagnostics rather than rewording a
@@ -182,8 +185,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       if (!provider.managerServiceAuthority)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
-      const remoteEntry = loadMeshes().find((entry) => entry.space === space && entry.mode === "user" && entry.userAuth?.remote === true);
-      const agentBearerExchangeUrl = remoteEntry?.mode === "user" ? remoteEntry.userAuth?.endpoints?.url : undefined;
+      const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
       const material = await provider.managerServiceAuthority({
