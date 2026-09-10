@@ -1467,6 +1467,16 @@ function remoteManagerPermissions(
     recordStatusKey(RECORD_KINDS.svc, ["manager", iid]),
     recordAtomicKey(GOVERN_HEAD, ["manager"]),
   ];
+  // Only the five-minute EXECUTOR, never the standing supervisor, may enumerate the records store.
+  // A remote manager needs this at boot to preserve the normative goalidx orphan sweep. The three
+  // consumer-lifecycle rows are the same read-only enumeration residual as the local provisioner's:
+  // they expose records metadata, no message bodies or secrets, and confer no record write beyond
+  // this instance's already exact recordKeys above.
+  const recordsEnumeration = pin.actor === `manager_exec_${iid}` ? [
+    `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,
+    `$JS.API.CONSUMER.INFO.KV_${REC}.>`,
+    `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,
+  ] : [];
   return {
     pub: {
       allow: [
@@ -1496,6 +1506,7 @@ function remoteManagerPermissions(
         `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
         ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),
         `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+        ...recordsEnumeration,
       ],
     },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },

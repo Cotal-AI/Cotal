@@ -174,6 +174,18 @@ await cell("supervise authority has no arbitrary stream/KV/static mint surface",
   assert.equal(all.some((row) => row.includes("STREAM.CREATE") || row.includes("STREAM.DELETE") || row.includes("$KV.>")), false);
   assert.equal(all.every((row) => !row.includes("epgate.manager.") || row.includes(instanceId)), true);
 });
+await cell("only the short remote executor can enumerate records for the required goal-index sweep", () => {
+  const actors = remoteManagerActors(instanceId);
+  const rows = (actor: string) => (permissionsFor("remote-manager", "demo", {
+    owner: retirementTarget.owner, actor, connId: newIdentity().id, lifecycleUid,
+  }, { remoteManager: { instanceId, owner: retirementTarget.owner, actor } }) as { pub: { allow: string[] } }).pub.allow;
+  const executor = rows(actors.executor);
+  const supervisor = rows(actors.supervisor);
+  const expected = ["CREATE", "INFO", "DELETE"].map((verb) => `$JS.API.CONSUMER.${verb}.KV_cotal_records_demo.>`);
+  assert.equal(expected.every((row) => executor.includes(row)), true);
+  assert.equal(expected.every((row) => !supervisor.includes(row)), true);
+  assert.equal(executor.some((row) => row.includes("CONSUMER.MSG.NEXT") || row.includes("$JS.ACK")), false);
+});
 await cell("host issuer grant has no signer or generic profile endpoint", () => {
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id);
   assert.equal(grants.publish.some((row) => row === ">" || row === "$JS.>" || row === "$KV.>"), false);

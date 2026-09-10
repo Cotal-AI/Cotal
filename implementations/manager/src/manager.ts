@@ -2064,7 +2064,9 @@ export class Manager {
         },
       });
     try {
-      const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
+      const outcome = await ((this.auth || this.remoteAuthority)
+        ? this.withEndpointServeExecutor(dereg)
+        : this.withOpenServeConnection(dereg));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
@@ -5222,10 +5224,11 @@ export class Manager {
     }
   }
 
-  /** Run one §13.1 ENDPOINT-SERVE credential operation (P2 item 1, 1a-serve) over an ephemeral,
+  /** Run one §13.1 endpoint-instance maintenance operation over an ephemeral,
    *  key-pinned `endpoint-serve-executor` connection: the credential's grants name exactly the
    *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
-   *  gate CAS, the mint fence, and the spec/governance writes ride a one-shot scoped authority —
+   *  gate CAS, mint fence, spec/governance writes, boot goalidx sweep, and clean deregistration ride
+   *  a one-shot scoped authority —
    *  NEVER the manager's standing seed/supervisor connection (the panel's "no seed shortcut"). */
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
@@ -5249,7 +5252,8 @@ export class Manager {
    *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
    *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
   private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    if (this.auth) throw new Error("withOpenServeConnection: an auth mesh must use the scoped endpoint-serve executor");
+    if (this.auth || this.remoteAuthority)
+      throw new Error("withOpenServeConnection: an authenticated mesh must use the scoped endpoint-serve executor");
     const nc = await this.dial({ maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
@@ -5940,8 +5944,9 @@ export class Manager {
 
   /** P2 item 2 must-5 Q-B — the boot reconcile: a fresh incarnation (a manager restart takes a NEW
    *  instanceId, so the in-memory acceptance map starts empty) inherits the endpoint's accepted-but-
-   *  unterminal goals from any predecessor. Enumerate the durable index over a scoped PROVISIONER
-   *  (records CONSUMER.CREATE; the goal-writer holds NO enumeration grant, exactly the ruling) and
+   *  unterminal goals from any predecessor. Enumerate the durable index over a bounded sweep cred:
+   *  the local signer's ephemeral PROVISIONER, or the remote manager's short instance EXECUTOR
+   *  (records CONSUMER.CREATE; the goal-writer and remote supervisor hold NO enumeration grant), and
    *  settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh: a bare
    *  connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
    *  accepting (the `goalReconcileDone` gate), so it never races a live goal's acceptance. Never
@@ -5951,15 +5956,19 @@ export class Manager {
     if (!gw) { this.goalReconcileDone = true; return; }
     try {
       let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
-      const nc = this.auth
-        ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
-        : await this.dial({ maxReconnectAttempts: 0 });
-      try {
-        const kvm = new Kvm(nc);
-        await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-        entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
-      } finally {
-        await nc.drain().catch(() => nc.close());
+      if (this.remoteAuthority) {
+        entries = await this.withEndpointServeExecutor(({ recordsKv }) => listGoalIndex(recordsKv, MANAGER_ENDPOINT));
+      } else {
+        const nc = this.auth
+          ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
+          : await this.dial({ maxReconnectAttempts: 0 });
+        try {
+          const kvm = new Kvm(nc);
+          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
+          entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
+        } finally {
+          await nc.drain().catch(() => nc.close());
+        }
       }
       // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
       // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep

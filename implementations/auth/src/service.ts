@@ -469,9 +469,11 @@ export async function openAuthAuthorityPlane(opts: {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
               expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
             });
-            // The registration executor intentionally receives the SAME exact instance-scoped
-            // grant surface as the supervisor credential, but under a separate nkey and bounded
-            // five-minute lifetime. It is used only for prepare→activate and then discarded.
+            // The executor receives the exact instance-scoped registration/maintenance surface under
+            // a separate nkey and bounded five-minute lifetime. The participant retains it for the
+            // immediate goalidx boot sweep and clean service deregistration. In-place remote renewal
+            // is not wired into Manager yet, so a long-running manager fails deregistration loud at
+            // expiry rather than falling back to an anonymous dial.
             credentials.executor = await credential("executor", "remote-manager", actors.executor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
               expiresInSeconds: 5 * 60,

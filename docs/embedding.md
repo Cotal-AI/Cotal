@@ -249,6 +249,12 @@ The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinn
 base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
 not select the local `--dir` arm, which depends on a host-only auth-service process record.
 
+The remote authority's instance executor remains the scoped maintenance credential for the manager's
+boot `goalidx` sweep and clean service deregistration. It is short-lived. A hosted process expected to
+run beyond that window cannot yet renew it in place. Clean deregistration then fails loud and the
+operator removes the stale instance with `cotal deregister-instance`. Wiring the typed `renew` phase
+into the running manager remains required for unattended long-lived hosting.
+
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
 the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference
