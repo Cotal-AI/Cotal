@@ -501,6 +501,10 @@ registry.register({
         COTAL_OWNER: opts.userAuth.owner, COTAL_ACTOR: opts.userAuth.actor,
         COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
         COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd), COTAL_LIFECYCLE_UID: opts.lifecycleUid,
+        // The runtime intentionally passes only connector-declared environment. This fixture's
+        // retained child execs agent-bearer against the owned private-PKI HTTPS proxy, so declare the
+        // same public CA path the supervisor was launched with. No key or credential crosses here.
+        NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
       },
     };
   },
