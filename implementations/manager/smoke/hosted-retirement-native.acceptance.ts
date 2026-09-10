@@ -168,6 +168,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type RetirementTarget = { owner: string; actor: string; lifecycleUid: string };
 type ReleaseRow = { target: RetirementTarget; opId: string; state: "pending" | "released" };
+const childHandles = new Map<string, ChildHandle>();
 
 class TestReleaseJournal {
   constructor(readonly path: string) {}
@@ -198,25 +199,62 @@ class TestReleaseJournal {
 class ChildHandle implements AgentHandle {
   readonly kind = "native-acceptance";
   private exited = false;
+  private code: number | null = null;
+  private signal: NodeJS.Signals | null = null;
+  private diagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  private readonly exits = new Set<() => void>();
   private readonly closed: Promise<void>;
   constructor(readonly name: string, private readonly child: ChildProcess) {
-    this.closed = new Promise((resolve) => child.once("close", () => { this.exited = true; resolve(); }));
+    const append = (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const combined = this.diagnostics.length === 0 ? bytes : Buffer.concat([this.diagnostics, bytes]);
+      let start = Math.max(0, combined.length - 32 * 1024);
+      while (start < combined.length && (combined[start]! & 0xc0) === 0x80) start++;
+      this.diagnostics = combined.subarray(start);
+    };
+    child.stdout?.on("data", append);
+    child.stderr?.on("data", append);
+    child.once("error", (error) => append(`[spawn error] ${error.message}\n`));
+    this.closed = new Promise((resolve) => child.once("close", (code, signal) => {
+      this.exited = true; this.code = code; this.signal = signal;
+      for (const listener of this.exits) listener();
+      resolve();
+    }));
   }
   status(): "running" | "exited" { return this.exited ? "exited" : "running"; }
   stop(): void { if (!this.exited) this.child.kill("SIGTERM"); }
   waitForExit(): Promise<void> { return this.closed; }
   interrupt(): void { if (!this.exited) this.child.kill("SIGINT"); }
+  exitInfo(): { code?: number; signal?: number } | undefined {
+    if (!this.exited) return undefined;
+    return { ...(this.code !== null ? { code: this.code } : {}) };
+  }
   attach(): AttachSession {
-    return { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
+    return {
+      cols: 80, rows: 24,
+      backlog: () => Buffer.from(this.diagnostics.toString("utf8")
+        .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted credential block]")
+        .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]")),
+      onData: () => () => {},
+      onExit: (listener) => { this.exits.add(listener); return () => this.exits.delete(listener); },
+      write: () => {}, resize: () => {},
+    };
+  }
+  diagnostic(): string {
+    return this.diagnostics.toString("utf8").trim()
+      .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted credential block]")
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]");
   }
 }
 
 const childRuntime: Runtime = {
   kind: "native-acceptance",
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
-    return new ChildHandle(name, trackChild(spawn(spec.command, spec.args, {
-      cwd, env: { ...process.env, ...spec.env }, stdio: "ignore",
+    const handle = new ChildHandle(name, trackChild(spawn(spec.command, spec.args, {
+      cwd, env: { ...process.env, ...spec.env }, stdio: ["ignore", "pipe", "pipe"],
     })));
+    childHandles.set(name, handle);
+    return handle;
   },
 };
 const runtimeProvider: RuntimeProvider = {
@@ -264,6 +302,20 @@ let endpoint: CotalEndpoint | undefined;
 let manager: Manager | undefined;
 let observerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let storeDir: string | undefined;
+let managerDiagnostics = "";
+const originalConsoleError = console.error;
+console.error = (...args: unknown[]) => {
+  managerDiagnostics = `${managerDiagnostics}\n${args.map(String).join(" ")}`.slice(-32 * 1024);
+  originalConsoleError(...args);
+};
+const redactDiagnostics = (value: string) => value
+  .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted credential block]")
+  .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]");
+const adoptionDiagnostic = (name: string) => ({
+  child: redactDiagnostics(childHandles.get(name)?.diagnostic() ?? "no child output captured"),
+  manager: redactDiagnostics(managerDiagnostics),
+  exit: childHandles.get(name)?.exitInfo(),
+});
 
 function trackChild(child: ChildProcess): ChildProcess {
   child.once("close", () => closedChildren.add(child));
@@ -694,7 +746,9 @@ try {
   const blockedEntry = await provisionRetained("blocked", blockedUid);
   console.log("\ncell 4/7: public resumePreserved launches agent-child");
   const blockedResume = await manager.resumePreserved(inventoryOf(blockedEntry));
-  check("public resumePreserved adopts the exact blocked lifecycle", blockedResume.ok, blockedResume);
+  check("public resumePreserved adopts the exact blocked lifecycle", blockedResume.ok,
+    blockedResume.ok ? undefined : { reply: blockedResume, diagnostic: adoptionDiagnostic("blocked") });
+  if (!blockedResume.ok) throw new Error("blocked lifecycle adoption failed before release-refusal coverage armed");
   console.log("\ncell 5/7: public targeted despawn reaches host prepare and fails closed");
   failRelease.add("blocked");
   const beforeBlockedMints = retirementMints;
@@ -711,7 +765,9 @@ try {
   const retiredUid = mintLifecycleUid();
   const retiredEntry = await provisionRetained("retired", retiredUid);
   const retiredResume = await manager.resumePreserved(inventoryOf(retiredEntry));
-  check("public resumePreserved adopts the exact terminal lifecycle", retiredResume.ok, retiredResume);
+  check("public resumePreserved adopts the exact terminal lifecycle", retiredResume.ok,
+    retiredResume.ok ? undefined : { reply: retiredResume, diagnostic: adoptionDiagnostic("retired") });
+  if (!retiredResume.ok) throw new Error("terminal lifecycle adoption failed before release-success coverage armed");
   const beforeRetiredMints = retirementMints;
   const retiredStop = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
     target: { mode: "any", owner, actor: "retired", lifecycleUid: retiredUid },
@@ -762,6 +818,7 @@ try {
   }
   if (previousHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = previousHome;
+  console.error = originalConsoleError;
 }
 
 console.log(`\nHOSTED RETIREMENT NATIVE TWO-CELL ACCEPTANCE ${fail === 0 ? "GREEN" : "FAILED"} (${pass} passed, ${fail} failed; cells 3-7 out of scope; credentials logged: no)`);
