@@ -159,6 +159,7 @@ const renewing = new Manager({
   sessionLedgerCreds: string;
   renewRemoteAuthority(): Promise<void>;
   armRemoteAuthorityRenewal(): void;
+  probeStaticCredential(creds: string): Promise<{ ok: boolean; reason: string }>;
 };
 renewing.ep = {
   reloadCreds: async () => { adoption.push("supervisor-reload"); return {}; },
@@ -169,6 +170,7 @@ renewing.sessionLedgerConn = { creds: old.session, nc: { reconnect: async () => 
 renewing.goalWriterCreds = old.goal;
 renewing.sessionLedgerCreds = old.session;
 renewing.armRemoteAuthorityRenewal = () => {};
+renewing.probeStaticCredential = async () => ({ ok: true, reason: "ok" });
 const firstRenew = renewing.renewRemoteAuthority();
 const joinedRenew = renewing.renewRemoteAuthority();
 assert.equal(firstRenew, joinedRenew);

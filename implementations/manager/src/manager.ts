@@ -1487,6 +1487,9 @@ export class Manager {
       const delay = Math.min(...family.map((creds) => credsRenewalDelayMs(creds)));
       if (!/^sha256:[0-9a-f]{64}$/.test(fresh.registrationProof) || family.some((creds) => inspectCredHealth(creds).state === "expired"))
         throw new Error("the host returned expired or incomplete remote authority material");
+      const probes = await Promise.all(family.map((creds) => this.probeStaticCredential(creds)));
+      const refused = probes.find((probe) => !probe.ok);
+      if (refused) throw new Error(`the broker refused a renewed remote authority credential (${refused.reason}); nothing installed`);
       const serve = this.serviceServe;
       const goalWriter = this.goalWriter;
       const sessionLedger = this.sessionLedgerConn;
