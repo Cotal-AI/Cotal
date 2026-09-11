@@ -182,6 +182,11 @@ stays fail-loud on collision. `--detach` also brings up the control plane (deliv
 mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see
 [Run a mesh](run-a-mesh.md).
 
+On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
+canary and waits for the bucket to expire it before reporting success. If the broker accepts the
+stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
+persistence error instead of trusting the value returned by stream info.
+
 `--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
 auth callout plus its capability-gated local exchange, and optionally the closed public exchange
 face configured by the three `--exchange-*` flags above. The service is torn down with `cotal down`,

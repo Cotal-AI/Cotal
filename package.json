@@ -614,6 +614,7 @@
     "smoke:presence-ttl-migration:auth": "tsx packages/core/smoke/presence-ttl-migration-auth.smoke.ts",
     "smoke:presence-ttl-refresh-cli": "tsx packages/core/smoke/presence-ttl-refresh-cli.smoke.ts",
     "smoke:presence-ttl-expiry-open": "tsx packages/core/smoke/presence-ttl-expiry-open.smoke.ts",
+    "smoke:presence-ttl-persistence": "tsx packages/core/smoke/presence-ttl-persistence.smoke.ts",
     "smoke:retire-reply-bind": "tsx implementations/manager/smoke/retire-reply-bind.smoke.ts",
     "smoke:gate-reconcile:auth": "tsx implementations/manager/smoke/gate-reconcile-auth.smoke.ts",
     "smoke:gate-reconcile-cli:auth": "tsx implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts",

@@ -32,7 +32,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -5184,6 +5184,9 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private handleKvEntry(e: KvEntry): void {
+    // Provisioning uses this one reserved key to prove the bucket's max_age is enforced (#404).
+    // It is maintenance traffic, never a peer identity, an offline transition, or view freshness.
+    if (e.key === TTL_RECONCILE_CANARY_KEY) return;
     this.lastPresenceWatchAt = Date.now();
     this.presenceWatchEmpty = false;
     if (e.operation === "DEL" || e.operation === "PURGE") {

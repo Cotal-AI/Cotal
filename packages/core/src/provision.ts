@@ -14,7 +14,7 @@
  * D5 adds the first credential-death primitive: profile-classified user-JWT lifetimes. Full revocation,
  * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
-import { ttlBuckets } from "./streams.js";
+import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { join } from "node:path";
 import {
   decode,
@@ -2064,6 +2064,10 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // and the credential is not allowed to.
   const ttlStreams = ttlBuckets(space).map(([bucket]) => `KV_${bucket}`);
   const streamReconcile = ttlStreams.map((s) => `$JS.API.STREAM.UPDATE.${s}`);
+  // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
+  // provisioner still cannot write presence identities or lease keys; it can only write this fixed
+  // maintenance key, which expires through the policy the reconcile is proving.
+  const ttlCanaries = ttlBuckets(space).map(([bucket]) => `$KV.${bucket}.${TTL_RECONCILE_CANARY_KEY}`);
   // DM/DLV/TASK durable pre-create (bind-only mailboxes): both the new-API CREATE and legacy DURABLE.CREATE
   // forms (the client's consumer-add path varies by version), plus INFO (the add returns ConsumerInfo).
   // NO MSG.NEXT/MSG.GET/ACK — the provisioner creates the consumer but MUST NOT read its body.
@@ -2078,6 +2082,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         "$JS.API.INFO",
         ...streamSetup,
         ...streamReconcile,
+        ...ttlCanaries,
         ...consumerCreate,
         // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
         // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).
