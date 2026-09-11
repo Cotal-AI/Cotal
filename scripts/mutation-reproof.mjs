@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { liveShapedCommandReason, liveShapedFixtureReason } from "./mutation-command-safety.mjs";
 import { mutationShard } from "./mutation-shard.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
@@ -61,6 +62,11 @@ function git(root, argv) {
 }
 
 function runCommand(command, cwd, env) {
+  const liveReason = liveShapedCommandReason(command, { cwd });
+  if (liveReason) {
+    const output = `REFUSING live-shaped command \`${command}\` (${liveReason}) — mutation-reproof never executes a live suite\n`;
+    return { status: 2, signal: null, error: undefined, stdout: "", stderr: output, output };
+  }
   const run = spawnSync(command, {
     cwd, shell: true, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL",
@@ -227,6 +233,13 @@ let selected = fixtures.map((fixture) => ({
 })).filter(({ selectedBy }) => Object.values(selectedBy).some(Boolean));
 if (shard) selected = selected.filter(({ path }) => mutationShard(path, Number(shard[2])) === Number(shard[1]));
 
+const liveRefused = selected.flatMap((fixture) => {
+  const reason = liveShapedFixtureReason(fixture, { cwd: root });
+  return reason ? [{ path: fixture.path, command: fixture.command, reason }] : [];
+});
+const liveRefusedPaths = new Set(liveRefused.map(({ path }) => path));
+const prove = selected.filter((fixture) => !liveRefusedPaths.has(fixture.path));
+
 // Selection evidence precedes dangling validation. A deleted or renamed declared source is one of
 // the reasons a fixture is selected, so reporting the source error before the selected set would
 // hide the selector result the failure is meant to make observable.
@@ -237,6 +250,12 @@ console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fix
 if (metadataOnlyExclusions.size > 0)
   console.log(`metadata-only config-path exclusions (${metadataOnlyExclusions.size}):\n${[...metadataOnlyExclusions].map((path) => `  ${path}`).join("\n")}`);
 if (selected.length > 0) console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);
+if (liveRefused.length) {
+  console.log(`live-shaped fixtures refused (${liveRefused.length}):`);
+  for (const { path, command, reason } of liveRefused) {
+    console.log(`  ${path}  REFUSED \`${command}\` (${reason})`);
+  }
+}
 
 // UNMEASURED, exit 1: a selected fixture's guarded file does not exist at head — a dangling fixture.
 // Its guarded source was deleted or renamed away, so its anchor cannot resolve and its proof is
@@ -263,7 +282,7 @@ if (dangling.length) {
 // line is the JSON a workflow reads; an empty list is printed, not turned into exit 0 with no output,
 // so a caller that fans out on it can tell "nothing to prove" from "nothing was said".
 if (listShards !== undefined) {
-  const shards = [...new Set(selected.map(({ path }) => mutationShard(path, listShards)))].sort((x, y) => x - y);
+  const shards = [...new Set(prove.map(({ path }) => mutationShard(path, listShards)))].sort((x, y) => x - y);
   console.log(`shard plan: ${shards.length} of ${listShards} shard(s) hold a selected fixture${shards.length ? `: ${shards.join(", ")}` : ""}`);
   console.log(JSON.stringify({ shards }));
   process.exit(0);
@@ -271,12 +290,14 @@ if (listShards !== undefined) {
 
 // A zero after filtering means either no diff match or no assignment to this shard.
 // Keep the diff, corpus and selected counts visible in both cases.
-if (selected.length === 0) {
+if (prove.length === 0) {
   console.log(shard
     ? `No selected mutation fixtures are assigned to shard ${a.shard}.`
-    : metadataOnlyExclusions.size > 0
-      ? "No mutation fixtures to re-prove: the only intersections were metadata-only config-path exclusions."
-      : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
+    : liveRefused.length > 0
+      ? "No mutation fixtures to re-prove: every selected fixture was a named live-shaped refusal."
+      : metadataOnlyExclusions.size > 0
+        ? "No mutation fixtures to re-prove: the only intersections were metadata-only config-path exclusions."
+        : "No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.");
   process.exit(0);
 }
 
@@ -519,7 +540,7 @@ const preRed = [];      // exit 4 + base RED, or any exit 4 under --all — inhe
 const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head RED
 const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base comparison — loud failure
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
-for (const { path, command, mutations } of selected) {
+for (const { path, command, mutations } of prove) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
     cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: rootComparisonEnv(),
@@ -672,5 +693,5 @@ if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length || unme
   process.exit(1);
 }
 console.log(a.all
-  ? `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive; base not compared under --all)`
-  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - fixtureCount(preRed) - fixtureCount(inheritedFatal) - inconclusive.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);
+  ? `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${prove.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive; base not compared under --all)`
+  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${prove.length - fixtureCount(preRed) - fixtureCount(inheritedFatal) - inconclusive.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);

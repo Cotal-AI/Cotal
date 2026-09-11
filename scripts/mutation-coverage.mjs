@@ -16,10 +16,15 @@
  *
  *   node scripts/mutation-coverage.mjs                     # every config in the tree
  *   node scripts/mutation-coverage.mjs <config.json> …     # just these
+ *
+ * A live-shaped command is refused before it runs, whether the config was discovered or named.
+ * Refused configs are counted and printed; they are never a silent hole in the denominator.
  */
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
+
 
 /**
  * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
@@ -60,6 +65,7 @@ const probes = [];
  * other repository fixture so corpus validation does not have a blind spot.
  */
 const tools = [];
+const refused = [];
 
 /**
  * Only the fields THIS script's report depends on are checked here. The set of keys the harness
@@ -182,6 +188,11 @@ for (const path of configs) {
     }
     if (!gradesTool) assertGradable(path, suites, m, cfg.assembles ?? []);
   }
+  const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });
+  if (liveReason) {
+    refused.push([path, cfg.command, liveReason]);
+    continue;
+  }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
   // failures and keeps going; "N checks passed" from a fail-fast one, where reaching the line at
@@ -214,11 +225,15 @@ for (const path of configs) {
   rows.push([suites.join(", "), executed, distinct.size]);
 }
 
-const w = Math.max(...rows.map((r) => r[0].length));
-for (const [suite, executed, distinct] of rows) {
-  console.log(`${suite.padEnd(w)}  ${String(distinct).padStart(3)} / ${String(executed).padStart(3)} cells observed failing`);
+if (rows.length) {
+  const w = Math.max(...rows.map((r) => r[0].length));
+  for (const [suite, executed, distinct] of rows) {
+    console.log(`${suite.padEnd(w)}  ${String(distinct).padStart(3)} / ${String(executed).padStart(3)} cells observed failing`);
+  }
+  console.log(`${"TOTAL".padEnd(w)}  ${named} / ${cells} = ${Math.round((named / cells) * 100)}%`);
+} else if (!tools.length && !probes.length) {
+  console.log("TOTAL  0 / 0 = n/a (no safe configs executed)");
 }
-console.log(`${"TOTAL".padEnd(w)}  ${named} / ${cells} = ${Math.round((named / cells) * 100)}%`);
 console.log(`${mutations} mutations run, ${unkillable} recorded unkillable by construction and not run.`);
 console.log("A lower bound: a mutation may redden more cells than the one it names, and those are not claimed here.");
 console.log(
@@ -241,4 +256,11 @@ if (tools.length) {
   for (const [path, n, executed] of tools) {
     console.log(`  ${path}  ${n} mutations against a self-test of ${executed} cells`);
   }
+}
+if (refused.length) {
+  console.log("\nLive-shaped configs — refused before execution, counted and named so the denominator stays honest.");
+  for (const [path, command, reason] of refused) {
+    console.log(`  ${path}  REFUSED \`${command}\` (${reason})`);
+  }
+  console.log(`${refused.length} live-shaped config(s) refused.`);
 }
