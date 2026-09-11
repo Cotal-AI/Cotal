@@ -3,19 +3,17 @@
  * existing bucket, so a presence/lease bucket created by a cotal that predated the TTL keeps NO `max_age` and
  * never expires dead presence records / stale leases — a raw-KV reader (a dashboard) then shows a crashed agent
  * as live forever. `setupSpaceStreams` reconciles the three TTL'd buckets' `max_age` (STREAM.UPDATE), which
- * requires the `provisioner` cred to hold STREAM.UPDATE on exactly those three streams (provision.ts).
+ * requires the `provisioner` cred to hold STREAM.UPDATE plus one exact reserved canary key on each of
+ * those three streams (provision.ts).
  *
  * Runs against a REAL auth-callout broker AS the REAL provisioner credential, so it proves THE GRANT — the one
- * thing unique to auth mode. A fresh `cotal up` never exercises it (a just-created bucket already has the TTL, so
- * the reconcile skips the update), so we stage the old-deployment shape: pre-create the three buckets WITHOUT
+ * thing unique to auth mode. We stage the old-deployment shape: pre-create the three buckets WITHOUT
  * max_age (as the provisioner's STREAM.CREATE), then run setupSpaceStreams as the provisioner and assert all
  * three `max_age` values flip from 0 to their TTLs. Without the STREAM.UPDATE grant, setupSpaceStreams throws a
- * permissions violation at the reconcile — so reaching the post-asserts IS the proof.
+ * permissions violation at the reconcile or canary publish — so reaching the post-asserts IS the proof.
  *
- * The behavioral consequence (a stale record then ages out; an active lease, always younger than its TTL,
- * survives) is plain NATS `max_age` semantics, proven live in open mode by `_r286-mig.ts` / `_r286.ts` — not
- * re-proven here, where writing presence/lease records would need agent/delivery creds (the provisioner writes
- * neither). Needs `nats-server` on PATH. Run: pnpm smoke:presence-ttl-migration:auth
+ * The canary proves expiry without granting the provisioner arbitrary presence or lease writes. Needs
+ * `nats-server` on PATH. Run: pnpm smoke:presence-ttl-migration:auth
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
