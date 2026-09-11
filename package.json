@@ -272,6 +272,8 @@
     "smoke:remote-authority-operations": "tsx implementations/manager/smoke/remote-authority-operations.smoke.ts",
     "smoke:hosted-retirement-order": "tsx implementations/manager/smoke/hosted-retirement-order.smoke.ts",
     "probe:hosted-retirement-stock-supervise": "tsx implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts",
+    "probe:remote-authority-renewal:early": "COTAL_REMOTE_EXECUTOR_ARM=early tsx implementations/manager/smoke/remote-executor-renewal-stock.acceptance.ts",
+    "probe:remote-authority-renewal:expired": "COTAL_REMOTE_EXECUTOR_ARM=expired tsx implementations/manager/smoke/remote-executor-renewal-stock.acceptance.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:pid-contract": "tsx packages/workspace/smoke/pid.smoke.ts",
