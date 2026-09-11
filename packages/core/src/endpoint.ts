@@ -5162,11 +5162,11 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private handleKvEntry(e: KvEntry): void {
+    // Provisioning uses this one reserved key to prove the bucket's max_age is enforced (#404).
+    // It is maintenance traffic, never a peer identity, an offline transition, or view freshness.
+    if (e.key === TTL_RECONCILE_CANARY_KEY) return;
     this.lastPresenceWatchAt = Date.now();
     this.presenceWatchEmpty = false;
-    // Provisioning uses this one reserved key to prove the bucket's max_age is enforced (#404).
-    // It is maintenance traffic, never a peer identity and never an offline transition.
-    if (e.key === TTL_RECONCILE_CANARY_KEY) return;
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
