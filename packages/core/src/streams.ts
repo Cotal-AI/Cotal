@@ -4,6 +4,7 @@ import {
   AckPolicy,
   DeliverPolicy,
   type ConsumerConfig,
+  type JetStreamClient,
   type JetStreamManager,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
@@ -356,85 +357,67 @@ export function fanoutDurableConfig(
 
 /** Connect with the given (privileged) creds, create the space's streams, and disconnect.
  *  Used by `cotal up` to pre-create streams once at setup. */
-/** #286: reconcile a TTL'd KV bucket's `max_age` to `ttlMs`. `kvm.create` NEVER updates an existing
- *  bucket's config, so a presence/lease bucket created by a cotal that predated the TTL (or created
- *  without it) keeps NO expiry forever — dead presence records and stale leases never age out, and a
- *  raw-KV reader (a dashboard) shows a crashed agent as live indefinitely. Run at every `cotal up`, this
- *  `STREAM.UPDATE`s the backing stream when its `max_age` has drifted. Lowering `max_age` immediately
- *  ages out already-expired messages (the intended liveness effect; active leases are younger than their
- *  TTL and survive, a stale one dies and its holder self-fences on its next failed renewal). NATS requires
- *  `duplicate_window <= max_age`; an old unlimited bucket's 120s window would otherwise reject the update,
- *  so the window is lowered in the SAME update. Idempotent (a matching bucket is skipped). The `provisioner`
- *  cred holds `STREAM.UPDATE` on exactly these three streams (see provision.ts).
+export const TTL_RECONCILE_CANARY_KEY = "_cotal_ttl_reconcile";
+const TTL_RECONCILE_POLL_MS = 100;
+const TTL_RECONCILE_GRACE_MS = 2_000;
+
+/** The server accepted and reported a TTL update, but its backing store did not enforce it. */
+export class TtlPersistenceError extends Error {
+  constructor(readonly stream: string, readonly ttlMs: number, readonly canarySubject: string) {
+    super(
+      `TTL reconcile persistence failed for ${stream}: the server accepted max_age=${ttlMs}ms, ` +
+      "but the backing store did not persist or enforce it (the enforcement canary remained past max_age plus grace)",
+    );
+    this.name = "TtlPersistenceError";
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function proveTtlEnforcement(
+  jsm: JetStreamManager,
+  js: Pick<JetStreamClient, "publish">,
+  streamName: string,
+  bucket: string,
+  ttlMs: number,
+): Promise<void> {
+  const canarySubject = `$KV.${bucket}.${TTL_RECONCILE_CANARY_KEY}`;
+  await js.publish(canarySubject, new TextEncoder().encode("cotal ttl enforcement canary"));
+  const deadline = Date.now() + ttlMs + TTL_RECONCILE_GRACE_MS;
+  while (Date.now() <= deadline) {
+    const info = await jsm.streams.info(streamName, { subjects_filter: canarySubject });
+    if ((info.state.subjects?.[canarySubject] ?? 0) === 0) return;
+    await sleep(Math.min(TTL_RECONCILE_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+  throw new TtlPersistenceError(streamName, ttlMs, canarySubject);
+}
+
+/** #286/#404: reconcile a TTL'd KV bucket and prove the backing store enforces the result.
  *
- *  WHAT THE READ-BACK PROVES, AND WHAT IT CANNOT. It verifies exactly two things: **`max_age` came back
- *  EXACTLY as intended**, and **`duplicate_window` does not violate the NATS constraint** (it is not
- *  above `max_age`). A no-op update, a `max_age` that came back other than intended, or a server that
- *  answers OK without changing anything is caught here and throws.
+ * `STREAM.INFO` alone is not evidence. nats-server updates the stream's in-memory config before asking
+ * the backing store to persist it, ignores the store's `UpdateConfig` error, and serves INFO from the
+ * in-memory copy. A file-store metadata fault can therefore report UPDATE success and the requested
+ * `max_age` while the store rolls back and never starts age enforcement.
  *
- *  Note what that does NOT include: the update sends a computed `dupNs`, but the read-back never checks
- *  the window came back as sent — omitted, zeroed, or clamped smaller all pass. Deliberate: any window
- *  `<= max_age` is legal and harmless for a liveness bucket, and demanding equality would turn a
- *  legitimate server-side clamp into a failed `cotal up`. (Confirmed by probe: the real function accepts
- *  a read-back with exact `max_age` and the window OMITTED.) It does NOT prove that file-store expiry is
- *  in force either, and the distinction is
- *  not theoretical — on the supported floor (nats-server 2.12.1) the effect is applied in two places and
- *  only one of them is visible to us:
- *    - `stream.go` assigns the new in-memory `mset.cfg`, then calls `mset.store.UpdateConfig(cfg)` and
- *      IGNORES its returned error;
- *    - `filestore.go`'s `UpdateConfig` restores the previous config and returns early when
- *      `writeStreamMeta()` fails — BEFORE `expireMsgs()`/age enforcement is ever started;
- *    - `STREAM.INFO` is answered from `mset.config()`, i.e. the in-memory copy.
- *  So a metadata-write fault (EACCES, ENOSPC) yields UPDATE OK, a read-back showing the intended
- *  `max_age`, and a backing store still running unlimited with no expiry timer. **This check cannot see
- *  that**, because both fields it reads come from the config that DID get updated.
- *
- *  It is NOT, however, invisible everywhere — an earlier version of this comment said no check at this
- *  seam could see it, and that was false. `$JS.API.STREAM.SNAPSHOT` splits the useful way: the snapshot
- *  INITIATION response copies `mset.config()` and false-greens like INFO, but the STREAMED archive's
- *  first `meta.inf` entry marshals `fs.cfg` — the file store's own, rolled-back config. Reproduced live
- *  against an EACCES split: INFO and the initiation response both reported the requested TTL while the
- *  streamed `meta.inf` reported the old one. So a store-side detector EXISTS in the protocol, and this
- *  codebase has `downloadStreamSnapshot` plus a per-stream-scoped snapshot grant MODEL (`backup.ts`).
- *
- *  **It is NOT available under current authority, and that — not the cost — is what blocks it.**
- *  `assertBackupStream` runs every scope through `canonicalBackupStreamConfig`, which accepts only the
- *  durable registries (channel / acl / members) among KV buckets and THROWS for presence, delivery and
- *  manager. So wiring this in needs a NEW EXACT SCOPE, or a widening of the reconcile credential to
- *  whole-body snapshot authority over liveness data — an unsettled authority question on the credential
- *  this change otherwise keeps to three `STREAM.UPDATE` subjects. The cost is real too (it scales with
- *  bucket size, and a snapshot carries the bucket's records), but quoting only the cost would read as
- *  "available but expensive", which is the wrong summary. See the tracking issue for the full spec.
- *
- *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement — and
- *  "cannot be detected here" is the stronger claim it does NOT license.
- *
- *  CONSEQUENCE OF READING FIRST, which follows from the same split and is worth naming because the
- *  skip is deliberate: once `STREAM.INFO` reports the intended `max_age`, later reconciles see no
- *  drift and issue no update, so a bucket left unenforced by a metadata-write fault is not retried
- *  for as long as that server process lives.
- *
- *  WHERE THAT GOES depends on WHEN the write failed, and an earlier version of this comment got it
- *  wrong by generalising from one case. `writeStreamMeta` performs TWO writes — `meta.inf`, then
- *  `meta.sum` — and `UpdateConfig` rolls `fs.cfg` back if either fails:
- *    - **Failure BEFORE the first write commits** (the original EACCES reproduction): persisted state
- *      is coherent and old, so a restart makes `INFO` report the old value again and the next
- *      reconcile repairs it. Here the skip DEFERS a repair.
- *    - **Failure BETWEEN the two** (reproduced live by pointing `meta.sum.tmp` at `/dev/full`):
- *      `meta.inf` commits NEW while `meta.sum` stays OLD — a torn pair. On restart the server logs
- *      `checksums do not match` and recovery `continue`s past the stream, so it is SKIPPED: `INFO`
- *      returns **stream not found**, and the reconcile cannot repair it because its own first `INFO`
- *      gets not-found. **That case does not defer a repair, it loses the stream until an operator
- *      intervenes.**
- *  So "the persisted metadata is ground truth, restart repairs it" is TRUE ONLY of the
- *  before-first-atomic case, and "defers, never loses" is false in general. The read-first skip is
- *  still right — it keeps a healthy repeat `cotal up` to reads and no writes — but its worst case is
- *  worse than a deferred repair. Both branches reproduced live against 2.12.1 during review; see the
- *  tracking issue. */
-export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<TtlReconciled | undefined> {
+ * After checking the reported config, this writes one message on a reserved KV subject and waits for
+ * the subject-filtered stream state to report it gone within `max_age` plus fixed grace. That transition
+ * is proof of enforcement rather than config: the false-green store leaves the canary present and causes
+ * a named {@link TtlPersistenceError}, which `cotal up` surfaces. Successful canaries self-delete through
+ * the policy they verify. A matching INFO value is verified too: after the broker has false-greened once,
+ * later INFO reads keep matching even though enforcement is absent, so config equality cannot be a skip. */
+export async function reconcileBucketTtl(
+  jsm: JetStreamManager,
+  js: Pick<JetStreamClient, "publish">,
+  streamName: string,
+  bucket: string,
+  ttlMs: number,
+): Promise<TtlReconciled | undefined> {
   const wantNs = nanos(ttlMs);
   const info = await jsm.streams.info(streamName);
-  if (info.config.max_age === wantNs) return undefined; // already at the intended TTL — no update
+  if (info.config.max_age === wantNs) {
+    await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);
+    return undefined;
+  }
   const fromNs = info.config.max_age;
   const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs); // NATS constraint: duplicate_window <= max_age
   await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
@@ -450,6 +433,7 @@ export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: stri
   // written to remove. (Semantics confirmed at the NATS source rather than reasoned from our seam.)
   if ((after.config.duplicate_window ?? 0) > wantNs)
     throw new Error(`TTL reconcile left ${streamName} inconsistent: duplicate_window is ${after.config.duplicate_window}ns, which exceeds max_age ${wantNs}ns (a conforming server rejects this combination, so the update was applied partially)`);
+  await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);
   return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };
 }
 
@@ -507,12 +491,11 @@ export async function reconcileSpaceTtls(opts: {
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
-    const changed: TtlReconciled[] = [];
-    for (const [bucket, ttl] of ttlBuckets(opts.space)) {
-      const done = await reconcileBucketTtl(jsm, `KV_${bucket}`, ttl);
-      if (done) changed.push(done);
-    }
-    return changed;
+    const js = jetstream(nc);
+    const reconciled = await Promise.all(
+      ttlBuckets(opts.space).map(([bucket, ttl]) => reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl)),
+    );
+    return reconciled.filter((done): done is TtlReconciled => done !== undefined);
   } finally {
     await nc.drain();
   }
@@ -639,7 +622,10 @@ export async function setupSpaceStreams(opts: {
     // stale leases. Reconcile the three TTL'd buckets' `max_age` here (STREAM.UPDATE), idempotently.
     // Same list as `reconcileSpaceTtls`, from one source: two copies would let a fourth TTL'd bucket
     // be added to the create path and silently miss the upgrade path, which is this defect exactly.
-    for (const [bucket, ttl] of ttlBuckets(opts.space)) await reconcileBucketTtl(jsm, `KV_${bucket}`, ttl);
+    const js = jetstream(nc);
+    await Promise.all(
+      ttlBuckets(opts.space).map(([bucket, ttl]) => reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl)),
+    );
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);

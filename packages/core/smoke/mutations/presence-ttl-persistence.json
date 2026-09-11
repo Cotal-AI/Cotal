@@ -1,0 +1,39 @@
+{
+  "suite": [
+    "packages/core/smoke/presence-ttl-persistence.smoke.ts"
+  ],
+  "guard": "TTL reconciliation reports success only after a real canary expires from the backing store. A file store whose metadata update rolls back while STREAM.INFO false-greens must raise TtlPersistenceError on both the update pass and a later matching-INFO pass.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:presence-ttl-persistence",
+  "completionMarker": "PRESENCE-TTL-PERSISTENCE SMOKE",
+  "progressPattern": "  ✓ ",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/presence-ttl-persistence.json",
+  "why": [
+    "The smoke constructs the exact file-store fault behind #404: a real stream starts at max_age=0,",
+    "only its metadata directory becomes 0500, nats-server accepts the update and INFO reports the new",
+    "TTL, while the store rolls back before age enforcement starts. The protected cell requires the",
+    "named persistence error rather than success. Healthy file and memory streams prove the detector",
+    "accepts stores that really expire the canary."
+  ],
+  "mutations": [
+    {
+      "name": "INFO-only acceptance is restored after STREAM.UPDATE, so the forced file-store rollback false-greens again",
+      "file": "packages/core/src/streams.ts",
+      "find": "  await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);\n  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
+      "replace": "  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
+      "expectRed": "forced file-store metadata failure is a named TtlPersistenceError",
+      "cell": "forced file-store metadata failure is a named TtlPersistenceError",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:presence-ttl-persistence",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "matching STREAM.INFO skips the enforcement proof, so a previous rollback is accepted on the second reconcile",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (info.config.max_age === wantNs) {\n    await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);\n    return undefined;\n  }",
+      "replace": "  if (info.config.max_age === wantNs) return undefined;",
+      "expectRed": "a second matching-INFO reconcile still fails instead of skipping",
+      "cell": "a second matching-INFO reconcile still fails instead of skipping",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:presence-ttl-persistence",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}
