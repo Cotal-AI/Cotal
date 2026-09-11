@@ -72,7 +72,9 @@ watching. See [transport.md](transport.md).
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. `up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
-for the space it serves ([Config](config.md#project-files)).
+for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
+`up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
+systemd unit does not put those lines in that unit's journal.
 
 The daemon also hosts the space's **checkpoint timer writer** ([SPEC §13.9](../SPEC.md#139-authority-boundary)):
 the standing pump that turns workflow `.schedule` requests into armed broker schedules, on its own
