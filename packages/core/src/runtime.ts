@@ -88,9 +88,9 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
-  /** Spawn the agent. `reference` is a custody reference from a custodial runtime's `reserve`,
-   *  and a runtime that offers `reserve` must honour it exactly; it is absent for a runtime
-   *  without durable custody. */
+  /** Spawn the agent. `reference` is an opaque custody reference the caller reserved before any
+   *  process existed; a runtime that reports references on its handle must honour this one exactly.
+   *  Absent for a runtime that does not custody its own processes. */
   spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle;
   /**
    * Reattach this runtime to a handle it created previously. This is a local runtime operation,
@@ -101,10 +101,6 @@ export interface Runtime {
   adopt?(reference: RuntimeReference): AgentHandle;
 }
 
-/** What a reap proved. `absent`: no custody record exists for that reference (the
- *  runtime already forgot it, so nothing it addresses is running). `reaped`: every process the record
- *  named was signalled and verified gone, or found already gone by identity. */
-export type RuntimeReapEvidence = { outcome: "absent" } | { outcome: "reaped"; detail: string };
 
 /**
  * A bridge that contributes one runtime backend — an {@link Extension} of kind

@@ -4,17 +4,6 @@ import { randomBytes } from "node:crypto";
 
 export const RECORD_VERSION = 1;
 
-/** Read the kernel boot id from /proc, or undefined when unavailable. A custody record pins this
- *  at launch so a successor that rebooted between the spawn and the reap cannot signal a pid whose
- *  start identity coincidentally matches across boots. */
-export function readBootId(): string | undefined {
-  try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export interface SeatRecord {
   version: number;
   id: string;
@@ -30,8 +19,11 @@ export interface SeatRecord {
   /** The child's process start identity, same rule. Absent on a pinned record when the child had
    *  already exited before the custodian could read it (a failed exec); a reader takes that as gone. */
   childStart?: string;
-  /** The kernel boot id at launch time (`/proc/sys/kernel/random/boot_id`). A reap that sees a
-   *  different boot id refuses: pid + starttime pairs can collide across reboots. */
+  /** The boot this record's pids belong to (`/proc/sys/kernel/random/boot_id`). A start token counts
+   *  clock ticks SINCE BOOT, so it is only unique within one boot, and custody records outlive a
+   *  reboot on disk. Without this, a surviving record could match an unrelated process that reached
+   *  the same pid at the same tick after a reboot, and be signalled for it. Absent on a record
+   *  written before boot binding; such a record is never signalled. */
   bootId?: string;
 }
 
@@ -61,6 +53,19 @@ export function recordPath(root: string, id: string): string {
 
 export function socketPath(root: string, id: string): string {
   return join(root, assertSeatId(id), "seat.sock");
+}
+
+/** This boot's identity. Read at the moment a record is written and again when it is read back: a
+ *  start token is ticks since THIS boot, so two records from different boots share a namespace they
+ *  cannot distinguish on their own. Undefined where the kernel does not publish it, which leaves a
+ *  record unbound and therefore unsignallable rather than wrongly signallable. */
+export function bootToken(): string | undefined {
+  try {
+    const id = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
@@ -100,7 +105,7 @@ export function readRecord(path: string): SeatRecord {
   if (raw.childStart !== undefined && (typeof raw.childStart !== "string" || raw.childStart.length === 0))
     throw new Error("seat record childStart is not a start token");
   if (raw.bootId !== undefined && (typeof raw.bootId !== "string" || raw.bootId.length === 0))
-    throw new Error("seat record bootId is not a valid boot identifier");
+    throw new Error("seat record bootId is not a boot identity");
   return {
     version: RECORD_VERSION,
     id: raw.id,
@@ -111,6 +116,8 @@ export function readRecord(path: string): SeatRecord {
     childPid: raw.childPid,
     ...(raw.custodianStart !== undefined ? { custodianStart: raw.custodianStart } : {}),
     ...(raw.childStart !== undefined ? { childStart: raw.childStart } : {}),
+    // Carried, not re-read from this process: a record read on another boot must still say which
+    // boot its pids came from, which is the whole point of the stamp.
     ...(raw.bootId !== undefined ? { bootId: raw.bootId } : {}),
   };
 }
