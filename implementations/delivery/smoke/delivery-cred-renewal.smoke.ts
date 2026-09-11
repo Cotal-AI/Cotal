@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -38,6 +38,7 @@ import {
   setupSpaceStreams,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
+import { spaceMaterialDir } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -92,10 +93,13 @@ const releaseBroker = teardownOnSignal(srv, dir);
 
 // The daemon's ISOLATED workspace root — findCotalRoot(cwd) lands here, so the membership feed's
 // creds/config come from THIS staging, never the developer's real .cotal.
-const root = mkdtempSync(join(tmpdir(), "cotal-dlv-renew-root-"));
-mkdirSync(join(root, ".cotal"), { recursive: true });
-const credsPath = join(root, ".cotal", "delivery.creds");
-const rwPath = join(root, ".cotal", "membership-rw.creds");
+// Resolve once before deriving cwd or credential paths. Sandboxed runners may expose tmpdir through
+// an alias, and reloadStoreIdentity intentionally compares canonical filesystem roots.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-dlv-renew-root-")));
+const spaceDir = spaceMaterialDir(root, space);
+mkdirSync(spaceDir, { recursive: true });
+const credsPath = join(spaceDir, "delivery.creds");
+const rwPath = join(spaceDir, "membership-rw.creds");
 
 let daemon: ReturnType<typeof spawn> | undefined;
 let daemonExited = false;
@@ -113,9 +117,9 @@ try {
   const credA = await mintCreds(auth, dlvId, "delivery", { expiresInSeconds: TTL });
   writeFileSync(credsPath, credA, { mode: 0o600 });
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 120 }), { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership-observer.creds"), obsCreds, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership-observer.creds"), obsCreds, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
   const bornAt = Date.now();
 
   daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
