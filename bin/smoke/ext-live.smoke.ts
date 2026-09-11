@@ -22,6 +22,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { defaultStartToken } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
@@ -403,6 +404,14 @@ registry.register(
   const alive = (pid: number): boolean => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   };
+  const recordManager = (pid: number): void => {
+    const pidPath = join(sandbox, ".cotal", "manager.pid");
+    const token = defaultStartToken(pid);
+    if (!token) throw new Error(`fixture could not read the process start token for manager pid ${pid}`);
+    writeFileSync(pidPath, String(pid));
+    writeFileSync(`${pidPath}.identity`, `${pid} ${token}`);
+    writeFileSync(join(sandbox, ".cotal", "manager.spare-capability"), JSON.stringify({ version: 1, process: { pid, token } }));
+  };
   writeFileSync(join(sandbox, ".cotal", "manager.pid"), "");
   const invalidPid = cotal(["down", "manager"]);
   ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(join(sandbox, ".cotal", "manager.pid")), invalidPid.stdout + invalidPid.stderr);
@@ -419,7 +428,7 @@ registry.register(
   let managerPid = daemon();
   const natsPid = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(managerPid));
+  recordManager(managerPid);
   writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
   writeFileSync(join(sandbox, ".cotal", "nats.pid"), String(natsPid));
 
@@ -435,7 +444,7 @@ registry.register(
   ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(join(sandbox, ".cotal", "manager.pid.stopping")), staleStopping.stdout + staleStopping.stderr);
 
   managerPid = daemon();
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(managerPid));
+  recordManager(managerPid);
   writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
 
   const one = cotal(["down", "manager"]);
@@ -445,7 +454,7 @@ registry.register(
   const slowReady = join(sandbox, "slow-manager-ready");
   const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 5000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
   for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(slowManagerPid));
+  recordManager(slowManagerPid);
   writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(slowManagerPid));
   const concurrentOptions = { env, cwd: sandbox };
   assertSmokeSandboxDown(sandboxAnchor, ["down", "manager"], concurrentOptions);

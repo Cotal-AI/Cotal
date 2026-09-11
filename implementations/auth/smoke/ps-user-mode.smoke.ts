@@ -369,7 +369,7 @@ try {
             : `. Nothing was started.`),
       );
     }
-    const down = await cotal(["down"], 60_000);
+    const down = await cotal(["down", "--with-agents"], 60_000);
     // The same standard the graded cells get: `cotal()` resolves for a timeout, a signal death and a
     // launch failure alike, so an unchecked `await` treats every one of those as a successful stop.
     mustHaveRun(down, "`cotal down`");

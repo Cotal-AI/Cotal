@@ -412,6 +412,15 @@ export async function stopLocalProcess(
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
     if (identity.kind === "legacy") console.error(identityLegacyWarning(component.label, pidPath));
     else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
+    // The beforeSignal hook authorizes an action against a LIVE exact process. A pinned record whose
+    // process is already ESRCH-gone needs no spare capability or destructive intent because no signal
+    // will be sent. Clear that stale record directly, preserving the hook's documented placement
+    // immediately before SIGTERM and avoiding a false "identity is not pinned" refusal on cleanup.
+    if (identity.kind === "gone") {
+      console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
+      stopped = true;
+      return true;
+    }
     options.beforeSignal?.({
       target: identity.kind === "match" ? identity.record : { pid },
       stopper: { pid: process.pid, marker },

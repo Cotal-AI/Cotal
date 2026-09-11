@@ -139,8 +139,8 @@ try {
     scatter2.missing.includes(IID2) && scatter2.complete === false, { missing: scatter2.missing, complete: scatter2.complete });
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
   // The scratch tree goes too. Its absence here is the defect: this suite passed, said so, and
   // left one directory behind on every green run — reproduced by count, not inferred. The pause

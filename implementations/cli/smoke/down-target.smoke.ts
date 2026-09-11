@@ -35,13 +35,14 @@ let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
+let stopLocalProcess!: typeof import("../src/commands/down.js").stopLocalProcess;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
   ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
-  ({ down } = await import("../src/commands/down.js"));
+  ({ down, stopLocalProcess } = await import("../src/commands/down.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -161,6 +162,27 @@ try {
   check("--with-agents with --run is refused", true);
   await assert.rejects(run([], { "with-agents": true, space: "teamA" }), /--with-agents is bare-whole-stack only/);
   check("--with-agents with --space is refused", true);
+
+  // A pinned record can become ESRCH-dead before the manager policy hook runs. That path performs
+  // no signal and therefore needs neither spare capability nor destructive intent. It must clear the
+  // stale pid + identity pair without invoking the hook.
+  const deadChild = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  spawnedChildren.push(deadChild);
+  await new Promise<void>((resolve) => deadChild.once("exit", () => resolve()));
+  const deadRoot = mkdtempSync(join(tmpdir(), "cotal-dead-manager-record-"));
+  mkdirSync(join(deadRoot, ".cotal"), { recursive: true });
+  const deadPidPath = join(deadRoot, ".cotal", "manager.pid");
+  writeFileSync(deadPidPath, String(deadChild.pid), { mode: 0o600 });
+  writeFileSync(`${deadPidPath}.identity`, `${deadChild.pid} dead-token`, { mode: 0o600 });
+  let hookCalled = false;
+  await stopLocalProcess(
+    { kind: "local-process", name: "manager", label: "manager", pidFile: "manager.pid" },
+    { root: deadRoot, space: "main" },
+    { beforeSignal: () => { hookCalled = true; throw new Error("dead records must not reach beforeSignal"); } },
+  );
+  check("a dead pinned manager record bypasses the pre-signal policy hook", !hookCalled);
+  check("a dead pinned manager record clears both pid and identity files", !existsSync(deadPidPath) && !existsSync(`${deadPidPath}.identity`));
+  rmSync(deadRoot, { recursive: true, force: true });
 
   console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {

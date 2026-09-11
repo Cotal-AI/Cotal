@@ -60,6 +60,11 @@ function syncDirectory(path: string): void {
   try {
     fd = openSync(dirname(path), "r");
     fsyncSync(fd);
+  } catch (error) {
+    // Windows does not support opening/fsyncing a directory. Keep the file fsync + atomic rename,
+    // while preserving the parent-directory durability barrier as a correctness requirement on
+    // every platform that implements it. This mirrors maintenance's established portability rule.
+    if (process.platform !== "win32") throw error;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
