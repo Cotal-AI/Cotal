@@ -8,7 +8,7 @@
     "The control-caller instrument mint became an issuance, and the issuer session dials the broker",
     "BEFORE the preflight runs. Against a mesh that is not there that dial throws the transport's own",
     "words, which is what cell G of attach-reconnect saw: a raw `connection refused` where the",
-    "classified `mesh \"…\" is recorded at … but not running` sentence (and its registry prune) used to be.",
+    "classified `no mesh running at ... is recorded at ... but not running` sentence (and its registry prune) used to be.",
     "The catch in `connectOrThrow` runs the preflight on the dial failure so the classified refusal is",
     "what escapes; delete it and the raw error is the refusal again, end to end through the real binary.",
     "",
@@ -31,7 +31,7 @@
       "replace": "          throw e;",
       "expectRed": "...saying the mesh is not there, in the CLI's own words",
       "cell": "...saying the mesh is not there, in the CLI's own words",
-      "note": "Cell G pins an instance with `--on`, so this connect is the first thing that touches the broker, and the link is severed under it. Unmutated, the preflight classifies the dead link and the CLI prints `is recorded at` / `not running`; mutated, the issuer dial's `connection refused` is what the operator reads. The other three checks in cell G (non-zero exit, a single failure mark, no reconnect banner) stay green under this mutant, so a kill here is a claim about the refusal's WORDS specifically, which is the whole finding.",
+      "note": "Cell G pins an instance with `--on`, so this connect is the first thing that touches the broker, and the link is severed under it. Unmutated, the preflight classifies the dead link and the CLI prints `no mesh running at` plus the recorded root; mutated, the issuer dial's `connection refused` is what the operator reads. The other three checks in cell G (non-zero exit, a single failure mark, no reconnect banner) stay green under this mutant, so a kill here is a claim about the refusal's WORDS specifically, which is the whole finding.",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
     }
   ]

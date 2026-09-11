@@ -148,12 +148,12 @@ const T: MeshTarget = {
   mode: "open",
   tlsRequired: false,
 };
-check("message: unreachable names the recorded mesh and root, not a bare `cotal up`", (() => {
+check("message: unreachable keeps `no mesh running at` and names the recorded root", (() => {
   const m = preflightMessage("unreachable", T, false);
-  return m.includes(`mesh "${T.space}" is recorded at ${T.root}`) && m.includes("cotal up") && m.includes("there to restart") && !m.includes("removed");
+  return m.includes(`no mesh running at ${DEAD}`) && m.includes(`mesh "${T.space}" is recorded at ${T.root}`) && m.includes("cotal up") && m.includes("there to restart") && !m.includes("removed");
 })(), preflightMessage("unreachable", T, false));
 check("message: unreachable + pruned still names the recorded root (liveness no longer deletes)",
-  preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
+  preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && preflightMessage("unreachable", T, true).includes(`no mesh running at ${DEAD}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
 check("message: prune flag does not change the unreachable sentence (record is kept)", preflightMessage("unreachable", T, true) === preflightMessage("unreachable", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {

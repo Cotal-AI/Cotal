@@ -372,7 +372,7 @@ try {
     const r3 = await runMint(["x", "--profile", "agent", "--provision", "--out", out3]);
     process.chdir(root);
     check("bare --provision from an unrecorded root stays local and exits 1 without reaching the other mesh",
-      r3.code === 1 && /mesh "same" is recorded at/.test(r3.out) && (r3.out.includes(rootA) || r3.out.includes(canonicalRoot(rootA))) && /not running/.test(r3.out) && !r3.out.includes(rootB), r3.out);
+      r3.code === 1 && /no mesh running at nats:\/\/127\.0\.0\.1:4222/.test(r3.out) && /mesh "same" is recorded at/.test(r3.out) && (r3.out.includes(rootA) || r3.out.includes(canonicalRoot(rootA))) && /not running/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 

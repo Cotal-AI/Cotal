@@ -551,7 +551,7 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(`✗ mesh "${target.space}" is recorded at ${target.root} but not running - run \`cotal up\` there to restart`);
+    throw new ConnectRefusal(`✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`);
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;

@@ -15,8 +15,9 @@ every origin as `offline`. `mismatch` (credentials rejected, open-now-auth, stal
 drops an `up` record and still never drops a `manual` one. `cotal down` / `cotal clean all` still
 drop `up` records for the root they tear down.
 
-The unreachable copy for a kept `up` record names the recorded root and tells the operator to run
-`cotal up` there, so a bare `cotal up` in the wrong cwd cannot start a different mesh.
+The unreachable copy for a kept `up` record still starts `no mesh running at <server>` and then
+names the recorded root, telling the operator to run `cotal up` there, so a bare `cotal up` in
+the wrong cwd cannot start a different mesh.
 
 A liveness sweep still returns `{ pruned, offline }`. Resolution now uses `offline`: a record
 known dead is not a live candidate for a bare command (`no mesh running` / `multiple meshes
