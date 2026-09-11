@@ -6,7 +6,7 @@
  * Run: pnpm smoke:mutation-command-safety
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +94,29 @@ check(
   liveShapedCommandReason(`${process.execPath} -e "console.log('ok')"`, opts) === null,
   liveShapedCommandReason(`${process.execPath} -e "console.log('ok')"`, opts),
 );
+check(
+  "a path-spelled tsx launcher of a marked suite is refused",
+  liveShapedCommandReason("./node_modules/.bin/tsx suites/real.mjs", opts) ===
+    `suites/real.mjs declares ${MARKER}`,
+  liveShapedCommandReason("./node_modules/.bin/tsx suites/real.mjs", opts),
+);
+check(
+  "an absolute tsx launcher of a marked suite is refused",
+  liveShapedCommandReason("/usr/local/bin/tsx suites/real.mjs", opts) ===
+    `suites/real.mjs declares ${MARKER}`,
+  liveShapedCommandReason("/usr/local/bin/tsx suites/real.mjs", opts),
+);
+check(
+  "a quoted path-spelled tsx launcher of a marked suite is refused",
+  liveShapedCommandReason(`"./node_modules/.bin/tsx" suites/real.mjs`, opts) ===
+    `suites/real.mjs declares ${MARKER}`,
+  liveShapedCommandReason(`"./node_modules/.bin/tsx" suites/real.mjs`, opts),
+);
+check(
+  "a path-spelled tsx launcher of a safe suite still executes",
+  liveShapedCommandReason("./node_modules/.bin/tsx suites/safe.mjs", opts) === null,
+  liveShapedCommandReason("./node_modules/.bin/tsx suites/safe.mjs", opts),
+);
 
 const git = (root: string, args: string[]) =>
   execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -153,6 +176,23 @@ function writeCoverageTree(root: string) {
       "suites/real.mjs",
     ),
   );
+  mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
+  const stubTsx = join(root, "node_modules/.bin/tsx");
+  writeFileSync(
+    stubTsx,
+    [
+      "#!/usr/bin/env node",
+      "const { spawnSync } = require('node:child_process');",
+      "const run = spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });",
+      "process.exit(run.status ?? 1);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(stubTsx, 0o755);
+  writeFileSync(
+    join(root, "smoke/mutations/tsx.json"),
+    config("tsx", "./node_modules/.bin/tsx suites/real.mjs", "suites/real.mjs"),
+  );
   writeFileSync(
     join(root, "smoke/mutations/safe.json"),
     JSON.stringify({
@@ -175,6 +215,7 @@ const coverage = spawnSync(
     "smoke/mutations/live.json",
     "smoke/mutations/real.json",
     "smoke/mutations/options.json",
+    "smoke/mutations/tsx.json",
     "smoke/mutations/safe.json",
   ],
   { cwd: coverageRoot, encoding: "utf8", timeout: 30_000 },
@@ -186,7 +227,8 @@ check(
     && /smoke\/mutations\/live\.json\s+REFUSED `.*smoke:user-spawn:live`/.test(coverageOut)
     && /smoke\/mutations\/real\.json\s+REFUSED `.*suites\/real\.mjs`/.test(coverageOut)
     && /smoke\/mutations\/options\.json\s+REFUSED `.*suites\/real\.mjs`/.test(coverageOut)
-    && /3 live-shaped config\(s\) refused/.test(coverageOut),
+    && /smoke\/mutations\/tsx\.json\s+REFUSED `.*suites\/real\.mjs`/.test(coverageOut)
+    && /4 live-shaped config\(s\) refused/.test(coverageOut),
   coverageOut.slice(-800),
 );
 check(
@@ -237,6 +279,21 @@ writeFileSync(
     }],
   }),
 );
+writeFileSync(
+  join(reproofRoot, "smoke/mutations/tsx.json"),
+  JSON.stringify({
+    suite: ["suites/real.mjs"],
+    grades: "tool",
+    command: "./node_modules/.bin/tsx suites/real.mjs",
+    mutations: [{
+      name: "the guard is removed",
+      file: "guard.mjs",
+      find: "export const n = 1;",
+      replace: "export const n = 2;",
+      expectRed: "the guard holds",
+    }],
+  }),
+);
 git(reproofRoot, ["add", "."]);
 git(reproofRoot, ["commit", "--quiet", "-m", "base"]);
 const base = git(reproofRoot, ["rev-parse", "HEAD"]);
@@ -253,9 +310,10 @@ const reproofOut = `${reproof.stdout ?? ""}${reproof.stderr ?? ""}`;
 check(
   "reproof names a refused live-shaped fixture and does not execute it",
   reproof.status === 0
-    && /live-shaped fixtures refused \(2\)/.test(reproofOut)
+    && /live-shaped fixtures refused \(3\)/.test(reproofOut)
     && /smoke\/mutations\/live\.json\s+REFUSED `.*smoke:user-spawn:live`/.test(reproofOut)
     && /smoke\/mutations\/options\.json\s+REFUSED `.*suites\/real\.mjs`/.test(reproofOut)
+    && /smoke\/mutations\/tsx\.json\s+REFUSED `.*suites\/real\.mjs`/.test(reproofOut)
     && !existsSync(join(reproofRoot, "SENTINEL")),
   reproofOut.slice(-800),
 );

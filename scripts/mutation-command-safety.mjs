@@ -45,7 +45,7 @@ const VALUE_FLAGS = new Set([
   "--max-old-space-size",
   "--max-semi-space-size",
 ]);
-const LAUNCHER = /^(?:tsx|(?:.*\/)?node)$/;
+const LAUNCHER = /^(?:(?:.*[\\/])?(?:tsx|node))$/;
 const FLAG_NAME = /^([^=]+)(?:=.*)?$/;
 
 export function smokeTokens(command) {
@@ -96,9 +96,10 @@ function isSourcePath(token) {
 }
 
 /**
- * Collect suite files launched by `node` / `tsx`, skipping valid Node/tsx
- * options that sit between the launcher and the positional path. Inline
- * eval (`-e` / `--eval` / `-p`) is not a suite source.
+ * Collect suite files launched by `node` / `tsx` (bare or path-spelled, so
+ * `./node_modules/.bin/tsx` is inspected the same as `tsx`), skipping valid
+ * Node/tsx options that sit between the launcher and the positional path.
+ * Inline eval (`-e` / `--eval` / `-p`) is not a suite source.
  */
 function launchedFiles(command) {
   if (typeof command !== "string") return [];

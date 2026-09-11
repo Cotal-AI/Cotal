@@ -45,6 +45,14 @@
       "cell": "a node option before a marked suite path is refused"
     },
     {
+      "name": "path-spelled tsx launchers skip source inspection",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "const LAUNCHER = /^(?:(?:.*[\\\\/])?(?:tsx|node))$/;\n",
+      "replace": "const LAUNCHER = /^(?:tsx|(?:.*\\/)?node)$/;\n",
+      "expectRed": "a path-spelled tsx launcher of a marked suite is refused",
+      "cell": "a path-spelled tsx launcher of a marked suite is refused"
+    },
+    {
       "name": "reproof proves live-shaped fixtures instead of refusing them",
       "file": "scripts/mutation-reproof.mjs",
       "find": "const prove = selected.filter((fixture) => !liveRefusedPaths.has(fixture.path));\n",
