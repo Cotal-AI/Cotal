@@ -130,8 +130,8 @@
     {
       "name": "verdict lines are matched without stripping ANSI colour, so every verdict reads as absent",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "[...output.replace(ANSI, \"\").matchAll(verdictRe)]",
-      "replace": "[...output.matchAll(verdictRe)]",
+      "find": "  for (const line of output.replace(ANSI, \"\").split(\"\\n\")) {",
+      "replace": "  for (const line of output.split(\"\\n\")) {",
       "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
       "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
     },
