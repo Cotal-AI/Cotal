@@ -143,6 +143,7 @@ check(
 check(
   "Changesets version job reaches the release preflight before its recursive publish",
   /publish:\s*pnpm ci:publish/.test(version)
+    && ciPublish.indexOf("preflight-npm-publish.mjs") >= 0
     && ciPublish.indexOf("preflight-npm-publish.mjs") < ciPublish.indexOf("pnpm publish -r"),
   { versionHasCiPublish: /publish:\s*pnpm ci:publish/.test(version), ciPublish },
 );
