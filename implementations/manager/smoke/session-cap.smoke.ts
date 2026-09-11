@@ -160,8 +160,8 @@ try {
   }
   check("it throws rather than establishing", refusal !== undefined && leaked === undefined, { refusal, leaked });
   check("the refusal is `resource-exhausted`", refusal?.code === "resource-exhausted", refusal);
-  check("the message NAMES the cap and its current value (an operator learns the knob to raise)",
-    refusal !== undefined && refusal.message.includes(String(CAP)) && refusal.message.includes("maxSessions"), refusal?.message);
+  check("the message NAMES the cap and its operator flag (an operator learns the knob to raise)",
+    refusal !== undefined && refusal.message.includes(String(CAP)) && refusal.message.includes("--max-sessions"), refusal?.message);
   check("liveSessions stays at N — the refused attempt left no half-registered session",
     M.sessionPlane.liveSessions === CAP, M.sessionPlane.liveSessions);
   check("NO caller JWT was returned (the establisher never reached its mintCreds)", leaked === undefined);
@@ -286,8 +286,8 @@ try {
     const body = (await over.json()) as { error?: string; code?: string };
     check("the over-cap POST is 429, NOT the 500 an internal fault gets", over.status === 429, { status: over.status, body });
     check("the body carries the stable `code` a page can branch on", body.code === "resource-exhausted", body);
-    check("the body still names the ceiling and its knob for an operator reading the response",
-      (body.error ?? "").includes(String(CAP)) && (body.error ?? "").includes("maxSessions"), body.error);
+    check("the body still names the ceiling and its operator flag for an operator reading the response",
+      (body.error ?? "").includes(String(CAP)) && (body.error ?? "").includes("--max-sessions"), body.error);
     check("the response is JSON", (over.headers.get("content-type") ?? "").includes("application/json"), over.headers.get("content-type"));
     check("the refused POST did NOT attach the target's PTY", attaches === attachesAtCap, { attachesAtCap, now: attaches });
   }

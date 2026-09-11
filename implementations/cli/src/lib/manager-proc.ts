@@ -147,8 +147,22 @@ export function managerHasDeliveryMarker(space: string = folderSpace()): boolean
  *  composed `cotal` binary registers it; `process.execArgv` carries the tsx loader in dev and is
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
+export type ManagerStartOpts = {
+  space?: string;
+  server?: string;
+  spawn?: string[];
+  launch?: string;
+  runtime?: string;
+  attachHost?: string;
+  resumeAttempt?: string;
+  resumeCommitToken?: string;
+  wsPort?: number;
+  /** Live-session ceiling forwarded as `supervise --max-sessions`. */
+  maxSessions?: number;
+};
+
 export function startManagerDetached(
-  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  o: ManagerStartOpts = {},
 ): number {
   const space = o.space ?? folderSpace();
   // Clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded root
@@ -187,6 +201,7 @@ export function startManagerDetached(
     ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
+    ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -252,7 +267,7 @@ export function assertManagerRecordReplaceable(
 }
 
 export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
 ): { running: boolean } {

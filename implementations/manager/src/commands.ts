@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
+  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -371,6 +371,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // machine-local console. `cotal up` passes the address it bound the broker to when the operator
   // asked for an exposed console; the terminal itself rides the mesh either way.
   const attachHost = v["console-host"];
+  let maxSessions: number | undefined;
+  try {
+    maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   // Construction resolves the runtime (createRuntime) — which fails loud on an unusable env, e.g. the
   // pty runtime under Bun. Render that as one actionable line, not a raw stack (this also lands in
   // `.cotal/manager.log` for a detached `cotal up` daemon).
@@ -386,6 +393,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       consolePort,
       wsPort,
       attachHost,
+      maxSessions,
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
@@ -638,7 +646,7 @@ const managerCommands: Command[] = [
     name: "supervise",
     group: "Manager",
     summary:
-      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
+      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
@@ -646,6 +654,7 @@ const managerCommands: Command[] = [
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
       { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client (P2 item 6)" },
+      { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling (default 64; one session per console pane, so size for agents × panes)" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },

@@ -225,12 +225,13 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // of its own — so it reads the mesh's recorded exposure, or it would quietly replace a
       // reachable attach face with a loopback-only one.
       const attachHost = findMesh(space)?.attachHost;
+      const maxSessions = findMesh(space)?.maxSessions;
       if (!launchHeld) {
         // Nobody owns the space — stand up a manager (it acquires the lease on boot). The lease says
         // nobody is ANSWERING; it does not say the recorded pid is dead, so the pidfile is checked
         // before we overwrite it. This path used to skip that entirely.
         assertManagerRecordReplaceable(undefined, undefined, space);
-        startManagerDetached({ space, server: connection.server, runtime, attachHost });
+        startManagerDetached({ space, server: connection.server, runtime, attachHost, maxSessions });
       } else if (!launchReady) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
@@ -240,7 +241,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
           process.exit(1);
         }
         assertManagerRecordReplaceable(undefined, undefined, space); // an expired lease still says nothing about the recorded pid
-        startManagerDetached({ space, server: connection.server, runtime, attachHost });
+        startManagerDetached({ space, server: connection.server, runtime, attachHost, maxSessions });
       }
       // else: a live manager already answered — reuse it. All paths converge here: confirm a manager is
       // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
