@@ -2,7 +2,7 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReference } from "@cotal-ai/core";
-import { unsupportedTransport } from "@cotal-ai/seat";
+import { StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
@@ -10,15 +10,8 @@ const DEFAULT_ROWS = 32;
 /** How many rows of history the attach-time screen mirror retains (see spawn) so a late attach
  *  still sees output that scrolled past. */
 const SCROLLBACK_ROWS = 1000;
-/** Spacing between auto-confirm Enter presses, and how many to send. Claude's startup gates
- *  (workspace-trust, then the dev-channels warning) each wait for Enter and neither has a headless
- *  override. The count is variable — a fresh folder shows both, a re-launch on a now-trusted folder
- *  shows only the channels gate — and each gate's screen is static once rendered, so we don't match
- *  text or count prompts: press Enter blindly a few times, spaced so each press lands on the next
- *  gate and a dropped press is retried. Both gates default-highlight "proceed", so Enter accepts the
- *  safe option; any extra press lands on Claude's empty input as a no-op. */
-const CONFIRM_INTERVAL_MS = 1_000;
-const MAX_CONFIRMS = 5;
+/** Bounded early-output window for the connector-declared startup confirmation prompt. */
+const CONFIRM_TIMEOUT_MS = 15_000;
 /** Grace window for a clean exit before a graceful stop escalates to SIGKILL. */
 const GRACE_MS = 3_000;
 
@@ -73,33 +66,38 @@ export class LegacyPtyRuntime implements Runtime {
     // because "not exited yet" and "exited cleanly" must never read the same.
     let exit: { code?: number; signal?: number } | undefined;
 
-    // Clear Claude's startup gates (workspace-trust, dev-channels warning) by pressing Enter on a
-    // timer during the startup window — see CONFIRM_INTERVAL_MS for why this is blind, not output-
-    // driven. A spawn that opts in sets `spec.confirm` truthy.
-    let confirmTimer: ReturnType<typeof setInterval> | undefined;
-    if (spec.confirm) {
-      let presses = 0;
-      confirmTimer = setInterval(() => {
-        if (!alive || presses++ >= MAX_CONFIRMS) {
-          clearInterval(confirmTimer);
-          confirmTimer = undefined;
-          return;
-        }
-        proc.write("\r");
-      }, CONFIRM_INTERVAL_MS);
+    // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
+    // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
+    const confirmMatcher = spec.confirm ? new StartupConfirmMatcher(spec.confirm) : undefined;
+    let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+    if (confirmMatcher) {
+      const confirmTimeoutMs = Number(spec.env?.COTAL_CONFIRM_TIMEOUT_MS ?? CONFIRM_TIMEOUT_MS);
+      confirmTimer = setTimeout(() => {
+        if (!alive) return;
+        const message = unmatchedConfirmMessage(confirmMatcher.prompt, confirmTimeoutMs);
+        term.write(`\r\n${message}\r\n`);
+        const b = Buffer.from(`\r\n${message}\r\n`, "utf8");
+        for (const fn of dataSubs) fn(b);
+        proc.kill(process.platform === "win32" ? undefined : "SIGTERM");
+      }, confirmTimeoutMs);
     }
 
     proc.onData((d) => {
       term.write(d); // mirror into the screen model for attach-time reconstruction
       const b = Buffer.from(d, "utf8");
       for (const fn of dataSubs) fn(b);
+      if (confirmMatcher?.push(d)) {
+        proc.write("\r");
+        if (confirmTimer) clearTimeout(confirmTimer);
+        confirmTimer = undefined;
+      }
     });
     proc.onExit(({ exitCode, signal }) => {
       alive = false;
       // `signal` is absent on an ordinary exit and 0 is a real exit code, so both are recorded as
       // present-or-absent rather than coalesced into one number.
       exit = { code: exitCode, ...(signal === undefined ? {} : { signal }) };
-      if (confirmTimer) clearInterval(confirmTimer);
+      if (confirmTimer) clearTimeout(confirmTimer);
       for (const fn of exitSubs) fn();
     });
 

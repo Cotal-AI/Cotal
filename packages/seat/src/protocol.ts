@@ -4,8 +4,8 @@ export const PROTOCOL_VERSION = 1;
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 32;
 export const SCROLLBACK_ROWS = 1000;
-export const CONFIRM_INTERVAL_MS = 1_000;
-export const MAX_CONFIRMS = 5;
+/** How long a connector-declared startup prompt may take to appear before the seat fails loud. */
+export const CONFIRM_TIMEOUT_MS = 15_000;
 export const GRACE_MS = 3_000;
 /**
  * Max JSON body the local protocol accepts in one frame.

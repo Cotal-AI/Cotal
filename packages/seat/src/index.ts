@@ -4,3 +4,4 @@ export { adoptSeat, adoptSeatSync, type SeatHandle, type SeatAttachSession } fro
 export { readRecord, recordPath, socketPath, type SeatRecord } from "./record.js";
 export { SeatClient } from "./client.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
+export { StartupConfirmMatcher, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";
