@@ -39,8 +39,8 @@
     {
       "name": "clean release skips per-package OIDC exchanges",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  for (const row of rows) {\n    try {\n      row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n    } catch (error) {\n      row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n    }\n  }\n",
-      "replace": "  for (const row of rows) row.oidc = \"ready\";\n",
+      "find": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      try {\n        row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n      }\n    }\n",
+      "replace": "  } else if (hasOidcUrl) {\n    for (const row of rows) row.oidc = \"ready\";\n",
       "expectRed": "clean preflight exchanges OIDC for every package before publishing",
       "cell": "clean preflight exchanges OIDC for every package before publishing"
     },

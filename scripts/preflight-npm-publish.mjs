@@ -184,15 +184,25 @@ export async function preflightNpmPublish({
     throw new Error("the packages that would publish are not the complete fixed group");
   }
 
-  for (const row of rows) {
-    try {
-      row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
-    } catch (error) {
-      row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;
+  const hasOidcUrl = Boolean(env.ACTIONS_ID_TOKEN_REQUEST_URL);
+  const hasOidcToken = Boolean(env.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
+  if (hasOidcUrl !== hasOidcToken) {
+    for (const row of rows) row.oidc = "refused:incomplete GitHub OIDC requester";
+  } else if (hasOidcUrl) {
+    for (const row of rows) {
+      try {
+        row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
+      } catch (error) {
+        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;
+      }
     }
+  } else if (env.NPM_TOKEN || env.NODE_AUTH_TOKEN) {
+    for (const row of rows) row.oidc = "not-available:classic-token";
+  } else {
+    for (const row of rows) row.oidc = "refused:no publish credential path";
   }
   printPublishCensus(rows, log);
-  const refused = rows.filter((row) => row.oidc !== "ready");
+  const refused = rows.filter((row) => row.oidc.startsWith("refused:"));
   if (refused.length) throw new Error(`npm OIDC exchange refused ${refused.length}/${rows.length} packages`);
   return { state: "ready", rows };
 }

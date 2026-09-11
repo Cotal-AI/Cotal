@@ -85,15 +85,19 @@ The census prints every package and version before it refuses. If any exact vers
 or the recursive publish set is not the full fixed group, the command exits before `pnpm publish`.
 
 pnpm's `--batch` option was evaluated. It exists from pnpm 11.7 and is all-or-nothing only on a
-registry implementing `PUT /-/pnpm/v1/publish` (pnpr does). npm's published Registry API does not
-document that endpoint, and pnpm batch publishing also rejects provenance and requires one shared
-credential for the batch instead of the per-package OIDC exchanges used here. The repository stays
-on the normal npm publish protocol and treats the preflight as the fail-before-first-write control.
+registry implementing `PUT /-/pnpm/v1/publish` (pnpr does). npm's registry returns 404 for read-only
+`GET` and `OPTIONS` probes of that endpoint, and its published Registry API does not document it.
+pnpm batch publishing also rejects provenance and requires one shared credential for the batch
+instead of the per-package OIDC exchanges used here. The repository stays on the normal npm publish
+protocol and treats the preflight as the fail-before-first-write control.
 
 ```bash
-pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
+node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
 ```
 
+- `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
+  GitHub Actions it also verifies a package-specific OIDC exchange for every package. A manual run
+  with `NPM_TOKEN` still gets the registry and closure census; npm verifies that token on publish.
 - `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
   when a partial retry publishes only the packages still missing.
 - `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.
