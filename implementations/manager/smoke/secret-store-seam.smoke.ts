@@ -80,6 +80,7 @@ let mgr: InstanceType<typeof Manager> | undefined;
 let delivery: DeliveryDaemon | undefined;
 
 const store = recordingStore(workspaceSecretStore(workspaceRoot));
+process.env.COTAL_SECRET_STORE = `fs:${workspaceRoot}`;
 
 try {
   let up = false;
@@ -91,7 +92,10 @@ try {
   // live connections" here — the ledger names a holder. Without the daemon serving the
   // `ctl.delivery-admin` rail the barrier fails closed (correctly) and the retirement never reaches
   // the teardown this suite is about. Boot the shipped daemon rather than weaken the barrier.
-  delivery = await bootDeliveryDaemon({ space, servers: SERVERS, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: SERVERS, auth,
+    reloadStoreIdentity: { kind: "injected", coordinate: process.env.COTAL_SECRET_STORE! },
+  });
 
   mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot, secretStore: store });
   // A fake runtime + connector: nothing launches, the credential lifecycle is fully real.

@@ -13,7 +13,7 @@
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { FsSecretStore, workspaceSecretStore } from "../src/secret-store-fs.js";
 import { materializeSecretToFile, spaceSegment } from "../src/auth-paths.js";
 import {
@@ -39,6 +39,7 @@ const rejects = async (name: string, fn: () => Promise<unknown> | unknown, msgPa
 const dir = mkdtempSync(join(tmpdir(), "cotal-secret-store-"));
 try {
   const store = new FsSecretStore(dir);
+  check("direct filesystem store declares its exact store root", store.identity.kind === "fs" && store.identity.root === resolve(dir));
 
   // Roundtrip + layout
   check("absent key → undefined", (await store.get("delivery.creds")) === undefined);
@@ -86,6 +87,7 @@ try {
   const root = mkdtempSync(join(tmpdir(), "cotal-agent-secrets-"));
   try {
     const ws = workspaceSecretStore(root);
+    check("workspace store declares the workstation root, not its .cotal directory", ws.identity.kind === "fs" && ws.identity.root === resolve(root));
     // Every builder is per-space as of P1; the key composition is the local FS one, the same shape
     // the CLI and manager pass (`{ injected: false, root }`).
     const SPACE = "smoke-space";

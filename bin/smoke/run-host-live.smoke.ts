@@ -18,7 +18,7 @@ import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-runhost-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -94,7 +94,10 @@ let nc: Awaited<ReturnType<typeof connect>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: brokerA.servers, space: spaceA, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space: spaceA, servers: brokerA.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space: spaceA, servers: brokerA.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
+  });
   mgr = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
   await mgr.start();
 
@@ -344,6 +347,12 @@ try {
     mkdirSync(userAuthStateDir(wsUser, spaceA), { recursive: true });
     writeFileSync(join(userAuthStateDir(wsUser, spaceA), "idp.json"), "{}\n");
     recordMesh({ space: spaceA, server: brokerA.servers, root: wsUser, mode: "user", ts: new Date().toISOString() });
+    // A second workspace is required so this manager is not the static successor.
+    // The daemon already bound at wsA would then fail the store-identity challenge.
+    // Unbind it first so start sees an absent rail (not a named store). Restore it
+    // after this cell so A7's static successor still remints into the same store.
+    await delivery?.stop().catch(() => {});
+    delivery = undefined;
     const mgrU = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsUser });
     await mgrU.start();
     try {
@@ -354,6 +363,10 @@ try {
       await mgrU.stop();
       removeMesh(spaceA);
     }
+    delivery = await bootDeliveryDaemon({
+      space: spaceA, servers: brokerA.servers, auth,
+      reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
+    });
     mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
     await mgrB.start();
   }

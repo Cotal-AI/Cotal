@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -10,14 +11,18 @@ import {
   isReachable,
   mintCreds,
   newIdentity,
+  formatSecretStoreIdentity,
+  parseSecretStoreIdentity,
+  sameSecretStoreIdentity,
   standaloneConnectOpts,
   startTimerWriter,
   type MembershipFeedHandle,
   type ParsedArgs,
   type SecretStore,
+  type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
@@ -30,7 +35,113 @@ type Values = Record<string, string | undefined>;
  *  is the pre-P7 key and putting there leaves this daemon reading an empty location. */
 export { DELIVERY_CREDS_KIND, deliveryCredsKey };
 
-type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean };
+type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean; identity: SecretStoreIdentity };
+
+/**
+ * The store identity THIS daemon will re-read on `reloadCreds`. It is the same store
+ * `resolveCredsStore` returns: an injected coordinate, a `--creds` file that is
+ * exactly `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (named as the
+ * workstation root, matching the canonical arm), a `--creds` file that is not
+ * that file (named as the file's own directory), or the workstation root.
+ * Naming an ancestor via `findCotalRoot` would certify a two-root composition
+ * as a same-store proof.
+ */
+export function reloadStoreIdentityOf(
+  src: Pick<CredsSource, "injected" | "identity"> & { store?: SecretStore },
+): SecretStoreIdentity {
+  if (src.injected) {
+    if (src.store?.identity !== undefined) return parseSecretStoreIdentity(src.store.identity);
+    const coordinate = process.env.COTAL_SECRET_STORE;
+    if (!coordinate)
+      throw new Error(
+        "delivery: an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)",
+      );
+    return { kind: "injected", coordinate };
+  }
+  return src.identity;
+}
+
+/**
+ * Identity of the store a `--creds` file is reloaded from.
+ *
+ * With `--creds` the store object is deliberately FLAT (root = the file's own
+ * directory, key = basename). The canonical store is `<root>/.cotal` with a
+ * segmented key. Different store objects, but when `--creds` names THE FILE THE
+ * MANAGER WRITES they resolve THE SAME FILE, so they are the same authority.
+ * Identity names that authority, not the store object's root.
+ *
+ * The manager remints only `segmentedKey(DELIVERY_CREDS_KIND, space)` under
+ * `<root>/.cotal`. Collapse only that exact path: basename is `delivery.creds`,
+ * parent of the file dir is `.cotal`, and the file dir is `spaceSegment(space)`
+ * for THIS space. Another space's segment, a decoy basename, `.cotal/auth/...`,
+ * or a legacy `<root>/.cotal/delivery.creds` keep `dirname`. Never
+ * `spaceFromSegment` ("a valid segment") and never `findCotalRoot`.
+ */
+export function reloadStoreIdentityFromCredsPath(credsPath: string, space: string): SecretStoreIdentity {
+  const p = resolve(credsPath);
+  const fileDir = dirname(p);
+  const parent = dirname(fileDir);
+  const grand = dirname(parent);
+  if (
+    basename(p) === DELIVERY_CREDS_KIND
+    && basename(parent) === ".cotal"
+    && basename(fileDir) === spaceSegment(space)
+    && grand !== parent
+  )
+    return { kind: "fs", root: grand };
+  return { kind: "fs", root: fileDir };
+}
+
+/**
+ * Workstation root implied by a `--creds` path: the parent of the enclosing
+ * `.cotal` directory. A path that is not under any `.cotal` tree names no
+ * workstation (a flat mount, a container file) and returns undefined.
+ *
+ * Distinct from {@link reloadStoreIdentityFromCredsPath}, which names the
+ * SecretStore the manager challenges. That identity stays the file's own
+ * directory for a legacy shallow path; this helper answers a different
+ * question so the cwd guard can compare two workspace roots.
+ */
+export function workspaceRootFromCredsPath(credsPath: string): string | undefined {
+  let dir = dirname(resolve(credsPath));
+  for (;;) {
+    if (basename(dir) === ".cotal") {
+      const root = dirname(dir);
+      return root === dir ? undefined : root;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Uninjected `--creds` that names one real workstation root while process cwd
+ * resolves another is a false same-store proof: membership-rw still resolves
+ * via `findCotalRoot()` (cwd), not the `--creds` file. Fire only when BOTH
+ * sides resolve real workstation roots and those differ. A path that is not
+ * under a `.cotal` tree names no workstation, so this check does not fire
+ * (the manager challenge already diverges on that composition). Injected
+ * compositions skip this: both rails take the injected store. Never silently
+ * prefer either root.
+ */
+export function assertUninjectedCredsSharesCwdRoot(opts: {
+  injected: boolean;
+  credsPath: string;
+  cwdRoot?: string;
+}): void {
+  if (opts.injected) return;
+  const cwdRoot = opts.cwdRoot ?? findCotalRoot();
+  if (!existsSync(join(cwdRoot, ".cotal"))) return;
+  const credsWorkspace = workspaceRootFromCredsPath(opts.credsPath);
+  if (credsWorkspace === undefined) return;
+  const cwdIdentity: SecretStoreIdentity = { kind: "fs", root: cwdRoot };
+  const credsIdentity: SecretStoreIdentity = { kind: "fs", root: credsWorkspace };
+  if (sameSecretStoreIdentity(credsIdentity, cwdIdentity)) return;
+  throw new Error(
+    `delivery: --creds names workstation ${formatSecretStoreIdentity(credsIdentity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (process cwd). Pass both the same workstation root, or inject one SecretStore.`,
+  );
+}
 
 /**
  * THE ORDERING-CRITICAL HALF of the cred-source decision, split out so it cannot drift below the
@@ -51,8 +162,11 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
 }
 
 /** Where the daemon's pre-minted cred lives — exactly ONE source: an injected {@link SecretStore}
- *  (a hosted composition), an explicit `--creds <file>` (e.g. a read-only container mount) as an FS
- *  store over that exact file, or the default workstation location. `where` is the human label used
+ *  (a hosted composition), an explicit `--creds <file>` as an FS store over that exact file
+ *  (uninjected `--creds` that names one real workstation while process cwd
+ *  resolves another is refused, because membership-rw still uses
+ *  `findCotalRoot`; a path that is not under any `.cotal` tree is not that
+ *  case and is not refused here), or the default workstation location. `where` is the human label used
  *  in error messages so a local operator still sees a path, not an abstract key.
  *
  *  Called AFTER {@link assertNoLocalCredSourceFlags} has settled the injected/local conflict, which
@@ -65,15 +179,35 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
 function resolveCredsStore(v: Values, space: string, injected?: SecretStore): CredsSource {
   if (injected) {
     const key = segmentedKey(DELIVERY_CREDS_KIND, space);
-    return { store: injected, key, where: `secret-store key "${key}"`, injected: true };
+    return {
+      store: injected,
+      key,
+      where: `secret-store key "${key}"`,
+      injected: true,
+      // Coordinate is named AFTER the cred is found. An absent key must still be
+      // the absent-key error, never a COTAL_SECRET_STORE throw that masks it.
+      identity: { kind: "injected", coordinate: process.env.COTAL_SECRET_STORE ?? "" },
+    };
   }
   if (v.creds !== undefined) {
     const p = resolve(v.creds);
-    return { store: new FsSecretStore(dirname(p)), key: basename(p), where: p, injected: false };
+    return {
+      store: new FsSecretStore(dirname(p)),
+      key: basename(p),
+      where: p,
+      injected: false,
+      identity: reloadStoreIdentityFromCredsPath(p, space),
+    };
   }
   const root = findCotalRoot();
   const key = deliveryCredsKey(space, { injected: false, root });
-  return { store: workspaceSecretStore(root), key, where: join(root, ".cotal", key), injected: false };
+  return {
+    store: workspaceSecretStore(root),
+    key,
+    where: join(root, ".cotal", key),
+    injected: false,
+    identity: { kind: "fs", root },
+  };
 }
 
 /** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED cred through the
@@ -173,6 +307,8 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
   const credsSrc = resolveCredsStore(v, space, store);
+  if (v.creds !== undefined)
+    assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
@@ -214,6 +350,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
   await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
+  const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
 
   const ep = new CotalEndpoint({
     space,
@@ -288,6 +425,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // evictPrincipal, so gate reconciliation can refuse on a live holder's behalf rather than
     // killing it to discover it was alive (any refusal/unknown blocks the repair, fail-closed).
     principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
+    reloadStoreIdentity: () => reloadStoreIdentity,
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,

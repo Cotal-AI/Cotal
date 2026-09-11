@@ -294,6 +294,7 @@ try {
   await storeA.put(EVICTOR_KEY_A, evictorA);
 
   realLog("  · booting runDelivery(args, storeA) in-process (its output is teed below, prefixed │)");
+  process.env.COTAL_SECRET_STORE = "memory:sys-injection-evict";
   teeConsole();
   const args: ParsedArgs = { values: { space: spaceA, server: SERVERS }, positionals: [], raw: [] };
   void runDelivery(args, storeA); // never resolves by design — it runs until signalled
