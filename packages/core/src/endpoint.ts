@@ -390,6 +390,12 @@ export class CotalEndpoint extends EventEmitter {
   /** The freshest bearer — what every (re)connect attempt presents. */
   private currentBearer?: string;
   private bearerTimer?: NodeJS.Timeout;
+  /** Arms against the credential authenticated on the current wire. nats-core 3.4.0 discards the
+   *  promise returned by its async transport-close continuation; if that continuation enters the
+   *  reconnect dial loop with an expired JWT, its terminal auth error becomes an unhandled rejection.
+   *  Cotal knows the JWT expiry, so it disables the library reconnect before the broker closes the
+   *  transport. The endpoint's observed `closed()` supervisor remains responsible for rebuilding. */
+  private authExpiryReconnectTimer?: NodeJS.Timeout;
   private readonly sentinelCreds?: string;
   private readonly tls: boolean;
   private readonly heartbeatMs: number;
@@ -834,12 +840,43 @@ export class CotalEndpoint extends EventEmitter {
   /** Swap the live connection onto the freshest cached cred with a controlled `nc.reconnect()`
    *  (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of waiting for the
    *  broker to close the connection at `exp`, means the wire never carries a near-dead JWT and the
-   *  operator never sees a spurious "authentication expired" — the broker's expiry-close remains the
-   *  BACKSTOP if a swap is missed, not the mechanism. Already-closed/draining rejections are the
-   *  supervise loop's to own (its rebuild re-fetches); an already-disconnected client is a no-op
-   *  (its own reconnect loop presents the fresh cred). */
+   *  operator never sees a spurious "authentication expired". After the reconnect succeeds, re-arm
+   *  the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
-    if (this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
+    const nc = this.nc;
+    if (nc && !this.stopped) {
+      await nc.reconnect().catch(() => {});
+      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+    }
+  }
+
+  /** nats-core keeps its reconnect switch on the protocol handler. This pinned internal shape is the
+   *  same last-resort surface used by {@link closeFailedBind}; there is no public API for changing the
+   *  reconnect policy of an existing connection. Disabling it does not disable Cotal self-heal: the
+   *  `nc.closed()` supervisor below rebuilds the endpoint with freshly checked auth material. */
+  private disableLibraryReconnect(nc: NatsConnection): void {
+    const protocol = (nc as unknown as { protocol?: { options?: { reconnect?: boolean } } }).protocol;
+    if (protocol?.options) protocol.options.reconnect = false;
+  }
+
+  /** Disable nats-core reconnect shortly before the JWT authenticated on this wire expires. The small
+   *  lead makes the policy change precede the broker's expiry close even when both timers wake in the
+   *  same event-loop turn. A credential adoption does not move this fence until the resident reconnect
+   *  is requested, so the old wire remains protected during the prove-then-adopt window. */
+  private armAuthExpiryReconnectFence(nc: NatsConnection): void {
+    clearTimeout(this.authExpiryReconnectTimer);
+    this.authExpiryReconnectTimer = undefined;
+    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;
+    const expiryMs = this.userMode && this.currentBearer
+      ? bearerExpiryMs(this.currentBearer)
+      : typeof credsExp === "number"
+        ? credsExp * 1000
+        : undefined;
+    if (expiryMs === undefined || this.stopped) return;
+    this.authExpiryReconnectTimer = setTimeout(() => {
+      if (this.nc === nc) this.disableLibraryReconnect(nc);
+    }, Math.max(0, expiryMs - Date.now() - 500));
+    this.authExpiryReconnectTimer.unref?.();
   }
 
   /** The connectAndBind PRE-CONNECT fetch: pull the freshest source cred and pin it into
@@ -1055,6 +1092,7 @@ export class CotalEndpoint extends EventEmitter {
       // one the broker forces at JWT `exp`) present whatever refreshCreds last fetched.
       ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.credsSource ? () => this.currentCreds! : this.currentCreds, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
+    this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();
     this.js = jetstream(this.nc);
 
@@ -1193,6 +1231,10 @@ export class CotalEndpoint extends EventEmitter {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   private clearConnectionScoped(): void {
+    if (this.authExpiryReconnectTimer) {
+      clearTimeout(this.authExpiryReconnectTimer);
+      this.authExpiryReconnectTimer = undefined;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
@@ -1277,6 +1319,7 @@ export class CotalEndpoint extends EventEmitter {
    * retry starts with the same empty state as a first attempt. */
   private async closeFailedBind(): Promise<void> {
     const failedNc = this.nc;
+    if (failedNc) this.disableLibraryReconnect(failedNc);
     this.clearConnectionScoped();
     this.nc = undefined;
     this.js = undefined;
@@ -1351,6 +1394,7 @@ export class CotalEndpoint extends EventEmitter {
   private async tearDownIfStopped(): Promise<boolean> {
     if (!this.stopped) return false;
     const nc = this.nc;
+    if (nc) this.disableLibraryReconnect(nc);
     this.clearConnectionScoped();
     try {
       await nc?.drain();
@@ -1404,6 +1448,7 @@ export class CotalEndpoint extends EventEmitter {
    *  idempotent, so connectAndBind's own call here is a noop. */
   private async doRebuild(): Promise<void> {
     const oldNc = this.nc;
+    if (oldNc) this.disableLibraryReconnect(oldNc);
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
@@ -1522,6 +1567,7 @@ export class CotalEndpoint extends EventEmitter {
    *  (see {@link startPresenceWatch}). */
   async stop(): Promise<void> {
     if (this.stopped) return;
+    if (this.nc) this.disableLibraryReconnect(this.nc);
     this.stopped = true;
     this.presenceEpoch++;
     this.presenceRebind = undefined;
@@ -1532,6 +1578,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.bearerTimer) clearTimeout(this.bearerTimer);
     if (this.credsTimer) clearTimeout(this.credsTimer);
+    if (this.authExpiryReconnectTimer) clearTimeout(this.authExpiryReconnectTimer);
     for (const watch of this.membershipFeedWatches) {
       watch.stopped = true;
       watch.arm = watch.arm.catch(() => {}).then(async () => {
@@ -3169,6 +3216,7 @@ export class CotalEndpoint extends EventEmitter {
           continue;
         }
         if (s.type === "reconnect") {
+          this.armAuthExpiryReconnectFence(nc);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
           continue;
         }

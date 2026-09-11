@@ -119,17 +119,30 @@ try {
   const expiring = newIdentity();
   let expiringReads = 0;
   let failedRebuildLogStart = -1;
+  let originalExpiryObservedBeforeReconnectWindow = false;
   const expiringErrors: string[] = [];
   // Recoverable notices — the failed renewal and the pre-dial refusal below — ride `warning`,
   // not `error`: Node rethrows an unhandled `error` and would kill a host the endpoint is still
   // surviving (#891). The subject here is that the refusal is LOUD and names the renewal path.
   const expiringWarnings: string[] = [];
-  const expiringSource = () => {
+  const expiringSource = async () => {
     expiringReads++;
     if (expiringReads <= 3) {
       if (expiringReads === 1)
         return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 3 });
-      if (expiringReads === 3) failedRebuildLogStart = brokerLog.length;
+      if (expiringReads === 3) {
+        // The rebuild is triggered by the original connection's broker-auth-expiry close. Its log
+        // line and the socket close are separate asynchronous deliveries, so the source read can run
+        // before the log pipe appends that already-authenticated connection's expiry. That line is not
+        // a reconnect presenting cached credentials. Wait for that specific original-wire line before
+        // opening the reconnect-denial observation window; a real post-guard dial still logs after it.
+        originalExpiryObservedBeforeReconnectWindow = await until(
+          () => /cotal:expired-creds.*User Authentication Expired/.test(brokerLog),
+          2_000,
+          10,
+        );
+        failedRebuildLogStart = brokerLog.length;
+      }
       throw new Error("fixture renewal source offline");
     }
     return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 60 });
@@ -164,6 +177,10 @@ try {
   );
   const expiredCredDenials = brokerLog.slice(failedRebuildLogStart).split("\n").filter((l) =>
     /User JWT no longer valid.*claim is expired|cotal:expired-creds.*User Authentication Expired/.test(l),
+  );
+  check(
+    "the original wire's expiry log lands before the reconnect-denial observation window opens",
+    originalExpiryObservedBeforeReconnectWindow,
   );
   check(
     "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
