@@ -17,7 +17,7 @@
     {
       "name": "INFO-only acceptance is restored after STREAM.UPDATE, so the forced file-store rollback false-greens again",
       "file": "packages/core/src/streams.ts",
-      "find": "  await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);\n  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
+      "find": "  await js.publish(canarySubject, new TextEncoder().encode(\"cotal ttl enforcement canary\"));\n  await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);\n  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
       "replace": "  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
       "expectRed": "forced file-store metadata failure is a named TtlPersistenceError",
       "cell": "forced file-store metadata failure is a named TtlPersistenceError",
