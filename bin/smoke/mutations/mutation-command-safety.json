@@ -1,0 +1,64 @@
+{
+  "suite": [
+    "bin/smoke/mutation-command-safety.smoke.ts"
+  ],
+  "grades": "tool",
+  "guard": "mutation-coverage and mutation-reproof refuse live-shaped commands before executing them, including unsuffixed broker-starting suites",
+  "command": "pnpm smoke:mutation-command-safety",
+  "completionMarker": "MUTATION COMMAND SAFETY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/mutation-command-safety.json",
+  "why": [
+    "A suffix-only live guard closes today's :live configs and leaves every broker-starting suite that never used that suffix reachable from a coverage audit or a changed-source reproof.",
+    "Each mutation removes one half of the execution-boundary refusal so the cell that would have gone silently missing is the one that reddens."
+  ],
+  "mutations": [
+    {
+      "name": "coverage executes a live-shaped command instead of refusing it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (liveReason) {\n    refused.push([path, cfg.command, liveReason]);\n    continue;\n  }\n",
+      "replace": "",
+      "expectRed": "coverage does not execute a live-shaped command",
+      "cell": "coverage does not execute a live-shaped command"
+    },
+    {
+      "name": "live-named tokens are no longer refused by the shared predicate",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "  for (const token of tokens) {\n    if (isLiveNamedToken(token)) return `${token} is live-named`;\n  }\n",
+      "replace": "",
+      "expectRed": "a live-named command is refused without executing",
+      "cell": "a live-named command is refused without executing"
+    },
+    {
+      "name": "infrastructure markers in suite source are ignored",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "    if (marker !== undefined) return `${file} declares ${marker}`;\n",
+      "replace": "    void marker;\n",
+      "expectRed": "an unsuffixed broker-starting suite is refused without executing",
+      "cell": "an unsuffixed broker-starting suite is refused without executing"
+    },
+    {
+      "name": "node options before a suite path skip source inspection",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "      if (flag?.startsWith(\"-\")) {\n        if (EVAL_FLAGS.has(flag)) break;\n        if (takesValue(flag) && !token.includes(\"=\")) j++;\n        continue;\n      }\n",
+      "replace": "      if (flag?.startsWith(\"-\")) break;\n",
+      "expectRed": "a node option before a marked suite path is refused",
+      "cell": "a node option before a marked suite path is refused"
+    },
+    {
+      "name": "path-spelled tsx launchers skip source inspection",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "const LAUNCHER = /^(?:(?:.*[\\\\/])?(?:tsx|node))$/;\n",
+      "replace": "const LAUNCHER = /^(?:tsx|(?:.*\\/)?node)$/;\n",
+      "expectRed": "a path-spelled tsx launcher of a marked suite is refused",
+      "cell": "a path-spelled tsx launcher of a marked suite is refused"
+    },
+    {
+      "name": "reproof proves live-shaped fixtures instead of refusing them",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "const prove = selected.filter((fixture) => !liveRefusedPaths.has(fixture.path));\n",
+      "replace": "const prove = selected;\n",
+      "expectRed": "reproof names a refused live-shaped fixture and does not execute it",
+      "cell": "reproof names a refused live-shaped fixture and does not execute it"
+    }
+  ]
+}
