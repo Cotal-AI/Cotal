@@ -1,0 +1,19 @@
+{
+  "suite": [
+    "bin/smoke/mutation-reproof-full-partition.smoke.ts"
+  ],
+  "guard": "Every git-tracked fixture in the mutation corpus is assigned exactly once by the production shard function for a 12-way full sweep.",
+  "command": "pnpm smoke:mutation-reproof-full-partition",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof-full-partition.json",
+  "mutations": [
+    {
+      "name": "the production shard function collapses the corpus onto shard zero",
+      "file": "scripts/mutation-shard.mjs",
+      "find": "  return hash % count;",
+      "replace": "  return 0;",
+      "expectRed": "all 12 full-sweep shards receive at least one fixture",
+      "cell": "all 12 full-sweep shards receive at least one fixture"
+    }
+  ]
+}

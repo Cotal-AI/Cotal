@@ -1,0 +1,43 @@
+{
+  "suite": [
+    "bin/smoke/mutation-reproof-full-workflow.smoke.ts"
+  ],
+  "guard": "The scheduled full sweep is a 12-way fail-fast-disabled Tenki matrix with bounded shard budgets, a named aggregate gate that rejects failed or cancelled shards, and the full alarm depending on that aggregate.",
+  "command": "pnpm smoke:mutation-reproof-full-workflow",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof-full-workflow.json",
+  "mutations": [
+    {
+      "name": "the full matrix cancels siblings after one shard fails",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "  full_shard:\n    # A daily sweep keeps the remaining ambient-drift window bounded without making every pull\n    # request pay for the full corpus. The corpus takes roughly 20 hours as one serial process, so\n    # the runner's deterministic path hash partitions it across 12 independent mutation trees.\n    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'\n    timeout-minutes: 240\n    runs-on: tenki-standard-medium-4c-8g\n    strategy:\n      fail-fast: false",
+      "replace": "  full_shard:\n    # A daily sweep keeps the remaining ambient-drift window bounded without making every pull\n    # request pay for the full corpus. The corpus takes roughly 20 hours as one serial process, so\n    # the runner's deterministic path hash partitions it across 12 independent mutation trees.\n    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'\n    timeout-minutes: 240\n    runs-on: tenki-standard-medium-4c-8g\n    strategy:\n      fail-fast: true",
+      "expectRed": "full_shard is a 12-way fail-fast-disabled Tenki matrix",
+      "cell": "full_shard is a 12-way fail-fast-disabled Tenki matrix"
+    },
+    {
+      "name": "the full aggregate accepts a failed matrix",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          test \"$SHARD_RESULT\" = success",
+      "replace": "          test \"$SHARD_RESULT\" != cancelled",
+      "expectRed": "the full aggregate rejects matrix=failure",
+      "cell": "the full aggregate rejects matrix=failure"
+    },
+    {
+      "name": "the full aggregate accepts a cancelled matrix",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          test \"$SHARD_RESULT\" = success",
+      "replace": "          test \"$SHARD_RESULT\" != failure",
+      "expectRed": "the full aggregate rejects matrix=cancelled",
+      "cell": "the full aggregate rejects matrix=cancelled"
+    },
+    {
+      "name": "the full alarm watches shards instead of the aggregate gate",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "    needs: full\n    if: always() && (needs.full.result == 'failure' || needs.full.result == 'cancelled')",
+      "replace": "    needs: full_shard\n    if: always() && (needs.full_shard.result == 'failure' || needs.full_shard.result == 'cancelled')",
+      "expectRed": "full-alarm remains pointed at the full aggregate gate",
+      "cell": "full-alarm remains pointed at the full aggregate gate"
+    }
+  ]
+}
