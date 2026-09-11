@@ -56,7 +56,7 @@
       "name": "partial release begins OIDC exchanges before the complete registry census",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "  for (const pkg of packages) {\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: \"not-run\" });\n  }\n",
-      "replace": "  for (const pkg of packages) {\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) });\n  }\n",
+      "replace": "  for (const pkg of packages) {\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: env.ACTIONS_ID_TOKEN_REQUEST_URL ? await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) : \"not-run\" });\n  }\n",
       "expectRed": "partial prior publish refuses before any OIDC exchange or publish call",
       "cell": "partial prior publish refuses before any OIDC exchange or publish call"
     }
