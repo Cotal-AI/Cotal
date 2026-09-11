@@ -390,12 +390,19 @@ await h.waitForExit();
       }
     });
     check("instrument: the seat child leads a group with a grandchild", before.length >= 2, before);
-    const evidence = await reapSeat(root, rec.id);
-    check("reapSeat signals a live seat by identity and proves it gone", evidence.outcome === "reaped" && state(rec.childPid) === "gone" && state(rec.custodianPid) === "gone", evidence);
+    // A refusal is reported as this cell failing, never as a throw out of the suite: a reap that
+    // refuses a record it should have signalled is exactly what these cells exist to catch, and a
+    // throw here ends the run before any of them print.
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check("reapSeat signals a live seat by identity and proves it gone", !(evidence instanceof Error) && evidence.outcome === "reaped" && state(rec.childPid) === "gone" && state(rec.custodianPid) === "gone", evidence instanceof Error ? evidence.message : evidence);
     const after = before.filter((e) => state(Number(e)) !== "gone");
     check("the child's whole process group is gone", after.length === 0, after);
     check("the custody record is forgotten", !existsSync(join(root, rec.id)), rec.id);
-    check("a second reap of the same id reports absent", (await reapSeat(root, rec.id)).outcome === "absent");
+    const second = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check("a second reap of the same id reports absent", !(second instanceof Error) && second.outcome === "absent", second instanceof Error ? second.message : second);
+    // Whatever the cells above found, this seat must not outlive the suite.
+    try { process.kill(-rec.childPid, "SIGKILL"); } catch { /* already gone */ }
+    try { process.kill(rec.custodianPid, "SIGKILL"); } catch { /* already gone */ }
   }
 
   {
@@ -446,8 +453,8 @@ await h.waitForExit();
     // the record is forgotten as already-gone custody.
     const forged = { ...rec, custodianStart: "1", childStart: "1" };
     writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(forged)}\n`);
-    const evidence = await reapSeat(root, rec.id);
-    check("a pid whose start identity differs from the record is treated as gone, never signalled", evidence.outcome === "reaped" && state(rec.childPid) !== "gone" && state(rec.custodianPid) !== "gone", { evidence, child: state(rec.childPid) });
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check("a pid whose start identity differs from the record is treated as gone, never signalled", !(evidence instanceof Error) && evidence.outcome === "reaped" && state(rec.childPid) !== "gone" && state(rec.custodianPid) !== "gone", { evidence: evidence instanceof Error ? evidence.message : evidence, child: state(rec.childPid) });
   }
 
   {
