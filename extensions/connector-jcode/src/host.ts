@@ -1021,7 +1021,9 @@ export async function runJcodeHost(): Promise<void> {
       writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
     }
     initialized = true;
-    if (pendingKickoff !== undefined) await drive();
+    // Kickoff is not the only work that can arrive during that gate: a restart DM is parked until
+    // this drain, or the replacement never observes it (#1440 / #910).
+    if (hasDriveWork()) await drive();
   } catch (error) {
     // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
     // flight. That is the shutdown completing, not a startup failure: let its teardown own the
