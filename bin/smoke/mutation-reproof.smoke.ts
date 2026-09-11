@@ -460,28 +460,33 @@ try {
     );
   }
 
-  // 1d. Duplicate mutation names are valid. Identity is file+find, not the displayed label. A PR
-  //     that turns a later same-name KILLED into ERROR must fail even though an earlier same-name
-  //     ERROR is inherited.
+  // 1d. Duplicate mutation names are valid. Identity is file+find+replace, not the displayed
+  //     label. A later same-name mutant that newly becomes ERROR must still fail; matching by
+  //     label would inherit an earlier same-name ERROR from a different replacement.
   {
     const { root, base, head } = makeSingle(
       (r) => {
-        writeFileSync(join(r, "dup.mjs"), "export const dup = () => 1;\nexport const extra = () => 0;\n");
+        writeFileSync(join(r, "dup.mjs"), "export const dup = () => 1;\n");
         writeFileSync(join(r, "suites", "dup.suite.mjs"), "import { dup } from '../dup.mjs';\nif (dup() !== 1) { console.error('✗ FAIL: dup is one'); process.exit(1); }\nconsole.log('✓ dup is one');\n");
         writeFileSync(join(r, "smoke", "mutations", "dup.mutations.json"), JSON.stringify({
           suite: ["suites/dup.suite.mjs"],
           command: "node suites/dup.suite.mjs",
           mutations: [
-            { name: "same name", file: "dup.mjs", find: "export const extra = () => 0;", replace: "export const extra = () => 0;", expectRed: "dup is one" },
-            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one" },
+            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one", unknownKey: true },
+            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 3;", expectRed: "dup is one" },
           ],
         }, null, 2));
       },
       (r) => {
         const path = join(r, "smoke", "mutations", "dup.mutations.json");
-        const config = JSON.parse(readFileSync(path, "utf8"));
-        config.mutations[1] = { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one", unknownKey: true };
-        writeFileSync(path, JSON.stringify(config, null, 2));
+        writeFileSync(path, JSON.stringify({
+          suite: ["suites/dup.suite.mjs"],
+          command: "node suites/dup.suite.mjs",
+          mutations: [
+            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one" },
+            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 3;", expectRed: "dup is one", unknownKey: true },
+          ],
+        }, null, 2));
       },
     );
     const { status, out } = scan(root, base, head);

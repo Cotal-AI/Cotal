@@ -320,13 +320,15 @@ const FATAL_VERDICTS = new Set(["SURVIVED", "UNGRADABLE", "WRONG-RED", "ERROR"])
 // report line: ERROR why-text can name KILLED, so a loose `^VERDICT ` match is not a parse.
 // Duplicate names are valid, and array position is not identity: reordering or inserting
 // unchanged objects must not attribute a still-SURVIVED mutant. Identity is the mutation's
-// `file` plus `find` from the snapshot fixture — the code the mutation edits. Same key more
-// than once compares the multiset of verdicts under that key.
+// `file`, `find`, and `replace` from the snapshot fixture — the code the mutation edits.
+// `find` alone is not enough when two mutants in the same file share an anchor and differ
+// only in the replacement. Same key more than once compares the multiset of verdicts.
 const mutationIdentity = (mutation, index) => {
   if (!mutation || typeof mutation !== "object") return `\0unbound:${index}`;
   return JSON.stringify([
     typeof mutation.file === "string" ? mutation.file : null,
     mutation.find ?? null,
+    mutation.replace ?? null,
   ]);
 };
 const readFixtureMutations = (snapshotRoot, configPath) => {
