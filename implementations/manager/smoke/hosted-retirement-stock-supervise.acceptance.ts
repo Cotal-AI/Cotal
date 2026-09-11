@@ -599,7 +599,9 @@ registry.register({
 
   const beforeRetirementRequests = retirementRequests;
   const stopped = await endpoint.invokeService("manager", "despawn", { graceful: false }, {
-    target: { mode: "owner", owner, actor, lifecycleUid }, deadlineMs: 10_000,
+    // admin_requester carries the admin capability, whose broker grant is the operator any-mode
+    // despawn row. Owner mode belongs to the spawn capability and is intentionally absent here.
+    target: { mode: "any", owner, actor, lifecycleUid }, deadlineMs: 10_000,
   });
   check("stock targeted despawn accepts the retained lifecycle", stopped.reply.ok === true, stopped.reply.error?.message);
   for (let tries = 0; tries < 200 && !supervisorOutput.includes("remote participant supervision cannot terminally retire"); tries++) await wait(100);
