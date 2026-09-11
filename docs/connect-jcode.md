@@ -196,15 +196,15 @@ shows those messages without clearing them.
 ## Model limits
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
-against the active provider, then the connector reads runtime identity back and refuses startup if
-it is not the requested model; a seat is never allowed to join under a model label it did not
-receive.
+against the active provider, and an accepted selection becomes the session pin and the seat's model
+label. The connector does not require `RuntimeInfo.model` to echo that pin immediately because the
+runtime field can temporarily report the previous model after selection.
 
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
-Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
-different effective model. `private_state` names a different step: the seat's private home, its
-credential mirror, or its short socket alias could not be prepared.
+Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
+active provider route for the selected model. `private_state` names a different step: the seat's
+private home, its credential mirror, or its short socket alias could not be prepared.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
@@ -233,12 +233,14 @@ cotal spawn --agent jcode --model gpt-5.6-sol --variant high
 ```
 
 Which tiers exist depends on the provider, profile, and model. The connector does not carry a copy
-of those rules. After model selection it reads Jcode's runtime identity, verifies the requested model
-and active provider route, then passes the tier to that route. A duplicate model id on another route
-cannot receive the setting by accident. A rejected tier ends the launch with a safely parsed accepted
-ladder when Jcode supplies one. A verified route with no reasoning-effort surface also ends before
-the first turn, but reports unsupported capability instead of suggesting another tier. Arbitrary
-provider rejection text stays private. Omit `--variant` to keep Jcode's configured default.
+of those rules. After model selection it uses the accepted session pin with Jcode's runtime provider
+and route catalog to verify one active provider route, then passes the tier to that route. For a
+variant-only launch, where there is no requested pin, the runtime model identifies the selection.
+A duplicate model id on another route cannot receive the setting by accident. A rejected tier ends
+the launch with a safely parsed accepted ladder when Jcode supplies one. A verified route with no
+reasoning-effort surface also ends before the first turn, but reports unsupported capability instead
+of suggesting another tier. Arbitrary provider rejection text stays private. Omit `--variant` to
+keep Jcode's configured default.
 
 If the mandatory readiness turn receives a provider `invalid_request` refusal for a model id or
 reasoning-effort value, the launch diagnostic names only the provider error code and rejected
