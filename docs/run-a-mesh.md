@@ -11,8 +11,9 @@ operator-only maintenance verbs. Every command's full flag set is in the
 
 `cotal up` brings up the whole local stack and bare `cotal down` stops it. Managed
 agents stay running as unmanaged OS processes; pass `--with-agents` to take them
-with the stack. Bare down refuses to signal a manager that cannot detach its
-local PTY custody, so a later SIGKILL cannot take a legacy in-process seat with it.
+with the stack. A current manager proves that it can detach local PTY custody before
+bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
+warning and is signalled according to the documented upgrade contract.
 
 - **Broker**: a local `nats-server` (logs to `.cotal/nats.log`).
 - **Delivery daemon**: the durable backstop, auth mode only
