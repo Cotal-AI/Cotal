@@ -133,10 +133,19 @@ async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch
   ].join("");
   const decisionPath = join(root, "manager-decision.json");
   const workspaceEntry = new URL("../../../packages/workspace/dist/index.js", import.meta.url).href;
+  const managerEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    FIXTURE_ROOT: root,
+    AGENT_PID: String(agent.pid),
+    DECISION_PATH: decisionPath,
+    WORKSPACE_ENTRY: workspaceEntry,
+  };
   const child = spawn(
     process.execPath,
     ["--input-type=module", "-e", managerProgram, "supervise"],
-    { cwd: prevCwd, env: { ...process.env, FIXTURE_ROOT: root, AGENT_PID: String(agent.pid), DECISION_PATH: decisionPath, WORKSPACE_ENTRY: workspaceEntry }, stdio: "ignore" },
+    { cwd: prevCwd, env: managerEnv, stdio: "ignore" },
   );
   spawnedChildren.push(child);
   assert.ok(child.pid, "legacy manager fixture must have a manager pid");

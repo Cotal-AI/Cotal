@@ -15,11 +15,12 @@
     {
       "name": "M1 restore the unconditional legacy-manager refusal before SIGTERM",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "              if (attempt.target.token === undefined) {\n                // Upgrade compatibility follows the shared identity contract: a live pre-pin record\n                // is signalled after the warning emitted by stopLocalProcess. Bare down cannot verify\n                // the newer spare capability. Destructive down uses the helper's reduced-guarantee\n                // pid + reservation-inode handoff. A present pin still takes the fully identity-bound\n                // paths below, and a mismatching pin was already refused before this hook.\n                if (!values[\"with-agents\"])\n                  console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n              }",
-      "replace": "              if (attempt.target.token === undefined)\n                throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");",
+      "find": "                if (!values[\"with-agents\"])\n                  console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n              }\n              if (values[\"with-agents\"]) armManagerShutdownIntent(context, attempt);\n              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);",
+      "replace": "                throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");\n              }\n              if (values[\"with-agents\"]) armManagerShutdownIntent(context, attempt);\n              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);",
       "expectRed": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "cell": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
-      "note": "Restores the blocked-head behavior exactly: both live legacy records stop before SIGTERM, remain alive, and keep their pidfiles. The suite executes bare and --with-agents first, then the named bare cell is the first red."
+      "note": "Restores the blocked-head behavior exactly: both live legacy records stop before SIGTERM, remain alive, and keep their pidfiles. The suite executes bare and --with-agents first, then the named bare cell is the first red.",
+      "afterRestore": "pnpm build > /dev/null"
     },
     {
       "name": "M2 restore the tokenless destructive-intent refusal",
@@ -28,7 +29,8 @@
       "replace": "  if (attempt.target.token === undefined)\n    throw new Error(\"cannot arm --with-agents: manager process identity is not pinned; destructive policy was not published\");",
       "expectRed": "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
       "cell": "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
-      "note": "Restores the stale helper throw. The public --with-agents branch still calls the helper, so the live legacy manager is not signalled and its pidfile remains, reddening the destructive-path cell."
+      "note": "Restores the stale helper throw. The public --with-agents branch still calls the helper, so the live legacy manager is not signalled and its pidfile remains, reddening the destructive-path cell.",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }
