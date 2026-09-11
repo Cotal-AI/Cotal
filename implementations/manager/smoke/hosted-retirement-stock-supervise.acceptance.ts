@@ -505,6 +505,11 @@ registry.register({
         // retained child execs agent-bearer against the owned private-PKI HTTPS proxy, so declare the
         // same public CA path the supervisor was launched with. No key or credential crosses here.
         NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
+        // agent-bearer re-enters the development CLI. Keep that subprocess on the fixture-owned
+        // connector store and preserve the supervisor's explicit no-seed policy. COTAL_HOME does not
+        // relocate this store, and weakening the checkout guard would risk the operator's real store.
+        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+        COTAL_SKIP_CONNECTOR_SEED: process.env.COTAL_SKIP_CONNECTOR_SEED,
       },
     };
   },
