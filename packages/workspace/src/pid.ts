@@ -18,8 +18,9 @@
  * module they may depend on, never a core export.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { processStartToken as posixStartToken } from "./advisory-lock.js";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
  *  accepts (it throws `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE` outside it). Anything else -
@@ -185,28 +186,74 @@ export function formatRecord(record: ProcessIdentityRecord): string {
 /**
  * The creation-identity token of a live pid: on Linux `/proc/<pid>/stat` field 22 (starttime —
  * ticks since boot, fixed for the life of the pid); on macOS/BSD `ps -o lstart=`; on Windows
- * `undefined`, because no cheap STABLE token exists there (see the Windows note in
- * `advisory-lock.ts`'s `processStartToken` for why a `ps` on PATH is worse than none). A pid whose
- * token is `undefined` can still be recorded — the record then carries no start pin, and teardown
- * warns that it is proceeding without the identity check.
+ * the process creation FILETIME (PowerShell `Get-Process StartTime`, #1437). A pid whose token is
+ * `undefined` can still be recorded — the record then carries no start pin, and teardown warns that
+ * it is proceeding without the identity check. That pid-only shape is for a record that predates
+ * pinning, or a host that could not read a start at all. It is not the Windows steady state.
  */
 export type ProcessStartTokenReader = (pid: number) => string | undefined;
 
+/**
+ * Parse the stdout of the Windows creation-time reader into a pin token. Accepts only a bare
+ * unsigned FILETIME integer so a MSYS `ps` date string cannot become a "token" that drifts
+ * between launch and teardown (the original reason the lock reader refuses win32 `ps`).
+ */
+export function parseWin32CreationToken(raw: string): string | undefined {
+  const token = raw.trim();
+  return /^\d{1,20}$/.test(token) ? token : undefined;
+}
+
+/**
+ * Windows process-creation identity (#1437). A stop runs once, so unlike the advisory lock this
+ * may spend a PowerShell spawn: the token must be STABLE, not cheap. `Get-Process StartTime`
+ * converted to UTC FILETIME is fixed for the life of that pid and changes when the number is
+ * reused. `undefined` means the process is gone or PowerShell could not answer.
+ */
+export function win32ProcessCreationToken(pid: number): string | undefined {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  try {
+    const out = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+    );
+    return parseWin32CreationToken(out);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Identity's start-token reader: POSIX uses the same `/proc`/`ps` implementation as the advisory
+ *  lock so launch and teardown cannot drift; win32 uses {@link win32ProcessCreationToken} instead
+ *  of the lock's `undefined`. `platform` is a parameter so the win32 branch is executable off
+ *  Windows: a mutation that returns `undefined` on win32 must redden without a Windows kernel. */
+export function identityStartToken(
+  pid: number,
+  platform: string = process.platform,
+  win32: ProcessStartTokenReader = win32ProcessCreationToken,
+  posix: ProcessStartTokenReader = posixStartToken,
+): string | undefined {
+  if (platform === "win32") return win32(pid);
+  return posix(pid);
+}
+
+export function defaultStartToken(pid: number): string | undefined {
+  return identityStartToken(pid);
+}
+
 /** The start token for a pid THIS PROCESS is about to record. Prefer the reader passed by the
- *  caller (tests inject divergence), fall back to the same `/proc`/`ps` read the advisory lock
- *  uses, so the token written at launch and the token compared at teardown come from ONE
- *  implementation. `undefined` (Windows, or a ps-less host) records a pid-only LEGACY record —
+ *  caller (tests inject divergence), fall back to {@link defaultStartToken}. `undefined` (a
+ *  ps-less host, or a Windows pid PowerShell could not read) records a pid-only LEGACY record —
  *  visible as such to every reader, never silently. */
 export function identityRecord(pid: number, tokenAt: ProcessStartTokenReader = defaultStartToken): ProcessIdentityRecord | { pid: number } {
   const token = tokenAt(pid);
   return token === undefined ? { pid } : { pid, token };
 }
-
-/** The start-token reader shared with the advisory lock, so launch and teardown agree on the token
- *  for the same live pid. Imported here rather than reimplemented: two token readers that drift
- *  would make the SAME process look like a stranger at teardown. */
-import { processStartToken as defaultStartToken } from "./advisory-lock.js";
-export { defaultStartToken };
 
 /** The verdict of {@link assertRecordIdentity}: does the live process behind `pid` still carry the
  *  start this record pinned? `unreadable` is deliberately NOT a variant: the reader signature
@@ -276,18 +323,18 @@ export function identityPinPath(pidfilePath: string): string {
 
 /** Write the sibling pin for a pid this launch just spawned. Called AFTER the pidfile write, with
  *  the same pid, so a reader that sees a pidfile with no pin yet is reading either a legacy record
- *  or a launch mid-pairing - both are visible below, never silent. `undefined` token (Windows,
- *  ps-less host) writes NO pin, which is the honest legacy shape for that platform rather than a
- *  pin that cannot be checked. */
+ *  or a launch mid-pairing - both are visible below, never silent. `undefined` token (ps-less host,
+ *  or a pid whose creation time could not be read) writes NO pin. Windows writes a pin whenever
+ *  {@link win32ProcessCreationToken} returns a FILETIME (#1437). */
 export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: ProcessStartTokenReader = defaultStartToken): void {
   const rec = identityRecord(pid, tokenAt);
-  if (!("token" in rec)) return; // platform cannot pin: leave the legacy bare-pid shape, loud
+  if (!("token" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud
   writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));
 }
 
 /** What {@link verifyIdentityPin} found for one pidfile. */
 export type PinVerdict =
-  | { kind: "legacy" }        // no sibling: a pre-identity record (or a platform that cannot pin)
+  | { kind: "legacy" }        // no sibling: a pre-identity record. Windows launches write a sibling (#1437)
   | { kind: "match" }         // pinned, and the live process carries the recorded start
   | { kind: "gone" }          // pinned, and the pid is ESRCH-dead: the recorded process is gone
   | { kind: "mismatch"; record: ProcessIdentityRecord; liveToken: string } // PID REUSE: refuse
