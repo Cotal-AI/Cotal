@@ -998,7 +998,6 @@ export async function runJcodeHost(): Promise<void> {
     // proof turn must look idle, or the first mesh DM never drives.
     watchClient(client);
     turnActive = readinessTurnOpen;
-    initialized = true;
     await agent.start();
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
@@ -1010,6 +1009,8 @@ export async function runJcodeHost(): Promise<void> {
     // took the session's accumulated memory with it. Record the refusal and carry on: no failure to
     // deliver this notice is worth the seat it would otherwise cost. Any cause is tolerated here,
     // not just a busy agent, because the thrown code is `internal` for every one of them.
+    // drive() is gated on initialized. Leave that false until this notice has been attempted so a
+    // turn_done from the still-open proof cannot dispatch the spawn kickoff first (#1440).
     try {
       await client.sendMessage(
         sessionId,
@@ -1019,6 +1020,7 @@ export async function runJcodeHost(): Promise<void> {
     } catch (notice) {
       writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
     }
+    initialized = true;
     if (pendingKickoff !== undefined) await drive();
   } catch (error) {
     // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
