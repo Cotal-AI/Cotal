@@ -2,6 +2,7 @@
 "@cotal-ai/cli": patch
 "@cotal-ai/manager": patch
 "@cotal-ai/workspace": patch
+"@cotal-ai/connector-core": patch
 ---
 
 Wire `--max-sessions` from the CLI into the manager's live-session ceiling.
