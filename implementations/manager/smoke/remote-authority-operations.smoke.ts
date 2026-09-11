@@ -187,8 +187,70 @@ assert.deepEqual(effects, []);
 assert.equal(remoteChecks, 10);
 
 const proof = `sha256:${"b".repeat(64)}`;
-assert.equal(renewedRegistrationProof({ operation: "renew", registrationProof: proof, nextRegistrationProof: proof } as never, proof), proof);
-assert.throws(() => renewedRegistrationProof({ operation: "renew", registrationProof: proof, nextRegistrationProof: `sha256:${"c".repeat(64)}` } as never, proof), /did not preserve/);
+const renewalCredential = (identity: typeof identities.supervisor) => ({
+  jwt: [Buffer.from("{}").toString("base64url"), Buffer.from(JSON.stringify({ sub: identity.id, exp: 2_000_000_000 })).toString("base64url"), "sig"].join("."),
+  exp: 2_000_000_000,
+});
+const renewalRequest = {
+  v: 1 as const,
+  kind: "manager-service-authority" as const,
+  operation: "renew" as const,
+  space: "demo",
+  actor: "cli",
+  instanceId,
+  managerLifecycleUid: request.managerLifecycleUid,
+  requestId: `renew${mintLifecycleUid()}`,
+  registrationProof: proof,
+  identities: Object.fromEntries(Object.entries(identities).map(([name, identity]) => [name, { id: identity.id }])) as {
+    supervisor: { id: string }; executor: { id: string }; serve: { id: string };
+    goalWriter: { id: string }; sessionLedger: { id: string };
+  },
+};
+const renewalResult = {
+  v: 1 as const,
+  kind: "manager-service-authority" as const,
+  operation: "renew" as const,
+  space: renewalRequest.space,
+  owner,
+  actor: renewalRequest.actor,
+  instanceId: renewalRequest.instanceId,
+  lifecycleUid: renewalRequest.managerLifecycleUid,
+  requestId: renewalRequest.requestId,
+  registrationProof: proof,
+  issuedAt: 1_900_000_000_000,
+  expiresAt: 2_000_000_000_000,
+  actors: remoteManagerActors(instanceId),
+  identities: renewalRequest.identities,
+  nextRegistrationProof: proof,
+  credentials: {
+    supervisor: renewalCredential(identities.supervisor),
+    executor: renewalCredential(identities.executor),
+    serve: renewalCredential(identities.serve),
+    goalWriter: renewalCredential(identities.goalWriter),
+    sessionLedger: renewalCredential(identities.sessionLedger),
+  },
+};
+assert.equal(renewedRegistrationProof(renewalResult, renewalRequest, owner), proof);
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, extra: true } as never, renewalRequest, owner), /non-closed result/, "unknown renewal result fields are refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, v: 2 } as never, renewalRequest, owner), /different request/, "altered renewal protocol version is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, kind: "manager-service-authority-old" } as never, renewalRequest, owner), /different request/, "altered renewal result kind is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, operation: "activate" } as never, renewalRequest, owner), /different request/, "altered renewal operation is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, space: "other" }, renewalRequest, owner), /different request/, "altered renewal space is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, owner: `u_${"c".repeat(26)}` }, renewalRequest, owner), /different request/, "altered renewal owner is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, actor: "other" }, renewalRequest, owner), /different request/, "altered renewal actor is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, instanceId: mintLifecycleUid() }, renewalRequest, owner), /different request/, "altered renewal instance is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, lifecycleUid: mintLifecycleUid() }, renewalRequest, owner), /different request/, "altered renewal lifecycle is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, requestId: `renew${mintLifecycleUid()}` }, renewalRequest, owner), /different request/, "a still-live response from an earlier renewal request is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, registrationProof: `sha256:${"c".repeat(64)}` }, renewalRequest, owner), /different request/, "altered renewal current proof is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, nextRegistrationProof: `sha256:${"c".repeat(64)}` }, renewalRequest, owner), /different request/, "a renewal response with a different next proof is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, actors: { ...renewalResult.actors, executor: "other" } }, renewalRequest, owner), /different request/, "altered renewal actors are refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, identities: { ...renewalResult.identities, executor: { id: newIdentity().id } } }, renewalRequest, owner), /different request/, "a renewal response for a different identity family is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, identities: { ...renewalResult.identities, extra: { id: newIdentity().id } } } as never, renewalRequest, owner), /different request/, "an extra renewal identity is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, retirement: { id: newIdentity().id } } as never, renewalRequest, owner), /non-closed result/, "retirement coordinates on renewal are refused");
+const { executor: _missingExecutor, ...missingExecutor } = renewalResult.credentials;
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, credentials: missingExecutor } as never, renewalRequest, owner), /non-closed credential family/, "a missing renewal credential family member is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, credentials: { ...renewalResult.credentials, extra: renewalCredential(newIdentity()) } } as never, renewalRequest, owner), /non-closed credential family/, "an extra renewal credential family member is refused");
+assert.throws(() => renewedRegistrationProof({ ...renewalResult, credentials: { ...renewalResult.credentials, executor: { ...renewalResult.credentials.executor, extra: true } } } as never, renewalRequest, owner), /non-closed credential family/, "an extra field inside a renewal credential is refused");
 
 function fakeCred(identity: typeof identities.supervisor, iat: number, exp: number, generation: string): string {
   const jwt = [
@@ -237,6 +299,7 @@ const renewing = new Manager({
   sessionLedgerConn: { creds: string; nc: { reconnect(): Promise<void> } };
   remoteSupervisorCreds: string;
   remoteExecutorCreds: string;
+  remoteAuthority: { registrationProof: string };
   goalWriterCreds: string;
   sessionLedgerCreds: string;
   renewRemoteAuthority(): Promise<void>;
@@ -261,11 +324,17 @@ assert.equal(renewing.remoteExecutorCreds, old.executor);
 releaseRenew();
 await firstRenew;
 assert.equal(renewCalls, 1);
-assert.equal(renewing.remoteSupervisorCreds, fresh.supervisorCreds);
-assert.equal(renewing.remoteExecutorCreds, fresh.executorCreds);
-assert.equal(renewing.serviceServe.creds, fresh.serveCreds);
-assert.equal(renewing.goalWriter.creds, fresh.goalWriterCreds);
-assert.equal(renewing.sessionLedgerConn.creds, fresh.sessionLedgerCreds);
-assert.deepEqual(adoption.sort(), ["goal", "serve", "session", "supervisor-reload"]);
+assert.equal(renewing.remoteSupervisorCreds, fresh.supervisorCreds, "fresh supervisor credential was installed");
+assert.equal(renewing.remoteExecutorCreds, fresh.executorCreds, "fresh executor credential was installed");
+assert.equal(renewing.remoteAuthority.registrationProof, fresh.registrationProof, "fresh registration proof was installed");
+assert.equal(renewing.serviceServe.creds, fresh.serveCreds, "fresh serve credential was installed");
+assert.equal(renewing.goalWriterCreds, fresh.goalWriterCreds, "fresh goal-writer credential field was installed");
+assert.equal(renewing.goalWriter.creds, fresh.goalWriterCreds, "fresh goal-writer holder credential was installed");
+assert.equal(renewing.sessionLedgerCreds, fresh.sessionLedgerCreds, "fresh session-ledger credential field was installed");
+assert.equal(renewing.sessionLedgerConn.creds, fresh.sessionLedgerCreds, "fresh session-ledger holder credential was installed");
+assert.equal(adoption.filter((value) => value === "supervisor-reload").length, 1, "supervisor holder adopted the fresh credential");
+assert.equal(adoption.filter((value) => value === "serve").length, 1, "serve holder adopted the fresh credential");
+assert.equal(adoption.filter((value) => value === "goal").length, 1, "goal-writer holder adopted the fresh credential");
+assert.equal(adoption.filter((value) => value === "session").length, 1, "session-ledger holder adopted the fresh credential");
 
-console.log("remote authority operations: 41 passed, 0 failed");
+console.log("remote authority operations: 65 passed, 0 failed");

@@ -226,12 +226,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
-      const credentialFamily = (issued: typeof activate, expectedProof: string) => {
-        if (issued.owner !== material.owner || issued.actor !== request.actor || issued.space !== space ||
-            issued.instanceId !== state.instanceId || issued.lifecycleUid !== state.lifecycleUid ||
-            JSON.stringify(issued.actors) !== JSON.stringify(actors) || issued.operation !== "renew")
-          throw new Error("the host returned renewed manager-service material for different lifecycle coordinates");
-        const nextProof = renewedRegistrationProof(issued, expectedProof);
+      const credentialFamily = (issued: typeof activate, renewalRequest: ReturnType<typeof remoteManagerAuthorityRequest>) => {
+        const nextProof = renewedRegistrationProof(issued, renewalRequest, material.owner);
         return {
           registrationProof: nextProof,
           supervisorCreds: materialCredential(issued, "supervisor", state.identities.supervisor),
@@ -341,12 +337,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         registrationProof: retainedRegistrationProof,
         renew: async () => {
           const expectedProof = remoteAuthority!.registrationProof;
+          const renewalRequest = remoteManagerAuthorityRequest(state, "cli", "renew", expectedProof);
           const issued = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "renew", expectedProof),
+            request: renewalRequest,
           });
-          const fresh = credentialFamily(issued, expectedProof);
+          const fresh = credentialFamily(issued, renewalRequest);
           return fresh;
         },
         authorizeAdmin: async (caller) => {
