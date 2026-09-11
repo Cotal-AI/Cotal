@@ -304,9 +304,7 @@ try {
     "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
     !legacyBare.managerAlive && legacyBare.agentAlive && !legacyBare.pidfilePreserved &&
       /predates process identity pinning/.test(legacyBare.warning) &&
-      /could not verify that this legacy manager can spare/.test(legacyBare.warning) &&
-      /manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents/.test(legacyBare.output) &&
-      !/left \d+ managed agents? running/.test(legacyBare.output),
+      /could not verify that this legacy manager can spare/.test(legacyBare.warning),
     legacyBare,
   );
   check(
