@@ -170,6 +170,38 @@
       "replace": "        Promise.resolve(),",
       "expectRed": "session-ledger holder adopted the fresh credential",
       "cell": "session-ledger holder adopted the fresh credential"
+    },
+    {
+      "name": "supervisor reconnect begins before its credential assignment",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.remoteSupervisorCreds = fresh.supervisorCreds;\n      this.remoteExecutorCreds = fresh.executorCreds;\n      remote.registrationProof = fresh.registrationProof;\n      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),",
+      "replace": "      await this.ep.reloadCreds();\n      this.remoteSupervisorCreds = fresh.supervisorCreds;\n      this.remoteExecutorCreds = fresh.executorCreds;\n      remote.registrationProof = fresh.registrationProof;\n      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        Promise.resolve(),",
+      "expectRed": "supervisor adoption saw fresh credential",
+      "cell": "supervisor adoption saw fresh credential"
+    },
+    {
+      "name": "serve reconnect begins before its credential assignment",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),",
+      "replace": "      await serve.nc.reconnect();\n      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        Promise.resolve(),",
+      "expectRed": "serve adoption saw fresh credential",
+      "cell": "serve adoption saw fresh credential"
+    },
+    {
+      "name": "goal-writer reconnect begins before its credential assignments",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        goalWriter.nc.reconnect(),",
+      "replace": "      await goalWriter.nc.reconnect();\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        Promise.resolve(),",
+      "expectRed": "goal adoption saw fresh field",
+      "cell": "goal adoption saw fresh field"
+    },
+    {
+      "name": "session-ledger reconnect begins before its credential assignments",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        goalWriter.nc.reconnect(),\n        sessionLedger.nc.reconnect(),",
+      "replace": "      await sessionLedger.nc.reconnect();\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        goalWriter.nc.reconnect(),\n        Promise.resolve(),",
+      "expectRed": "session adoption saw fresh field",
+      "cell": "session adoption saw fresh field"
     }
   ]
 }

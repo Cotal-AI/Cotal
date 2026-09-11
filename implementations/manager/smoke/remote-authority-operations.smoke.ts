@@ -280,19 +280,7 @@ let renewCalls = 0;
 let releaseRenew!: () => void;
 const renewGate = new Promise<void>((resolve) => { releaseRenew = resolve; });
 const adoption: string[] = [];
-const renewing = new Manager({
-  space: "demo", runtime: "pty",
-  remoteAuthority: {
-    owner, actors: remoteManagerActors(instanceId), instanceId, lifecycleUid: request.managerLifecycleUid, identities,
-    supervisorCreds: old.supervisor, executorCreds: old.executor, serveCreds: old.serve,
-    goalWriterCreds: old.goal, sessionLedgerCreds: old.session, registrationProof: proof,
-    renew: async () => { renewCalls++; await renewGate; return fresh; },
-    serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
-    mintSessionServing: async () => "", mintRetirementRequester: async () => "",
-    prepareAgentRetirement: async () => {}, validateRetainedAgent: async () => { throw new Error("not used"); },
-    scanGoalIndex: async () => [], authorizeAdmin: async () => false,
-  },
-}) as unknown as {
+let renewing!: {
   ep: { reloadCreds(): Promise<unknown> };
   serviceServe: { creds: string; nc: { reconnect(): Promise<void> } };
   goalWriter: { creds: string; nc: { reconnect(): Promise<void> } };
@@ -306,12 +294,40 @@ const renewing = new Manager({
   armRemoteAuthorityRenewal(): void;
   probeStaticCredential(creds: string): Promise<{ ok: boolean; reason: string }>;
 };
+renewing = new Manager({
+  space: "demo", runtime: "pty",
+  remoteAuthority: {
+    owner, actors: remoteManagerActors(instanceId), instanceId, lifecycleUid: request.managerLifecycleUid, identities,
+    supervisorCreds: old.supervisor, executorCreds: old.executor, serveCreds: old.serve,
+    goalWriterCreds: old.goal, sessionLedgerCreds: old.session, registrationProof: proof,
+    renew: async () => { renewCalls++; await renewGate; return fresh; },
+    serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
+    mintSessionServing: async () => "", mintRetirementRequester: async () => "",
+    prepareAgentRetirement: async () => {}, validateRetainedAgent: async () => { throw new Error("not used"); },
+    scanGoalIndex: async () => [], authorizeAdmin: async () => false,
+  },
+}) as unknown as typeof renewing;
 renewing.ep = {
-  reloadCreds: async () => { adoption.push("supervisor-reload"); return {}; },
+  reloadCreds: async () => {
+    assert.equal(renewing.remoteSupervisorCreds, fresh.supervisorCreds, "supervisor adoption saw fresh credential");
+    adoption.push("supervisor-reload");
+    return {};
+  },
 };
-renewing.serviceServe = { creds: old.serve, nc: { reconnect: async () => { adoption.push("serve"); } } };
-renewing.goalWriter = { creds: old.goal, nc: { reconnect: async () => { adoption.push("goal"); } } };
-renewing.sessionLedgerConn = { creds: old.session, nc: { reconnect: async () => { adoption.push("session"); } } };
+renewing.serviceServe = { creds: old.serve, nc: { reconnect: async () => {
+  assert.equal(renewing.serviceServe.creds, fresh.serveCreds, "serve adoption saw fresh credential");
+  adoption.push("serve");
+} } };
+renewing.goalWriter = { creds: old.goal, nc: { reconnect: async () => {
+  assert.equal(renewing.goalWriterCreds, fresh.goalWriterCreds, "goal adoption saw fresh field");
+  assert.equal(renewing.goalWriter.creds, fresh.goalWriterCreds, "goal adoption saw fresh holder");
+  adoption.push("goal");
+} } };
+renewing.sessionLedgerConn = { creds: old.session, nc: { reconnect: async () => {
+  assert.equal(renewing.sessionLedgerCreds, fresh.sessionLedgerCreds, "session adoption saw fresh field");
+  assert.equal(renewing.sessionLedgerConn.creds, fresh.sessionLedgerCreds, "session adoption saw fresh holder");
+  adoption.push("session");
+} } };
 renewing.goalWriterCreds = old.goal;
 renewing.sessionLedgerCreds = old.session;
 renewing.armRemoteAuthorityRenewal = () => {};
@@ -337,4 +353,4 @@ assert.equal(adoption.filter((value) => value === "serve").length, 1, "serve hol
 assert.equal(adoption.filter((value) => value === "goal").length, 1, "goal-writer holder adopted the fresh credential");
 assert.equal(adoption.filter((value) => value === "session").length, 1, "session-ledger holder adopted the fresh credential");
 
-console.log("remote authority operations: 65 passed, 0 failed");
+console.log("remote authority operations: 70 passed, 0 failed");
