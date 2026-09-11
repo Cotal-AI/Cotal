@@ -143,6 +143,20 @@ check(
   clean.seen,
 );
 
+const manual = await preflightNpmPublish({
+  fixedPackages: fixed,
+  workspacePackages: workspace,
+  registryBase: "https://fake.registry",
+  env: { NPM_TOKEN: "test-only" },
+  fetchImpl: (async () => ({ status: 404 })) as unknown as typeof fetch,
+  log: () => {},
+});
+check(
+  "manual token escape hatch keeps the fixed-group census without requiring GitHub OIDC",
+  manual.state === "ready" && manual.rows.every((row) => row.oidc === "not-available:classic-token"),
+  manual,
+);
+
 const partial = await scenario(new Set(["@cotal-ai/seat"]));
 check(
   "one already-published package refuses the whole preflight",
