@@ -376,6 +376,7 @@ export function endpointRegistrationBarrier(
     return { row: parseEndpointGate(entry.value, key), revision: entry.revision };
   };
   return {
+    operationId: opId,
     observe: async () => {
       const cur = await observed();
       if (cur === null) return null;
@@ -442,6 +443,11 @@ export function endpointRegistrationBarrier(
         if (isRawCasLoss(e)) return false;
         throw new EpEnvelopeError("unavailable", `the endpoint gate reopen CAS for ${key} is ambiguous; leave frozen for reconciliation (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
       }
+    },
+    progress: {
+      load: () => loadEndpointRepairCursor(kv, endpoint, instanceId),
+      save: (cursor, expectedRevision) => saveEndpointRepairCursor(kv, endpoint, instanceId, cursor, expectedRevision),
+      clear: (expectedRevision) => deleteEndpointRepairCursor(kv, endpoint, instanceId, expectedRevision),
     },
   };
 }

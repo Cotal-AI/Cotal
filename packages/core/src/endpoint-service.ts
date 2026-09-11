@@ -25,6 +25,7 @@ import {
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
+import type { EndpointRepairCursor } from "./lifecycle-state.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -425,14 +426,18 @@ export async function registerServiceInstance(
       headState: "retired",
       ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
     });
-  if (obs.state !== "open")
+  const resuming = obs.state === "frozen"
+    && obs.op?.kind === "registration"
+    && args.barrier.operationId !== undefined
+    && obs.op.opId === args.barrier.operationId;
+  if (obs.state !== "open" && !resuming)
     throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
       blockedOp: obs.op?.kind ?? "registration",
       headState: obs.state === "frozen" ? "retiring" : "retired",
       ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
       remedy: "cotal reconcile-gate",
     });
-  const token = await args.barrier.freeze(obs.revision);
+  const token = resuming ? obs.revision : await args.barrier.freeze(obs.revision);
   if (token === null)
     throw new EpEnvelopeError("conflict", `a concurrent barrier froze the issuance gate for "${args.instanceId}" first; re-read and re-decide (SPEC 13.1/13.8)`);
 
@@ -443,6 +448,33 @@ export async function registerServiceInstance(
   const successorAt = (registrationRevision: number, processEpoch: number = obs.processEpoch): EpGateSuccessor => ({
     generation: obs.generation + 1, processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
   });
+
+  // A fresh executor may be resuming after the Phase-3 publish committed but the old connection
+  // died before its read-back or reopen. Finish that SAME frozen operation before repeating any
+  // family work or writing the spec again. The held governance slot plus the unchanged gate/op
+  // coordinate makes the advanced spec revision attributable to this operation.
+  if (resuming) {
+    const finished = await completeFrozenRegistrationFromSpec(kv, {
+      endpoint: spec.endpoint,
+      instanceId: args.instanceId,
+      barrier: args.barrier,
+      freezeToken: token,
+      gate: {
+        generation: obs.generation,
+        processEpoch: obs.processEpoch,
+        registrationRevision: obs.registrationRevision,
+        nameAuthorityRevision: obs.nameAuthorityRevision,
+      },
+    });
+    if (finished.completed) {
+      const stored = await args.barrier.progress?.load();
+      if (stored) {
+        try { await args.barrier.progress?.clear(stored.revision); }
+        catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
+      }
+      return { registrationRevision: finished.registrationRevision };
+    }
+  }
 
   // PHASE 1 — authorize UNDER the frozen gate, then ownership stability. Both are authority /
   // local reads with NO write side-effect, so any failure (owner not authorized, name-authority
@@ -488,8 +520,13 @@ export async function registerServiceInstance(
     // OBSERVE that stamp to be behind the holder's live gate ({@link assertForeignSlotIsOrphaned};
     // fail-closed without that observation).
     const gov = await readEndpointGovernance(kv, spec.endpoint);
+    let holdsSlot = false;
     if (gov.provisional) {
-      if (gov.provisional.instanceId !== args.instanceId)
+      if (resuming) {
+        if (gov.provisional.instanceId !== args.instanceId || gov.provisional.generation !== obs.generation)
+          throw new EpEnvelopeError("unavailable", `the resumed registration no longer holds endpoint "${spec.endpoint}" governance at generation ${obs.generation}; the gate stays frozen for reconciliation (SPEC 13.7/13.1)`);
+        holdsSlot = true;
+      } else if (gov.provisional.instanceId !== args.instanceId)
         await assertForeignSlotIsOrphaned(gov.provisional, spec.endpoint, args.observeHolderGeneration);
       else if (gov.provisional.generation >= obs.generation)
         throw new EpEnvelopeError("internal", `the governance slot for endpoint "${spec.endpoint}" is held by this very instance at generation ${gov.provisional.generation} while its gate is frozen at ${obs.generation}; a live slot under a re-frozen gate cannot exist (every retry freezes at an advanced generation); reconcile the head before registering (SPEC 13.7)`);
@@ -512,8 +549,10 @@ export async function registerServiceInstance(
       provisional: { instanceId: args.instanceId, generation: obs.generation, commands: serializeGovernanceCommands(next) },
     };
     try {
-      if (gov.revision === null) await createRecordEntry(kv, govKey, slotValue);
-      else await updateRecordEntry(kv, govKey, slotValue, gov.revision);
+      if (!holdsSlot) {
+        if (gov.revision === null) await createRecordEntry(kv, govKey, slotValue);
+        else await updateRecordEntry(kv, govKey, slotValue, gov.revision);
+      }
     } catch (e) {
       // createRecordEntry/updateRecordEntry translate the broker CAS loss (err_code 10071/10164)
       // into EpEnvelopeError("conflict") — classify on THAT, the numeric code never reaches here.
@@ -522,7 +561,10 @@ export async function registerServiceInstance(
       throw new EpEnvelopeError("unavailable", `the governance slot-take for endpoint "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens; a committed-but-unacked slot self-orphans at the reopened generation and this instance's retry replaces it (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
     }
   } catch (err) {
-    await reopenGateAfterAbort(args.barrier, token, successorAt(obs.registrationRevision), err);
+    // A resumed freeze may already have revoked part of the old family. Never abort-reopen that
+    // coordinate on a repeated Phase-1 read failure. The durable operation remains frozen and can
+    // be retried with fresh authority or reconciled.
+    if (!resuming) await reopenGateAfterAbort(args.barrier, token, successorAt(obs.registrationRevision), err);
     throw err;
   }
 
@@ -534,12 +576,40 @@ export async function registerServiceInstance(
   //  - but verified-evict the distinct holder principals of the ENTIRE enumerated family: an
   //    already-revoked row from a PARTIALLY FAILED prior barrier may still have a live connection
   //    that was never verified gone, so eviction must not skip it (§13.1).
+  let progressRevision: number | null = null;
   try {
     const family = await args.barrier.enumerate();
     for (const row of family) if (row.state === "active") await args.barrier.revoke(row);
-    for (const holderPrincipal of new Set(family.map((row) => row.holderPrincipal)))
+    const holders = [...new Set(family.map((row) => row.holderPrincipal))].sort();
+    const opId = args.barrier.operationId ?? obs.op?.opId;
+    let progress: EndpointRepairCursor | undefined;
+    if (args.barrier.progress && opId) {
+      progress = { v: 1, opId, freezeToken: token, holders, verified: [] };
+      const stored = await args.barrier.progress.load();
+      if (
+        stored
+        && stored.cursor.opId === progress.opId
+        && stored.cursor.freezeToken === progress.freezeToken
+        && stored.cursor.holders.length === holders.length
+        && stored.cursor.holders.every((h, i) => h === holders[i])
+      ) {
+        progress = stored.cursor;
+        progressRevision = stored.revision;
+      } else {
+        progressRevision = await args.barrier.progress.save(progress, stored?.revision ?? null);
+      }
+    }
+    const verified = new Set(progress?.verified ?? []);
+    for (const holderPrincipal of holders) {
+      if (verified.has(holderPrincipal)) continue;
       if (!(await args.barrier.evict(holderPrincipal)))
         throw new Error(`principal "${holderPrincipal}" is not verified evicted`);
+      if (args.barrier.progress && progress) {
+        progress = { ...progress, verified: [...verified, holderPrincipal].sort() };
+        progressRevision = await args.barrier.progress.save(progress, progressRevision);
+      }
+      verified.add(holderPrincipal);
+    }
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen for reconciliation, no new spec published (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
@@ -617,7 +687,12 @@ export async function registerServiceInstance(
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
-  await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation);
+  try { await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation); }
+  catch { /* gate already reopened; a slot stamped behind its live generation is safely orphaned */ }
+  if (args.barrier.progress && progressRevision !== null) {
+    try { await args.barrier.progress.clear(progressRevision); }
+    catch { /* gate is already open; a stale freeze-bound cursor is safe to retain */ }
+  }
   return { registrationRevision: newRev };
 }
 
@@ -1688,6 +1763,8 @@ export interface EpIssuanceGate {
  *  so core never publishes an independently-callable unsafe writer beside the fence: the spec
  *  writer {@link registerServiceInstance} drives this seam and has no bare spec-key advance. */
 export interface EpIssuanceBarrier {
+  /** Stable operation id for this registration attempt. A fresh authority retry reuses it. */
+  readonly operationId?: string;
   /** Leader-served read of the gate (same key as the mint's {@link EpIssuanceGate.observe}). */
   observe: () => Promise<EpGateState | null> | EpGateState | null;
   /** Revision-pinned CAS `open` → `frozen` at `expectedRevision`, returning the FENCING TOKEN
@@ -1712,6 +1789,13 @@ export interface EpIssuanceBarrier {
    *  stale reopen loses and never clobbers the newer gate). Advances the currency the barrier
    *  changed, so a superseded mint's rebuilt CAS still loses. */
   reopen: (token: number, successor: EpGateSuccessor) => Promise<boolean> | boolean;
+  /** Optional durable progress journal for a long-running registration's verified-eviction phase.
+   *  Production endpoint barriers provide it. In-memory test barriers may omit it. */
+  progress?: {
+    load: () => Promise<{ cursor: EndpointRepairCursor; revision: number } | null>;
+    save: (cursor: EndpointRepairCursor, expectedRevision: number | null) => Promise<number>;
+    clear: (expectedRevision: number) => Promise<void>;
+  };
 }
 
 /** The minted-credential context the release fence records into its §13.1 ledger row: the
