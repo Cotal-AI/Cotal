@@ -460,6 +460,40 @@ try {
     );
   }
 
+  // 1d. Duplicate mutation names are valid. Index, not displayed label, is the identity. A PR that
+  //     turns a later same-name KILLED into ERROR must fail even though an earlier same-name ERROR
+  //     is inherited.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "dup.mjs"), "export const dup = () => 1;\n");
+        writeFileSync(join(r, "suites", "dup.suite.mjs"), "import { dup } from '../dup.mjs';\nif (dup() !== 1) { console.error('✗ FAIL: dup is one'); process.exit(1); }\nconsole.log('✓ dup is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "dup.mutations.json"), JSON.stringify({
+          suite: ["suites/dup.suite.mjs"],
+          command: "node suites/dup.suite.mjs",
+          mutations: [
+            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 1;", expectRed: "dup is one" },
+            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "dup.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.mutations[1] = { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one", unknownKey: true };
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR",
+      status === 1
+        && eq(offenderPaths(out), ["smoke/mutations/dup.mutations.json"])
+        && /^MUTATION REPROOF FAILED /m.test(out),
+      `status=${status} offenders=${JSON.stringify(offenderPaths(out))} inherited=${JSON.stringify(inheritedFatalPaths(out))}\n${out}`,
+    );
+  }
+
   // Every member of a multi-source declaration participates in selection. The first source is the
   // suite command and remains unchanged; only the second metadata member moves.
   {

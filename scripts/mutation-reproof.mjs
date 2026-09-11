@@ -316,12 +316,19 @@ if (selected.length === 0) {
 const ANSI = /\x1b\[[0-9;]*m/g;
 const VERDICTS = ["KILLED", "SURVIVED", "INCONCLUSIVE", "UNGRADABLE", "WRONG-RED", "ERROR"];
 const FATAL_VERDICTS = new Set(["SURVIVED", "UNGRADABLE", "WRONG-RED", "ERROR"]);
-const verdictRe = new RegExp(`^(${VERDICTS.join("|")}) `, "gm");
-const verdictsIn = (output) =>
-  [...output.replace(ANSI, "").matchAll(verdictRe)].map((m) => m[1]);
-const labeledVerdictsIn = (output) =>
-  [...output.replace(ANSI, "").matchAll(new RegExp(`^(${VERDICTS.join("|")}) +(.*)$`, "gm"))]
-    .map((m) => ({ verdict: m[1], label: m[2].trim() }));
+// mutation-proof prints `${verdict.padEnd(12)} ${label}`. That 12-wide field is the identity of a
+// report line: ERROR why-text can name KILLED, and duplicate mutation names are valid, so neither a
+// loose `^VERDICT ` match nor a label-keyed map is a mutation identity.
+const labeledVerdictsIn = (output) => {
+  const records = [];
+  for (const line of output.replace(ANSI, "").split("\n")) {
+    const verdict = VERDICTS.find((token) => line.startsWith(`${token.padEnd(12)} `));
+    if (!verdict) continue;
+    records.push({ index: records.length, verdict, label: line.slice(13).trim() });
+  }
+  return records;
+};
+const verdictsIn = (output) => labeledVerdictsIn(output).map((rec) => rec.verdict);
 
 function runProof(cwd, configPath, env) {
   const run = spawnSync(process.execPath, [PROOF, "--config", configPath], {
@@ -331,15 +338,12 @@ function runProof(cwd, configPath, env) {
 }
 
 function compareFatalVerdicts(headRecords, baseRecords) {
-  const baseByLabel = new Map();
-  for (const rec of baseRecords) {
-    if (!baseByLabel.has(rec.label)) baseByLabel.set(rec.label, rec.verdict);
-  }
   const inherited = [];
   const attributable = [];
   for (const rec of headRecords) {
     if (!FATAL_VERDICTS.has(rec.verdict)) continue;
-    const baseVerdict = baseByLabel.get(rec.label);
+    const baseRec = baseRecords.find((candidate) => candidate.index === rec.index);
+    const baseVerdict = baseRec?.verdict;
     if (baseVerdict === rec.verdict) inherited.push({ ...rec, baseVerdict });
     else attributable.push({ ...rec, baseVerdict: baseVerdict ?? "ABSENT" });
   }

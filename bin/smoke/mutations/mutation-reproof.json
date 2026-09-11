@@ -200,6 +200,14 @@
       "cell": "an inherited SURVIVED selected only by a comment-only guarded-source change remains nonfatal"
     },
     {
+      "name": "fatal attribution keys same-name mutations by displayed label",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const baseRec = baseRecords.find((candidate) => candidate.index === rec.index);",
+      "replace": "    const baseRec = baseRecords.find((candidate) => candidate.label === rec.label);",
+      "expectRed": "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR",
+      "cell": "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR"
+    },
+    {
       "name": "a depth-zero temp-root filename is erased as though it were a randomized directory",
       "file": "scripts/mutation-failure-signature.mjs",
       "find": "      return { kind: \"origin\", value: separator === -1 ? `<TMP>/${remainder}` : `<TMP>/${remainder.slice(separator + 1)}` };",
