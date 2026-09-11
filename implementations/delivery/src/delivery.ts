@@ -12,6 +12,7 @@ import {
   mintCreds,
   newIdentity,
   formatSecretStoreIdentity,
+  parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   standaloneConnectOpts,
   startTimerWriter,
@@ -45,12 +46,15 @@ type CredsSource = { store: SecretStore; key: string; where: string; injected: b
  * Naming an ancestor via `findCotalRoot` would certify a two-root composition
  * as a same-store proof.
  */
-export function reloadStoreIdentityOf(src: Pick<CredsSource, "injected" | "identity">): SecretStoreIdentity {
+export function reloadStoreIdentityOf(
+  src: Pick<CredsSource, "injected" | "identity"> & { store?: SecretStore },
+): SecretStoreIdentity {
   if (src.injected) {
+    if (src.store?.identity !== undefined) return parseSecretStoreIdentity(src.store.identity);
     const coordinate = process.env.COTAL_SECRET_STORE;
     if (!coordinate)
       throw new Error(
-        "delivery: an injected SecretStore must name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)",
+        "delivery: an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)",
       );
     return { kind: "injected", coordinate };
   }

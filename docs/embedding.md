@@ -188,7 +188,8 @@ at start, naming both, because membership-rw still uses `findCotalRoot`. A `--cr
 path that is not under any `.cotal` tree is not that case and is not refused here. It never
 walks ancestors with `findCotalRoot`. No bound daemon is not a named
 store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
-An injected store names its coordinate in
+The first-party filesystem adapter declares its workspace-root identity on the store itself. Other
+injected adapters declare their stable coordinate on `SecretStore.identity`, or name it in
 `COTAL_SECRET_STORE` on both processes. It never throws: it
 returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
@@ -224,7 +225,8 @@ registry record and the workspace user-auth marker to start in user mode. `Manag
 injects the one `SecretStore` the manager uses for **the signer itself (the split trust
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
-hosted renewal, and set `COTAL_SECRET_STORE` to the same coordinate on both processes. The manager
+hosted renewal. The store declares the same identity on both processes, or both set
+`COTAL_SECRET_STORE` to the same coordinate. The manager
 refuses to remint when the daemon names a different store, including a daemon that binds after
 start. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted

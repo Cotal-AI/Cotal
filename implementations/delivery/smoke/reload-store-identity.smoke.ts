@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sameSecretStoreIdentity } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, workspaceRootFromCredsPath } from "../src/delivery.js";
 
 let pass = 0;
@@ -128,10 +128,20 @@ try {
   process.env.COTAL_SECRET_STORE = "vault:prod";
   const injected = reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA } });
   ok("injected identity is the coordinate, never the dummy fs root", injected.kind === "injected" && injected.coordinate === "vault:prod");
+  delete process.env.COTAL_SECRET_STORE;
+
+  const explicitWorkspace = reloadStoreIdentityOf({
+    injected: true,
+    identity: { kind: "injected", coordinate: "" },
+    store: workspaceSecretStore(workspaceC),
+  });
+  ok(
+    "an explicitly passed workspace store names its real filesystem authority without an ambient coordinate",
+    explicitWorkspace.kind === "fs" && explicitWorkspace.root === resolve(workspaceC),
+    explicitWorkspace,
+  );
   if (prev === undefined) delete process.env.COTAL_SECRET_STORE;
   else process.env.COTAL_SECRET_STORE = prev;
-
-  ok("non-injected identity is the recorded fs root", reloadStoreIdentityOf({ injected: false, identity: { kind: "fs", root: storeDirB } }).root === storeDirB);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -28,6 +28,13 @@
  * (e.g. `mintCreds`).
  */
 export interface SecretStore {
+  /** Stable, non-secret identity of the authority this adapter reads and writes. A first-party
+   *  filesystem adapter declares this intrinsically. A hosted adapter may declare its Vault/KMS
+   *  coordinate here, so callers do not have to reconstruct the adapter's authority from cwd or
+   *  another local root. Optional for compatibility; a composition that needs identity proof must
+   *  otherwise supply an explicit coordinate at its boundary. */
+  readonly identity?: SecretStoreIdentity;
+
   /** The stored value for `key`, or `undefined` if absent. */
   get(key: string): Promise<string | undefined>;
 
@@ -53,7 +60,8 @@ export interface SecretStore {
  * genuinely read one store. This identity is that proof: it names the store, never a secret.
  * Two workstation filesystem stores agree only when they resolve the same directory. An
  * injected (hosted) store is identified by an operator-supplied coordinate, never guessed from
- * a local root. There is no fallback between the two shapes.
+ * a local root. A store may declare this identity itself; otherwise the composition root must
+ * provide it explicitly. There is no fallback between the two shapes.
  */
 export type SecretStoreIdentity =
   | { kind: "fs"; root: string }

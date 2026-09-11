@@ -335,8 +335,8 @@ export interface ManagerOptions {
    *  naming both stores when they diverge. No bound daemon is not a named store, so start
    *  proceeds and remint writes this store; a later daemon on a foreign store is refused on
    *  the next remint rather than certified by the earlier absence. A hung rail (request
-   *  timeout) fails closed. An injected store must also set `COTAL_SECRET_STORE` to the same
-   *  coordinate the daemon process uses. */
+   *  timeout) fails closed. An injected store declares its identity, or both processes set
+   *  `COTAL_SECRET_STORE` to the same coordinate. */
   secretStore?: SecretStore;
   /** P2 item 6: the global ceiling on concurrently live §13.6 sessions this manager will serve.
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
@@ -875,11 +875,12 @@ function foreignEventChannels(channels: readonly string[], owner: string, actor:
 
 type LeaseState = "held" | "held-unrenewed" | "gone" | "taken" | "unknown";
 
-function injectedManagerStoreIdentity(): SecretStoreIdentity {
+function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
+  if (store.identity !== undefined) return parseSecretStoreIdentity(store.identity);
   const coordinate = process.env.COTAL_SECRET_STORE;
   if (!coordinate)
     throw new Error(
-      "ManagerOptions.secretStore requires COTAL_SECRET_STORE so the manager and delivery daemon can name the same authority (never a silent local-root fallback)",
+      "ManagerOptions.secretStore must declare its identity or set COTAL_SECRET_STORE so the manager and delivery daemon can name the same authority (never a silent local-root fallback)",
     );
   return { kind: "injected", coordinate };
 }
@@ -1150,7 +1151,7 @@ export class Manager {
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.secretStoreIdentity = opts.secretStore
-      ? injectedManagerStoreIdentity()
+      ? injectedManagerStoreIdentity(opts.secretStore)
       : { kind: "fs", root: resolve(this.workspaceRoot) };
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
