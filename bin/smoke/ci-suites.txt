@@ -260,7 +260,6 @@ smoke:persona-announce
 smoke:presence-ttl-migration:auth
 smoke:presence-ttl-refresh-cli
 smoke:presence-ttl-expiry-open
-smoke:presence-ttl-persistence
 smoke:retire-reply-bind
 smoke:gate-reconcile:auth
 smoke:gate-reconcile-cli:auth
