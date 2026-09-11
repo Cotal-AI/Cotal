@@ -1,8 +1,10 @@
 /**
  * The release preflight must fail before the first registry write. This suite drives the shipped
  * preflight against a local fake registry and records every request. Clean all-absent full-group
- * state passes after one OIDC exchange per package. A prior partial publish and an incomplete
- * recursive publish set both refuse without any write-shaped request.
+ * state passes only after an OIDC exchange AND a GET-trust direct-publish census for every package.
+ * A prior partial publish, an incomplete recursive publish set, a refused exchange, and a
+ * stage-only Allowed-actions sibling all refuse without any write-shaped request. An opaque HTTP
+ * 201 exchange is not treated as publish-ready.
  *
  * Run: pnpm smoke:npm-publish-preflight
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/npm-publish-preflight.json
@@ -11,7 +13,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
-import { preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
+import { classifyDirectPublishPermission, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,10 +45,41 @@ const env = {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
 };
 
+function githubPublisher(actions: string[]) {
+  return {
+    type: "github",
+    repository: "Cotal-AI/Cotal",
+    workflow_filename: "changesets.yml",
+    allowed_actions: actions,
+  };
+}
+
+function isWriteShaped(call: Seen): boolean {
+  return call.method === "PUT"
+    || call.method === "DELETE"
+    || call.url.includes("/-/pnpm/v1/publish")
+    || call.url.startsWith("/-/stage/")
+    || (call.method === "POST" && !call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/"));
+}
+
 type Seen = { method: string; url: string };
-async function scenario(present: Set<string>, workspacePackages = workspace, exchangeStatus = 201) {
+type ScenarioOpts = {
+  present?: Set<string>;
+  workspacePackages?: typeof workspace;
+  exchangeStatus?: number;
+  trust?: Record<string, unknown>;
+  trustStatus?: number | ((name: string) => number);
+};
+async function scenario({
+  present = new Set(),
+  workspacePackages = workspace,
+  exchangeStatus = 201,
+  trust,
+  trustStatus = 200,
+}: ScenarioOpts = {}) {
   const seen: Seen[] = [];
   const logs: string[] = [];
+  const defaultTrust = { trustedPublishers: [githubPublisher(["stage", "publish"])] };
   const server = createServer((req, res) => {
     seen.push({ method: req.method ?? "", url: req.url ?? "" });
     if (req.url?.startsWith("/oidc?")) {
@@ -57,6 +90,15 @@ async function scenario(present: Set<string>, workspacePackages = workspace, exc
     if (req.url?.startsWith("/-/npm/v1/oidc/token/exchange/package/")) {
       res.writeHead(exchangeStatus, { "content-type": "application/json" });
       res.end(JSON.stringify({ token: "opaque-exchange-token" }));
+      return;
+    }
+    const trustMatch = req.url?.match(/^\/-\/package\/(.+)\/trust$/);
+    if (trustMatch) {
+      const name = decodeURIComponent(trustMatch[1]);
+      const status = typeof trustStatus === "function" ? trustStatus(name) : trustStatus;
+      const body = trust && Object.prototype.hasOwnProperty.call(trust, name) ? trust[name] : defaultTrust;
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
       return;
     }
     const exact = req.url?.match(/^\/(.+)\/9\.9\.9$/)?.[1] ?? "";
@@ -94,6 +136,9 @@ async function repositoryEntrypoint() {
     } else if (req.url?.startsWith("/-/npm/v1/oidc/token/exchange/package/")) {
       res.writeHead(201, { "content-type": "application/json" });
       res.end(JSON.stringify({ token: "opaque-exchange-token" }));
+    } else if (req.url?.includes("/trust")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ trustedPublishers: [githubPublisher(["stage", "publish"])] }));
     } else {
       res.writeHead(404, { "content-type": "application/json" });
       res.end("{}");
@@ -121,6 +166,23 @@ async function repositoryEntrypoint() {
   return { code, output, seen };
 }
 
+check(
+  "classifier treats an empty Allowed-actions list as stage-only",
+  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher([])] }) === "stage-only",
+);
+check(
+  "classifier treats a stage-only GitHub publisher as stage-only",
+  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher(["stage"])] }) === "stage-only",
+);
+check(
+  "classifier accepts npm publish as the direct Allowed action",
+  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher(["stage", "publish"])] }) === "createPackage",
+);
+check(
+  "classifier does not treat an opaque exchange body as publish-ready",
+  classifyDirectPublishPermission({ token: "opaque-exchange-token", token_type: "oidc" }) === "refused:malformed-trust",
+);
+
 const cli = await repositoryEntrypoint();
 check("the shipped repository entrypoint passes a clean full fixed group", cli.code === 0, cli.output);
 check(
@@ -128,8 +190,14 @@ check(
   cli.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 22,
   cli.seen,
 );
+check(
+  "the repository entrypoint GETs trust for every fixed-group package",
+  cli.seen.filter((call) => call.method === "GET" && call.url.includes("/trust")).length === 22,
+  cli.seen,
+);
+check("the repository entrypoint never issues a write-shaped registry call", cli.seen.every((call) => !isWriteShaped(call)), cli.seen);
 
-const clean = await scenario(new Set());
+const clean = await scenario();
 check("clean full-group census passes", clean.result?.state === "ready", clean.error);
 check(
   "clean preflight exchanges OIDC for every package before publishing",
@@ -137,10 +205,19 @@ check(
   clean.seen,
 );
 check(
-  "clean preflight never sends a registry publish request",
-  clean.seen.every((call) => call.method === "GET" || call.method === "POST")
-    && clean.seen.every((call) => !call.url.includes("/-/pnpm/v1/publish")),
+  "clean preflight GETs trust for every package before publishing",
+  clean.seen.filter((call) => call.method === "GET" && call.url.includes("/trust")).length === fixed.length,
   clean.seen,
+);
+check(
+  "clean preflight never sends a registry publish request",
+  clean.seen.every((call) => !isWriteShaped(call)),
+  clean.seen,
+);
+check(
+  "clean preflight records createPackage, not OIDC 201, as the publish-ready proof",
+  clean.result?.rows.every((row) => row.oidc === "exchanged" && row.direct === "createPackage") === true,
+  clean.result,
 );
 
 const manual = await preflightNpmPublish({
@@ -153,20 +230,22 @@ const manual = await preflightNpmPublish({
 });
 check(
   "manual token escape hatch keeps the fixed-group census without requiring GitHub OIDC",
-  manual.state === "ready" && manual.rows.every((row) => row.oidc === "not-available:classic-token"),
+  manual.state === "ready"
+    && manual.rows.every((row) => row.oidc === "not-available:classic-token" && row.direct === "not-available:classic-token"),
   manual,
 );
 
-const partial = await scenario(new Set(["@cotal-ai/seat"]));
+const partial = await scenario({ present: new Set(["@cotal-ai/seat"]) });
 check(
   "one already-published package refuses the whole preflight",
   partial.error instanceof Error && partial.error.message.includes("exact versions already exist"),
   partial.error,
 );
 check(
-  "partial prior publish refuses before any OIDC exchange or publish call",
+  "partial prior publish refuses before any OIDC exchange, trust GET, or publish call",
   partial.seen.every((call) => !call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/"))
-    && partial.seen.every((call) => !call.url.includes("/-/pnpm/v1/publish")),
+    && partial.seen.every((call) => !call.url.includes("/trust"))
+    && partial.seen.every((call) => !isWriteShaped(call)),
   partial.seen,
 );
 check(
@@ -175,7 +254,7 @@ check(
   partial.logs,
 );
 
-const incomplete = await scenario(new Set(), workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat"));
+const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });
 check(
   "one fixed-group package missing from the recursive publish set refuses",
   incomplete.error instanceof Error && incomplete.error.message.includes("fixed packages missing from workspace publish set"),
@@ -183,7 +262,7 @@ check(
 );
 check("incomplete publish set refuses before the fake registry sees any call", incomplete.seen.length === 0, incomplete.seen);
 
-const oidcRefused = await scenario(new Set(), workspace, 401);
+const oidcRefused = await scenario({ exchangeStatus: 401 });
 check(
   "one refused OIDC exchange refuses the full release",
   oidcRefused.error instanceof Error && oidcRefused.error.message.includes("npm OIDC exchange refused"),
@@ -193,6 +272,65 @@ check(
   "OIDC refusal prints the complete census before exiting non-zero",
   fixed.every((name) => oidcRefused.logs.some((line) => line.includes(`${name}\t9.9.9\t`))),
   oidcRefused.logs,
+);
+check(
+  "OIDC refusal never issues a write-shaped registry call",
+  oidcRefused.seen.every((call) => !isWriteShaped(call)),
+  oidcRefused.seen,
+);
+
+const stageOnly = await scenario({
+  trust: {
+    "@cotal-ai/core": { trustedPublishers: [githubPublisher(["stage", "publish"])] },
+    "@cotal-ai/seat": { trustedPublishers: [githubPublisher(["stage"])] },
+    "cotal-ai": { trustedPublishers: [githubPublisher(["stage", "publish"])] },
+  },
+});
+check(
+  "one stage-only Allowed-actions sibling refuses the whole preflight",
+  stageOnly.error instanceof Error && stageOnly.error.message.includes("allow only staged publish"),
+  stageOnly.error,
+);
+check(
+  "stage-only sibling still exchanged OIDC 201 for every package",
+  stageOnly.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === fixed.length,
+  stageOnly.seen,
+);
+check(
+  "stage-only sibling never issues a write-shaped registry call",
+  stageOnly.seen.every((call) => !isWriteShaped(call)),
+  stageOnly.seen,
+);
+check(
+  "stage-only refusal prints the complete census including the stage-only row",
+  stageOnly.logs.some((line) => line.includes("@cotal-ai/seat\t9.9.9\tabsent\texchanged\tstage-only")),
+  stageOnly.logs,
+);
+
+const opaque201 = await scenario({
+  trustStatus: 200,
+  trust: {
+    "@cotal-ai/core": { token: "opaque-exchange-token" },
+    "@cotal-ai/seat": { token: "opaque-exchange-token" },
+    "cotal-ai": { token: "opaque-exchange-token" },
+  },
+});
+check(
+  "an opaque HTTP 201 exchange is not treated as direct-publish proof",
+  opaque201.error instanceof Error && opaque201.error.message.includes("direct-publish authorization refused"),
+  opaque201.error,
+);
+
+const trustDenied = await scenario({ trustStatus: 401 });
+check(
+  "a 401 trust census refuses before any publish call",
+  trustDenied.error instanceof Error && trustDenied.error.message.includes("direct-publish authorization refused"),
+  trustDenied.error,
+);
+check(
+  "a 401 trust census never issues a write-shaped registry call",
+  trustDenied.seen.every((call) => !isWriteShaped(call)),
+  trustDenied.seen,
 );
 
 console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);

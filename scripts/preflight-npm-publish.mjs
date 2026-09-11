@@ -9,8 +9,19 @@
  * It then reads every exact package@version from npm. A clean release has every version absent.
  * Any present exact version is refused. A mixed census is a prior partial publish; an all-present
  * census has no complete fixed group left to publish. Unknown registry answers refuse too.
+ *
  * When GitHub Actions exposes its OIDC token requester, a distinct id_token is exchanged for every
- * package before any build, assembly, or publish command begins.
+ * package. That HTTP 201 is identity only: npm's trusted-publisher Allowed actions always permit
+ * `npm stage publish`, and configurations created after 2026-09-03 default to stage. Direct
+ * `npm publish` is a separate permission. The exchanged token is then used to GET
+ * `/-/package/<name>/trust`. The whole run refuses unless every package's GitHub publisher lists
+ * a direct-publish action. A stage-only sibling cannot pass this census and later fail during
+ * sequential `pnpm publish -r` after earlier writes.
+ *
+ * There is no non-writing PUT that proves createPackage: a complete packument would publish, and
+ * an incomplete one can 400 before the policy check. This script therefore never PUT/POSTs a
+ * packument. GET trust is the authorization census. If that read cannot be obtained, the run
+ * refuses rather than treating OIDC 201 as publish-ready.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -89,6 +100,62 @@ export function validateReleaseSet(fixedPackages, workspacePackages) {
   return fixed.map((name) => manifests.get(name));
 }
 
+export function trustUrl(registryBase, name) {
+  return `${registryBase}/-/package/${encodeURIComponent(name)}/trust`;
+}
+
+function normalizeAction(action) {
+  return String(action).toLowerCase().replace(/[\s._-]/g, "");
+}
+
+function isDirectPublishAction(action) {
+  const n = normalizeAction(action);
+  return n === "publish" || n === "npmpublish" || n === "createpackage" || n === "direct" || n === "directpublish";
+}
+
+function isGithubPublisher(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const nested = entry.publisher && typeof entry.publisher === "object" ? entry.publisher : {};
+  const type = String(entry.type ?? nested.type ?? "").toLowerCase();
+  if (type.includes("github")) return true;
+  const workflow = entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow;
+  const repo = entry.repository ?? nested.repository ?? nested.repository_name;
+  return typeof workflow === "string" || typeof repo === "string";
+}
+
+function publisherEntries(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== "object") return null;
+  if (Array.isArray(body.trustedPublishers)) return body.trustedPublishers;
+  if (Array.isArray(body.publishers)) return body.publishers;
+  if (Array.isArray(body.configurations)) return body.configurations;
+  if (Array.isArray(body.configs)) return body.configs;
+  return null;
+}
+
+function actionList(entry) {
+  if (!entry || typeof entry !== "object") return [];
+  const nested = entry.publisher && typeof entry.publisher === "object" ? entry.publisher : {};
+  const raw = entry.allowedActions ?? entry.allowed_actions ?? entry.permissions ?? nested.allowedActions ?? nested.permissions;
+  return Array.isArray(raw) ? raw : [];
+}
+
+/**
+ * Map a GET /-/package/<name>/trust body onto the direct-publish Allowed action.
+ * Empty allowed-action lists are stage-only: npm's post-2026-09-03 default.
+ * HTTP 201 from the OIDC exchange is not an input here.
+ */
+export function classifyDirectPublishPermission(body) {
+  const entries = publisherEntries(body);
+  if (!entries) return "refused:malformed-trust";
+  if (entries.length === 0) return "refused:no-trusted-publisher";
+  const github = entries.filter(isGithubPublisher);
+  if (github.length === 0) return "refused:no-github-publisher";
+  const withDirect = github.filter((entry) => actionList(entry).some(isDirectPublishAction));
+  if (withDirect.length > 0) return "createPackage";
+  return "stage-only";
+}
+
 async function readExactVersion(pkg, registryBase, fetchImpl) {
   try {
     const response = await fetchImpl(versionUrl(registryBase, pkg.name, pkg.version), {
@@ -131,16 +198,35 @@ async function exchangePackageIdentity(pkg, registryBase, env, fetchImpl) {
     body: "",
     redirect: "manual",
   });
-  if (response.status !== 201) return `refused:${response.status}`;
+  if (response.status !== 201) return { oidc: `refused:${response.status}`, token: null };
   const body = await response.json();
-  if (!body || typeof body.token !== "string" || body.token.length === 0) return "refused:malformed-token";
-  return "ready";
+  if (!body || typeof body.token !== "string" || body.token.length === 0) return { oidc: "refused:malformed-token", token: null };
+  return { oidc: "exchanged", token: body.token };
+}
+
+async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImpl) {
+  try {
+    const response = await fetchImpl(trustUrl(registryBase, pkg.name), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      redirect: "manual",
+    });
+    if (response.status !== 200) return `refused:${response.status}`;
+    const body = await response.json();
+    return classifyDirectPublishPermission(body);
+  } catch (error) {
+    return `refused:${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 export function printPublishCensus(rows, log = console.log) {
   log("npm publish preflight census");
-  log("package\tversion\tregistry\toidc");
-  for (const row of rows) log(`${row.name}\t${row.version}\t${row.registry}\t${row.oidc}`);
+  log("package\tversion\tregistry\toidc\tdirect");
+  for (const row of rows) log(`${row.name}\t${row.version}\t${row.registry}\t${row.oidc}\t${row.direct}`);
+}
+
+function blankCensusRow(pkg) {
+  return { ...pkg, registry: "not-run", oidc: "not-run", direct: "not-run" };
 }
 
 export async function preflightNpmPublish({
@@ -157,17 +243,20 @@ export async function preflightNpmPublish({
   } catch (error) {
     const manifests = new Map(workspacePackages.map((pkg) => [pkg.name, pkg]));
     const names = [...new Set([...fixedPackages, ...workspacePackages.map((pkg) => pkg.name)])].sort();
-    printPublishCensus(names.map((name) => ({
+    printPublishCensus(names.map((name) => blankCensusRow({
       name,
       version: manifests.get(name)?.version ?? "<missing>",
-      registry: "not-run",
-      oidc: "not-run",
     })), log);
     throw error;
   }
   const rows = [];
   for (const pkg of packages) {
-    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: "not-run" });
+    rows.push({
+      ...pkg,
+      registry: await readExactVersion(pkg, registryBase, fetchImpl),
+      oidc: "not-run",
+      direct: "not-run",
+    });
   }
 
   const unknown = rows.filter((row) => row.registry.startsWith("unknown:"));
@@ -187,23 +276,51 @@ export async function preflightNpmPublish({
   const hasOidcUrl = Boolean(env.ACTIONS_ID_TOKEN_REQUEST_URL);
   const hasOidcToken = Boolean(env.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
   if (hasOidcUrl !== hasOidcToken) {
-    for (const row of rows) row.oidc = "refused:incomplete GitHub OIDC requester";
+    for (const row of rows) {
+      row.oidc = "refused:incomplete GitHub OIDC requester";
+      row.direct = "not-run";
+    }
   } else if (hasOidcUrl) {
     for (const row of rows) {
       try {
-        row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
+        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
+        row.oidc = exchanged.oidc;
+        if (exchanged.oidc === "exchanged" && exchanged.token) {
+          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl);
+        } else {
+          row.direct = "not-run";
+        }
       } catch (error) {
         row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;
+        row.direct = "not-run";
       }
     }
   } else if (env.NPM_TOKEN || env.NODE_AUTH_TOKEN) {
-    for (const row of rows) row.oidc = "not-available:classic-token";
+    for (const row of rows) {
+      row.oidc = "not-available:classic-token";
+      row.direct = "not-available:classic-token";
+    }
   } else {
-    for (const row of rows) row.oidc = "refused:no publish credential path";
+    for (const row of rows) {
+      row.oidc = "refused:no publish credential path";
+      row.direct = "not-run";
+    }
   }
   printPublishCensus(rows, log);
-  const refused = rows.filter((row) => row.oidc.startsWith("refused:"));
-  if (refused.length) throw new Error(`npm OIDC exchange refused ${refused.length}/${rows.length} packages`);
+  const refusedOidc = rows.filter((row) => row.oidc.startsWith("refused:"));
+  if (refusedOidc.length) throw new Error(`npm OIDC exchange refused ${refusedOidc.length}/${rows.length} packages`);
+  const stageOnly = rows.filter((row) => row.direct === "stage-only");
+  if (stageOnly.length) {
+    throw new Error(`publish preflight refused: ${stageOnly.length}/${rows.length} packages allow only staged publish`);
+  }
+  const refusedDirect = rows.filter((row) => row.direct.startsWith("refused:"));
+  if (refusedDirect.length) {
+    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);
+  }
+  const unproven = rows.filter((row) => row.direct !== "createPackage" && row.direct !== "not-available:classic-token");
+  if (unproven.length) {
+    throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);
+  }
   return { state: "ready", rows };
 }
 
