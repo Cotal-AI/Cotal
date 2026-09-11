@@ -5,13 +5,13 @@
  * With no paths, configs are discovered from this checkout's index. Every config is examined even
  * when an earlier one is refused or cannot be parsed. Live-shaped commands (live-named smoke
  * tokens or suite sources that declare real infrastructure) use the same fail-closed predicate as
- * mutation-reproof and are not executed unless --execute-live is passed. A discovered (no-path)
- * run enumerates and validates but does not execute unless --execute-discovered is passed. The
- * final summary names the checkout HEAD and exits non-zero if any config was not graded.
+ * mutation-reproof and are refused before any child is spawned. A discovered (no-path) run
+ * enumerates and validates but does not execute unless --execute-discovered is passed. The final
+ * summary names the checkout HEAD when git can resolve it, and exits non-zero if any config was
+ * not graded. Live-shaped refusals and discovered fences are named skips, not grading failures.
  *
- *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still fenced)
- *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still fenced
- *   node scripts/mutation-coverage.mjs --execute-live <config.json> # include live-shaped commands
+ *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still refused)
+ *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still refused
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
@@ -20,12 +20,10 @@ import ts from "typescript";
 import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
-const FLAG_EXECUTE_LIVE = "--execute-live";
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
 const rawArgs = process.argv.slice(2);
-const executeLive = rawArgs.includes(FLAG_EXECUTE_LIVE);
 const executeDiscovered = rawArgs.includes(FLAG_EXECUTE_DISCOVERED);
-const args = rawArgs.filter((arg) => arg !== FLAG_EXECUTE_LIVE && arg !== FLAG_EXECUTE_DISCOVERED);
+const args = rawArgs.filter((arg) => arg !== FLAG_EXECUTE_DISCOVERED);
 const discovered = args.length === 0;
 const configs = discovered
   ? execSync("git ls-files '*/mutations/*.json' '*.mutations.json'", { encoding: "utf8" }).split("\n").filter(Boolean)
@@ -36,14 +34,20 @@ if (configs.length === 0) {
   process.exit(1);
 }
 
-const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+let head = "unknown";
+try {
+  head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+} catch {
+  head = "unknown";
+}
 let cells = 0, named = 0, mutations = 0, unkillable = 0;
-let examined = 0, graded = 0, refused = 0, unparsed = 0, failed = 0;
-let fencedLive = 0, fencedDiscovered = 0;
+let examined = 0, graded = 0, unparsed = 0, failed = 0;
+let fencedDiscovered = 0;
 const rows = [];
 const probes = [];
 const tools = [];
 const refusals = [];
+const refused = [];
 const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
@@ -109,7 +113,13 @@ const relativeImports = (path, source) => {
 };
 
 const manifestByName = new Map();
-for (const path of execFileSync("git", ["ls-files", "*package.json"], { encoding: "utf8" }).split("\n").filter(Boolean)) {
+let packageManifests = [];
+try {
+  packageManifests = execFileSync("git", ["ls-files", "*package.json"], { encoding: "utf8" }).split("\n").filter(Boolean);
+} catch {
+  packageManifests = [];
+}
+for (const path of packageManifests) {
   try {
     const manifest = JSON.parse(readFileSync(path, "utf8"));
     if (typeof manifest.name === "string") manifestByName.set(manifest.name, { path, manifest });
@@ -311,7 +321,6 @@ for (const path of configs) {
     cfg = JSON.parse(readFileSync(path, "utf8"));
     ({ gradesTool, suites } = validate(path, cfg));
   } catch (error) {
-    refused++;
     const reason = error instanceof Error ? error.message : String(error);
     refusals.push([path, reason]);
     console.error(`REFUSED ${path}: ${reason}`);
@@ -324,9 +333,8 @@ for (const path of configs) {
     continue;
   }
   const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });
-  if (!executeLive && liveReason) {
-    fencedLive++;
-    console.error(`FENCED ${path}: command names a live suite; pass --execute-live to run it`);
+  if (liveReason) {
+    refused.push([path, cfg.command, liveReason]);
     continue;
   }
 
@@ -412,9 +420,16 @@ if (refusals.length) {
   console.error("\nRefused configs:");
   for (const [path, reason] of refusals) console.error(`  ${path}: ${reason}`);
 }
+if (refused.length) {
+  console.log("\nLive-shaped configs — refused before execution, counted and named so the denominator stays honest.");
+  for (const [path, command, reason] of refused) {
+    console.log(`  ${path}  REFUSED \`${command}\` (${reason})`);
+  }
+  console.log(`${refused.length} live-shaped config(s) refused.`);
+}
 console.log(
   `MUTATION COVERAGE SUMMARY head=${head} enumerated=${configs.length} examined=${examined} graded=${graded} ` +
-  `refused-with-reason=${refused} unparsed=${unparsed} command-failed=${failed} ` +
-  `fenced-live=${fencedLive} fenced-discovered=${fencedDiscovered}`,
+  `refused-with-reason=${refusals.length} unparsed=${unparsed} command-failed=${failed} ` +
+  `fenced-live=${refused.length} fenced-discovered=${fencedDiscovered}`,
 );
-if (refused || unparsed || failed || examined !== configs.length || graded !== configs.length) process.exitCode = 1;
+if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;

@@ -92,8 +92,8 @@
     {
       "name": "incomplete aggregate grading exits successfully",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "if (refused || unparsed || failed || examined !== configs.length || graded !== configs.length) process.exitCode = 1;",
-      "replace": "void refused; void unparsed; void failed; void examined; void graded;",
+      "find": "if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;",
+      "replace": "void refusals; void unparsed; void failed; void examined; void graded; void refused; void fencedDiscovered;",
       "expectRed": "a by-name same-package import without ../src is refused",
       "cell": "a by-name same-package import without ../src is refused"
     },
@@ -162,10 +162,10 @@
       "cell": "the pnpm --filter=value build form is accepted"
     },
     {
-      "name": "a live-suite command is executed without --execute-live",
+      "name": "coverage executes a live-shaped command instead of refusing it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });\n  if (!executeLive && liveReason) {\n    fencedLive++;\n    console.error(`FENCED ${path}: command names a live suite; pass --execute-live to run it`);\n    continue;\n  }",
-      "replace": "  void executeLive; void liveShapedCommandReason;",
+      "find": "  if (liveReason) {\n    refused.push([path, cfg.command, liveReason]);\n    continue;\n  }\n",
+      "replace": "",
       "expectRed": "a glob-shaped argv still fences a live-suite command",
       "cell": "a glob-shaped argv still fences a live-suite command"
     },
@@ -184,14 +184,6 @@
       "replace": "  void discovered; void executeDiscovered;",
       "expectRed": "a discovered run does not execute any config",
       "cell": "a discovered run does not execute any config"
-    },
-    {
-      "name": "--execute-live is ignored so a live command cannot be opted in",
-      "file": "scripts/mutation-coverage.mjs",
-      "find": "const executeLive = rawArgs.includes(FLAG_EXECUTE_LIVE);",
-      "replace": "const executeLive = false;",
-      "expectRed": "an explicit --execute-live flag still runs a live-suite command",
-      "cell": "an explicit --execute-live flag still runs a live-suite command"
     }
   ]
 }

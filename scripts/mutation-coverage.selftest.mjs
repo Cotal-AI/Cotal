@@ -419,9 +419,11 @@ try {
   );
   check(
     "a glob-shaped argv still fences a live-suite command",
-    !existsSync(sentinelPath("suffix"))
+    result.status === 0
+      && !existsSync(sentinelPath("suffix"))
       && ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"].every((name) => existsSync(sentinelPath(name)))
-      && /FENCED bin\/smoke\/mutations\/suffix\.json/.test(result.stderr)
+      && /bin\/smoke\/mutations\/suffix\.json\s+REFUSED `.*smoke:user-spawn:live`/.test(report(result))
+      && /1 live-shaped config\(s\) refused/.test(result.stdout)
       && /fenced-live=1/.test(result.stdout),
     report(result),
   );
@@ -430,8 +432,10 @@ try {
   result = runArgs("bin/smoke/mutations/ops.json");
   check(
     "an always-live suite name is fenced without a :live suffix",
-    !existsSync(sentinelPath("ops"))
-      && /FENCED bin\/smoke\/mutations\/ops\.json/.test(result.stderr)
+    result.status === 0
+      && !existsSync(sentinelPath("ops"))
+      && /bin\/smoke\/mutations\/ops\.json\s+REFUSED `/.test(report(result))
+      && /1 live-shaped config\(s\) refused/.test(result.stdout)
       && /fenced-live=1/.test(result.stdout),
     report(result),
   );
@@ -442,14 +446,6 @@ try {
     "a discovered run does not execute any config",
     fenceNames.every((name) => !existsSync(sentinelPath(name)))
       && /fenced-discovered=[1-9]\d*/.test(result.stdout),
-    report(result),
-  );
-
-  clearSentinels(...fenceNames);
-  result = runArgs("--execute-live", "bin/smoke/mutations/suffix.json");
-  check(
-    "an explicit --execute-live flag still runs a live-suite command",
-    existsSync(sentinelPath("suffix")) && /graded=1/.test(result.stdout) && /fenced-live=0/.test(result.stdout),
     report(result),
   );
 
