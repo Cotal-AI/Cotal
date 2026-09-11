@@ -19,9 +19,9 @@
     "",
     "THE PAIRING IS THE POINT, not the count. Cell F builds its inputs by hand, so on its own it",
     "proves only that the suite depends on those three functions. Mutations 1, 2, 4, 5, 6, 7 and 8 are",
-    "aimed at END-TO-END cells, which is what shows a real entry point reaches them: mutation 4 changes what",
-    "`attachRefusal` answers for `not-found` and the despawn cell goes red, having travelled the",
-    "whole path from a real `cotal stop` through the manager's reply code into the loop's verdict.",
+    "aimed at END-TO-END cells, which is what shows a real entry point reaches them: the despawn mutation changes what",
+    "`attachRefusal` answers for the manager's durable static-slot observation and the despawn cell goes red, having travelled the",
+    "whole path from a real `cotal stop` through the manager's structured reply detail into the loop's verdict.",
     "Mutations 3 and 9 are the ones aimed at hand-built cells, and each says why in its own note:",
     "nothing this harness can do makes the manager answer `permission-denied` (a static single-owner",
     "mesh mints an admin instrument for every attach), and nothing here can produce a hand-back that",
@@ -33,7 +33,7 @@
     "is a SURVIVOR, and the first attempt to show that was thrown out: run alone it came back",
     "UNGRADABLE, because a suite passing with a mutation applied proves nothing until something",
     "shows the suite reaches that file at runtime at all. Applies and mutates are different",
-    "properties. Re-run PAIRED with a positive control in the same file (`not-found` -> `transient`,",
+    "properties. Re-run PAIRED with a positive control in the same file (the durable static-slot detail -> `transient`,",
     "which reddens cell E end to end), the control was KILLED and the branch deletion SURVIVED, so",
     "the survivor is a real coverage gap rather than an unexecuted line. What IS proved is the",
     "classification (mutation 3) and the loop's handling of the two classifications this harness CAN",
@@ -112,13 +112,13 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "a seat the manager no longer knows is classified as worth retrying",
+      "name": "a durable static slot whose live seat is gone is classified as worth retrying",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  if (code === \"not-found\") return \"gone\";",
-      "replace": "  if (code === \"not-found\") return \"transient\";",
+      "find": "  if (code === \"failed-precondition\" && details?.some((detail) => detail.kind === STATIC_SLOT_OBSERVATION_DETAIL)) return \"gone\";",
+      "replace": "  if (code === \"failed-precondition\" && details?.some((detail) => detail.kind === STATIC_SLOT_OBSERVATION_DETAIL)) return \"transient\";",
       "expectRed": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
       "cell": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
-      "note": "THE REACHABILITY PROOF for the classifier. This is one line in a pure function, and the cell it reddens is a full end-to-end run: a real `cotal stop` despawns the seat while the client is reconnecting, the manager answers `not-found` on the wire, the CLI's inspect resolution carries that code, and the loop turns it into a clean exit. A kill here is the evidence that cell F is grading a function the product actually calls, rather than one the suite happens to import.",
+      "note": "THE REACHABILITY PROOF for the classifier. This is one line in a pure function, and the cell it reddens is a full end-to-end run: a real `cotal stop` despawns the seat while the client is reconnecting, the manager reports the durable nonterminal static slot as `failed-precondition` with its namespaced observation detail, and the loop turns that structured refusal into a clean exit. A kill here is the evidence that the real binary reaches the detail-aware classifier rather than only the suite's direct imports. Cell F separately pins the plain `not-found` classification.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -168,7 +168,7 @@
       "replace": "  if (pending < 1) return undefined;",
       "expectRed": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
       "cell": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
-      "note": "The `gone` verdict only exists because the manager answered `not-found`, and it only answers that once the seat has been freed; freeing a seat ends every session bound to it. So the sessions this line would name are already collected and naming them invents work. Aimed at the hand-built cell because the harness cannot produce the state that reaches it end to end: it needs a hand-back that FAILED on the same attempt whose control ask SUCCEEDED, over the same broker. Its sibling is mutation 8, which drives the same function's printing branch through the real binary.",
+      "note": "The `gone` verdict exists only when the manager proves the live seat is absent, either by `not-found` or by the durable static-slot observation detail after the process is gone; freeing a seat ends every session bound to it. So the sessions this line would name are already collected and naming them invents work. Aimed at the hand-built cell because the harness cannot produce the state that reaches it end to end: it needs a hand-back that FAILED on the same attempt whose control ask SUCCEEDED, over the same broker. Its sibling is mutation 8, which drives the same function's printing branch through the real binary.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {

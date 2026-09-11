@@ -512,11 +512,12 @@ export function reconnectNotice(est: { fromManager?: true; message: string }, al
 /**
  * The line an exit owes an operator about sessions this attach could not hand back, or nothing.
  *
- * Suppressed on `gone`, and that is not tidiness. That verdict exists because the manager answered
- * `not-found`, which it only answers once the seat has been freed, and freeing a seat ends every
- * session bound to it (`freeSlot` into `endForTarget`, on despawn, self-stop, reap and natural exit
- * alike). The sessions this would name have already been collected, so naming them would be
- * inventing work for someone who is about to close their terminal.
+ * Suppressed on `gone`, and that is not tidiness. That verdict exists only when the manager proves
+ * the live seat is absent: either `not-found`, or the namespaced durable static-slot observation
+ * after its process is gone. Freeing a seat ends every session bound to it (`freeSlot` into
+ * `endForTarget`, on despawn, self-stop, reap and natural exit alike). The sessions this would name
+ * have already been collected, so naming them would be inventing work for someone who is about to
+ * close their terminal.
  */
 export function heldSessionNotice(pending: number, verdict: AttachVerdict["kind"]): string | undefined {
   if (pending < 1 || verdict === "gone") return undefined;
