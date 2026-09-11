@@ -22,7 +22,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { defaultStartToken } from "@cotal-ai/workspace";
+import {
+  canonicalLocalProcessPath,
+  defaultStartToken,
+  MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_PIDFILE,
+  MANAGER_SPARE_CAPABILITY,
+} from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
@@ -404,17 +410,20 @@ registry.register(
   const alive = (pid: number): boolean => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   };
+  const managerContext = { root: sandbox, space: "main" };
+  const managerPidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, managerContext);
+  const managerDeliveryAwarePath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, managerContext);
+  const managerSpareCapabilityPath = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, managerContext);
   const recordManager = (pid: number): void => {
-    const pidPath = join(sandbox, ".cotal", "manager.pid");
     const token = defaultStartToken(pid);
     if (!token) throw new Error(`fixture could not read the process start token for manager pid ${pid}`);
-    writeFileSync(pidPath, String(pid));
-    writeFileSync(`${pidPath}.identity`, `${pid} ${token}`);
-    writeFileSync(join(sandbox, ".cotal", "manager.spare-capability"), JSON.stringify({ version: 1, process: { pid, token } }));
+    writeFileSync(managerPidPath, String(pid));
+    writeFileSync(`${managerPidPath}.identity`, `${pid} ${token}`);
+    writeFileSync(managerSpareCapabilityPath, JSON.stringify({ version: 1, process: { pid, token } }));
   };
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), "");
+  writeFileSync(managerPidPath, "");
   const invalidPid = cotal(["down", "manager"]);
-  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(join(sandbox, ".cotal", "manager.pid")), invalidPid.stdout + invalidPid.stderr);
+  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(managerPidPath), invalidPid.stdout + invalidPid.stderr);
 
   const reservationOwner = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), `removing:${reservationOwner}`);
@@ -429,33 +438,33 @@ registry.register(
   const natsPid = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
   recordManager(managerPid);
-  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
+  writeFileSync(managerDeliveryAwarePath, String(managerPid));
   writeFileSync(join(sandbox, ".cotal", "nats.pid"), String(natsPid));
 
   const dry = cotal(["down", "manager", "--dry-run"]);
-  ok("selective down dry-run is non-destructive", dry.status === 0 && alive(managerPid) && existsSync(join(sandbox, ".cotal", "manager.pid")) && /nothing was changed/i.test(dry.stdout), dry.stdout + dry.stderr);
+  ok("selective down dry-run is non-destructive", dry.status === 0 && alive(managerPid) && existsSync(managerPidPath) && /nothing was changed/i.test(dry.stdout), dry.stdout + dry.stderr);
   const brokerOnly = cotal(["down", "nats"]);
   ok("down nats refuses to orphan live dependants", brokerOnly.status === 1 && /cannot stop nats/.test(brokerOnly.stderr) && alive(natsPid) && alive(managerPid), brokerOnly.stdout + brokerOnly.stderr);
   const typo = cotal(["down", "managre"]);
   ok("unknown down component names list known components", typo.status === 1 && /unknown component/.test(typo.stderr) && /manager/.test(typo.stderr), typo.stderr);
 
-  writeFileSync(join(sandbox, ".cotal", "manager.pid.stopping"), "0");
+  writeFileSync(`${managerPidPath}.stopping`, "0");
   const staleStopping = cotal(["down", "manager"]);
-  ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(join(sandbox, ".cotal", "manager.pid.stopping")), staleStopping.stdout + staleStopping.stderr);
+  ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(`${managerPidPath}.stopping`), staleStopping.stdout + staleStopping.stderr);
 
   managerPid = daemon();
   recordManager(managerPid);
-  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
+  writeFileSync(managerDeliveryAwarePath, String(managerPid));
 
   const one = cotal(["down", "manager"]);
   ok("down manager stops only the manager", one.status === 0 && !alive(managerPid) && alive(natsPid) && alive(fixturePid), one.stdout + one.stderr);
-  ok("selective down removes only manager-owned files", !existsSync(join(sandbox, ".cotal", "manager.pid")) && !existsSync(join(sandbox, ".cotal", "manager.delivery-aware")) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
+  ok("selective down removes only manager-owned files", !existsSync(managerPidPath) && !existsSync(managerDeliveryAwarePath) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
 
   const slowReady = join(sandbox, "slow-manager-ready");
   const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 5000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
   for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
   recordManager(slowManagerPid);
-  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(slowManagerPid));
+  writeFileSync(managerDeliveryAwarePath, String(slowManagerPid));
   const concurrentOptions = { env, cwd: sandbox };
   assertSmokeSandboxDown(sandboxAnchor, ["down", "manager"], concurrentOptions);
   const concurrentDown = spawn(realNode, [tsxCli, binCotal, "down", "manager"], concurrentOptions);
@@ -464,10 +473,10 @@ registry.register(
   concurrentDown.stdout?.on("data", (data: Buffer) => (concurrentOut += data.toString()));
   concurrentDown.stderr?.on("data", (data: Buffer) => (concurrentErr += data.toString()));
   const concurrentExit = new Promise<number | null>((resolve) => concurrentDown.once("exit", resolve));
-  const stopping = join(sandbox, ".cotal", "manager.pid.stopping");
+  const stopping = `${managerPidPath}.stopping`;
   for (let i = 0; i < 100 && !existsSync(stopping); i++) await sleep(20);
   const duplicateDown = cotal(["down", "manager"]);
-  ok("concurrent down preserves live-process artifacts", duplicateDown.status === 1 && /already being stopped/.test(duplicateDown.stderr) && existsSync(join(sandbox, ".cotal", "manager.delivery-aware")), duplicateDown.stdout + duplicateDown.stderr);
+  ok("concurrent down preserves live-process artifacts", duplicateDown.status === 1 && /already being stopped/.test(duplicateDown.stderr) && existsSync(managerDeliveryAwarePath), duplicateDown.stdout + duplicateDown.stderr);
   const race = cotal(["down", "nats"]);
   const concurrentStatus = await concurrentExit;
   ok("down nats stays blocked while a dependant is concurrently stopping", existsSync(stopping) === false && race.status === 1 && /cannot stop nats/.test(race.stderr) && concurrentStatus === 0 && alive(natsPid), race.stdout + race.stderr + concurrentOut + concurrentErr);
