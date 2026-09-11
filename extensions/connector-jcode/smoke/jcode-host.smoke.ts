@@ -1253,4 +1253,4 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
+console.log(`\nJCODE HOST SMOKE: ${pass} passed, 0 failed`);

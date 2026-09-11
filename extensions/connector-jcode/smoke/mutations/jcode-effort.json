@@ -9,6 +9,7 @@
       "find": "        await client.setReasoningEffort(sessionId, config.variant);",
       "replace": "        void sessionId;",
       "expectRed": "requested variant reaches the session as its reasoning effort",
+      "cell": "requested variant reaches the session as its reasoning effort",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
@@ -17,6 +18,7 @@
       "find": "        await client.setReasoningEffort(sessionId, config.variant);",
       "replace": "        const effortClient = client;\n        const effortSessionId = sessionId;\n        const effortVariant = config.variant;\n        setTimeout(() => void effortClient.setReasoningEffort(effortSessionId, effortVariant), 50);",
       "expectRed": "reasoning effort is set before the session's first turn",
+      "cell": "reasoning effort is set before the session's first turn",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
@@ -25,6 +27,7 @@
       "find": "    const runtime = config.model || config.variant ? await client.getRuntimeInfo(sessionId) : undefined;",
       "replace": "    const runtime = config.model ? await client.getRuntimeInfo(sessionId) : undefined;",
       "expectRed": "variant without an explicit model verifies its runtime route before applying effort",
+      "cell": "variant without an explicit model verifies its runtime route before applying effort",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
@@ -33,6 +36,7 @@
       "find": "    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;",
       "replace": "    const route = runtime?.routes?.find((candidate) => candidate.model === effectiveModel);",
       "expectRed": "effort refusal keeps only its requested tier, effective model, fixed provider code, and accepted ladder",
+      "cell": "effort refusal keeps only its requested tier, effective model, fixed provider code, and accepted ladder",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
@@ -41,6 +45,7 @@
       "find": "        throw jcodeEffortRefusal(error, config.variant, {\n          model: effectiveModel!,\n          provider: route!.provider,\n          apiMethod: route!.api_method,\n        });",
       "replace": "        void error;",
       "expectRed": "a tier the provider refuses ends the launch",
+      "cell": "a tier the provider refuses ends the launch",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
@@ -49,6 +54,7 @@
       "find": "    return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);",
       "replace": "    return new JcodeEffortRefusal(requestedTier, identity.model, identity.provider, identity.apiMethod, []);",
       "expectRed": "capability refusal is not relabelled as a tier-ladder refusal",
+      "cell": "capability refusal is not relabelled as a tier-ladder refusal",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
@@ -57,6 +63,7 @@
       "find": "      .filter((tier) => SAFE_EFFORT_TIERS.has(tier)),",
       "replace": "      .map((tier) => tier === \"jcode-refusal-canary-3c5e9d77-do-not-print\" ? tier : tier),",
       "expectRed": "downstream effort-refusal text never reaches stderr",
+      "cell": "downstream effort-refusal text never reaches stderr",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     }
   ],

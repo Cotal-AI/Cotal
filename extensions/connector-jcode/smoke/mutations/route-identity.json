@@ -29,56 +29,64 @@
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  const provider = matched?.provider ?? runtime?.provider;",
       "replace": "  const provider = runtime?.provider ?? matched?.provider;",
-      "expectRed": "names the provider actually serving THIS model"
+      "expectRed": "names the provider actually serving THIS model",
+      "cell": "names the provider actually serving THIS model"
     },
     {
       "name": "M2 go quiet when the route is unknown",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  if (!provider) return `model ${model} is served by an unreported provider (the Harness API named none)`;",
       "replace": "  if (!provider) return \"\";",
-      "expectRed": "no routes and no provider says so explicitly"
+      "expectRed": "no routes and no provider says so explicitly",
+      "cell": "no routes and no provider says so explicitly"
     },
     {
       "name": "M3 drop the api method, losing the wire shape",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  const via = matched?.api_method ? ` via ${matched.api_method}` : \"\";",
       "replace": "  const via = \"\";",
-      "expectRed": "names the api method, so the wire shape is on the record"
+      "expectRed": "names the api method, so the wire shape is on the record",
+      "cell": "names the api method, so the wire shape is on the record"
     },
     {
       "name": "M4 ignore a route that reports itself unavailable",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  const unavailable = matched && matched.available === false ? \" (route reports itself UNAVAILABLE)\" : \"\";",
       "replace": "  const unavailable = \"\";",
-      "expectRed": "an unavailable route is flagged"
+      "expectRed": "an unavailable route is flagged",
+      "cell": "an unavailable route is flagged"
     },
     {
       "name": "M5 accept a provider-prefixed id and forward it into a model_not_found",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
       "replace": "  return { ok: true };\n  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
-      "expectRed": "a provider-prefixed id is refused"
+      "expectRed": "a provider-prefixed id is refused",
+      "cell": "a provider-prefixed id is refused"
     },
     {
       "name": "M6 treat a trailing slash as a prefix (refusing a legitimate id)",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
       "replace": "  if (slash <= 0) return { ok: true };",
-      "expectRed": "a trailing slash is not a prefix"
+      "expectRed": "a trailing slash is not a prefix",
+      "cell": "a trailing slash is not a prefix"
     },
     {
       "name": "M7 choose the first duplicate model route instead of the active provider",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);",
       "replace": "  return matches[0];",
-      "expectRed": "the active provider wins when duplicate routes share a model id"
+      "expectRed": "the active provider wins when duplicate routes share a model id",
+      "cell": "the active provider wins when duplicate routes share a model id"
     },
     {
       "name": "M8 guess among ambiguous duplicate model routes without an active provider",
       "file": "extensions/connector-jcode/src/route-identity.ts",
       "find": "  return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);",
       "replace": "  return matches.find((route) => route.provider === runtime?.provider) ?? matches[0];",
-      "expectRed": "ambiguous duplicate routes stay unverified when active provider is absent"
+      "expectRed": "ambiguous duplicate routes stay unverified when active provider is absent",
+      "cell": "ambiguous duplicate routes stay unverified when active provider is absent"
     }
   ]
 }

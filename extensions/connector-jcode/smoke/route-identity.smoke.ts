@@ -104,7 +104,7 @@ console.log("\n6. duplicate model ids are resolved only by active provider ident
   check("ambiguous duplicate routes stay unverified when active provider is absent", activeModelRoute({ routes: duplicate.routes }, "same") === undefined);
 }
 
-console.log(`\nroute identity: ${pass} cells OK, ${failures.length} failed`);
+console.log(`\nroute identity: ${pass} passed, ${failures.length} failed`);
 if (failures.length) {
   assert.fail(`route identity: ${failures.length} cell(s) failed\n  - ${failures.join("\n  - ")}`);
 }

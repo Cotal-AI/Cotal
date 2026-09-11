@@ -12,21 +12,24 @@
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "    return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);",
       "replace": "    return new JcodeEffortRefusal(requestedTier, identity.model, identity.provider, identity.apiMethod, []);",
-      "expectRed": "the exact Harness invalid_request capability refusal is classified separately"
+      "expectRed": "the exact Harness invalid_request capability refusal is classified separately",
+      "cell": "the exact Harness invalid_request capability refusal is classified separately"
     },
     {
       "name": "Jcode capability classification accepts copied untrusted Error text",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "    error instanceof HarnessError &&",
       "replace": "    error instanceof Error &&",
-      "expectRed": "a plain Error with copied capability text stays a generic refusal"
+      "expectRed": "a plain Error with copied capability text stays a generic refusal",
+      "cell": "a plain Error with copied capability text stays a generic refusal"
     },
     {
       "name": "Jcode capability classification accepts any unsupported-reasoning invalid_request",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "    /^invalid_request: Reasoning effort is not supported by the current model\\/profile\\./.test(error.message)",
       "replace": "    /^invalid_request: Reasoning effort is not supported/.test(error.message)",
-      "expectRed": "a near-miss invalid_request message stays a generic refusal"
+      "expectRed": "a near-miss invalid_request message stays a generic refusal",
+      "cell": "a near-miss invalid_request message stays a generic refusal"
     }
   ]
 }

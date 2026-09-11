@@ -1,12 +1,16 @@
-import assert from "node:assert/strict";
 import { HarnessError } from "@1jehuang/jcode-sdk";
 import { JcodeEffortRefusal, JcodeEffortUnsupported, jcodeEffortRefusal } from "../src/startup-diagnostics.js";
 
 let pass = 0;
+let fail = 0;
 const check = (name: string, condition: boolean): void => {
-  assert.ok(condition, name);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  if (condition) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    fail++;
+    console.log(`  ✗ FAIL: ${name}`);
+  }
 };
 
 const identity = { model: "model", provider: "profile", apiMethod: "openai-compatible:profile" };
@@ -20,4 +24,5 @@ check("a plain Error with copied capability text stays a generic refusal", jcode
 check("a different Harness code with copied capability text stays a generic refusal", jcodeEffortRefusal(new HarnessError("internal", exactCapability.message.replace(/^invalid_request: /, "")), "high", identity) instanceof JcodeEffortRefusal);
 check("a near-miss invalid_request message stays a generic refusal", jcodeEffortRefusal(new HarnessError("invalid_request", "Reasoning effort is not supported by this route."), "high", identity) instanceof JcodeEffortRefusal);
 
-console.log(`JCODE EFFORT CONTRACT PASSED (${pass} checks)`);
+console.log(`JCODE EFFORT CONTRACT: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
