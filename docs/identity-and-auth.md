@@ -281,7 +281,13 @@ the serve grant from the durable registered surface, and returns the supervisor,
 executor, serve, goal-writer, and session-ledger credentials as one complete family. The manager
 accepts only a closed response bound to that request's id, lifecycle, identity family, owner, and
 proof. It schedules from the earliest member's normal 75% point, installs the proof and all five
-credentials atomically, and reconnects every standing holder onto them. Each request is replay-safe and idempotent at its lifecycle/instance operation
+credentials atomically, and reconnects every standing holder onto them. The host records a durable
+request-scoped cleanup intent before finalizing the renewal's serve, goal-writer, or session-ledger
+row, including whether that request won the atomic row create or reused an identical prior issuance.
+If issuance cannot complete, it retains the ledger history and marks only rows that request created
+revoked. A revoke failure or interrupted ownership checkpoint stays as cleanup debt and blocks
+another renewal until the same rows reconcile. Each request is replay-safe and idempotent at its
+lifecycle/instance operation
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester

@@ -104,6 +104,9 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       // issuance family is reachable through this server-side connection.
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.epcred.manager.>`,
+      // One durable cleanup intent per manager instance. It records only request/role/state plus the
+      // three endpoint-family ledger rows whose finalization may need compensating revocation.
+      `$KV.${epAuthBucket(space)}.renewclean.manager.>`,
     ],
     subscribe: base.subscribe,
   };

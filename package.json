@@ -267,6 +267,7 @@
     "smoke:own-agent-control": "tsx implementations/manager/smoke/own-agent-control.smoke.ts",
     "smoke:views": "tsx implementations/auth/smoke/views.smoke.ts",
     "smoke:manager-service-authority": "tsx implementations/auth/smoke/manager-service-authority.smoke.ts",
+    "smoke:manager-renewal-compensation": "tsx implementations/auth/smoke/manager-renewal-compensation.smoke.ts",
     "probe:remote-manager-executor-authority": "tsx implementations/auth/smoke/remote-manager-executor-authority.probe.ts",
     "smoke:owned-child-cleanup": "tsx implementations/auth/smoke/owned-child-cleanup.smoke.ts",
     "smoke:manager-goal-index": "tsx implementations/auth/smoke/manager-goal-index.smoke.ts",

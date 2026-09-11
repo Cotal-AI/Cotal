@@ -84,6 +84,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
+import { ManagerRenewalCompensation, type RenewalCleanupFault } from "./renewal-compensation.js";
 import {
   AGENT_BEARER_TTL_SEC,
   findInteractiveActor,
@@ -218,6 +219,8 @@ export async function openAuthAuthorityPlane(opts: {
    *  Production compositions never set this: the real oracle is the delivery daemon's
    *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminPlaneOracle}). */
   probePlaneOracle?: PlaneLivenessOracle;
+  /** SMOKE-ONLY renewal compensation fault injector. Production compositions never set this. */
+  probeRenewalFault?: RenewalCleanupFault;
   /** SMOKE-ONLY scanner-death injector: receives kill switches for the two plane-owned scanner
    *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
    *  no natural failure to inject). Production compositions never set this. */
@@ -410,6 +413,19 @@ export async function openAuthAuthorityPlane(opts: {
     throw e;
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
+  const renewalTails = new Map<string, Promise<void>>();
+  const serializeRenewal = async <T>(instanceId: string, run: () => Promise<T>): Promise<T> => {
+    const previous = renewalTails.get(instanceId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
+    renewalTails.set(instanceId, mine);
+    await previous;
+    try { return await run(); }
+    finally {
+      release();
+      if (renewalTails.get(instanceId) === mine) renewalTails.delete(instanceId);
+    }
+  };
   // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
   // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
   // window, not the operator — the agent cannot "restart the auth service", so it gets a retryable
@@ -459,23 +475,26 @@ export async function openAuthAuthorityPlane(opts: {
     },
     issueManagerServiceAuthority: async ({ owner, scope, request }) => {
       refuseIfFenced();
-      return issueRemoteManagerAuthority({
-        owner,
-        scope,
-        request,
-        issue: async ({ actors, request: r }) => {
-          const credential = async (
-            key: keyof RemoteManagerAuthorityRequest["identities"],
-            profile: Parameters<typeof mintPublicUserJwt>[2],
-            actor: string,
-            opts: Parameters<typeof mintPublicUserJwt>[3],
-          ) => mintPublicUserJwt(
-            { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
-            r.identities[key].id,
-            profile,
-            { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
-          );
-          const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
+      const run = async () => {
+        let renewal: ManagerRenewalCompensation | undefined;
+        try {
+          const material = await issueRemoteManagerAuthority({
+            owner,
+            scope,
+            request,
+            issue: async ({ actors, request: r }) => {
+              const credential = async (
+                key: keyof RemoteManagerAuthorityRequest["identities"],
+                profile: Parameters<typeof mintPublicUserJwt>[2],
+                actor: string,
+                opts: Parameters<typeof mintPublicUserJwt>[3],
+              ) => mintPublicUserJwt(
+                { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+                r.identities[key].id,
+                profile,
+                { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
+              );
+              const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
           if (r.operation === "prepare") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
@@ -536,11 +555,11 @@ export async function openAuthAuthorityPlane(opts: {
             );
             return { credentials };
           }
-          if (r.operation === "activate" || r.operation === "renew") {
-            const kvm = new Kvm(remoteIssuer.nc);
-            const authKv = await kvm.open(epAuthBucket(space));
-            const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId: r.instanceId });
-            const observed = await gate.observe();
+            if (r.operation === "activate" || r.operation === "renew") {
+              const kvm = new Kvm(remoteIssuer.nc);
+              const authKv = await kvm.open(epAuthBucket(space));
+              const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId: r.instanceId });
+              const observed = await gate.observe();
             if (!observed) throw new EpEnvelopeError("failed-precondition", `manager-service ${r.operation} found no issuance gate`);
             if (r.operation === "activate") {
               const expectedProof = remoteManagerRegistrationProof(owner, r);
@@ -548,9 +567,11 @@ export async function openAuthAuthorityPlane(opts: {
                 throw new EpEnvelopeError("permission-denied", "manager-service registration proof does not match this owner/lifecycle/artifact set");
             } else {
               const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
-              if (r.registrationProof !== expectedProof)
-                throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registered lifecycle");
-              credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
+                if (r.registrationProof !== expectedProof)
+                  throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registered lifecycle");
+                renewal = new ManagerRenewalCompensation(authKv, gate, r.instanceId, r.requestId, opts.probeRenewalFault);
+                await renewal.begin();
+                credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
                 remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
                 expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
               });
@@ -591,12 +612,13 @@ export async function openAuthAuthorityPlane(opts: {
                 lifecycleUid: r.managerLifecycleUid,
                 expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
                 endpointServe: serveGrant,
-                serveIssuance: gate,
+                serveIssuance: renewal ? renewal.wrap("serve") : gate,
               },
             );
+            await renewal?.checkpoint("after-serve-finalize");
             const sibling = async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
               const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: STANDING_RENEWABLE_TTL_SEC } : { expiresInSeconds: STANDING_RENEWABLE_TTL_SEC });
-              await commitSiblingIssuance(gate, observed, {
+              await commitSiblingIssuance(renewal ? renewal.wrap(key) : gate, observed, {
                 credentialId: rawDigest(issued.jwt).replace("sha256:", "sha256-"),
                 credentialKey: r.identities[key].id,
                 holderPrincipal: `${owner}.${actor}`,
@@ -613,15 +635,33 @@ export async function openAuthAuthorityPlane(opts: {
               return issued;
             };
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
+            await renewal?.checkpoint("after-goal-finalize");
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
-            return {
-              credentials,
-              nextRegistrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed),
-            };
+            await renewal?.checkpoint("after-session-finalize");
+              return {
+                credentials,
+                nextRegistrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed),
+              };
+            }
+            return { credentials };
+          },
+        });
+          if (renewal) {
+            await renewal.beforeResponse();
+            await renewal.complete();
           }
-          return { credentials };
-        },
-      });
+          return material;
+        } catch (error) {
+          if (renewal) return renewal.compensate(error);
+          throw error;
+        }
+      };
+      // Activation and renewal issue the same deterministic endpoint-family JWTs and rows. Keep
+      // their atomic stage/commit sequences ordered per instance so a creator cannot lose its gate
+      // CAS after a later byte-identical reuser has already released the shared credential.
+      return request.operation === "activate" || request.operation === "renew"
+        ? serializeRenewal(request.instanceId, run)
+        : run();
     },
     validateRetainedAgent: async ({ owner, scope, request }) => {
       refuseIfFenced();

@@ -1668,7 +1668,8 @@ export interface EpIssuanceGate {
    *  CREATE-ONLY / idempotent-if-identical: staging a `credentialId` that is already present must
    *  succeed only when the row is byte-identical (a retry of the SAME issuance), and CONFLICT when
    *  it differs (a different holder/lineage must never overwrite the row revocation/audit relies
-   *  on). Because `credentialId` is a per-JWT digest, a re-mint is a new id, never an overwrite. */
+   *  on). A byte-identical retry or replay can reuse the same digest and row; a distinct JWT gets a
+   *  new id and never overwrites prior audit history. */
   stage: (row: EpServeLedgerRow) => Promise<void> | void;
   /** Revision-pinned CAS: keep the gate `open`, unchanged, at `expectedRevision`. TRUE iff this
    *  mint won the single-key serialization; FALSE on any change (a freeze/retire, or a

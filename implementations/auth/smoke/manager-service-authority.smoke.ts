@@ -219,6 +219,7 @@ await cell("host issuer alone owns the manager endpoint gate and credential writ
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id).publish;
   assert.equal(grants.includes("$KV.cotal_auth_demo.epgate.manager.>"), true);
   assert.equal(grants.includes("$KV.cotal_auth_demo.epcred.manager.>"), true);
+  assert.equal(grants.includes("$KV.cotal_auth_demo.renewclean.manager.>"), true);
   assert.equal(grants.some((row) => row.includes("epgate.") && !row.includes("epgate.manager.")), false);
   assert.equal(grants.some((row) => row.includes("epcred.") && !row.includes("epcred.manager.")), false);
   const participant = permissionsFor("remote-manager", "demo", {
