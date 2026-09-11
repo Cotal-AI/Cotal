@@ -47,27 +47,31 @@ try {
   publishManagerSpareCapability(context, true, tokens);
   assertManagerCanSpare(context, tokens, attempt.target as { pid: number; token: string });
   check("matching exact stop target accepts the manager spare capability", existsSync(capabilityPath));
-  await assert.rejects(
-    Promise.resolve().then(() => assertManagerCanSpare(
+  let targetRefusal: Error | undefined;
+  try {
+    assertManagerCanSpare(
       context,
       tokens,
       { pid: process.pid + 1, token: stopperToken },
-    )),
-    /stop attempt target does not match/,
-  );
-  check("a successor target cannot reuse the predecessor's spare capability", existsSync(capabilityPath));
+    );
+  } catch (e) { targetRefusal = e as Error; }
+  assert.ok(targetRefusal, "a successor target cannot reuse the predecessor's spare capability");
+  assert.match(targetRefusal.message, /stop attempt target does not match/);
+  check("a successor target cannot reuse the predecessor's spare capability", true);
   writeFileSync(capabilityPath, JSON.stringify({
     version: 1,
     process: { pid: process.pid + 1, token: stopperToken },
   }));
-  await assert.rejects(
-    Promise.resolve().then(() => assertManagerCanSpare(
+  let capabilityRefusal: Error | undefined;
+  try {
+    assertManagerCanSpare(
       context,
       tokens,
       attempt.target as { pid: number; token: string },
-    )),
-    /malformed, stale, or belongs to a different manager process/,
-  );
+    );
+  } catch (e) { capabilityRefusal = e as Error; }
+  assert.ok(capabilityRefusal, "a successor capability record cannot authorize the predecessor target");
+  assert.match(capabilityRefusal.message, /malformed, stale, or belongs to a different manager process/);
   check("a successor capability record cannot authorize the predecessor target", true);
   publishManagerSpareCapability(context, true, tokens);
 
