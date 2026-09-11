@@ -423,11 +423,11 @@ wait-timeout: the facts were always in the manager log; they now reach the spawn
 
 Give reconciliation a **quiet manager**. Suspend systemd restart policies, watchdogs, health-check
 restart loops, and any other automation that can start or kill `cotal supervise` while boot healing or
-`cotal reconcile-gate` is running. Leave exactly one recovery attempt in control until it finishes.
+`cotal reconcile-gate` is running. Leave one recovery attempt in control until it finishes.
 Restarting the manager during the walk interrupts the current authority window. Durable progress makes
 that interruption resumable, but a quiet manager is still the fastest and safest incident procedure.
 
-### Last resort: preserve and replace the JetStream store
+### Last-resort JetStream store replacement
 
 Store replacement is not normal gate recovery, is never automatic, and is destructive to mesh history.
 Use it only after the retained store cannot be reconciled and after deciding that losing its durable
@@ -440,7 +440,7 @@ contents is acceptable.
 3. Understand the loss: replacing the store removes JetStream message and control history and durable
    consumer state. Agent session files stored outside JetStream remain, but the mesh history they
    referenced does not.
-4. Start the broker against a new empty store, then start **exactly one** manager. Wait until it reports
+4. Start the broker against a new empty store, then start one manager. Wait until it reports
    serving successfully.
 5. Repopulate the mesh only after that manager is healthy. Re-enable supervisors, watchdogs, and other
    restart automation last.
