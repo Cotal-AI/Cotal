@@ -3,19 +3,21 @@
  * Report how many executed smoke-suite cells have been observed failing under a mutation.
  *
  * With no paths, configs are discovered from this checkout's index. Every config is examined even
- * when an earlier one is refused or cannot be parsed. Commands that name a live suite are not
- * executed unless --execute-live is passed. A discovered (no-path) run enumerates and validates
- * but does not execute unless --execute-discovered is passed. The final summary names the checkout
- * HEAD and exits non-zero if any config was not graded.
+ * when an earlier one is refused or cannot be parsed. Live-shaped commands (live-named smoke
+ * tokens or suite sources that declare real infrastructure) use the same fail-closed predicate as
+ * mutation-reproof and are not executed unless --execute-live is passed. A discovered (no-path)
+ * run enumerates and validates but does not execute unless --execute-discovered is passed. The
+ * final summary names the checkout HEAD and exits non-zero if any config was not graded.
  *
  *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still fenced)
  *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still fenced
- *   node scripts/mutation-coverage.mjs --execute-live <config.json> # include live-suite commands
+ *   node scripts/mutation-coverage.mjs --execute-live <config.json> # include live-shaped commands
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
 import { dirname, extname, resolve } from "node:path";
 import ts from "typescript";
+import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const FLAG_EXECUTE_LIVE = "--execute-live";
@@ -42,16 +44,6 @@ const rows = [];
 const probes = [];
 const tools = [];
 const refusals = [];
-const LIVE_SUITE_NAMES = [
-  "smoke:manager-service-ops",
-  "smoke:manager-service-invoke",
-  "smoke:manager-spawn-action",
-  "smoke:manager-service",
-  "smoke:persona-announce",
-  "smoke:seat-input",
-];
-const commandNamesLiveSuite = (command) =>
-  /:live\b|-live\b/.test(command) || LIVE_SUITE_NAMES.some((name) => command.includes(name));
 const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
@@ -331,7 +323,8 @@ for (const path of configs) {
     console.error(`FENCED ${path}: discovered configs are not executed; pass --execute-discovered to run them`);
     continue;
   }
-  if (!executeLive && commandNamesLiveSuite(cfg.command)) {
+  const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });
+  if (!executeLive && liveReason) {
     fencedLive++;
     console.error(`FENCED ${path}: command names a live suite; pass --execute-live to run it`);
     continue;
