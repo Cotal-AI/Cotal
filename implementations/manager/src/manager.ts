@@ -63,6 +63,7 @@ import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecr
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
+  isCustodialRuntime,
   requireRuntimeAdopt,
   requireRuntimeReap,
   type AgentHandle,
@@ -708,7 +709,9 @@ export interface SpawnHooks {
    *  THROW here aborts the spawn before provisioning (the existing catch returns the failure and the
    *  finally releases the reserve, so no footprint leaks) — this is the bind-conflict refusal path. */
   onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string; agentTriple: { owner: string; actor: string; uid: string } }) => Promise<void> | void;
-  /** Fires once the child process has been launched (the "launched" progress edge). */
+  /** Fires once the child process has been launched (the "launched" progress edge). A THROW here
+   *  aborts the spawn with the seat already running and the handle held only in a local, so the
+   *  finally's orphan rollback reaps it by the reference the spawn reserved. */
   onLaunched?: () => void;
   /** Fires once the connector has supplied the exact bounded readiness window for this launch,
    * before the process starts. The action goal records that same value at acceptance. */
@@ -937,7 +940,7 @@ export class Manager {
    *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
-  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; startedAt: number; lastError?: string; standingAuthorityLive?: boolean }>();
+  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; startedAt: number; lastError?: string; standingAuthorityLive?: boolean }>();
   /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
    *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
    *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
@@ -1704,7 +1707,7 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }, context = ""): void {
+  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference }, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
@@ -3136,14 +3139,17 @@ export class Manager {
       // static retirement the detached deprovision below drives) — the alias frees only when the
       // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
       // incarnation-unique nkey (F5-bind); owner is the dev owner.
-      this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: DEV_OWNER, actor: a.id, agentId: a.id, secretPaths: a.secretPaths, startedAt: Date.now() });
+      this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: DEV_OWNER, actor: a.id, agentId: a.id, secretPaths: a.secretPaths, runtime: a.handle?.reference, startedAt: Date.now() });
     }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
     // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
+    // The departed agent's own custody reference rides the teardown: the exit that freed this slot
+    // is usually the seat ending, but a stop that could not prove the process gone leaves one the
+    // terminal must still address before it frees the alias.
     if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
-      this.trackDeprovision(a);
+      this.trackDeprovision({ ...a, runtime: a.handle?.reference });
   }
 
   /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
@@ -3158,7 +3164,7 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference }): Promise<void> {
     if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
@@ -3174,7 +3180,7 @@ export class Manager {
   }
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
-  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference }): Promise<void> {
     if (this.remoteAuthority) {
       // A hosted composition owns grant revocation and resumable footprint release. It calls this
       // prerequisite before the terminal rail. The callback must preserve this UID and its pending
@@ -3581,7 +3587,7 @@ export class Manager {
         // still-active slot before its processes exist, so a crash here never strands it.
         const custody = this.reserveCustody();
         if (custody) await this.recordSlotCustody(a, custody);
-        const handle = this.spawnCustodied(a.name, spec, a.launch.cwd, custody);
+        const handle = await this.spawnCustodied(a.name, spec, a.launch.cwd, custody);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
         if (continueSession !== undefined)
@@ -4283,7 +4289,12 @@ export class Manager {
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
     // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
     // static durable teardown (the freelance found this window leaking the managed grant + files).
-    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] } | undefined;
+    // The RESERVED custody reference rides the rollback object: a spawn that launched the seat and
+    // then threw (the activation CAS refuses a slot that is not this spawn's intent) reaches the
+    // `finally` with the handle only in a local, so without this the terminal has nothing to reap
+    // and retires over a live process. The slot row holds the same reference; this is the copy the
+    // in-process rollback can actually read.
+    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -4381,7 +4392,7 @@ export class Manager {
         }
         userLaunch = prep.launch;
         userOwner = prep.owner;
-        provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, secretPaths: prep.files };
+        provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
       } else if (this.auth) {
         // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
         // broker footprint — the F3 outer spawn intent first (slot row, phase `provisioning`),
@@ -4394,7 +4405,7 @@ export class Manager {
         // From here the DURABLE registration exists: arm the rollback BEFORE minting, so a throw
         // between activation and provisioning still drives the exact-op static terminal (the
         // finally's deprovision tolerates absent files; the broker teardown is idempotent).
-        provisioned = { id: identity.id, name, lifecycleUid };
+        provisioned = { id: identity.id, name, lifecycleUid, ...(custody ? { runtime: custody } : {}) };
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
         // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
@@ -4432,7 +4443,7 @@ export class Manager {
         credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, lifecycleUid).creds;
         await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
         await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
-        provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath } }; // footprint now exists — the finally rolls it back if the spawn throws
+        provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
@@ -4494,7 +4505,7 @@ export class Manager {
         workspaceRoot: this.workspaceRoot,
       };
       const spec = connector.buildLaunch(launchOpts);
-      const handle = this.spawnCustodied(name, spec, cwd, custody);
+      const handle = await this.spawnCustodied(name, spec, cwd, custody);
       hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
@@ -5082,7 +5093,7 @@ export class Manager {
       const resumeId = entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id;
       const custody = this.reserveCustody();
       if (custody) await this.recordSlotCustody({ name: entry.name, id: resumeId, lifecycleUid: entry.identity.lifecycleUid }, custody);
-      const handle = this.spawnCustodied(entry.name, prepared.spec, entry.launch.cwd, custody);
+      const handle = await this.spawnCustodied(entry.name, prepared.spec, entry.launch.cwd, custody);
       const managed: ManagedAgent = {
         name: entry.name,
         role: entry.role,
@@ -7082,21 +7093,38 @@ export class Manager {
    *  exist. Absent for a runtime with no durable custody (there is nothing a successor could reap
    *  by reference), which is the only case that still spawns unreserved. */
   private reserveCustody(): RuntimeReference | undefined {
-    return this.runtime.reserve?.();
+    return isCustodialRuntime(this.runtime) ? this.runtime.reserve() : undefined;
   }
 
   /** Spawn under a reserved reference and prove the runtime honoured it. A runtime that minted its
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
-  private spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): AgentHandle {
+  private async spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
     const handle = this.runtime.spawn(name, spec, cwd, reserved);
     if (reserved === undefined) return handle;
     const got = handle.reference;
     if (got?.kind === reserved.kind && got.id === reserved.id) return handle;
-    try { handle.stop({ graceful: false }); } catch { /* the throw below is the report */ }
+    // A live seat now exists under a reference no durable row names, and the rollback will reap the
+    // RESERVED one, which addresses nothing. `handle.stop` cannot close this: it is fire-and-forget
+    // over the seat socket and swallows its own errors, so it proves nothing about the process. Reap
+    // the reference the runtime ACTUALLY used — that path verifies identity and proves the exit —
+    // and carry what the proof said into the throw, so a mismatch never reports a disposal it did
+    // not make.
+    let disposal: string;
+    if (got === undefined) {
+      try { handle.stop({ graceful: false }); } catch { /* reported below */ }
+      disposal = "the handle carries no reference, so nothing could reap it by identity and only a best-effort stop was issued";
+    } else {
+      try {
+        const evidence = await requireRuntimeReap(this.runtime, got);
+        disposal = `the spawned seat was reaped (${evidence.outcome === "absent" ? "already forgotten by the runtime" : evidence.detail})`;
+      } catch (e) {
+        disposal = `the spawned seat could NOT be reaped: ${(e as Error).message}`;
+      }
+    }
     throw new Error(
       `runtime "${this.runtime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
-        `${got ? `${got.kind}:${got.id}` : "a handle with no reference"}; the recorded reference would address no seat`,
+        `${got ? `${got.kind}:${got.id}` : "a handle with no reference"}; the recorded reference would address no seat, so ${disposal}`,
     );
   }
 
@@ -7108,11 +7136,12 @@ export class Manager {
    *  with no recorded reference has nothing this manager can address. */
   private async reapOrphanSeat(a: { name: string; runtime?: RuntimeReference }): Promise<void> {
     if (a.runtime === undefined) {
-      // Since spawn reserves its custody reference before the seat processes exist, a row with no
-      // reference under a custodying runtime can only be one this manager did not write (an older
-      // manager, before the reservation). Say so: silence here reads as "nothing was running".
-      if (typeof this.runtime.reap === "function")
-        console.error(`static retirement ${a.name}: the slot row carries no custody reference, though runtime "${this.runtime.kind}" custodies its seats; a seat launched before this manager reserved its reference is not addressable here`);
+      // No reference reached this terminal. Under a custodying runtime that is either a row written
+      // before the reservation existed, or a caller that dropped the reference on the way here.
+      // Do not name the slot row: the row may well hold a reference this caller never read, and
+      // a diagnostic that guesses which is which sends the reader the wrong way.
+      if (isCustodialRuntime(this.runtime))
+        console.error(`static retirement ${a.name}: no custody reference reached this terminal, though runtime "${this.runtime.kind}" custodies its seats; any seat it launched is not addressable from here`);
       return;
     }
     const evidence = await requireRuntimeReap(this.runtime, a.runtime);

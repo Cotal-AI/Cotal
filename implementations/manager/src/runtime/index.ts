@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReapEvidence, type RuntimeReference } from "@cotal-ai/core";
+import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReference } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
@@ -13,9 +13,45 @@ export function requireRuntimeAdopt(runtime: Runtime, reference: RuntimeReferenc
   return runtime.adopt(reference);
 }
 
-/** Reap an orphaned custody by reference, or refuse by name when this runtime has no reap method. */
+/** What a {@link CustodialRuntime.reap} proved. `absent`: no custody record exists for that
+ *  reference (the runtime already forgot it, so nothing it addresses is running). `reaped`: every
+ *  process the record named was signalled and verified gone, or found already gone by identity. */
+export type RuntimeReapEvidence = { outcome: "absent" } | { outcome: "reaped"; detail: string };
+
+/**
+ * A runtime that OWNS the processes it starts, durably enough to address them after the manager
+ * that started them is gone.
+ *
+ * This is deliberately NOT on the core {@link Runtime} contract. Core hosts the extension contracts
+ * so that any backend can implement them, and these two cannot be implemented by a backend that
+ * delegates to an external surface: `tmux`, `cmux`, `orca` and `herdr` do not own a process to
+ * signal or a custody record to pre-mint against, so the methods would have no meaning for them
+ * rather than merely no implementation. `adopt` stays on the generic contract because "reattach to
+ * a handle you created" is something a delegating backend could one day mean.
+ *
+ * `reserve` mints the custody reference BEFORE any process exists, so the caller can record it
+ * durably and hand the same reference to `spawn`; the reference then precedes the processes it
+ * addresses. `reap` signals only a process whose identity it verifies against its own record,
+ * proves it and its descendants gone, and forgets the record.
+ */
+export interface CustodialRuntime extends Runtime {
+  reserve(): RuntimeReference;
+  reap(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
+}
+
+/** Whether this backend custodies its own processes. Both methods are required together: a runtime
+ *  that could mint references but never prove them gone would have the manager record references no
+ *  successor can act on, which is worse than recording none. */
+export function isCustodialRuntime(runtime: Runtime): runtime is CustodialRuntime {
+  const r = runtime as Partial<CustodialRuntime>;
+  return typeof r.reserve === "function" && typeof r.reap === "function";
+}
+
+/** Reap an orphaned custody by reference, or refuse by name when this runtime does not custody its
+ *  own processes. Absent means REFUSE, never "assume gone": the lifecycle stays held rather than
+ *  retiring over a live seat. */
 export function requireRuntimeReap(runtime: Runtime, reference: RuntimeReference): Promise<RuntimeReapEvidence> {
-  if (typeof runtime.reap !== "function")
+  if (!isCustodialRuntime(runtime))
     throw new Error(`runtime "${runtime.kind}" does not support reap; the orphaned process for ${reference.kind}:${reference.id} cannot be proved gone`);
   return runtime.reap(reference);
 }

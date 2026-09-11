@@ -1,7 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReapEvidence, RuntimeReference } from "@cotal-ai/core";
+import type { AgentHandle, AttachSession, LaunchSpec, RuntimeReference } from "@cotal-ai/core";
+import type { CustodialRuntime, RuntimeReapEvidence } from "./index.js";
 import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport } from "@cotal-ai/seat";
 
 function defaultCustodyRoot(): string {
@@ -14,7 +15,7 @@ function defaultCustodyRoot(): string {
  * `createRuntime("pty")` does not construct this class off Linux. Spawn and
  * adopt still throw the named transport error if it is instantiated there.
  */
-export class CustodialPtyRuntime implements Runtime {
+export class CustodialPtyRuntime implements CustodialRuntime {
   readonly kind = "pty" as const;
   readonly supportsRelease = true;
 
