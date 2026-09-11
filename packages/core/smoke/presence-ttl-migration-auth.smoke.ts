@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { connect, nanos } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, reconcileBucketTtl, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket } from "../src/index.js";
+import { isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, reconcileBucketTtl, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket, TTL_RECONCILE_CANARY_KEY } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker } from "./_ephemeral-only.js";
@@ -101,6 +101,8 @@ try {
   // proof: after the store rollback in #404, every later INFO falsely reports the matching max_age.
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   check("second reconcile keeps max_age at 6s after re-proving enforcement", (await maxAge(presenceBucket(space))) === nanos(PRESENCE_MS));
+  const canary = await (await kvm.open(presenceBucket(space))).get(TTL_RECONCILE_CANARY_KEY);
+  check("the reserved canary expires and leaves no synthetic presence key", canary === null);
 
   // ---- the ALREADY-CORRECT bucket, proven at the branch rather than at the value ----------------
   // The assert above cannot tell "skipped" from "re-updated": re-running the UPDATE with the same
