@@ -7,7 +7,7 @@
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/remote-authority-renewal-binding.json",
   "why": [
     "The response-binding mutations remove one exact coordinate check at a time. The broker-free suite supplies a still-live response from a different request and altered closed envelope coordinates, so proof stability cannot make an old response current.",
-    "The installation mutations leave one member of the five-credential family stale. The suite observes the manager field or standing holder directly for supervisor, executor, serve, goal-writer, and session-ledger, plus the installed registration proof.",
+    "The installation mutations leave one credential member stale. The suite observes the manager field or standing holder directly for supervisor, executor, serve, goal-writer, and session-ledger. The registration-proof assignment is intentionally not a mutation: renewal preserves the current proof, so removing that assignment is behaviorally identical and cannot discriminate without fabricating an invalid rotation.",
     "The adoption mutations suppress one reconnect action at a time. The suite records endpoint reload and each direct holder reconnect independently, so validating or assigning a credential without adopting it is red."
   ],
   "mutations": [
@@ -63,7 +63,7 @@
       "name": "renewal accepts an extra credential family member",
       "file": "implementations/manager/src/remote-authority.ts",
       "find": "      Object.keys(material.credentials).sort().join(\",\") !== [...credentialNames].sort().join(\",\") ||",
-      "replace": "      false ||",
+      "replace": "      !credentialNames.every((name) => name in material.credentials) ||",
       "expectRed": "an extra renewal credential family member is refused",
       "cell": "an extra renewal credential family member is refused"
     },
@@ -90,14 +90,6 @@
       "replace": "      void fresh.executorCreds;",
       "expectRed": "fresh executor credential was installed",
       "cell": "fresh executor credential was installed"
-    },
-    {
-      "name": "fresh registration proof is not installed",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      remote.registrationProof = fresh.registrationProof;",
-      "replace": "      void fresh.registrationProof;",
-      "expectRed": "fresh registration proof was installed",
-      "cell": "fresh registration proof was installed"
     },
     {
       "name": "fresh serve credential is not installed",

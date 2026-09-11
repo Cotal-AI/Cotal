@@ -309,23 +309,23 @@ renewing = new Manager({
 }) as unknown as typeof renewing;
 renewing.ep = {
   reloadCreds: async () => {
-    assert.equal(renewing.remoteSupervisorCreds, fresh.supervisorCreds, "supervisor adoption saw fresh credential");
+    assert.ok(renewing.remoteSupervisorCreds === fresh.supervisorCreds, "supervisor adoption saw fresh credential");
     adoption.push("supervisor-reload");
     return {};
   },
 };
 renewing.serviceServe = { creds: old.serve, nc: { reconnect: async () => {
-  assert.equal(renewing.serviceServe.creds, fresh.serveCreds, "serve adoption saw fresh credential");
+  assert.ok(renewing.serviceServe.creds === fresh.serveCreds, "serve adoption saw fresh credential");
   adoption.push("serve");
 } } };
 renewing.goalWriter = { creds: old.goal, nc: { reconnect: async () => {
-  assert.equal(renewing.goalWriterCreds, fresh.goalWriterCreds, "goal adoption saw fresh field");
-  assert.equal(renewing.goalWriter.creds, fresh.goalWriterCreds, "goal adoption saw fresh holder");
+  assert.ok(renewing.goalWriterCreds === fresh.goalWriterCreds, "goal adoption saw fresh field");
+  assert.ok(renewing.goalWriter.creds === fresh.goalWriterCreds, "goal adoption saw fresh holder");
   adoption.push("goal");
 } } };
 renewing.sessionLedgerConn = { creds: old.session, nc: { reconnect: async () => {
-  assert.equal(renewing.sessionLedgerCreds, fresh.sessionLedgerCreds, "session adoption saw fresh field");
-  assert.equal(renewing.sessionLedgerConn.creds, fresh.sessionLedgerCreds, "session adoption saw fresh holder");
+  assert.ok(renewing.sessionLedgerCreds === fresh.sessionLedgerCreds, "session adoption saw fresh field");
+  assert.ok(renewing.sessionLedgerConn.creds === fresh.sessionLedgerCreds, "session adoption saw fresh holder");
   adoption.push("session");
 } } };
 renewing.goalWriterCreds = old.goal;
@@ -336,18 +336,18 @@ const firstRenew = renewing.renewRemoteAuthority();
 const joinedRenew = renewing.renewRemoteAuthority();
 assert.equal(firstRenew, joinedRenew);
 assert.equal(renewCalls, 1);
-assert.equal(renewing.remoteExecutorCreds, old.executor);
+assert.ok(renewing.remoteExecutorCreds === old.executor, "blocked renewal leaves the executor credential unchanged");
 releaseRenew();
 await firstRenew;
 assert.equal(renewCalls, 1);
-assert.equal(renewing.remoteSupervisorCreds, fresh.supervisorCreds, "fresh supervisor credential was installed");
-assert.equal(renewing.remoteExecutorCreds, fresh.executorCreds, "fresh executor credential was installed");
+assert.ok(renewing.remoteSupervisorCreds === fresh.supervisorCreds, "fresh supervisor credential was installed");
+assert.ok(renewing.remoteExecutorCreds === fresh.executorCreds, "fresh executor credential was installed");
 assert.equal(renewing.remoteAuthority.registrationProof, fresh.registrationProof, "fresh registration proof was installed");
-assert.equal(renewing.serviceServe.creds, fresh.serveCreds, "fresh serve credential was installed");
-assert.equal(renewing.goalWriterCreds, fresh.goalWriterCreds, "fresh goal-writer credential field was installed");
-assert.equal(renewing.goalWriter.creds, fresh.goalWriterCreds, "fresh goal-writer holder credential was installed");
-assert.equal(renewing.sessionLedgerCreds, fresh.sessionLedgerCreds, "fresh session-ledger credential field was installed");
-assert.equal(renewing.sessionLedgerConn.creds, fresh.sessionLedgerCreds, "fresh session-ledger holder credential was installed");
+assert.ok(renewing.serviceServe.creds === fresh.serveCreds, "fresh serve credential was installed");
+assert.ok(renewing.goalWriterCreds === fresh.goalWriterCreds, "fresh goal-writer credential field was installed");
+assert.ok(renewing.goalWriter.creds === fresh.goalWriterCreds, "fresh goal-writer holder credential was installed");
+assert.ok(renewing.sessionLedgerCreds === fresh.sessionLedgerCreds, "fresh session-ledger credential field was installed");
+assert.ok(renewing.sessionLedgerConn.creds === fresh.sessionLedgerCreds, "fresh session-ledger holder credential was installed");
 assert.equal(adoption.filter((value) => value === "supervisor-reload").length, 1, "supervisor holder adopted the fresh credential");
 assert.equal(adoption.filter((value) => value === "serve").length, 1, "serve holder adopted the fresh credential");
 assert.equal(adoption.filter((value) => value === "goal").length, 1, "goal-writer holder adopted the fresh credential");
