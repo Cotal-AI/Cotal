@@ -4,11 +4,12 @@
  * while its static-orphan terminal sweep is still running, rather than holding the instance lease
  * while the whole space has no control plane.
  *
- * The fixture writes several ACTIVE orphan rows before start. The manager therefore cannot finish
- * reconciliation before the first terminal transition lands. We await that first transition, then
- * invoke `status` over the real ep.one rail. A green status reply while later slots remain ACTIVE
- * proves overlap and availability before sweep completion. In the old serial start() order, that
- * invocation has no service registration yet, so the assertion fails.
+ * The fixture writes several ACTIVE orphan rows before start. Registration finishes first, then
+ * the manager starts the static-orphan sweep so the typed control service is already registered
+ * when the first terminal transition lands. We await that first transition, then invoke `status`
+ * over the real ep.one rail. A green status reply while later slots remain ACTIVE proves overlap
+ * and availability before sweep completion. A serial start() that awaits the whole sweep before
+ * registration cannot satisfy both conditions.
  *
  * The sweep still owns a per-alias gate: a new spawn for an alias whose row is being reconciled is
  * refused until that exact terminal attempt returns; it cannot race the terminal and reuse its name.

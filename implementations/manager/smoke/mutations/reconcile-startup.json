@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/manager-reconcile-startup.smoke.ts"
   ],
-  "guard": "A manager starts startup static lifecycle reconciliation, then overlaps the remaining sweep with control-service registration; every alias in the collected reconcile plan is refused for spawn until its own terminal attempt returns.",
+  "guard": "A manager registers its control service, then overlaps startup static lifecycle reconciliation with the remaining start() work; every alias in the collected reconcile plan is refused for spawn until its own terminal attempt returns.",
   "command": "pnpm smoke:manager-reconcile-startup",
   "completionMarker": "MANAGER RECONCILE STARTUP SMOKE",
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/reconcile-startup.json",
@@ -23,8 +23,8 @@
     {
       "name": "serve last again, recreating startup-wide manager unavailability",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)",
-      "replace": "    const startupReconcile = this.auth && !this.userMode ? await this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)",
+      "find": "    await this.registerManagerService();\n    if (this.staticReconcileStopping) return;\n    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)\n      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));\n",
+      "replace": "    const startupReconcile = this.auth && !this.userMode ? await this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)\n      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));\n    await this.registerManagerService();\n    if (this.staticReconcileStopping) return;\n",
       "expectRed": "status serves while later orphan rows remain ACTIVE",
       "cell": "status serves while later orphan rows remain ACTIVE",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"

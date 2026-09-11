@@ -1380,14 +1380,6 @@ export class Manager {
     }
     this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_RENEW_MS);
     this.leaseTimer.unref?.();
-    // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
-    // now, but do not let their exact-op terminals make the whole space unreachable. The service
-    // comes up below, then the sweep overlaps the remaining registration work. `reconcilingAliases`
-    // keeps the old no-race property at the actual conflict boundary: a caller cannot spawn or
-    // attach THAT alias until its terminal attempt returns.
-    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
-    if (startupReconcile)
-      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
     // P2 item 1 (1d): the manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -1414,8 +1406,15 @@ export class Manager {
     // an open mesh runs the same gate/registration ceremony over bare connections and never mints
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
+    // Unit B (static §13.1): register first, then collect durable orphan rows. Heal and
+    // re-registration use separate executor windows, so a sweep started before that pair can
+    // finish while the space is still unreachable. `reconcilingAliases` still refuses spawn or
+    // attach of THAT alias until its terminal attempt returns.
     await this.registerManagerService();
     if (this.staticReconcileStopping) return;
+    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
+    if (startupReconcile)
+      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
     // P2 item 2: stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
