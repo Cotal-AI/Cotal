@@ -3,7 +3,11 @@ import type { ManagerResumeInventory } from "./manager.js";
 
 export const MAX_RESUME_CONTROL_BYTES = 512 * 1024;
 export const MAX_RESUME_COMMIT_BYTES = 1024;
-const MAX_AGENTS = 50;
+/** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
+ *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call.
+ *  Declared here (not in manager.ts) so the resume inventory schema and the spawn/resume
+ *  capacity checks share one value; manager.ts imports it. */
+export const MAX_AGENTS = 50;
 const TOKEN = /^[A-Za-z0-9_]+$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 

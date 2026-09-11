@@ -1,0 +1,52 @@
+{
+  "suite": [
+    "implementations/manager/smoke/max-agents-single-source.smoke.ts"
+  ],
+  "guard": "production MAX_AGENTS is one exported numeric definition; manager imports that binding and the resume schema caps agents with it",
+  "command": "pnpm smoke:max-agents-single-source",
+  "completionMarker": "MAX-AGENTS SINGLE-SOURCE SMOKE",
+  "proveWith": "pnpm mutation-proof -- --config implementations/manager/smoke/mutations/max-agents-single-source.json",
+  "why": [
+    "The defect is a second private copy, not a wrong number. The suite therefore walks the",
+    "production manager src tree and counts VariableDeclarations named MAX_AGENTS, then",
+    "checks that both consumers acquire that one binding. A filename list would stay green",
+    "if a third file grew its own copy."
+  ],
+  "mutations": [
+    {
+      "name": "a second production MAX_AGENTS definition appears outside the known pair",
+      "file": "implementations/manager/src/launch.ts",
+      "find": "const TOKEN = /^[A-Za-z0-9_-]+$/;\n",
+      "replace": "const TOKEN = /^[A-Za-z0-9_-]+$/;\nconst MAX_AGENTS = 50;\n",
+      "expectRed": "exactly one production MAX_AGENTS VariableDeclaration",
+      "cell": "exactly one production MAX_AGENTS VariableDeclaration",
+      "note": "A third file is the case a two-name detector cannot see."
+    },
+    {
+      "name": "manager stops importing MAX_AGENTS from the defining module",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from \"./resume.js\";\n",
+      "replace": "import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from \"./resume.js\";\n",
+      "expectRed": "a value import of MAX_AGENTS resolves to the definition",
+      "cell": "a value import of MAX_AGENTS resolves to the definition",
+      "note": "Capacity checks can keep using the identifier; without the import they no longer acquire the definition."
+    },
+    {
+      "name": "resume schema recaps the array with a literal instead of the shared binding",
+      "file": "implementations/manager/src/resume.ts",
+      "find": "  agents: z.array(agent).max(MAX_AGENTS),\n",
+      "replace": "  agents: z.array(agent).max(50),\n",
+      "expectRed": "an acquiring file caps the resume inventory array with MAX_AGENTS",
+      "cell": "an acquiring file caps the resume inventory array with MAX_AGENTS",
+      "note": "The definition can remain exported while the schema consumer silently forks."
+    },
+    {
+      "name": "the single definition is no longer exported",
+      "file": "implementations/manager/src/resume.ts",
+      "find": "export const MAX_AGENTS = 50;\n",
+      "replace": "const MAX_AGENTS = 50;\n",
+      "expectRed": "the single MAX_AGENTS definition is exported",
+      "cell": "the single MAX_AGENTS definition is exported"
+    }
+  ]
+}

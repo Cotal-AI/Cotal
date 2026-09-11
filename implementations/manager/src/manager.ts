@@ -74,7 +74,7 @@ import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
-import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
+import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -180,9 +180,6 @@ import {
   STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
 
-/** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
- *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
-const MAX_AGENTS = 50;
 /** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */

@@ -1,0 +1,2 @@
+# One production MAX_AGENTS definition, acquired by manager capacity and the resume schema.
+smoke:max-agents-single-source
