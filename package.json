@@ -601,6 +601,8 @@
     "smoke:verify-publish-closure": "tsx bin/smoke/verify-publish-closure.smoke.ts",
     "smoke:mutation-fixtures": "tsx bin/smoke/mutation-fixtures.smoke.ts",
     "smoke:mutation-reproof": "tsx bin/smoke/mutation-reproof.smoke.ts",
+    "smoke:mutation-reproof-full-partition": "tsx bin/smoke/mutation-reproof-full-partition.smoke.ts",
+    "smoke:mutation-reproof-full-workflow": "tsx bin/smoke/mutation-reproof-full-workflow.smoke.ts",
     "smoke:dep-pins": "tsx bin/smoke/dep-pins.smoke.ts",
     "smoke:manager-runtime-deps": "tsx bin/smoke/manager-runtime-deps.smoke.ts",
     "smoke:inst-route-enforce": "tsx packages/core/smoke/inst-route-enforce.smoke.ts",

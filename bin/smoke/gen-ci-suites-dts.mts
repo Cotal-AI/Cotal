@@ -20,6 +20,10 @@ export const DECLARATIONS = [
     module: fileURLToPath(new URL("./live-suite.mjs", import.meta.url)),
     declaration: fileURLToPath(new URL("./live-suite.d.mts", import.meta.url)),
   },
+  {
+    module: fileURLToPath(new URL("../../scripts/mutation-shard.mjs", import.meta.url)),
+    declaration: fileURLToPath(new URL("../../scripts/mutation-shard.d.mts", import.meta.url)),
+  },
 ] as const;
 
 function options(): ts.CompilerOptions {

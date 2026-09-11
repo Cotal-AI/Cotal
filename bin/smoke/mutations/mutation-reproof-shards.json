@@ -10,14 +10,14 @@
     {
       "name": "every shard executes the full selected set",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));",
-      "replace": "if (false && shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));",
+      "find": "if (shard) selected = selected.filter(({ path }) => mutationShard(path, Number(shard[2])) === Number(shard[1]));",
+      "replace": "if (false && shard) selected = selected.filter(({ path }) => mutationShard(path, Number(shard[2])) === Number(shard[1]));",
       "expectRed": "fixture shards partition the selected set without omission or overlap",
       "cell": "fixture shards partition the selected set without omission or overlap"
     },
     {
       "name": "all fixtures collapse onto shard zero",
-      "file": "scripts/mutation-reproof.mjs",
+      "file": "scripts/mutation-shard.mjs",
       "find": "  return hash % count;",
       "replace": "  return 0;",
       "expectRed": "the partition control exercises every configured shard with a discriminating fixture",
@@ -26,8 +26,8 @@
     {
       "name": "the workflow omits the runner shard argument",
       "file": ".github/workflows/mutation-reproof.yml",
-      "find": " --shard \"${{ matrix.shard }}/12\"",
-      "replace": "",
+      "find": "          node scripts/mutation-reproof.mjs --base \"$base\" --head \"$(git rev-parse HEAD)\" --shard \"${{ matrix.shard }}/12\"",
+      "replace": "          node scripts/mutation-reproof.mjs --base \"$base\" --head \"$(git rev-parse HEAD)\"",
       "expectRed": "the changed workload fans exactly the planned shards without fail-fast cancellation",
       "cell": "the changed workload fans exactly the planned shards without fail-fast cancellation"
     },
@@ -42,8 +42,8 @@
     {
       "name": "a failed shard cancels its sibling work",
       "file": ".github/workflows/mutation-reproof.yml",
-      "find": "      fail-fast: false",
-      "replace": "      fail-fast: true",
+      "find": "  changed_shard:\n    # At dfbb4550f, PR #1350 selected 32 fixtures and exhausted the 145-minute serial step.\n    # Each path is assigned to one shard by the runner's existing hash. Shards use separate\n    # checkouts because mutation-proof temporarily changes source and compiled artifacts.\n    # Only the shards the plan named are fanned; the shard run re-selects for itself, so a shard\n    # that disagrees with the plan prints its own selection rather than trusting the plan's.\n    if: github.event_name != 'schedule' && needs.plan.outputs.shards != '[]'\n    needs: [plan]\n    timeout-minutes: 150\n    runs-on: tenki-standard-medium-4c-8g\n    strategy:\n      fail-fast: false",
+      "replace": "  changed_shard:\n    # At dfbb4550f, PR #1350 selected 32 fixtures and exhausted the 145-minute serial step.\n    # Each path is assigned to one shard by the runner's existing hash. Shards use separate\n    # checkouts because mutation-proof temporarily changes source and compiled artifacts.\n    # Only the shards the plan named are fanned; the shard run re-selects for itself, so a shard\n    # that disagrees with the plan prints its own selection rather than trusting the plan's.\n    if: github.event_name != 'schedule' && needs.plan.outputs.shards != '[]'\n    needs: [plan]\n    timeout-minutes: 150\n    runs-on: tenki-standard-medium-4c-8g\n    strategy:\n      fail-fast: true",
       "expectRed": "the changed workload fans exactly the planned shards without fail-fast cancellation",
       "cell": "the changed workload fans exactly the planned shards without fail-fast cancellation"
     },

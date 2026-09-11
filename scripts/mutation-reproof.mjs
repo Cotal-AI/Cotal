@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { mutationShard } from "./mutation-shard.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -160,12 +161,6 @@ function isMetadataOnlySuiteCanonicalization(root, base, fixture) {
   return isDeepStrictEqual(baseRest, headRest);
 }
 
-function shardOf(path, count) {
-  let hash = 0;
-  for (const byte of Buffer.from(path)) hash = (hash * 31 + byte) >>> 0;
-  return hash % count;
-}
-
 const a = args(process.argv.slice(2));
 const root = resolve(a.root ?? process.cwd());
 const head = a.head ?? "HEAD";
@@ -230,7 +225,7 @@ let selected = fixtures.map((fixture) => ({
       typeof mutation?.file === "string" && changed.has(mutation.file)),
   },
 })).filter(({ selectedBy }) => Object.values(selectedBy).some(Boolean));
-if (shard) selected = selected.filter(({ path }) => shardOf(path, Number(shard[2])) === Number(shard[1]));
+if (shard) selected = selected.filter(({ path }) => mutationShard(path, Number(shard[2])) === Number(shard[1]));
 
 // Selection evidence precedes dangling validation. A deleted or renamed declared source is one of
 // the reasons a fixture is selected, so reporting the source error before the selected set would
@@ -268,7 +263,7 @@ if (dangling.length) {
 // line is the JSON a workflow reads; an empty list is printed, not turned into exit 0 with no output,
 // so a caller that fans out on it can tell "nothing to prove" from "nothing was said".
 if (listShards !== undefined) {
-  const shards = [...new Set(selected.map(({ path }) => shardOf(path, listShards)))].sort((x, y) => x - y);
+  const shards = [...new Set(selected.map(({ path }) => mutationShard(path, listShards)))].sort((x, y) => x - y);
   console.log(`shard plan: ${shards.length} of ${listShards} shard(s) hold a selected fixture${shards.length ? `: ${shards.join(", ")}` : ""}`);
   console.log(JSON.stringify({ shards }));
   process.exit(0);

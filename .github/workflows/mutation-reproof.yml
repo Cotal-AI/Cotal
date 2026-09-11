@@ -146,12 +146,18 @@ jobs:
           test "$PLAN_RESULT" = success
           if [ "$PLAN_SHARDS" = "[]" ]; then test "$SHARD_RESULT" = skipped; else test "$SHARD_RESULT" = success; fi
 
-  full:
+  full_shard:
     # A daily sweep keeps the remaining ambient-drift window bounded without making every pull
-    # request pay for all 1,714 mutations. It is manually runnable after an infrastructure repair.
+    # request pay for the full corpus. The corpus takes roughly 20 hours as one serial process, so
+    # the runner's deterministic path hash partitions it across 12 independent mutation trees.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 360
+    timeout-minutes: 240
     runs-on: tenki-standard-medium-4c-8g
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    name: full shard ${{ matrix.shard }}/12
     permissions:
       contents: read
     steps:
@@ -182,15 +188,42 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Build
         run: pnpm build
-      - name: Re-prove every mutation fixture
-        run: node scripts/mutation-reproof.mjs --all
+      - name: Re-prove every mutation fixture assigned to this shard
+        # Leave 15 minutes after a step timeout for teardown and elapsed reporting.
+        timeout-minutes: 225
+        run: |
+          date +%s > "$RUNNER_TEMP/mutation-started"
+          node scripts/mutation-reproof.mjs --all --shard "${{ matrix.shard }}/12"
+      - name: Report elapsed
+        if: always()
+        run: |
+          marker="$RUNNER_TEMP/mutation-started"
+          if [ -s "$marker" ]; then
+            echo "mutation reproof: full shard ${{ matrix.shard }}/12 elapsed $(( $(date +%s) - $(cat "$marker") ))s (step budget 225m; job budget 240m)"
+          else
+            echo "mutation reproof: no start marker; the job ended before the full re-prove step began"
+          fi
+
+  full:
+    name: full sweep aggregate
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && always()
+    needs: [full_shard]
+    timeout-minutes: 10
+    runs-on: tenki-standard-small-2c-4g
+    steps:
+      - name: Gate
+        env:
+          SHARD_RESULT: ${{ needs.full_shard.result }}
+        run: |
+          set -euo pipefail
+          echo "full_shard=$SHARD_RESULT"
+          test "$SHARD_RESULT" = success
 
   full-alarm:
-    # The alarm lives outside the job it watches. A job-level timeout ends `full` as `cancelled`,
-    # which `failure()` never matches, and a step trailing the sweep inside the same job can be
-    # killed with it: every retained scheduled sweep ended cancelled and none filed an issue. A
-    # dependent job still runs after the sweep's timeout, so this one reads the sweep's result and
-    # turns a failed or cancelled sweep into one open, labelled tracking issue: a run that ends
+    # The alarm lives outside the aggregate gate it watches. A shard timeout makes the matrix result
+    # non-success, and the always-running aggregate turns that into a failure before this job reads
+    # it. The alarm therefore still turns a failed or cancelled full sweep into one open, labelled
+    # tracking issue: a run that ends
     # that way while the marker issue is still open comments on it instead of opening a second.
     # The key is the label, read through the Issues API, not title search (tokenised and
     # eventually consistent). A skipped sweep (any other event) leaves this job skipped too.
@@ -214,7 +247,7 @@ jobs:
           gh label create "$label" --description "Open while the scheduled mutation-reproof full sweep is failing" --color B60205 --force
           existing="$(gh issue list --state open --label "$label" --json number --jq '.[0].number // empty')"
           if [ "$SWEEP_RESULT" = cancelled ]; then
-            outcome="did not finish (job result: cancelled; the sweep's 360-minute timeout ends it this way)"
+            outcome="did not finish (aggregate job result: cancelled)"
           else
             outcome="failed (job result: $SWEEP_RESULT)"
           fi
