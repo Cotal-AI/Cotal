@@ -8,9 +8,14 @@
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/npm-publish-preflight.json
  */
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
 import { preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 let passed = 0;
 let failed = 0;
@@ -78,6 +83,51 @@ async function scenario(present: Set<string>, workspacePackages = workspace, exc
     await once(server, "close");
   }
 }
+
+async function repositoryEntrypoint() {
+  const seen: Seen[] = [];
+  const server = createServer((req, res) => {
+    seen.push({ method: req.method ?? "", url: req.url ?? "" });
+    if (req.url?.startsWith("/oidc?")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ value: idToken }));
+    } else if (req.url?.startsWith("/-/npm/v1/oidc/token/exchange/package/")) {
+      res.writeHead(201, { "content-type": "application/json" });
+      res.end(JSON.stringify({ token: "opaque-exchange-token" }));
+    } else {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const child = spawn(process.execPath, ["scripts/preflight-npm-publish.mjs"], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      ...env,
+      npm_config_registry: base,
+      ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { output += chunk; });
+  const [code] = await once(child, "close") as [number];
+  server.close();
+  await once(server, "close");
+  return { code, output, seen };
+}
+
+const cli = await repositoryEntrypoint();
+check("the shipped repository entrypoint passes a clean full fixed group", cli.code === 0, cli.output);
+check(
+  "the repository entrypoint derives and exchanges every fixed-group package",
+  cli.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 22,
+  cli.seen,
+);
 
 const clean = await scenario(new Set());
 check("clean full-group census passes", clean.result?.state === "ready", clean.error);
