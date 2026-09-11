@@ -315,10 +315,13 @@ The first teardown after upgrading a running pre-pin stack has a narrower guaran
 with no identity pin is signalled after a loud warning that it predates identity pinning. Restarting
 the component writes the pin, so later teardowns receive full match and mismatch protection. The
 same warning applies on platforms where no stable start token is available. For a legacy manager,
-bare `cotal down` also warns that agent sparing cannot be verified before it signals; `--with-agents`
-publishes a one-shot reduced-guarantee handoff bound to the recorded manager pid and the live
-`.stopping` reservation's inode, then signals unconditionally. That handoff cannot be replayed by a
-later stop attempt. A pin that exists and does not match the live process still refuses before signal.
+bare `cotal down` also warns that agent sparing cannot be verified before it signals. Because the
+CLI cannot establish which SIGTERM handler that already-running binary carries, it never presents
+the pre-signal seat inventory as confirmed spared; a genuinely older destructive handler may still
+reap those agents. `--with-agents` publishes a one-shot reduced-guarantee handoff bound to the
+recorded manager pid and the live `.stopping` reservation's inode, then signals unconditionally.
+That handoff cannot be replayed by a later stop attempt. A pin that exists and does not match the
+live process still refuses before signal.
 
 `--with-agents` performs the old destructive logical teardown: managed processes stop and their
 credentials, ACL rows, and delivery footprints are deprovisioned. `--preserve-state` is a different

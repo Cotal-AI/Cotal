@@ -103,10 +103,15 @@ type LegacyManagerStop = {
   pinPreserved?: boolean;
   managerDecision?: string;
   warning: string;
+  output: string;
 };
 
 /** Drive the public bare-down manager branch with a live planted process record. */
-async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch"): Promise<LegacyManagerStop> {
+async function stopPlantedManager(
+  withAgents: boolean,
+  pin: "legacy" | "mismatch",
+  handler: "intent-aware" | "historical-destructive" = "intent-aware",
+): Promise<LegacyManagerStop> {
   const root = mkdtempSync(join(tmpdir(), `cotal-${pin}-manager-${withAgents ? "reap" : "spare"}-`));
   mkdirSync(join(root, ".cotal"), { recursive: true });
   const agent = spawn(
@@ -122,6 +127,7 @@ async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch
     "process.on('SIGTERM',async()=>{",
     " if(stopping)return; stopping=true;",
     " try {",
+    "  if(process.env.HISTORICAL_DESTRUCTIVE==='1'){process.kill(Number(process.env.AGENT_PID),'SIGTERM');setTimeout(()=>process.exit(0),100);return;}",
     "  const {consumeManagerShutdownIntent}=await import(process.env.WORKSPACE_ENTRY);",
     "  const decision=consumeManagerShutdownIntent({root:process.env.FIXTURE_ROOT,space:'main'});",
     "  writeFileSync(process.env.DECISION_PATH,JSON.stringify(decision));",
@@ -141,6 +147,7 @@ async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch
     AGENT_PID: String(agent.pid),
     DECISION_PATH: decisionPath,
     WORKSPACE_ENTRY: workspaceEntry,
+    HISTORICAL_DESTRUCTIVE: handler === "historical-destructive" ? "1" : "0",
   };
   const child = spawn(
     process.execPath,
@@ -157,23 +164,28 @@ async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch
   else writeIdentityPin(pidPath, child.pid, () => undefined); // Windows/ps-less host: honest no-pin shape
 
   let warning = "";
+  let output = "";
   const originalError = console.error;
+  const originalLog = console.log;
   const originalExitCode = process.exitCode;
   const cwd = process.cwd();
   try {
     process.exitCode = undefined;
     process.chdir(root);
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
+    console.log = (...args: unknown[]) => { output += `${args.join(" ")}\n`; };
     await sleep(100); // the child must install its SIGTERM handler before down can signal it
     try { await run([], withAgents ? { "with-agents": true } : {}); }
     catch (error) { warning += `${(error as Error).message}\n`; }
   } finally {
     console.error = originalError;
+    console.log = originalLog;
     process.chdir(cwd);
   }
 
   for (let i = 0; i < 100 && alive(child.pid); i++) await sleep(20);
-  if (withAgents) for (let i = 0; i < 100 && alive(agent.pid); i++) await sleep(20);
+  if (withAgents || handler === "historical-destructive")
+    for (let i = 0; i < 100 && alive(agent.pid); i++) await sleep(20);
 
   const result = {
     managerAlive: alive(child.pid),
@@ -182,6 +194,7 @@ async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch
     pinPreserved: pin === "mismatch" ? existsSync(pinPath) : undefined,
     managerDecision: existsSync(decisionPath) ? readFileSync(decisionPath, "utf8") : undefined,
     warning,
+    output,
   };
   process.exitCode = originalExitCode;
   if (result.managerAlive) {
@@ -286,19 +299,31 @@ try {
   // does not require an impossible identity-bound intent from a manager launched before pinning.
   const legacyBare = await stopPlantedManager(false, "legacy");
   const legacyWithAgents = await stopPlantedManager(true, "legacy");
+  const historicalBare = await stopPlantedManager(false, "legacy", "historical-destructive");
   check(
     "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
     !legacyBare.managerAlive && legacyBare.agentAlive && !legacyBare.pidfilePreserved &&
       /predates process identity pinning/.test(legacyBare.warning) &&
-      /could not verify that this legacy manager can spare/.test(legacyBare.warning),
+      /could not verify that this legacy manager can spare/.test(legacyBare.warning) &&
+      /manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents/.test(legacyBare.output) &&
+      !/left \d+ managed agents? running/.test(legacyBare.output),
     legacyBare,
   );
   check(
     "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
     !legacyWithAgents.managerAlive && !legacyWithAgents.agentAlive && !legacyWithAgents.pidfilePreserved &&
       /predates process identity pinning/.test(legacyWithAgents.warning) &&
-      /"withAgents":true/.test(legacyWithAgents.managerDecision ?? ""),
+      /"withAgents":true/.test(legacyWithAgents.managerDecision ?? "") &&
+      !/manager version could not be verified/.test(legacyWithAgents.output),
     legacyWithAgents,
+  );
+  check(
+    "bare down never reports a historical destructive manager's reaped agent as spared",
+    !historicalBare.managerAlive && !historicalBare.agentAlive && !historicalBare.pidfilePreserved &&
+      /manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents/.test(historicalBare.output) &&
+      !/left \d+ managed agents? running/.test(historicalBare.output) &&
+      !/agents will still be spared/.test(`${historicalBare.warning}\n${historicalBare.output}`),
+    historicalBare,
   );
   const mismatched = await stopPlantedManager(false, "mismatch");
   check(

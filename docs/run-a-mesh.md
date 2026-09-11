@@ -13,7 +13,9 @@ operator-only maintenance verbs. Every command's full flag set is in the
 agents stay running as unmanaged OS processes; pass `--with-agents` to take them
 with the stack. A current manager proves that it can detach local PTY custody before
 bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
-warning and is signalled according to the documented upgrade contract.
+warning and is signalled according to the documented upgrade contract. Its running binary
+may still carry the older destructive SIGTERM handler, so the CLI does not claim its
+pre-signal agent inventory was spared; those agents may have been reaped.
 
 - **Broker**: a local `nats-server` (logs to `.cotal/nats.log`).
 - **Delivery daemon**: the durable backstop, auth mode only

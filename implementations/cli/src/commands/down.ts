@@ -172,8 +172,12 @@ export async function down(args: ParsedArgs): Promise<void> {
   const managerComponent = selected.find((component) => component.name === "manager");
   const managerContext = managerComponent ? contextFor(managerComponent) : undefined;
   let spared: DownSeatRow[] | undefined;
+  let legacyManagerSpareUnverified = false;
   if (!values["with-agents"] && managerComponent && managerContext && processRecorded(managerComponent, managerContext)) {
-    spared = await listManagerSeatsForSpare(managerContext);
+    const managerPidPath = localProcessPath(managerComponent.pidFile, managerContext);
+    const pin = verifyIdentityPin(managerPidPath);
+    if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
+    else if (pin.kind === "match") spared = await listManagerSeatsForSpare(managerContext);
   }
   let any = false;
   let allStopped = true;
@@ -235,7 +239,8 @@ export async function down(args: ParsedArgs): Promise<void> {
     console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
     process.exit(1);
   }
-  if (spared) printSparedAgents(spared);
+  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty(spared);
+  else if (spared) printSparedAgents(spared);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -291,6 +296,16 @@ function printSparedAgents(rows: DownSeatRow[]): void {
     console.log(`  ${facts.join("  ·  ")}`);
   }
   console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
+}
+
+function printLegacyManagerSpareUncertainty(rows: DownSeatRow[] | undefined): void {
+  console.log(c.dim("manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents"));
+  if (!rows?.length) return;
+  console.log(c.dim(`${rows.length} managed agent${rows.length === 1 ? " was" : "s were"} present before shutdown, but cannot be confirmed running:`));
+  for (const row of rows) {
+    const facts = [row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, row.status].filter(Boolean);
+    console.log(`  ${facts.join("  ·  ")}`);
+  }
 }
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
