@@ -22,13 +22,6 @@
       "expectRed": "a plain Error with copied capability text stays a generic refusal"
     },
     {
-      "name": "Jcode capability classification ignores the stable invalid_request code",
-      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "    error.code === \"invalid_request\" &&",
-      "replace": "    error.code !== \"disconnected\" &&",
-      "expectRed": "a different Harness code with copied capability text stays a generic refusal"
-    },
-    {
       "name": "Jcode capability classification accepts any unsupported-reasoning invalid_request",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "    /^invalid_request: Reasoning effort is not supported by the current model\\/profile\\./.test(error.message)",

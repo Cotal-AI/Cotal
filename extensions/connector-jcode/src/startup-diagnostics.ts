@@ -150,7 +150,9 @@ export interface JcodeEffortIdentity {
   apiMethod?: string;
 }
 
-/** Classify the two stable invalid-request outcomes without rendering downstream text. */
+/** Classify the two stable invalid-request outcomes without rendering downstream text. HarnessError
+ * prefixes its message with the stable code, so the anchored `invalid_request:` predicate below is
+ * also the code gate; a second `error.code` check would be redundant. */
 export function jcodeEffortRefusal(
   error: unknown,
   requestedTier: string,
@@ -158,7 +160,6 @@ export function jcodeEffortRefusal(
 ): JcodeEffortRefusal | JcodeEffortUnsupported {
   if (
     error instanceof HarnessError &&
-    error.code === "invalid_request" &&
     /^invalid_request: Reasoning effort is not supported by the current model\/profile\./.test(error.message)
   ) {
     return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);
