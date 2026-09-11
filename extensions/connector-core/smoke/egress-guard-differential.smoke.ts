@@ -37,6 +37,14 @@
  * corpus-limited: it does not speak to an input that is not a row, to a WAL encoder this
  * suite never runs, or to whether a live entry point reaches the predicate (#1426).
  *
+ * HISTORY. Smoke CI checks out depth 1 (`actions/checkout@v6` with no fetch-depth). A short
+ * prefix `git show ee73e33c1:...` is `fatal: invalid object name` there even though the commit
+ * is on origin. The loader pins 40-char SHAs, `git cat-file -e <sha>^{commit}`, and if the
+ * object is missing `git fetch --no-tags --depth=1 origin <sha>`. Still missing is
+ * `missing-history:`, never a silent bind of HEAD and never a vendored copy of the function.
+ * The missing-history control proves that: a well-formed SHA that is not in the checkout, with
+ * fetch disabled, must throw `missing-history:` rather than classify anything.
+ *
  * Run: pnpm smoke:egress-guard-differential
  */
 import { execFileSync } from "node:child_process";
@@ -267,16 +275,61 @@ const bindRole = (mod: Record<string, unknown>, ref: string): Arm => {
   throw new Error(`${ref}: no frozen-body classifier role (looked for frozenBodyEgressVerdict and frozenBodyViolatesEgressPolicy)`);
 };
 
+const SHA = /^[0-9a-f]{40}$/;
+/** Boolean predecessor that #1429 replaced. On origin/main's history. */
+const PREDECESSOR = "ee73e33c15f1a147b435d44a6f4feb8fd38512bc";
+/** Adapter-free weakening of that predecessor. On origin; not an ancestor of current main. */
+const ADAPTER_FREE = "1698fe25356b3160b4ccb77f5b3056182ac8b688";
+/** Well-formed and not a commit this checkout should ever contain. Fetch stays off for the control. */
+const MISSING_HISTORY_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+const gitOk = (args: string[]): boolean => {
+  try {
+    execFileSync("git", args, { cwd: REPO, stdio: ["ignore", "ignore", "ignore"] });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const hasCommit = (sha: string): boolean => gitOk(["cat-file", "-e", `${sha}^{commit}`]);
+
+const ensureCommit = (sha: string, opts: { fetch: boolean }): void => {
+  if (!SHA.test(sha)) {
+    throw new Error(`missing-history: ${sha} is not a 40-char commit sha`);
+  }
+  if (hasCommit(sha)) return;
+  if (!opts.fetch) {
+    throw new Error(`missing-history: ${sha} is not in this checkout and fetch is disabled`);
+  }
+  try {
+    execFileSync("git", ["fetch", "--no-tags", "--depth=1", "origin", sha], {
+      cwd: REPO,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    const err = e as { stderr?: string; message?: string };
+    throw new Error(
+      `missing-history: git fetch --depth=1 origin ${sha} failed: ${(err.stderr ?? err.message ?? "fetch").toString().slice(0, 200)}`,
+    );
+  }
+  if (!hasCommit(sha)) {
+    throw new Error(`missing-history: ${sha} still absent after git fetch --depth=1 origin`);
+  }
+};
+
 const loadedFiles: string[] = [];
-const loadArm = async (ref: string): Promise<Arm> => {
+const loadArm = async (ref: string, opts: { fetch: boolean } = { fetch: true }): Promise<Arm> => {
   if (ref === "HEAD") {
     const mod = (await import("../src/agui.js")) as Record<string, unknown>;
     return bindRole(mod, "HEAD");
   }
+  ensureCommit(ref, opts);
   // Historical copies must sit next to the live src so `./launch.js` and friends resolve.
   // Named with a leading dot and cleaned in `finally` so an interrupted run cannot leave an
   // untracked file that makes mutation-proof refuse the tree.
-  const dest = join(SRC_DIR, `.egress-guard-arm-${process.pid}-${ref.replace(/[^A-Za-z0-9]/g, "")}.ts`);
+  const dest = join(SRC_DIR, `.egress-guard-arm-${process.pid}-${ref}.ts`);
   const blob = execFileSync("git", ["show", `${ref}:${AGUI_PATH}`], { encoding: "utf8", cwd: REPO });
   writeFileSync(dest, blob);
   loadedFiles.push(dest);
@@ -578,7 +631,7 @@ for (const [label, make] of Object.entries(representations)) {
 /**
  * Predicted answers, written from a hand-read of origin/main `frozenBodyEgressVerdict`
  * (per-part try, forbidden returns immediately, unreadable is a flag read after the loop;
- * parseAguiFrame runs before the scan) and of ee73e33c1 `frozenBodyViolatesEgressPolicy`
+ * parseAguiFrame runs before the scan) and of PREDECESSOR `frozenBodyViolatesEgressPolicy`
  * (no try, parse throws out of the function). If the harness disagrees, the harness is
  * wrong until that is proven otherwise — not a finding about the guard.
  */
@@ -601,25 +654,25 @@ const DIVERGENT: DivergentRow[] = [
     name: "across parts: unreadable then TOOL_CALL_RESULT",
     axis: "body-composition",
     body: [unreadablePart(), dirty("TOOL_CALL_RESULT")],
-    expected: { "ee73e33c1": "THROW", HEAD: "forbidden-kind", "1698fe253": "REFUSE" },
+    expected: { [PREDECESSOR]: "THROW", HEAD: "forbidden-kind", [ADAPTER_FREE]: "REFUSE" },
   },
   {
     name: "across parts: TOOL_CALL_RESULT then unreadable",
     axis: "body-composition",
     body: [dirty("TOOL_CALL_RESULT"), unreadablePart()],
-    expected: { "ee73e33c1": "REFUSE", HEAD: "forbidden-kind", "1698fe253": "REFUSE" },
+    expected: { [PREDECESSOR]: "REFUSE", HEAD: "forbidden-kind", [ADAPTER_FREE]: "REFUSE" },
   },
   {
     name: "across parts: unreadable then TOOL_CALL_ARGS",
     axis: "body-composition",
     body: [unreadablePart(), dirty("TOOL_CALL_ARGS")],
-    expected: { "ee73e33c1": "THROW", HEAD: "forbidden-kind", "1698fe253": "REFUSE" },
+    expected: { [PREDECESSOR]: "THROW", HEAD: "forbidden-kind", [ADAPTER_FREE]: "REFUSE" },
   },
   {
     name: "across parts: TOOL_CALL_ARGS then unreadable",
     axis: "body-composition",
     body: [dirty("TOOL_CALL_ARGS"), unreadablePart()],
-    expected: { "ee73e33c1": "REFUSE", HEAD: "forbidden-kind", "1698fe253": "REFUSE" },
+    expected: { [PREDECESSOR]: "REFUSE", HEAD: "forbidden-kind", [ADAPTER_FREE]: "REFUSE" },
   },
   {
     name: "same part: bad protocol AND TOOL_CALL_RESULT",
@@ -629,7 +682,7 @@ const DIVERGENT: DivergentRow[] = [
       (f as { protocol: string }).protocol = "ag-ui/0.9";
       return [f];
     },
-    expected: { "ee73e33c1": "THROW", HEAD: "unreadable", "1698fe253": "REFUSE" },
+    expected: { [PREDECESSOR]: "THROW", HEAD: "unreadable", [ADAPTER_FREE]: "REFUSE" },
   },
   {
     name: "same part: seq -1 AND TOOL_CALL_ARGS",
@@ -639,7 +692,7 @@ const DIVERGENT: DivergentRow[] = [
       (f as { seq: number }).seq = -1;
       return [f];
     },
-    expected: { "ee73e33c1": "THROW", HEAD: "unreadable", "1698fe253": "REFUSE" },
+    expected: { [PREDECESSOR]: "THROW", HEAD: "unreadable", [ADAPTER_FREE]: "REFUSE" },
   },
 ];
 
@@ -693,15 +746,15 @@ interface Pair {
 
 const PAIRS: Pair[] = [
   {
-    name: "adapter-free ee73e33c1 vs 1698fe253",
-    baseRef: "ee73e33c1",
-    headRef: "1698fe253",
+    name: "adapter-free predecessor vs adapter-free weakening",
+    baseRef: PREDECESSOR,
+    headRef: ADAPTER_FREE,
     expectWeakerMin: 1,
     expectStricterMax: 99,
   },
   {
-    name: "primary ee73e33c1 vs HEAD",
-    baseRef: "ee73e33c1",
+    name: "primary predecessor vs HEAD",
+    baseRef: PREDECESSOR,
     headRef: "HEAD",
     expectWeakerMin: 0,
     expectStricterMax: 0,
@@ -814,34 +867,46 @@ try {
   console.log(`  (${HELD.length} held; an empty list is not coverage)`);
   ok("CORPUS is non-empty", CORPUS.length > 0, CORPUS.length);
 
-  const agreeing = DIVERGENT.filter((r) => r.expected.ee73e33c1 === r.expected.HEAD).map((r) => r.name);
+  const agreeing = DIVERGENT.filter((r) => r.expected[PREDECESSOR] === r.expected.HEAD).map((r) => r.name);
   ok(
-    "every declared divergence names two different answers on ee73 vs HEAD",
+    "every declared divergence names two different answers on predecessor vs HEAD",
     agreeing.length === 0,
     agreeing,
   );
   ok(
-    "PREDICT across-unreadable-then-forbidden matches the ee73/HEAD pins",
-    DIVERGENT[0]!.expected.ee73e33c1 === PREDICT.acrossUnreadableThenForbidden.boolean &&
+    "PREDICT across-unreadable-then-forbidden matches the predecessor/HEAD pins",
+    DIVERGENT[0]!.expected[PREDECESSOR] === PREDICT.acrossUnreadableThenForbidden.boolean &&
       DIVERGENT[0]!.expected.HEAD === PREDICT.acrossUnreadableThenForbidden.threeWay,
   );
   ok(
-    "PREDICT across-forbidden-then-unreadable matches the ee73/HEAD pins",
-    DIVERGENT[1]!.expected.ee73e33c1 === PREDICT.acrossForbiddenThenUnreadable.boolean &&
+    "PREDICT across-forbidden-then-unreadable matches the predecessor/HEAD pins",
+    DIVERGENT[1]!.expected[PREDECESSOR] === PREDICT.acrossForbiddenThenUnreadable.boolean &&
       DIVERGENT[1]!.expected.HEAD === PREDICT.acrossForbiddenThenUnreadable.threeWay,
   );
   ok(
-    "PREDICT same-part unreadable-beats-forbidden matches the ee73/HEAD pins",
-    DIVERGENT[4]!.expected.ee73e33c1 === PREDICT.samePartUnreadableAndForbidden.boolean &&
+    "PREDICT same-part unreadable-beats-forbidden matches the predecessor/HEAD pins",
+    DIVERGENT[4]!.expected[PREDECESSOR] === PREDICT.samePartUnreadableAndForbidden.boolean &&
       DIVERGENT[4]!.expected.HEAD === PREDICT.samePartUnreadableAndForbidden.threeWay,
   );
 
+  let missingHistory = "";
+  try {
+    await loadArm(MISSING_HISTORY_SHA, { fetch: false });
+  } catch (e) {
+    missingHistory = (e as Error).message ?? "";
+  }
+  ok(
+    "missing-history control: a well-formed SHA that is not in the checkout, with fetch disabled, throws missing-history:",
+    missingHistory.startsWith("missing-history:") && !missingHistory.includes("HEAD"),
+    missingHistory,
+  );
+
   const arms: Record<string, Arm> = {};
-  for (const ref of ["ee73e33c1", "1698fe253", "HEAD"]) {
+  for (const ref of [PREDECESSOR, ADAPTER_FREE, "HEAD"]) {
     arms[ref] = await loadArm(ref);
     ok(`${ref}: classifier role bound`, Boolean(arms[ref]), arms[ref]?.role);
   }
-  ok("adapter-free pair is boolean both sides", arms.ee73e33c1!.role === "boolean" && arms["1698fe253"]!.role === "boolean");
+  ok("adapter-free pair is boolean both sides", arms[PREDECESSOR]!.role === "boolean" && arms[ADAPTER_FREE]!.role === "boolean");
   ok("HEAD is the three-way role", arms.HEAD!.role === "three-way", arms.HEAD!.role);
 
   for (const pair of PAIRS) {
