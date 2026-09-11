@@ -376,8 +376,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "write": {
-        if (alive) proc.write(req.data);
-        send(sock, { id: req.id, ok: true, op: "write" });
+        if (!alive) throw new Error(`seat ${launch.name} is not running; the PTY rejected the write`);
+        proc.write(req.data);
+        send(sock, { id: req.id, ok: true, op: "write", bytes: Buffer.byteLength(req.data, "utf8") });
         return;
       }
       case "resize": {

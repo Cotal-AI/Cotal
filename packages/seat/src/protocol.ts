@@ -51,7 +51,7 @@ export type ServerReply =
   | { id: number; ok: true; op: "snapshot"; data: string; cols: number; rows: number }
   | { id: number; ok: true; op: "subscribe-output"; sub: number }
   | { id: number; ok: true; op: "unsubscribe-output" }
-  | { id: number; ok: true; op: "write" }
+  | { id: number; ok: true; op: "write"; bytes: number }
   | { id: number; ok: true; op: "resize" }
   | { id: number; ok: true; op: "interrupt" }
   | { id: number; ok: true; op: "stop" }

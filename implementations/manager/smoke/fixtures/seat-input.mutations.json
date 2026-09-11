@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/seat-input-live.smoke.ts"
   ],
-  "guard": "the `input` op authorizes exactly as `attach` does before it writes, and `enter:false` really suppresses the carriage return",
+  "guard": "the `input` op authorizes exactly as `attach` does before it writes, `enter:false` suppresses the carriage return, and a sent receipt comes only from the runtime's acknowledged write",
   "command": "pnpm smoke:seat-input",
   "completionMarker": "SEAT INPUT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/seat-input.mutations.json",
@@ -48,6 +48,12 @@
     "with a FIXTURE FAILURE rather than letting a cell pass, and cell 1 asserts the marker exists, so",
     "a dead mechanism cannot be mistaken for a satisfied one.",
     "",
+    "THE ACKNOWLEDGED RECEIPT is the issue #1333 honesty boundary. The dropped-write cell replaces",
+    "the live handle write with a resolved no-op carrying no accepted-byte count. The real CLI must",
+    "exit non-zero, name the seat and the acknowledgement failure, print no `sent` receipt, and the",
+    "child must receive nothing. Its mutation restores the old intended-buffer arithmetic, which",
+    "turns that same cell back into the exact false success reported by triage.",
+    "",
     "NOT GRADED HERE, and named rather than implied: the refusal for a runtime with no `write` on",
     "its handle. That branch is reached by ABSENCE of an optional method, which no mutation of this",
     "source can produce and no fixture in this suite can spawn, so it is covered by the type and by",
@@ -70,7 +76,16 @@
       "replace": "    const data = `${String(args.text)}\\r`;",
       "expectRed": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
       "cell": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
-      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count derived from what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply."
+      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count acknowledged for what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply."
+    },
+    {
+      "name": "the manager restores an intended-buffer receipt and ignores the runtime's accepted-byte count",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    let bytes: number;\n    try {\n      bytes = await write(data);\n    } catch (error) {\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n    }\n    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);\n    return { name: a.name, bytes };",
+      "replace": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    try {\n      await write(data);\n    } catch (error) {\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n    }\n    return { name: a.name, bytes: intendedBytes };",
+      "expectRed": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
+      "cell": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
+      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and reports the intended buffer length. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change."
     }
   ]
 }
