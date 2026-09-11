@@ -369,6 +369,7 @@
     "smoke:spawn-env-e2e": "tsx bin/smoke/spawn-env-e2e.smoke.ts",
     "smoke:agui-emitter": "tsx extensions/connector-core/smoke/agui-emitter.smoke.ts",
     "smoke:agui-tool-result": "tsx extensions/connector-core/smoke/agui-tool-result.smoke.ts",
+    "smoke:egress-guard-differential": "tsx extensions/connector-core/smoke/egress-guard-differential.smoke.ts",
     "smoke:agui-retry-duplicate": "tsx extensions/connector-core/smoke/agui-retry-duplicate.smoke.ts",
     "smoke:agui-holder": "tsx extensions/connector-core/smoke/agui-holder.smoke.ts",
     "smoke:agui-multi-session": "tsx extensions/connector-core/smoke/agui-multi-session.smoke.ts",
