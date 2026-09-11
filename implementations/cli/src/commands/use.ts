@@ -12,9 +12,9 @@ export async function use(args: ParsedArgs): Promise<void> {
     console.error(c.red("usage: cotal use <space>"));
     process.exit(1);
   }
-  await pruneStaleMeshes();
+  const sweep = await pruneStaleMeshes();
   const m = findMesh(space);
-  if (!m) {
+  if (!m || sweep.offline.includes(space)) {
     console.error(c.red(`✗ no mesh named "${space}" is running - see \`cotal meshes\``));
     process.exit(1);
   }

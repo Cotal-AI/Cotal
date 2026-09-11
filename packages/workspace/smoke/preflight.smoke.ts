@@ -212,6 +212,8 @@ const sweep = await pruneStaleMeshes();
 check("sweep KEEPS the `up` record", findMesh("ours") !== undefined, loadMeshes());
 check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
 check("sweep reports both as offline (none pruned)", sweep.pruned.length === 0 && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
+assert.throws(() => resolveMeshTarget("/nonexistent/cwd", { offline: sweep.offline }), /no mesh running/);
+check("all-offline is still no-meshes; both records remain", findMesh("ours") !== undefined && findMesh("theirs") !== undefined);
 check("pruneMesh reports refusing to delete a manual record", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
 check("pruneMesh reports refusing to delete an `up` record on liveness", pruneMesh("ours") === false && findMesh("ours") !== undefined);
 check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);

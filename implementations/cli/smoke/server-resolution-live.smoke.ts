@@ -136,10 +136,10 @@ try {
   ok("recovery did NOT pre-prune the named --space entry", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
 
   // 6. Bare resolution DOES run the global sweep: with a live survivor registered, a bare (no-flags)
-  //    resolve prunes the dead team-alpha and returns the survivor.
+  //    resolve keeps the dead team-alpha as offline (it is not a live candidate) and returns the survivor.
   recordMesh({ space: "survivor", server: OVERRIDE, root: projectRoot, mode: "open", ts });
   const bareAfter = await resolveControlTarget({}, "control-caller-privileged");
-  ok("bare resolve prunes the dead entry (global sweep)", !loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
+  ok("bare resolve keeps the dead entry (global sweep no longer deletes)", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
   ok("bare resolve returns the surviving live mesh", bareAfter.server === OVERRIDE, bareAfter);
 
   // 7. REGISTERED-BUT-BROKEN must fail loud — it must never fall through to a credential-less open

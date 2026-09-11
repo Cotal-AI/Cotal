@@ -475,7 +475,7 @@ try {
     const r = await cotal(["attach", "--name", SEAT, "--on", String(instance), "--space", space, "--server", PROXY], root, 60_000);
     await heal();
     check("it exits non-zero", r.status !== 0, { status: r.status, out: r.out.slice(-400) });
-    check("...saying the mesh is not there, in the CLI's own words", /no mesh running at/.test(r.out), r.out.slice(-400));
+    check("...saying the mesh is not there, in the CLI's own words", /is recorded at/.test(r.out) && /not running/.test(r.out), r.out.slice(-400));
     check("...with ONE failure mark, not the doubled one a rethrown refusal renders",
       !/✗\s*✗/.test(r.out), r.out.slice(-400));
     check("...and it never announced a reconnect it was not going to make",
@@ -642,7 +642,7 @@ try {
   check("notice: a steady refusal is said once, not on every attempt",
     reconnectNotice({ fromManager: true, message: "same refusal" }, "same refusal") === undefined);
   check("notice: a LOCAL refusal is not relayed (its copy is written for someone who just typed a command)",
-    reconnectNotice({ message: "✗ no mesh running at nats://127.0.0.1:4222 - run `cotal up`" }, "") === undefined);
+    reconnectNotice({ message: "✗ mesh \"alpha\" is recorded at /tmp/root but not running - run `cotal up` there to restart" }, "") === undefined);
   check("held: a session the loop could not hand back is named on exit",
     heldSessionNotice(1, "ended")?.includes("still holds a session") === true);
   check("held: more than one is counted rather than collapsed",

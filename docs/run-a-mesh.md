@@ -328,7 +328,8 @@ that way only to an address you would have registered.
 
 Records added this way are removed only by something that names them. A failed liveness probe
 does not delete any record: an unreachable broker, local or registered by hand, is shown as
-`offline` in `cotal meshes`. `cotal down` / `cotal clean all` still drop an `up` record for the
+`offline` in `cotal meshes`. A bare command does not count that offline record as running;
+name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the
 project they are tearing down, and they leave a hand-registered one alone even when `--root`
 pointed at that project. A `cotal up` for that space refuses outright (naming `cotal meshes rm`) unless it is
 that same endpoint: finding a broker already answering there is a refresh that starts nothing and

@@ -7,7 +7,7 @@
  *     actually CONNECTS to it (not the hardcoded DEFAULT_SERVER).
  *  B. probeConnect's split against REAL brokers: ok (live, open) vs auth-required (real auth broker)
  *     vs unreachable (killed) — the input that drives preflight's error routing.
- *  C. prune-on-real-death: a killed broker's entry is dropped by pruneStaleMeshes.
+ *  C. keep-on-real-death: a killed broker's entry is kept as offline by pruneStaleMeshes.
  *  D. the registry dir is really 0700 after a real recordMesh.
  *
  * Needs `nats-server` on PATH (like the other broker smokes). Kills ONLY the PIDs it spawns —

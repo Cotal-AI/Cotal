@@ -17,3 +17,9 @@ drop `up` records for the root they tear down.
 
 The unreachable copy for a kept `up` record names the recorded root and tells the operator to run
 `cotal up` there, so a bare `cotal up` in the wrong cwd cannot start a different mesh.
+
+A liveness sweep still returns `{ pruned, offline }`. Resolution now uses `offline`: a record
+known dead is not a live candidate for a bare command (`no mesh running` / `multiple meshes
+running` name only meshes that answered). `--space` still resolves a dead record so preflight
+can name its root. All-offline is still `no-meshes`; the named-space path is what reports
+"recorded but not running".

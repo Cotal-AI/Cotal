@@ -512,28 +512,27 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
 }
 
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
- *  registry rather than a stack trace. Prunes dead registry entries first so a crashed mesh doesn't
- *  block a bare command or appear in the "pick one" list — but ONLY when resolving without an
- *  explicit `--space`. A named `--space` is resolved + preflighted directly, so pre-pruning can't
- *  erase a dead-recorded mesh the operator is recovering with a live `--server` override; preflight
- *  still prunes it (with the friendly message) when no override revives it. */
+ *  registry rather than a stack trace. Sweeps first when resolving without an explicit `--space`,
+ *  and hands the sweep's `offline` set to the resolver so a crashed mesh's kept record does not
+ *  count as running. A named `--space` is resolved + preflighted directly, so the sweep cannot
+ *  hide a dead-recorded mesh the operator is recovering with a live `--server` override. */
 export async function resolveTargetOrThrow(flags: {
   server?: string;
   space?: string;
 }): Promise<MeshTarget> {
-  if (!flags.space) await pruneStaleMeshes();
+  const sweep = flags.space ? { pruned: [] as string[], offline: [] as string[] } : await pruneStaleMeshes();
   let target: MeshTarget;
   try {
-    target = resolveMeshTarget(process.cwd(), flags);
+    target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
     if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }));
     throw e;
   }
-  // If a dangling `current` was silently bypassed — it named a mesh that's since gone and we fell
-  // back to the only live one — say so. The N>1 case errors loudly; this is the one spot that would
-  // otherwise quietly redirect a stale default.
+  // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
+  // or kept as offline) and we fell back to the only live one — say so. The N>1 case errors
+  // loudly; this is the one spot that would otherwise quietly redirect a stale default.
   const cur = getCurrent();
-  if (cur && !findMesh(cur) && target.source === "registry")
+  if (cur && (!findMesh(cur) || sweep.offline.includes(cur)) && target.source === "registry")
     console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }

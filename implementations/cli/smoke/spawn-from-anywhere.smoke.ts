@@ -5,8 +5,9 @@
  * against a closed port. Run: pnpm smoke:spawn-from-anywhere
  *
  * Covers every `resolveMeshTarget` source branch (0 / 1 / N+current / --space / local-project),
- * that completion lists the RESOLVED mesh's personas (not the cwd's) without opening the network,
- * that `current` wins inside another project, and that a dead registry entry probes `unreachable`
+ * a known-dead record that stays but is not a live candidate when `offline` is passed,
+ * completion of the RESOLVED mesh's personas (not the cwd's) without opening the network,
+ * `current` winning inside another project, and a dead registry entry that probes `unreachable`
  * and is kept as offline.
  */
 import { strict as assert } from "node:assert";
@@ -280,6 +281,27 @@ try {
   recordMesh(entry("ghost", projA, DEAD));
   await pruneStaleMeshes();
   check("pruneStaleMeshes keeps the dead entry as offline", loadMeshes().some((m) => m.space === "ghost"), loadMeshes());
+
+  // The sweep used to disambiguate by deleting. The record now stays, so the resolver must
+  // take the sweep's offline set rather than counting a known-dead mesh as running.
+  check(
+    "named --space still resolves a dead kept record (preflight names its root)",
+    resolveMeshTarget(neutral, { space: "ghost" }).space === "ghost",
+  );
+  assert.throws(() => resolveMeshTarget(neutral, { offline: ["ghost"] }), /no mesh running/);
+  check("known-dead record is not a live candidate; the record is still there", loadMeshes().some((m) => m.space === "ghost"));
+  recordMesh(entry("survivor", projB));
+  const live = resolveMeshTarget(neutral, { offline: ["ghost"] });
+  check(
+    "a known-dead record does not make a live singleton ambiguous",
+    live.space === "survivor" && live.source === "registry",
+    live,
+  );
+  assert.throws(
+    () => resolveMeshTarget(neutral),
+    (e: Error) => /multiple meshes/.test(e.message) && e.message.includes("ghost") && e.message.includes("survivor"),
+  );
+  check("without the offline set the kept dead record still counts (the sweep is what disambiguates)", true);
 
   console.log(`\nspawn-from-anywhere smoke: ${pass} checks passed`);
 } finally {

@@ -515,7 +515,8 @@ is the right verb, and `rm` says so unless you pass `--force`. A hand-added reco
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
-wrote the record. `cotal down` / `cotal clean all` still drop an `up` record for the project
+wrote the record. A bare command does not treat that offline record as a running mesh;
+name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the project
 they tear down; a hand-added one they leave alone even when it shares a root, because nothing
 on this machine could write it back.
 

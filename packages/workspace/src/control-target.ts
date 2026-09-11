@@ -78,11 +78,16 @@ export async function resolveControlTarget(
   // misconfigured AUTH mesh with no credentials. Those codes rethrow and the command dies loud.
   if (!withSpace.creds) {
     // Sweep first when no space is named, as the connect helper does before ITS resolve, so the
-    // peek and the connect see one world.
-    if (!withSpace.space) await pruneStaleMeshes();
+    // peek and the connect see one world. The sweep's `offline` set is the liveness verdict:
+    // pass it through so a kept dead record is not a live candidate.
+    const offline = withSpace.space ? [] : (await pruneStaleMeshes()).offline;
     let mode: MeshTarget["mode"] | undefined;
     try {
-      mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
+      mode = resolveMeshTarget(process.cwd(), {
+        server: withSpace.server,
+        space: withSpace.space,
+        offline,
+      }).mode;
     } catch (e) {
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }

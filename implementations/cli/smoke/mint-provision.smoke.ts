@@ -44,7 +44,7 @@ const {
   seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER, registry,
 } = await import("@cotal-ai/core");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
-const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { runCli } = await import("../src/command.js");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 
@@ -332,8 +332,8 @@ try {
     check("--provision naming a mesh on another trust root exits 1 naming both roots and both authorities",
       r.code === 1
         && /authorities disagree/.test(r.out)
-        && r.out.includes(openRoot)
-        && r.out.includes(root)
+        && (r.out.includes(openRoot) || r.out.includes(canonicalRoot(openRoot)))
+        && (r.out.includes(root) || r.out.includes(canonicalRoot(root)))
         && /sandbox\/no-account/.test(r.out)
         && /main\//.test(r.out),
       r.out);
@@ -372,7 +372,7 @@ try {
     const r3 = await runMint(["x", "--profile", "agent", "--provision", "--out", out3]);
     process.chdir(root);
     check("bare --provision from an unrecorded root stays local and exits 1 without reaching the other mesh",
-      r3.code === 1 && /no mesh running at nats:\/\/127\.0\.0\.1:4222/.test(r3.out), r3.out);
+      r3.code === 1 && /mesh "same" is recorded at/.test(r3.out) && (r3.out.includes(rootA) || r3.out.includes(canonicalRoot(rootA))) && /not running/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 
@@ -385,8 +385,8 @@ try {
     check("--provision naming a same-named mesh on another trust root exits 1 naming both roots and both authorities",
       r4.code === 1
         && /authorities disagree/.test(r4.out)
-        && r4.out.includes(rootA)
-        && r4.out.includes(rootB),
+        && (r4.out.includes(rootA) || r4.out.includes(canonicalRoot(rootA)))
+        && (r4.out.includes(rootB) || r4.out.includes(canonicalRoot(rootB))),
       r4.out);
     check("  and mints nothing", !existsSync(out4));
   }
