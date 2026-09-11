@@ -57,7 +57,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   requireRuntimeAdopt,
@@ -389,6 +389,8 @@ export interface ManagerOptions {
     /** Host-owned boot enumeration. It returns parsed, owner-scoped manager goal-index entries and
      * never hands the participant records-stream consumer authority. */
     scanGoalIndex: () => Promise<import("@cotal-ai/core").GoalIndexEntry[]>;
+    /** Fresh host-owned serve-time admin decision for a broker-authenticated caller tuple. */
+    authorizeAdmin: (caller: { owner: string; actor: string; lifecycleUid: string }) => Promise<boolean>;
     /** Pinned public auth-service base used by retained managed children for fresh bearers. The
      * signerless Manager must select `agent-bearer --exchange-url`, never the local `--dir` arm. */
     agentBearerExchangeUrl: string;
@@ -2390,21 +2392,24 @@ export class Manager {
    *  only into operator instruments (§13.2: `any` is operator-policy-mintable; the agent/spawn
    *  rollups never carry them), so REACHING the handler is holding the admin tier, exactly as
    *  holding `ctl.<admin>` is today. User mesh: the caller's CURRENT ledger scope must carry
-   *  `admin` — the same fresh-read authority {@link psOwnerFilter} consults, so a revoked scope
-   *  demotes the very next call even on a still-valid bearer. Fail-closed: an unreadable ledger
-   *  authorizes nothing. NAMED RESIDUAL (critic, 1c.2b): the static `true` has no serve-time
+   *  `admin`. A local-host manager reads its own ledger fresh. A remote-authority manager relays the
+   *  subject-parsed caller tuple to its host-owned authorization callback, with no participant-ledger
+   *  fallback. The same fresh authority drives {@link psOwnerFilter}, so a revoked scope demotes the
+   *  very next call even on a still-valid bearer. Local ledger read failures authorize nothing;
+   *  remote host-state faults throw and fail the operation closed. NAMED RESIDUAL (critic,
+   *  1c.2b): the static `true` has no serve-time
    *  re-check — a LEAKED static admin instrument keeps its reach until the credential's bounded
    *  TTL (the one-shot 5-minute profile), the same static-revoke≠reconnect-death class ruled
    *  across this campaign; static revocation is the TTL, not a ledger. */
-  private async epAdminReach(caller: string): Promise<boolean> {
+  private async epAdminReach(caller: EpCaller): Promise<boolean> {
     if (!this.userMode) return true;
-    const key = parsePrincipalKey(caller);
-    if (!key) return false;
+    if (this.remoteAuthority)
+      return this.remoteAuthority.authorizeAdmin({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
     try {
       const scope = await resolveAuthProvider().actorScope({
         dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: key.owner,
-        actor: key.actor,
+        owner: caller.owner,
+        actor: caller.actor,
       });
       return scope?.includes("admin") === true;
     } catch {
@@ -2419,7 +2424,7 @@ export class Manager {
    *  reinterpreted). Owner mode is always the privileged (own-domain) path. */
   private async epAnyModeAdmin(ctx: EpServeContext): Promise<boolean> {
     if (ctx.subject.target?.mode !== "any") return false;
-    if (!(await this.epAdminReach(principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key)))
+    if (!(await this.epAdminReach(ctx.subject.caller)))
       throw new EpEnvelopeError("permission-denied", `an any-mode ${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
     return true;
   }
@@ -2496,7 +2501,7 @@ export class Manager {
     // call instead of riding the bearer's remaining JWT-row lifetime. The resume family keeps its
     // serveGated BYPASS (those ops must run while the maintenance fence holds) but not the gate.
     const adminGated = async <T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> => {
-      if (!(await this.epAdminReach(callerOf(ctx))))
+      if (!(await this.epAdminReach(ctx.subject.caller)))
         throw new EpEnvelopeError("permission-denied", `${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
       return fn();
     };
@@ -2508,10 +2513,10 @@ export class Manager {
     };
     return managerCommandDefs({
       status: (ctx) => this.serveGated(ctx, () => this.managerStatusData()),
-      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(callerOf(ctx), false))),
+      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
-        const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);
+        const row = this.list(await this.psOwnerFilter(ctx.subject.caller, false)).find((x) => x.name === name);
         if (!row) {
           // The live hit above stays entirely local. Only a miss widens into durable static state,
           // where `not-found` is honest only after the slot read itself succeeds and returns absent.
@@ -2550,13 +2555,13 @@ export class Manager {
       spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
@@ -2565,7 +2570,7 @@ export class Manager {
       // place for one of them to quietly acquire a condition the other does not have.
       input: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.inputAuthorized(a, args(ctx));
       }),
@@ -2574,7 +2579,7 @@ export class Manager {
       // reason `input` is (a shared policy, not a shared body).
       turn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.serveTurnGoal(ctx, a);
       }),
@@ -2663,11 +2668,26 @@ export class Manager {
    *  instruments). With admin=true (any-mode) any named target is allowed (operator). Otherwise
    *  a named target is allowed if it's the caller's OWN child (`spawner == caller`) — and, on a
    *  user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the caller's ledger row
-   *  holds `admin`, read fresh. The policy is the pure
-   *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
-   *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
-   *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
-  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): Promise<string | undefined> {
+   *  holds `admin`, read fresh. Local managers run the pure {@link authorizeNamedControl} policy
+   *  against their provider-backed ledger. Remote managers preserve own-child and owner-domain
+   *  decisions locally, then send only the residual cross-owner admin question through the registered
+   *  host callback with the full endpoint caller tuple. Error string when denied, `undefined` when
+   *  allowed; remote host-state faults throw rather than being collapsed into a denial. */
+  private async authorizeNamed(target: ManagedAgent, caller: string, admin: boolean, epCaller?: EpCaller): Promise<string | undefined> {
+    if (this.remoteAuthority && epCaller && !admin) {
+      if (target.spawner === caller) return undefined;
+      const principal = parsePrincipalKey(caller);
+      if (principal && target.userOwner === principal.owner) return undefined;
+      // Unlike the local pure-policy adapter below, host authority faults are not collapsed into an
+      // ordinary denial. The registered remote manager must fail the operation closed and surface
+      // unavailable/corrupt authoritative state rather than implying a healthy `authorized:false`.
+      if (await this.epAdminReach(epCaller)) return undefined;
+      return (
+        `not authorized: ${target.name} runs under another owner - your grant covers agents under your own owner; ` +
+        `cross-owner stop/attach/input needs scope "admin" on your actor. Re-grant with "admin" ADDED to your current ` +
+        `scope (the upsert replaces the list; see \`cotal actor list\`)`
+      );
+    }
     return authorizeNamedControl({
       target: { name: target.name, spawner: target.spawner, userOwner: target.userOwner },
       caller,
@@ -3785,21 +3805,20 @@ export class Manager {
    *  two surfaces disagree: an admin operator could cross-owner stop an agent it could not list.
    *  Read fresh so a revoked admin loses visibility on its next call; a read failure and an
    *  unparseable caller both fall closed (own-owner / matches-nothing). Static meshes are unbounded. */
-  private async psOwnerFilter(caller: string, admin: boolean): Promise<string | undefined> {
+  private async psOwnerFilter(caller: EpCaller, admin: boolean): Promise<string | undefined> {
     if (!this.userMode || admin) return undefined;
-    const key = parsePrincipalKey(caller);
-    if (!key) return NO_OWNER_MATCHES;
+    if (this.remoteAuthority) return (await this.epAdminReach(caller)) ? undefined : caller.owner;
     try {
       const scope = await resolveAuthProvider().actorScope({
         dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: key.owner,
-        actor: key.actor,
+        owner: caller.owner,
+        actor: caller.actor,
       });
       if (scope?.includes("admin")) return undefined;
     } catch {
       /* unreadable ledger authorizes nothing extra: fall through to the own-owner bound */
     }
-    return key.owner;
+    return caller.owner;
   }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING

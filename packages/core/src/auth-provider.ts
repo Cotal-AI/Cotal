@@ -1,6 +1,8 @@
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
 import type {
+  RemoteManagerAdminAuthorizationRequest,
+  RemoteManagerAdminAuthorizationResult,
   RemoteManagerAuthorityMaterial,
   RemoteManagerAuthorityRequest,
   RemoteManagerGoalIndexScanRequest,
@@ -79,6 +81,12 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerGoalIndexScanRequest;
   }): Promise<RemoteManagerGoalIndexScanResult>;
+  /** Host-owned, fresh serve-time authorization for one exact remote manager caller. */
+  authorizeRemoteManagerAdmin?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerAdminAuthorizationRequest;
+  }): Promise<RemoteManagerAdminAuthorizationResult>;
   /**
    * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
    * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.

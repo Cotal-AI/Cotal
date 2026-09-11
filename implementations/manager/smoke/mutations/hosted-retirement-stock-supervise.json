@@ -1,0 +1,60 @@
+{
+  "suite": [
+    "implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts"
+  ],
+  "guard": "stock cotal supervise validates retained authority at resume and commit, then refuses hosted terminal retirement before requester issuance while the alias remains held",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build && COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm probe:hosted-retirement-stock-supervise",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/hosted-retirement-stock-supervise.json",
+  "why": [
+    "This owner-native acceptance starts the real cotal supervise CLI, an authenticated broker, registry-pinned HTTPS authority, and a retained child from a registry-only participant root.",
+    "The release mutation proves the stock callback is the fail-closed boundary before retirement requester issuance; the commit mutation proves the third HTTPS validation is a fresh commit-time check rather than startup traffic.",
+    "The admin mutations prove remote serve-time authorization cannot bypass the host callback and cannot ignore the caller lifecycle bound to the host row."
+  ],
+  "mutations": [
+    {
+      "name": "stock activation resends the full command-schema closure",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "      const contractArtifacts = [artifacts.document, artifacts.manifest];",
+      "replace": "      const contractArtifacts = [...(await import(\"./manager-service-contract.js\")).managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];",
+      "expectRed": "stock cotal supervise reaches manager ready through remote prepare and activate",
+      "cell": "stock cotal supervise reaches manager ready through remote prepare and activate",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "stock supervision silently accepts hosted release without a host composition",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "        prepareAgentRetirement: async () => {\n          // The stock remote participant path has no hosted storage lifecycle. A composition that\n          // manages hosted agents must inject its revoke + resumable-release operation here rather\n          // than letting consumer deprovision masquerade as terminal retirement.\n          throw new Error(\"remote participant supervision cannot terminally retire a hosted managed agent without a host release composition\");\n        },",
+      "replace": "        prepareAgentRetirement: async () => {},",
+      "expectRed": "stock hosted deprovision fails closed at the explicit host-release refusal",
+      "cell": "stock hosted deprovision fails closed at the explicit host-release refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "resume commit skips its fresh retained-authority validation",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const authority = await Promise.all(inventory.agents.map(async (entry) => {\n      try {\n        await this.validateRetainedAuthority(entry);\n        return undefined;",
+      "replace": "    const authority = await Promise.all(inventory.agents.map(async (entry) => {\n      try {\n        void entry;\n        return undefined;",
+      "expectRed": "stock resume commit fresh-validates retained authority through registry-pinned HTTPS",
+      "cell": "stock resume commit fresh-validates retained authority through registry-pinned HTTPS",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "remote manager bypasses host-owned admin authorization",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (this.remoteAuthority)\n      return this.remoteAuthority.authorizeAdmin({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });",
+      "replace": "    if (this.remoteAuthority)\n      return true;",
+      "expectRed": "narrowed host admin scope refuses before the manager operation runs",
+      "cell": "narrowed host admin scope refuses before the manager operation runs",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "host admin authorization ignores caller lifecycle binding",
+      "file": "implementations/auth/src/manager-admin-authorization.ts",
+      "find": "    authorized = row?.lifecycleUid === request.caller.lifecycleUid && row.scope.includes(\"admin\");",
+      "replace": "    authorized = row?.scope.includes(\"admin\") === true;",
+      "expectRed": "stale caller lifecycle refuses without a reason oracle or manager operation",
+      "cell": "stale caller lifecycle refuses without a reason oracle or manager operation",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

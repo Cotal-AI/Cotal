@@ -7,6 +7,8 @@ import {
   remoteManagerActors,
   writeSecretFileAtomic,
   type Identity,
+  type RemoteManagerAdminAuthorizationRequest,
+  type RemoteManagerAdminAuthorizationResult,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteManagerGoalIndexScanRequest,
@@ -28,6 +30,47 @@ interface RemoteManagerIdentityState {
     goalWriter: Identity;
     sessionLedger: Identity;
   };
+}
+
+export function remoteManagerAdminAuthorizationRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: { owner: string; actor: string; lifecycleUid: string },
+): RemoteManagerAdminAuthorizationRequest {
+  return {
+    v: 1,
+    kind: "manager-admin-authorization",
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `admin${mintLifecycleUid()}`,
+    registrationProof,
+    serveEpoch,
+    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerAdminAuthorizationRequest["identities"],
+    caller,
+  };
+}
+
+/** Validate the untrusted host result before the boolean can gate a manager operation. */
+export function remoteManagerAdminAuthorized(
+  result: RemoteManagerAdminAuthorizationResult,
+  request: RemoteManagerAdminAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  const fields = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller", "authorized"];
+  if (result === null || typeof result !== "object" || Array.isArray(result) || Object.keys(result).sort().join(",") !== fields.sort().join(","))
+    throw new Error("manager admin authorization returned a non-closed result");
+  if (result.v !== 1 || result.kind !== "manager-admin-authorization" || result.space !== request.space ||
+      result.owner !== expectedOwner || result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch ||
+      JSON.stringify(result.identities) !== JSON.stringify(request.identities) || JSON.stringify(result.caller) !== JSON.stringify(request.caller) ||
+      typeof result.authorized !== "boolean")
+    throw new Error("manager admin authorization returned different lifecycle, identity, caller, owner, or boolean coordinates");
+  return result.authorized;
 }
 
 function stateFile(root: string, space: string): string {

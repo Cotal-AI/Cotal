@@ -47,7 +47,7 @@ are marked; import them with `import type`.
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
-| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including a required host-owned release prerequisite and a target-pinned retirement-requester callback. |
+| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 
 **Provisioning and minting** (all `@cotal-ai/core`)
@@ -248,6 +248,18 @@ store. Both contain private signing or exchange authority.
 The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinned public auth-service
 base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
 not select the local `--dir` arm, which depends on a host-only auth-service process record.
+
+Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
+request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays
+that tuple over the current registered manager lifecycle. HTTPS does not separately authenticate the
+relayed caller. The host authenticates the manager operator, binds the request to the current open
+manager gate, registration proof, serving epoch, and identity nkeys, then reads the caller's unified
+authoritative row fresh. It returns only the manager owner and `authorized: boolean`, with every request
+coordinate echoed. Missing, revoked, narrowed, foreign-owner, and stale-lifecycle callers all return
+`false`; malformed coordinates or corrupt and unavailable authority state fail the operation. The
+participant never reads or mirrors the host ledger, and the remote branch has no local fallback. The
+same callback gates all `manager.admin` handlers, any-mode cross-owner control, and `ps` or `inspect`
+cross-owner visibility. Launch keeps its owner-equality policy.
 
 The remote authority's instance executor remains the scoped maintenance credential for clean service
 deregistration and exact instance registration operations. It carries no records-stream consumer
