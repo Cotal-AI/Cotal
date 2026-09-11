@@ -567,11 +567,14 @@ export async function openAuthAuthorityPlane(opts: {
                 throw new EpEnvelopeError("permission-denied", "manager-service registration proof does not match this owner/lifecycle/artifact set");
             } else {
               const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
-                if (r.registrationProof !== expectedProof)
-                  throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registered lifecycle");
-                renewal = new ManagerRenewalCompensation(authKv, gate, r.instanceId, r.requestId, opts.probeRenewalFault);
-                await renewal.begin();
-                credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
+              if (r.registrationProof !== expectedProof)
+                throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registered lifecycle");
+            }
+            const familyIssuance = new ManagerRenewalCompensation(authKv, gate, r.instanceId, r.requestId, opts.probeRenewalFault);
+            renewal = familyIssuance;
+            await familyIssuance.begin();
+            if (r.operation === "renew") {
+              credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
                 remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
                 expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
               });
@@ -612,13 +615,13 @@ export async function openAuthAuthorityPlane(opts: {
                 lifecycleUid: r.managerLifecycleUid,
                 expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
                 endpointServe: serveGrant,
-                serveIssuance: renewal ? renewal.wrap("serve") : gate,
+                serveIssuance: familyIssuance.wrap("serve"),
               },
             );
-            await renewal?.checkpoint("after-serve-finalize");
+            await familyIssuance.checkpoint("after-serve-finalize");
             const sibling = async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
               const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: STANDING_RENEWABLE_TTL_SEC } : { expiresInSeconds: STANDING_RENEWABLE_TTL_SEC });
-              await commitSiblingIssuance(renewal ? renewal.wrap(key) : gate, observed, {
+              await commitSiblingIssuance(familyIssuance.wrap(key), observed, {
                 credentialId: rawDigest(issued.jwt).replace("sha256:", "sha256-"),
                 credentialKey: r.identities[key].id,
                 holderPrincipal: `${owner}.${actor}`,
@@ -635,9 +638,9 @@ export async function openAuthAuthorityPlane(opts: {
               return issued;
             };
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
-            await renewal?.checkpoint("after-goal-finalize");
+            await familyIssuance.checkpoint("after-goal-finalize");
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
-            await renewal?.checkpoint("after-session-finalize");
+            await familyIssuance.checkpoint("after-session-finalize");
               return {
                 credentials,
                 nextRegistrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed),

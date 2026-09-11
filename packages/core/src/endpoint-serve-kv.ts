@@ -112,7 +112,6 @@ export function serveIssuanceGateKv(
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
-  const stagedOwnership = new Map<string, "created" | "reused">();
   const stageOwned = async (row: EpServeLedgerRow): Promise<"created" | "reused"> => {
     // The staged row must BE this gate's instance — a foreign endpoint/instance row through this
     // adapter is a caller bug, never silently redirected into another family.
@@ -128,9 +127,7 @@ export function serveIssuanceGateKv(
     // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
     // this trusted path would itself refuse to read never lands durably.
     parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
-    const ownership = await createRowByteIdempotentOwned(kv, rowKey, ledgerRow);
-    stagedOwnership.set(row.credentialId, ownership);
-    return ownership;
+    return createRowByteIdempotentOwned(kv, rowKey, ledgerRow);
   };
   return {
     observe: async () => {
@@ -168,10 +165,6 @@ export function serveIssuanceGateKv(
       // `revoke` runs ONLY after a successful `stage` (finalizeServeIssuance's non-win cleanup), so
       // the row MUST exist. markLedgerRowRevoked is idempotent on an already-revoked row and FAILS
       // LOUD on an absent/DEL row (corruption, never a "never staged" idempotence case).
-      // A byte-identical row reused by this gate call belongs to a prior completed issuance. A lost
-      // CAS from this caller must not revoke it. An absent local outcome is an explicit cleanup or
-      // recovery call over a durable row and retains the original revoke behavior.
-      if (stagedOwnership.get(row.credentialId) === "reused") return;
       await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
     },
   };

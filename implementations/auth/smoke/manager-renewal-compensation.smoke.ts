@@ -52,7 +52,7 @@ const releaseBroker = teardownOnSignal(broker, tmp);
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const quiet = () => {};
 let assertionCount = 0;
-const expectedAssertions = 5 + 5 + (2 * 4) + 3 + 3 + (4 * 6) + 3 + 2 + 6 + 1;
+const expectedAssertions = 5 + 5 + 5 + (2 * 4) + 3 + 3 + (4 * 6) + 3 + 2 + 6 + 1;
 const measured = {
   equal: (actual: unknown, expected: unknown, name: string): void => { assertionCount++; assert.equal(actual, expected, name); console.log(`  PASS: ${name}`); },
   match: (actual: string, expected: RegExp, name: string): void => { assertionCount++; assert.match(actual, expected, name); console.log(`  PASS: ${name}`); },
@@ -176,6 +176,19 @@ try {
   measured.equal(sameClock.after.find((row) => row.key === initialByRole.get("serve")?.key)?.state, "active", "same-clock: compensation leaves the exact reused serve row active");
   measured.equal(initialFamily.every((old) => sameClock.after.some((row) => row.key === old.key && row.role === old.role && row.state === "active")), true, "same-clock: compensation preserves every role in the prior complete generation");
 
+  const sameClockActivationTemplate = request("activate", `sha256:${"0".repeat(64)}`, [artifacts.document, artifacts.manifest]);
+  const sameClockActivation = await delta(() => atIssuanceClock(() => plane!.issueManagerServiceAuthority({
+    owner, scope: ["supervise"], request: {
+      ...sameClockActivationTemplate,
+      registrationProof: remoteManagerRegistrationProof(owner, sameClockActivationTemplate),
+    },
+  })));
+  measured.match(sameClockActivation.error?.message ?? "", /after-serve-finalize/, "same-clock activation: the manager wrapper reaches its issuance fault");
+  measured.equal(sameClockActivation.fresh.length, 0, "same-clock activation: reuse creates no new ledger row");
+  measured.equal(sameClockActivation.after.length, initialFamily.length, "same-clock activation: rollback retains exactly the prior complete family");
+  measured.equal(sameClockActivation.after.find((row) => row.key === initialByRole.get("serve")?.key)?.state, "active", "same-clock activation: rollback leaves the reused serve row active");
+  measured.equal(initialFamily.every((old) => sameClockActivation.after.some((row) => row.key === old.key && row.role === old.role && row.state === "active")), true, "same-clock activation: rollback preserves every prior role");
+
   // The public plane above proves the real source reach. These two focused cells drive the shipped
   // compensation wrapper against the same real auth KV while controlling only the collaborator's
   // gate CAS result. A CAS loser must conserve a byte-identical reused row, while still revoking a row
@@ -226,9 +239,9 @@ try {
   await wrapperCasLoss("reused");
   await wrapperCasLoss("created");
 
-  // The same ownership rule also lives in the real KV gate itself for core finalizers that call its
-  // ordinary stage/revoke pair directly. Reusing through one gate instance conserves the old row;
-  // a fresh gate instance has no local reuse claim and may explicitly revoke durable cleanup debt.
+  // Explicit revocation preserves the shared gate's published contract after an idempotent restage.
+  // Request-owned rollback belongs in the manager wrapper above, rather than suppressing a caller's
+  // explicit revoke of an existing ledger row.
   const directInstanceId = mintLifecycleUid();
   const directGate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId: directInstanceId });
   const directRow: EpServeLedgerRow = {
@@ -248,9 +261,9 @@ try {
   measured.equal(await directState(), "active", "real gate: ordinary stage creates an active row");
   await directGate.stage(directRow);
   await directGate.revoke(directRow);
-  measured.equal(await directState(), "active", "real gate: ordinary identical reuse records ownership and skips same-instance revoke");
+  measured.equal(await directState(), "revoked", "real gate: explicit revoke remains effective after an identical restage");
   await serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId: directInstanceId }).revoke(directRow);
-  measured.equal(await directState(), "revoked", "real gate: a fresh instance can explicitly revoke durable cleanup debt");
+  measured.equal(await directState(), "revoked", "real gate: repeated explicit revoke is idempotent");
 
   // A collaborator that reports an atomic create but loses the staged row is corruption, not the
   // ordinary prepared-before-create crash window. The durable intent lives in the real auth KV. Its

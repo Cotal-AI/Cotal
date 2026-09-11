@@ -24,12 +24,12 @@
       "expectRed": "wrapper reused: lost-CAS revoke ownership is conserved"
     },
     {
-      "name": "real KV gate revokes its reused row",
+      "name": "real KV gate drops explicit revocation",
       "file": "packages/core/src/endpoint-serve-kv.ts",
-      "find": "      if (stagedOwnership.get(row.credentialId) === \"reused\") return;",
-      "replace": "      if (stagedOwnership.get(row.credentialId) === \"reused\" && false) return;",
+      "find": "      await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));\n    },\n  };",
+      "replace": "      void row;\n    },\n  };",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build",
-      "expectRed": "real gate: ordinary identical reuse records ownership and skips same-instance revoke"
+      "expectRed": "wrapper created: real auth KV retains the required terminal row state"
     },
     {
       "name": "new issuance ignores a prior unresolved revoke failure",
