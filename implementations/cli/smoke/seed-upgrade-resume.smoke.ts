@@ -92,10 +92,15 @@ const cursor = { nonce: "issue-1336-upgrade", package: "claude", phase: "add" } 
 let broker: ChildProcess | undefined;
 let manager: ChildProcess | undefined;
 let pass = 0;
+let fail = 0;
 function check(name: string, condition: boolean, extra?: unknown): void {
-  if (!condition) throw new Error(`FAIL: ${name}${extra === undefined ? "" : `\n${String(extra)}`}`);
-  pass += 1;
-  console.log(`  ✓ ${name}`);
+  if (condition) {
+    pass += 1;
+    console.log(`  ✓ ${name}`);
+  } else {
+    fail += 1;
+    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
+  }
 }
 
 try {
@@ -187,4 +192,5 @@ try {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log(`seed-upgrade-resume smoke: ${pass} passed, 0 failed`);
+console.log(`seed-upgrade-resume smoke: ${pass} passed, ${fail} failed`);
+process.exitCode = fail ? 1 : 0;
