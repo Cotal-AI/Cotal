@@ -213,11 +213,12 @@ jobs:
       - name: Version snapshot
         run: pnpm changeset version --snapshot ${{ inputs.snapshot }}
 
-      - name: Build, assemble natives, and publish
+      - name: Preflight, build, assemble natives, and publish
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
         run: |
+          node scripts/preflight-npm-publish.mjs
           pnpm build
           node scripts/seat-assemble-natives.mjs
           pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}

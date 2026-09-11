@@ -1,0 +1,64 @@
+{
+  "suite": [
+    "scripts/preflight-npm-publish.mjs",
+    "bin/smoke/npm-publish-preflight.smoke.ts"
+  ],
+  "guard": "The fixed-group npm census and OIDC preflight refuses partial or incomplete releases before any registry write",
+  "command": "pnpm smoke:npm-publish-preflight",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/npm-publish-preflight.json",
+  "why": [
+    "A sequential recursive publish cannot recover after one package version lands and a later package refuses.",
+    "These mutations remove one fail-before-write property at a time and every one must be killed by the fake registry smoke."
+  ],
+  "mutations": [
+    {
+      "name": "an already-published exact version is treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 200) return \"present\";\n",
+      "replace": "    if (response.status === 200) return \"absent\";\n",
+      "expectRed": "one already-published package refuses the whole preflight",
+      "cell": "one already-published package refuses the whole preflight"
+    },
+    {
+      "name": "a mixed present and absent census is allowed to continue",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (unknown.length || (present.length > 0 && absent.length > 0)) {\n",
+      "replace": "  if (unknown.length) {\n",
+      "expectRed": "one already-published package refuses the whole preflight",
+      "cell": "one already-published package refuses the whole preflight"
+    },
+    {
+      "name": "the recursive publish set may omit one fixed-group package",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (invalid.length || missingManifests.length || outsideFixedGroup.length || manifests.size !== fixed.length) {\n",
+      "replace": "  if (invalid.length || outsideFixedGroup.length) {\n",
+      "expectRed": "one fixed-group package missing from the recursive publish set refuses",
+      "cell": "one fixed-group package missing from the recursive publish set refuses"
+    },
+    {
+      "name": "clean release skips per-package OIDC exchanges",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  for (const row of rows) row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n",
+      "replace": "  for (const row of rows) row.oidc = \"ready\";\n",
+      "expectRed": "clean preflight exchanges OIDC for every package before publishing",
+      "cell": "clean preflight exchanges OIDC for every package before publishing"
+    },
+    {
+      "name": "a refused OIDC exchange is treated as ready",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (response.status !== 201) return `refused:${response.status}`;\n",
+      "replace": "  if (response.status !== 201) return \"ready\";\n",
+      "expectRed": "one refused OIDC exchange refuses the full release",
+      "cell": "one refused OIDC exchange refuses the full release"
+    },
+    {
+      "name": "partial release begins OIDC exchanges before the complete registry census",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  for (const pkg of packages) {\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: \"not-run\" });\n  }\n",
+      "replace": "  for (const pkg of packages) {\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) });\n  }\n",
+      "expectRed": "partial prior publish refuses before any OIDC exchange or publish call",
+      "cell": "partial prior publish refuses before any OIDC exchange or publish call"
+    }
+  ]
+}
