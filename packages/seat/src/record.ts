@@ -104,6 +104,8 @@ export function readRecord(path: string): SeatRecord {
     throw new Error("seat record custodianStart is not a start token");
   if (raw.childStart !== undefined && (typeof raw.childStart !== "string" || raw.childStart.length === 0))
     throw new Error("seat record childStart is not a start token");
+  if (raw.bootId !== undefined && (typeof raw.bootId !== "string" || raw.bootId.length === 0))
+    throw new Error("seat record bootId is not a boot identity");
   return {
     version: RECORD_VERSION,
     id: raw.id,
@@ -114,5 +116,8 @@ export function readRecord(path: string): SeatRecord {
     childPid: raw.childPid,
     ...(raw.custodianStart !== undefined ? { custodianStart: raw.custodianStart } : {}),
     ...(raw.childStart !== undefined ? { childStart: raw.childStart } : {}),
+    // Carried, not re-read from this process: a record read on another boot must still say which
+    // boot its pids came from, which is the whole point of the stamp.
+    ...(raw.bootId !== undefined ? { bootId: raw.bootId } : {}),
   };
 }

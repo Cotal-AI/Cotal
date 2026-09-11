@@ -118,6 +118,16 @@
       "expectRed": "the custodian stamps the boot its pids belong to",
       "cell": "the custodian stamps the boot its pids belong to",
       "note": "An unstamped record is refused by reapSeat, so every seat this custodian launches becomes unreapable rather than misreaped."
+    },
+    {
+      "name": "drop the boot stamp when a record is read back",
+      "file": "packages/seat/src/record.ts",
+      "find": "    ...(raw.bootId !== undefined ? { bootId: raw.bootId } : {}),\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "reapSeat signals a live seat by identity and proves it gone",
+      "cell": "reapSeat signals a live seat by identity and proves it gone",
+      "note": "A reader that rebuilds the record without the stamp makes every seat unreapable: the custodian writes the boot, readRecord forgets it, and reapSeat refuses the record it was handed."
     }
   ]
 }
