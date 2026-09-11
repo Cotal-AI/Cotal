@@ -1,5 +1,3 @@
-import type { existsSync, readFileSync } from "node:fs";
-
 export const INFRASTRUCTURE_MARKERS: readonly [
   "REAL Manager",
   "REAL agent processes",
@@ -11,13 +9,15 @@ export function smokeTokens(command: string): string[];
 export function isLiveNamedToken(token: string): boolean;
 export function infrastructureMarkerIn(source: string): string | undefined;
 
+export interface LiveCommandSafetyOptions {
+  cwd?: string;
+  readFile?: (path: string, encoding?: string) => string;
+  exists?: (path: string) => boolean;
+}
+
 export function liveShapedCommandReason(
   command: string,
-  options?: {
-    cwd?: string;
-    readFile?: typeof readFileSync;
-    exists?: typeof existsSync;
-  },
+  options?: LiveCommandSafetyOptions,
 ): string | null;
 
 export function liveShapedFixtureReason(
@@ -25,9 +25,5 @@ export function liveShapedFixtureReason(
     command?: string;
     mutations?: { command?: string }[];
   },
-  options?: {
-    cwd?: string;
-    readFile?: typeof readFileSync;
-    exists?: typeof existsSync;
-  },
+  options?: LiveCommandSafetyOptions,
 ): string | null;
