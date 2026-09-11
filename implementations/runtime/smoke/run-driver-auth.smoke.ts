@@ -58,6 +58,7 @@ import {
   type IssuedSubjectPermissions,
   wfjStreamName,
   wfjSubject,
+  waitConsumerName,
   DEV_OWNER,
   type CotalMessage,
 } from "@cotal-ai/core";
@@ -96,6 +97,14 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+};
+const until = async (fn: () => Promise<boolean>, ms: number): Promise<boolean> => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await fn()) return true;
+    await wait(50);
+  }
+  return false;
 };
 
 const PORT = await pickFreePort();
@@ -236,9 +245,30 @@ try {
 // ── 2) the run-driver credential drives a program across every plane its rows name ───────────
 const A = await driver(RUN_A, TK_A);
 {
-  const driven = startRun(A.js, A.jsm, { space: S, endpoint: EP, runId: RUN_A, source: PROGRAM, kv: A.kv, lease: lease(TK_A, 1), handler: A.handler });
-  // The wait arms after the sleep's real second has passed and its fire has been taken.
-  await wait(4_000);
+  let waitRequestId: string | undefined;
+  const handler = {
+    ...A.handler,
+    wait(req: Parameters<typeof A.handler.wait>[0], ctx: Parameters<typeof A.handler.wait>[1]) {
+      waitRequestId = ctx.requestId;
+      return A.handler.wait(req, ctx);
+    },
+  };
+  const driven = startRun(A.js, A.jsm, { space: S, endpoint: EP, runId: RUN_A, source: PROGRAM, kv: A.kv, lease: lease(TK_A, 1), handler });
+  // Publish only after the wait's DeliverPolicy.New durable exists. A wall-clock delay races the
+  // host's journal and admission reads: a slow but healthy host can create the durable after the
+  // message, correctly exclude it as history, and wait the full program timeout.
+  const waitReady = await until(async () => {
+    if (waitRequestId === undefined) return false;
+    try {
+      await A.hostPlanes.jsm.consumers.info(`CHAT_${S}`, waitConsumerName(waitRequestId));
+      return true;
+    } catch (error) {
+      if ((error as { code?: unknown })?.code === 10014) return false;
+      throw error;
+    }
+  }, 10_000);
+  c("the driven wait durable is observable before the test publishes its message", waitReady);
+  if (!waitReady) throw new Error("the driven wait durable did not become observable");
   await say("the build is green");
   const out = await withDeadline(driven.then((o) => ({ o }), (e: unknown) => ({ e })), 30_000, "the driven run");
   const entries = out !== undefined && "o" in out && out.o.status === "completed" ? out.o.result.journal.entries() : [];

@@ -1298,7 +1298,7 @@ function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string;
   };
 }
 
-function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
+export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;

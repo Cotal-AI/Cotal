@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, rawDigest, type PlaneConnTuple, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -90,27 +90,20 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
   return {
     publish: [
       ...base.publish,
+      // The typed activation phase mints the manager instance's endpoint-serve credential through
+      // serveIssuanceGateKv. That fence stages one `epcred.manager.<instance>.<credential>` row and
+      // revision-touches the matching `epgate.manager.<instance>` row. The host issuer serves many
+      // manager instances, so the instance tail is necessarily open, but the endpoint label stays
+      // fixed to `manager`: no participant credential receives these rows, and no other endpoint's
+      // issuance family is reachable through this server-side connection.
+      `$KV.${epAuthBucket(space)}.epgate.manager.>`,
+      `$KV.${epAuthBucket(space)}.epcred.manager.>`,
     ],
     subscribe: base.subscribe,
   };
 }
 
-/** Deterministic registration proof shared by prepare, the participant, and activate. It binds
- * owner, instance, lifecycle, every caller-generated nkey, and the canonical manager artifact
- * digests; replay against another lifecycle or artifact set cannot pass. */
-export function remoteManagerRegistrationProof(owner: string, request: RemoteManagerAuthorityRequest): string {
-  const artifactDigests = request.operation === "session" ? [] : (request.contractArtifacts ?? []).map((value) => rawDigest(JSON.stringify(value)));
-  return rawDigest(JSON.stringify({
-    v: 1,
-    space: request.space,
-    owner,
-    instanceId: request.instanceId,
-    lifecycleUid: request.managerLifecycleUid,
-    actors: remoteManagerActors(request.instanceId),
-    identities: request.identities,
-    artifactDigests,
-  }));
-}
+export { remoteManagerRegistrationProof };
 
 /**
  * The BARRIER EXECUTOR's scoped credential grant (SPEC 13.9): the lifecycle-barrier surface —

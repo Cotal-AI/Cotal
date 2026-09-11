@@ -1,0 +1,2 @@
+# A current manager resumes an interrupted refresh over a v0.33.1-shaped seed store.
+smoke:seed-upgrade-resume

@@ -34,6 +34,7 @@ import {
   type IssuanceSeam,
   type IssuedStore,
   mintLifecycleUid,
+  managedRetirementOpId,
   mkSecretDir,
   newIdentity,
   actionContext,
@@ -56,7 +57,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   requireRuntimeAdopt,
@@ -74,7 +75,7 @@ import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
-import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
+import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -180,9 +181,6 @@ import {
   STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
 
-/** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
- *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
-const MAX_AGENTS = 50;
 /** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
@@ -262,7 +260,7 @@ type StaticReconcileItem = ManagerStaticReconciliationFailure & {
  *  operation (the rail's idempotence table needs exactly one op per retiring incarnation). 26 hex
  *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
 function retireOpId(lifecycleUid: string): string {
-  return createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
+  return managedRetirementOpId(lifecycleUid);
 }
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
@@ -362,6 +360,38 @@ export interface ManagerOptions {
     sessionLedgerCreds: string;
     serveGrant: EpServeGrant;
     mintSessionServing: (args: { identity: Identity; endpoint: string; sessionId: string; epoch: number; exp: number }) => Promise<string>;
+    mintRetirementRequester: (args: {
+      identity: Identity;
+      target: { owner: string; actor: string; lifecycleUid: string };
+      opId: string;
+      serveEpoch: number;
+    }) => Promise<string>;
+    /** Host-owned prerequisite for terminal retirement. It revokes the managed grant and completes
+     * the host's resumable release/sweep while preserving this UID. Success means the terminal auth
+     * barrier may start; failure keeps the alias held and is retried with the same operation id. */
+    prepareAgentRetirement: (args: {
+      target: { owner: string; actor: string; lifecycleUid: string };
+      opId: string;
+    }) => Promise<void>;
+    /** Host-owned continuity check for a retained managed actor. A signerless participant cannot
+     * validate the actor token or sentinel from public material alone, and must never receive the
+     * provider's issuer/callout private records. Hosted compositions keep those records host-side
+     * and return only the non-secret current authority shape. */
+    validateRetainedAgent: (args: {
+      owner: string;
+      actor: string;
+      lifecycleUid: string;
+      actorToken: string;
+      sentinelCreds: string;
+    }) => Promise<import("@cotal-ai/core").RetainedAgentAuthority>;
+    /** Host-owned boot enumeration. It returns parsed, owner-scoped manager goal-index entries and
+     * never hands the participant records-stream consumer authority. */
+    scanGoalIndex: () => Promise<import("@cotal-ai/core").GoalIndexEntry[]>;
+    /** Fresh host-owned serve-time admin decision for a broker-authenticated caller tuple. */
+    authorizeAdmin: (caller: { owner: string; actor: string; lifecycleUid: string }) => Promise<boolean>;
+    /** Pinned public auth-service base used by retained managed children for fresh bearers. The
+     * signerless Manager must select `agent-bearer --exchange-url`, never the local `--dir` arm. */
+    agentBearerExchangeUrl: string;
   };
 }
 
@@ -872,6 +902,12 @@ export class Manager {
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
   private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; startedAt: number; lastError?: string; standingAuthorityLive?: boolean }>();
+  /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
+   *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
+   *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
+   *  unknown, current, or differently identified live row still refuses. A later retirement of the
+   *  same alias replaces its prior predecessor coordinate. */
+  private readonly confirmedRetiredPredecessors = new Map<string, { principal: string; lifecycleUid: string }>();
   /** SINGLE-FLIGHT guard for {@link requestRetirement} (audit #1): one in-flight rail round-trip per
    *  (name, lifecycleUid). The detached `deprovision` call and every same-name-spawn nudge for THAT
    *  lifecycle JOIN the same promise instead of stacking independent requests that dual-enter the
@@ -2048,7 +2084,9 @@ export class Manager {
         },
       });
     try {
-      const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
+      const outcome = await ((this.auth || this.remoteAuthority)
+        ? this.withEndpointServeExecutor(dereg)
+        : this.withOpenServeConnection(dereg));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
@@ -2352,21 +2390,24 @@ export class Manager {
    *  only into operator instruments (§13.2: `any` is operator-policy-mintable; the agent/spawn
    *  rollups never carry them), so REACHING the handler is holding the admin tier, exactly as
    *  holding `ctl.<admin>` is today. User mesh: the caller's CURRENT ledger scope must carry
-   *  `admin` — the same fresh-read authority {@link psOwnerFilter} consults, so a revoked scope
-   *  demotes the very next call even on a still-valid bearer. Fail-closed: an unreadable ledger
-   *  authorizes nothing. NAMED RESIDUAL (critic, 1c.2b): the static `true` has no serve-time
+   *  `admin`. A local-host manager reads its own ledger fresh. A remote-authority manager relays the
+   *  subject-parsed caller tuple to its host-owned authorization callback, with no participant-ledger
+   *  fallback. The same fresh authority drives {@link psOwnerFilter}, so a revoked scope demotes the
+   *  very next call even on a still-valid bearer. Local ledger read failures authorize nothing;
+   *  remote host-state faults throw and fail the operation closed. NAMED RESIDUAL (critic,
+   *  1c.2b): the static `true` has no serve-time
    *  re-check — a LEAKED static admin instrument keeps its reach until the credential's bounded
    *  TTL (the one-shot 5-minute profile), the same static-revoke≠reconnect-death class ruled
    *  across this campaign; static revocation is the TTL, not a ledger. */
-  private async epAdminReach(caller: string): Promise<boolean> {
+  private async epAdminReach(caller: EpCaller): Promise<boolean> {
     if (!this.userMode) return true;
-    const key = parsePrincipalKey(caller);
-    if (!key) return false;
+    if (this.remoteAuthority)
+      return this.remoteAuthority.authorizeAdmin({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
     try {
       const scope = await resolveAuthProvider().actorScope({
         dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: key.owner,
-        actor: key.actor,
+        owner: caller.owner,
+        actor: caller.actor,
       });
       return scope?.includes("admin") === true;
     } catch {
@@ -2381,7 +2422,7 @@ export class Manager {
    *  reinterpreted). Owner mode is always the privileged (own-domain) path. */
   private async epAnyModeAdmin(ctx: EpServeContext): Promise<boolean> {
     if (ctx.subject.target?.mode !== "any") return false;
-    if (!(await this.epAdminReach(principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key)))
+    if (!(await this.epAdminReach(ctx.subject.caller)))
       throw new EpEnvelopeError("permission-denied", `an any-mode ${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
     return true;
   }
@@ -2458,7 +2499,7 @@ export class Manager {
     // call instead of riding the bearer's remaining JWT-row lifetime. The resume family keeps its
     // serveGated BYPASS (those ops must run while the maintenance fence holds) but not the gate.
     const adminGated = async <T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> => {
-      if (!(await this.epAdminReach(callerOf(ctx))))
+      if (!(await this.epAdminReach(ctx.subject.caller)))
         throw new EpEnvelopeError("permission-denied", `${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
       return fn();
     };
@@ -2470,10 +2511,10 @@ export class Manager {
     };
     return managerCommandDefs({
       status: (ctx) => this.serveGated(ctx, () => this.managerStatusData()),
-      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(callerOf(ctx), false))),
+      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
-        const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);
+        const row = this.list(await this.psOwnerFilter(ctx.subject.caller, false)).find((x) => x.name === name);
         if (!row) {
           // The live hit above stays entirely local. Only a miss widens into durable static state,
           // where `not-found` is honest only after the slot read itself succeeds and returns absent.
@@ -2512,13 +2553,13 @@ export class Manager {
       spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
@@ -2527,7 +2568,7 @@ export class Manager {
       // place for one of them to quietly acquire a condition the other does not have.
       input: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.inputAuthorized(a, args(ctx));
       }),
@@ -2536,7 +2577,7 @@ export class Manager {
       // reason `input` is (a shared policy, not a shared body).
       turn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.serveTurnGoal(ctx, a);
       }),
@@ -2625,11 +2666,26 @@ export class Manager {
    *  instruments). With admin=true (any-mode) any named target is allowed (operator). Otherwise
    *  a named target is allowed if it's the caller's OWN child (`spawner == caller`) — and, on a
    *  user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the caller's ledger row
-   *  holds `admin`, read fresh. The policy is the pure
-   *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
-   *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
-   *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
-  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): Promise<string | undefined> {
+   *  holds `admin`, read fresh. Local managers run the pure {@link authorizeNamedControl} policy
+   *  against their provider-backed ledger. Remote managers preserve own-child and owner-domain
+   *  decisions locally, then send only the residual cross-owner admin question through the registered
+   *  host callback with the full endpoint caller tuple. Error string when denied, `undefined` when
+   *  allowed; remote host-state faults throw rather than being collapsed into a denial. */
+  private async authorizeNamed(target: ManagedAgent, caller: string, admin: boolean, epCaller?: EpCaller): Promise<string | undefined> {
+    if (this.remoteAuthority && epCaller && !admin) {
+      if (target.spawner === caller) return undefined;
+      const principal = parsePrincipalKey(caller);
+      if (principal && target.userOwner === principal.owner) return undefined;
+      // Unlike the local pure-policy adapter below, host authority faults are not collapsed into an
+      // ordinary denial. The registered remote manager must fail the operation closed and surface
+      // unavailable/corrupt authoritative state rather than implying a healthy `authorized:false`.
+      if (await this.epAdminReach(epCaller)) return undefined;
+      return (
+        `not authorized: ${target.name} runs under another owner - your grant covers agents under your own owner; ` +
+        `cross-owner stop/attach/input needs scope "admin" on your actor. Re-grant with "admin" ADDED to your current ` +
+        `scope (the upsert replaces the list; see \`cotal actor list\`)`
+      );
+    }
     return authorizeNamedControl({
       target: { name: target.name, spawner: target.spawner, userOwner: target.userOwner },
       caller,
@@ -2997,7 +3053,7 @@ export class Manager {
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
   private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
-    if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
+    if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
     // outlive the hold-clear and delete a successor's row. A fresh trigger after settle re-drives.
@@ -3013,6 +3069,19 @@ export class Manager {
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
   private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+    if (this.remoteAuthority) {
+      // A hosted composition owns grant revocation and resumable footprint release. It calls this
+      // prerequisite before the terminal rail. The callback must preserve this UID and its pending
+      // state until the host decides terminal retirement, never map deprovisioning to suspension.
+      const target = parsePrincipalKey(a.id);
+      if (!target) throw new Error(`hosted retirement cannot derive the managed principal ${a.id}`);
+      await this.remoteAuthority.prepareAgentRetirement({
+        target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
+        opId: retireOpId(a.lifecycleUid),
+      });
+      await this.requestRetirement(a);
+      return;
+    }
     if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
     if (!this.userMode && !a.userOwner) {
       // Unit B: a STATIC lifecycle retires through the F1 terminal barrier — freeze → head
@@ -3109,7 +3178,7 @@ export class Manager {
 
   /** The rail round-trip for one retirement (wrapped by {@link requestRetirement}'s single-flight). */
   private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
-    if (!this.auth) return; // guaranteed by requestRetirement; re-checked for the type narrowing below
+    if (!this.auth && !this.remoteAuthority) return;
     const held = this.retiring.get(a.name);
     const target = parsePrincipalKey(a.id);
     if (!target) {
@@ -3149,10 +3218,18 @@ export class Manager {
       // mismatch in the owner half the moment a manager ran under a user-shaped identity. This is
       // also the more honest attribution: the authority being exercised is "I am the registered
       // serving instance", which is exactly what the gate records.
-      const caller = { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
-      const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
-        retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
-      });
+      const caller = this.remoteAuthority
+        ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
+        : { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
+      const requestIdentity = newIdentity();
+      const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
+      const opId = retireOpId(a.lifecycleUid);
+      const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
+      const creds = this.remoteAuthority
+        ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
+        : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
+            retirementRequester: { ...caller, target: retirementTarget },
+          });
       const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
       try {
         // §13.2 nonce: >=128 bits of CSPRNG entropy, base64url (the `endpoint-invoke` idiom).
@@ -3180,30 +3257,14 @@ export class Manager {
           // caller's own subject-derived principal. A superseded predecessor (same instanceId, OLD
           // epoch after a restart) is still refused by the epoch comparison.
           JSON.stringify({ id: requestId, op: "retireLifecycle", args: {
-            opId: retireOpId(a.lifecycleUid),
-            serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch: this.serviceServe?.grant.epoch ?? 0,
+            opId,
+            serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch,
           } }),
           20_000,
         );
         const r = m as { ok: boolean; data?: unknown; error?: string };
         if (r.ok) {
-          // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
-          // lifecycle's - a late reply for a retired predecessor must never clear a successor's newer hold.
-          const cur = this.retiring.get(a.name);
-          if (cur && cur.lifecycleUid === a.lifecycleUid) {
-            if (cur.standingAuthorityLive) {
-              // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
-              // not yet revoked (a failed revoke). Freeing the name here would be a false terminal (a
-              // copied token could still mint), so keep the hold with its revoke-failure copy; a retry
-              // re-drives the full teardown (revoke included).
-              console.error(`despawn ${a.name}: the auth-plane lifecycle retired, but the standing mint authority is not yet revoked; the name stays held. ${cur.lastError ?? ""}`);
-            } else {
-              this.retiring.delete(a.name);
-              console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
-            }
-          } else {
-            console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
-          }
+          this.confirmRetirement(a);
         } else {
           // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
           // full-no-op statements included) - surface it INTACT, never flattened.
@@ -3217,6 +3278,29 @@ export class Manager {
       const copy = uncertain((e as Error).message);
       if (held) held.lastError = copy;
       console.error(`despawn ${a.name}: ${copy}`);
+    }
+  }
+
+  /** Apply one terminal retirement answer. The predecessor coordinate is recorded only when the
+   *  answer clears this exact lifecycle's hold, never for an ABA-late answer or an incomplete hosted
+   *  teardown whose standing authority still lives. */
+  private confirmRetirement(a: { id: string; name: string; lifecycleUid: string }): void {
+    // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
+    // lifecycle's. A late reply for a retired predecessor must never clear a successor's newer hold.
+    const cur = this.retiring.get(a.name);
+    if (cur && cur.lifecycleUid === a.lifecycleUid) {
+      if (cur.standingAuthorityLive) {
+        // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
+        // not yet revoked. A copied token could still mint, so neither free the alias nor classify
+        // its presence as a completed predecessor.
+        console.error(`despawn ${a.name}: the auth-plane lifecycle retired, but the standing mint authority is not yet revoked; the name stays held. ${cur.lastError ?? ""}`);
+      } else {
+        this.confirmedRetiredPredecessors.set(a.name, { principal: a.id, lifecycleUid: a.lifecycleUid });
+        this.retiring.delete(a.name);
+        console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
+      }
+    } else {
+      console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
     }
   }
 
@@ -3724,21 +3808,20 @@ export class Manager {
    *  two surfaces disagree: an admin operator could cross-owner stop an agent it could not list.
    *  Read fresh so a revoked admin loses visibility on its next call; a read failure and an
    *  unparseable caller both fall closed (own-owner / matches-nothing). Static meshes are unbounded. */
-  private async psOwnerFilter(caller: string, admin: boolean): Promise<string | undefined> {
+  private async psOwnerFilter(caller: EpCaller, admin: boolean): Promise<string | undefined> {
     if (!this.userMode || admin) return undefined;
-    const key = parsePrincipalKey(caller);
-    if (!key) return NO_OWNER_MATCHES;
+    if (this.remoteAuthority) return (await this.epAdminReach(caller)) ? undefined : caller.owner;
     try {
       const scope = await resolveAuthProvider().actorScope({
         dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: key.owner,
-        actor: key.actor,
+        owner: caller.owner,
+        actor: caller.actor,
       });
       if (scope?.includes("admin")) return undefined;
     } catch {
       /* unreadable ledger authorizes nothing extra: fall through to the own-owner bound */
     }
-    return key.owner;
+    return caller.owner;
   }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
@@ -4465,15 +4548,33 @@ export class Manager {
       const seen = new Set<string>();
       const principals = new Set<string>();
       await this.ep.waitForPresenceSnapshot();
-      const livePrincipals = new Set(this.ep.getRoster()
-        .filter((presence) => presence.status !== "offline")
-        .map((presence) => presence.card.id));
+      const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       if (this.agents.size + this.reserved.size + this.coolingCount() + inventory.agents.length > MAX_AGENTS)
         return { ok: false, agents: [], error: `resume inventory would exceed manager capacity (${MAX_AGENTS})` };
       for (const entry of inventory.agents) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
         seen.add(entry.name);
+        // A manager-local retirement hold is stronger and more precise than presence. The stopped
+        // predecessor can remain roster-live until its TTL/offline update lands, but that stale row
+        // must not hide the durable teardown state the manager already owns. Refuse and re-drive the
+        // exact held lifecycle before consulting generic principal liveness. A confirmed terminal has
+        // already removed the hold, so fresh-lifecycle resume still reaches the fail-closed roster gate.
+        const held = this.retiring.get(entry.name);
+        if (held) {
+          void this.deprovision({
+            id: held.agentId,
+            name: entry.name,
+            lifecycleUid: held.lifecycleUid,
+            userOwner: held.userOwner,
+            secretPaths: held.secretPaths,
+          }).catch(() => {});
+          return {
+            ok: false,
+            agents: [],
+            error: `retained agent "${entry.name}" is reserved pending retirement: its previous lifecycle ${held.lifecycleUid} still owns the alias${held.lastError ? ` (last attempt: ${held.lastError})` : ""}; retrying re-drives that exact teardown`,
+          };
+        }
         let principal: string;
         try {
           principal = entry.identity.mode === "user"
@@ -4485,7 +4586,16 @@ export class Manager {
         if (principals.has(principal))
           return { ok: false, agents: [], error: `resume inventory contains duplicate principal "${principal}"` };
         principals.add(principal);
-        if (livePrincipals.has(principal))
+        const confirmedPredecessor = this.confirmedRetiredPredecessors.get(entry.name);
+        const principalIsLive = liveRoster.some((presence) => {
+          if (presence.card.id !== principal) return false;
+          return confirmedPredecessor === undefined ||
+            confirmedPredecessor.principal !== principal ||
+            confirmedPredecessor.lifecycleUid !== presence.lifecycleUid ||
+            presence.card.name !== entry.name ||
+            entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;
+        });
+        if (principalIsLive)
           return { ok: false, agents: [], error: `retained principal "${principal}" is already live and this runtime cannot authoritatively adopt it` };
         if (this.agents.has(entry.name) || this.reserved.has(entry.name))
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
@@ -4640,15 +4750,23 @@ export class Manager {
       const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel, this.space));
       if (actorToken === undefined || sentinelCreds === undefined)
         throw new Error("the retained actor token / sentinel credential is not in the secret store");
-      const adopted = await provider.validateRetainedAgent({
-        store: secrets,
-        dir: userAuthStateDir(this.workspaceRoot, this.space),
-        space: this.space,
-        owner: entry.identity.owner,
-        actor: entry.identity.actor,
-        actorToken,
-        sentinelCreds,
-      });
+      const adopted = this.remoteAuthority
+        ? await this.remoteAuthority.validateRetainedAgent({
+            owner: entry.identity.owner,
+            actor: entry.identity.actor,
+            lifecycleUid: entry.identity.lifecycleUid,
+            actorToken,
+            sentinelCreds,
+          })
+        : await provider.validateRetainedAgent({
+            store: secrets,
+            dir: userAuthStateDir(this.workspaceRoot, this.space),
+            space: this.space,
+            owner: entry.identity.owner,
+            actor: entry.identity.actor,
+            actorToken,
+            sentinelCreds,
+          });
       if (adopted.owner !== entry.identity.owner || adopted.actor !== entry.identity.actor)
         throw new Error(`auth provider returned a replacement principal; expected ${entry.identity.owner}.${entry.identity.actor}`);
       // Bind the inventory's uid to the CURRENT authority row BEFORE any spawn: a corrupt or
@@ -4671,7 +4789,9 @@ export class Manager {
             ...process.execArgv,
             process.argv[1],
             provider.agentBearerCommand,
-            "--dir", userAuthStateDir(this.workspaceRoot, this.space),
+            ...(this.remoteAuthority
+              ? ["--exchange-url", this.remoteAuthority.agentBearerExchangeUrl]
+              : ["--dir", userAuthStateDir(this.workspaceRoot, this.space)]),
             "--space", this.space,
             "--owner", entry.identity.owner,
             "--actor", entry.identity.actor,
@@ -5235,11 +5355,12 @@ export class Manager {
     };
   }
 
-  /** Run one §13.1 ENDPOINT-SERVE credential operation (P2 item 1, 1a-serve) over an ephemeral,
+  /** Run one §13.1 endpoint-instance maintenance operation over an ephemeral,
    *  key-pinned `endpoint-serve-executor` connection: the credential's grants name exactly the
    *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
-   *  gate CAS, the mint fence, and the spec/governance writes ride a one-shot scoped authority —
-   *  NEVER the manager's standing seed/supervisor connection (the panel's "no seed shortcut"). */
+   *  gate CAS, mint fence, spec/governance writes, and clean deregistration ride a one-shot scoped
+   *  authority. The remote boot goal-index sweep instead uses the authenticated host-owned scan.
+   *  This is NEVER the manager's standing seed/supervisor connection. */
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
     const creds = this.remoteAuthority?.executorCreds ?? (this.auth
@@ -5262,7 +5383,8 @@ export class Manager {
    *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
    *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
   private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    if (this.auth) throw new Error("withOpenServeConnection: an auth mesh must use the scoped endpoint-serve executor");
+    if (this.auth || this.remoteAuthority)
+      throw new Error("withOpenServeConnection: an authenticated mesh must use the scoped endpoint-serve executor");
     const nc = await this.dial({ maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
@@ -5953,10 +6075,11 @@ export class Manager {
 
   /** P2 item 2 must-5 Q-B — the boot reconcile: a fresh incarnation (a manager restart takes a NEW
    *  instanceId, so the in-memory acceptance map starts empty) inherits the endpoint's accepted-but-
-   *  unterminal goals from any predecessor. Enumerate the durable index over a scoped PROVISIONER
-   *  (records CONSUMER.CREATE; the goal-writer holds NO enumeration grant, exactly the ruling) and
-   *  settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh: a bare
-   *  connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
+   *  unterminal goals from any predecessor. The local signer enumerates with an ephemeral PROVISIONER.
+   *  A remote manager calls the authenticated host-owned scan, which keeps the sealed consumer and its
+   *  lifecycle authority on the host; the instance executor, goal-writer, and supervisor hold NO records
+   *  consumer grant. Settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh:
+   *  a bare connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
    *  accepting (the `goalReconcileDone` gate), so it never races a live goal's acceptance. Never
    *  fatal — a reconcile failure is logged and the gate opens either way. */
   private async reconcileGoalIndex(): Promise<void> {
@@ -5964,15 +6087,24 @@ export class Manager {
     if (!gw) { this.goalReconcileDone = true; return; }
     try {
       let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
-      const nc = this.auth
-        ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
-        : await this.dial({ maxReconnectAttempts: 0 });
-      try {
-        const kvm = new Kvm(nc);
-        await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-        entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
-      } finally {
-        await nc.drain().catch(() => nc.close());
+      if (this.remoteAuthority) {
+        entries = (await this.remoteAuthority.scanGoalIndex()).map((entry) => ({
+          ref: { endpoint: entry.endpoint, caller: { owner: entry.owner, actor: entry.actor, uid: entry.uid }, goalId: entry.goalId },
+          iid: entry.iid,
+          ...(entry.allocated !== undefined ? { allocated: entry.allocated } : {}),
+          ...(entry.note !== undefined ? { note: entry.note } : {}),
+        }));
+      } else {
+        const nc = this.auth
+          ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
+          : await this.dial({ maxReconnectAttempts: 0 });
+        try {
+          const kvm = new Kvm(nc);
+          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
+          entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
+        } finally {
+          await nc.drain().catch(() => nc.close());
+        }
       }
       // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
       // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep

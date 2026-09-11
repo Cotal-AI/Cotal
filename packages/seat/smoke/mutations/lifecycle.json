@@ -71,14 +71,14 @@
       "note": "A live Unix socket after waitForExit keeps the manager event loop alive through spawn-detach teardown."
     },
     {
-      "name": "M7 never arm the post-exit linger",
+      "name": "M7 skip terminal custodian cleanup after child exit",
       "file": "packages/seat/src/custodian.ts",
-      "find": "    resolveWaiters();\n    armExit();\n  };",
-      "replace": "    resolveWaiters();\n  };",
+      "find": "  const settleTerminal = (): void => {\n    if (alive || settling || !ready) return;",
+      "replace": "  const settleTerminal = (): void => {\n    return;\n    if (alive || settling || !ready) return;",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
-      "expectRed": "unadopted custodian exits after its child exits",
-      "cell": "unadopted custodian exits after its child exits",
-      "note": "This is the pre-fix behavior: a custodian outlived every child forever."
+      "expectRed": "natural exit: custodian process, socket, and record converge without fixture kill",
+      "cell": "natural exit: custodian process, socket, and record converge without fixture kill",
+      "note": "Deleting the owned terminal-settle transition leaves the Unix server, socket, record, and custodian process alive after waitForExit. The named cell must fail without fixture SIGKILL."
     },
     {
       "name": "M8 treat any live pid as the recorded process",

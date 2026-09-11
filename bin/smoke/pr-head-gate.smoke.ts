@@ -32,11 +32,13 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 // "Mutation reproof" is expected on every PR: mutation-reproof.yml (#1272, closing #1217) declares a
 // pull_request trigger with no paths filter, so the declaration-derived set includes it for any
 // changed-path set. Added in sorted position. The matching run row lives in the #1087 fixture below.
-const expectedNames = ["CI", "Docs", "Mutation reproof", "Windows"];
+// "Attribution" likewise: attribution.yml declares pull_request with no paths filter and a types
+// list that keeps opened and synchronize, so it is minted at every head of every PR.
+const expectedNames = ["Attribution", "CI", "Docs", "Mutation reproof", "Windows"];
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Mutation reproof", "Windows"]) &&
-    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Mutation reproof", "Windows"]),
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["Attribution", "CI", "Mutation reproof", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["Attribution", "CI", "Installer", "Mutation reproof", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;
 try {
@@ -59,6 +61,47 @@ check(
     "hidden.yml": "name: Hidden\non: [push, pull_request] # ordinary YAML comment\n",
   }, ["package.json"])) === '["Hidden"]',
 );
+check(
+  "YAML anchors without a merge key still declare pull_request",
+  JSON.stringify(expectedPullRequestWorkflows({
+    "alias.yml": "name: Alias\njobs:\n  j:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        include:\n          - anchor: &events { pull_request: null, push: null }\n    steps: [{run: echo hi}]\non: *events\n",
+  }, ["package.json"])) === '["Alias"]',
+);
+check(
+  "a schema-valid on mapping without a merge key still declares pull_request",
+  JSON.stringify(expectedPullRequestWorkflows({
+    "literal.yml": "name: Literal\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps: [{run: echo hi}]\non:\n  pull_request:\n  push:\n",
+  }, ["package.json"])) === '["Literal"]',
+);
+for (const [label, source] of [
+  [
+    "a merge key supplying the on event name fails closed",
+    "name: Merge\njobs:\n  j:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        include:\n          - anchor: &events { pull_request: null }\n    steps: [{run: echo hi}]\non:\n  <<: *events\n  push:\n",
+  ],
+  [
+    "a merge key nested inside an on event config fails closed",
+    "name: Nested\njobs:\n  j:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        include:\n          - anchor: &paths { paths: [\"src/**\"] }\n    steps: [{run: echo hi}]\non:\n  pull_request:\n    branches: [main]\n    <<: *paths\n",
+  ],
+] as const) {
+  let refused = false;
+  try { expectedPullRequestWorkflows({ "merge.yml": source }, ["package.json"]); }
+  catch (error) { refused = /unsupported YAML merge key in the on mapping/.test(String(error)); }
+  check(label, refused);
+}
+{
+  let refused = false;
+  let message = "";
+  try {
+    expectedPullRequestWorkflows({
+      "both.yml": "name: Both\njobs:\n  j:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        include:\n          - anchor: &events { pull_request: { types: [opened] } }\n    steps: [{run: echo hi}]\non:\n  <<: *events\n  push:\n",
+    }, ["package.json"]);
+  } catch (error) {
+    message = String(error);
+    refused = /unsupported YAML merge key in the on mapping/.test(message) &&
+      !/types must keep opened and synchronize/.test(message);
+  }
+  check("a merge key and a types filter that drops synchronize report only the merge-key refusal", refused, message);
+}
 let invalidYamlRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -103,6 +146,26 @@ try {
   unsupportedFilterRefused = /unsupported pull_request filter: branches/.test(String(error));
 }
 check("a pull_request filter the guard cannot evaluate fails closed", unsupportedFilterRefused);
+check(
+  "a types filter that keeps opened and synchronize still expects the workflow at every head",
+  JSON.stringify(expectedPullRequestWorkflows({
+    "typed.yml": "name: Typed\non:\n  pull_request:\n    types: [opened, synchronize, reopened, edited]\n",
+  }, ["package.json"])) === '["Typed"]',
+);
+for (const [label, types, pattern] of [
+  ["a types filter that drops synchronize fails closed instead of expecting a run that is never minted", "[opened, edited]", /types must keep opened and synchronize/],
+  ["a types filter that drops opened fails closed instead of expecting a run at the first head", "[synchronize]", /types must keep opened and synchronize/],
+  ["an unknown pull_request activity type fails closed", "[opened, synchronize, synchronise]", /unknown pull_request activity type: synchronise/],
+  ["an empty types list fails closed", "[]", /pull_request types must be a non-empty string array/],
+] as const) {
+  let refused = false;
+  try {
+    expectedPullRequestWorkflows({ "typed.yml": `name: Typed\non:\n  pull_request:\n    types: ${types}\n` }, ["package.json"]);
+  } catch (error) {
+    refused = pattern.test(String(error));
+  }
+  check(label, refused);
+}
 let unsupportedPatternRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -199,7 +262,7 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-function shippedCommand(mode: "success" | "missing") {
+function shippedCommand(mode: "success" | "missing" | "merge-key") {
   // The shipped gate reads GitHub credentials (GH_TOKEN/GITHUB_TOKEN/GITHUB_REPOSITORY) and no
   // COTAL_ name at all, so an ambient copy would hand a live credential and broker URL to a child
   // that has no use for either. Strip the prefix.
@@ -229,8 +292,14 @@ check(
   shippedMissing.status === 1 && shippedMissing.stdout.includes("missing: Hidden") && shippedMissing.stdout.includes("verdict: NOT GREEN"),
   `${shippedMissing.stdout}${shippedMissing.stderr}`,
 );
+const shippedMergeKey = shippedCommand("merge-key");
+check(
+  "the shipped pr-head-gate command refuses a YAML merge key in on instead of shrinking the expected set",
+  shippedMergeKey.status === 2 && /unsupported YAML merge key in the on mapping/.test(`${shippedMergeKey.stdout}${shippedMergeKey.stderr}`),
+  `${shippedMergeKey.stdout}${shippedMergeKey.stderr}`,
+);
 
-const EXPECTED = 34;
+const EXPECTED = 45;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

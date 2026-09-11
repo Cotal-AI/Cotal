@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
@@ -9,8 +9,6 @@ import {
   CONFIRM_INTERVAL_MS,
   DEFAULT_COLS,
   DEFAULT_ROWS,
-  EXIT_LINGER_MAX_MS,
-  EXIT_LINGER_MS,
   FrameReader,
   GRACE_MS,
   MAX_CONFIRMS,
@@ -80,15 +78,25 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   term.loadAddon(serializer);
 
   let alive = true;
+  let ready = false;
+  let settling = false;
+  let seenClient = false;
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
   let exit: { code?: number; signal?: number } | undefined;
   const dataSubs = new Map<number, Set<Socket>>();
   const waiters = new Map<Socket, Set<number>>();
   const controllers = new Set<Socket>();
+  const clients = new Set<Socket>();
   let nextSub = 1;
   let early = "";
   let confirmTimer: ReturnType<typeof setInterval> | undefined;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
+  let reap: ReturnType<typeof setInterval> | undefined;
+  let server: ReturnType<typeof createServer> | undefined;
+  /** Wait for the first adopter when the child has already exited at listen. */
+  const LAUNCH_HANDOFF_MS = 5_000;
 
   if (launch.confirm) {
     let presses = 0;
@@ -121,9 +129,77 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   };
 
+  const settleTerminal = (): void => {
+    if (alive || settling || !ready) return;
+    if (clients.size > 0) return;
+    if (!seenClient) return;
+    settling = true;
+    if (confirmTimer) {
+      clearInterval(confirmTimer);
+      confirmTimer = undefined;
+    }
+    if (killTimer) {
+      clearTimeout(killTimer);
+      killTimer = undefined;
+    }
+    if (handoffTimer) {
+      clearTimeout(handoffTimer);
+      handoffTimer = undefined;
+    }
+    if (reap) {
+      clearInterval(reap);
+      reap = undefined;
+    }
+    try {
+      term.dispose();
+    } catch {
+      /* already gone */
+    }
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+    server?.close();
+    for (const sock of clients) {
+      try {
+        sock.destroy();
+      } catch {
+        /* already gone */
+      }
+    }
+    clients.clear();
+    controllers.clear();
+    waiters.clear();
+    dataSubs.clear();
+    try {
+      unlinkSync(launch.socket);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    try {
+      unlinkSync(launch.recordPath);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    process.exit(0);
+  };
+
+  const armUnobservedHandoff = (): void => {
+    if (alive || seenClient || settling || !ready || handoffTimer) return;
+    handoffTimer = setTimeout(() => {
+      handoffTimer = undefined;
+      seenClient = true;
+      settleTerminal();
+    }, LAUNCH_HANDOFF_MS);
+    handoffTimer.unref();
+  };
+
   const markExited = (info?: { code?: number; signal?: number }): void => {
     if (!alive) {
       resolveWaiters();
+      settleTerminal();
+      armUnobservedHandoff();
       return;
     }
     alive = false;
@@ -134,33 +210,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
     for (const sock of controllers) send(sock, { event: "exit" });
     resolveWaiters();
-    armExit();
-  };
-
-  // A custodian with no child left to custody exits and forgets its record. It lingers only long
-  // enough for a late adopter to read the final screen: EXIT_LINGER_MS after the last controller
-  // drops, and EXIT_LINGER_MAX_MS at most while one stays connected. Without this a custodian
-  // outlived every child forever, and a manager accumulated one idle process per seat it ever ran.
-  let lingerTimer: ReturnType<typeof setTimeout> | undefined;
-  let lingerDeadline: ReturnType<typeof setTimeout> | undefined;
-  const leave = (): void => {
-    server.close();
-    try {
-      unlinkSync(launch.socket);
-    } catch {
-      /* already gone */
-    }
-    rmSync(dirname(launch.recordPath), { recursive: true, force: true });
-    process.exit(0);
-  };
-  const armExit = (): void => {
-    if (lingerDeadline === undefined) lingerDeadline = setTimeout(leave, EXIT_LINGER_MAX_MS);
-    rearmLinger();
-  };
-  const rearmLinger = (): void => {
-    if (alive) return;
-    if (lingerTimer) clearTimeout(lingerTimer);
-    lingerTimer = controllers.size === 0 ? setTimeout(leave, EXIT_LINGER_MS) : undefined;
+    settleTerminal();
+    armUnobservedHandoff();
   };
 
   proc.onData((d) => {
@@ -176,9 +227,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   proc.onExit(({ exitCode, signal }) => {
     markExited({ code: exitCode, ...(signal === undefined ? {} : { signal }) });
   });
-  const reap = setInterval(() => {
+  reap = setInterval(() => {
     if (!alive) {
-      clearInterval(reap);
+      if (reap) clearInterval(reap);
+      reap = undefined;
       return;
     }
     if (childGone()) markExited({});
@@ -192,7 +244,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       return;
     }
     proc.kill("SIGTERM");
-    setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
+    if (killTimer) clearTimeout(killTimer);
+    killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
   };
 
   const record: SeatRecord = {
@@ -207,11 +260,13 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     ...(childStart === undefined ? {} : { childStart }),
   };
 
-  const server = createServer((sock) => {
+  server = createServer((sock) => {
     const reader = new FrameReader();
     let authed = false;
     const owned = new Set<number>();
+    clients.add(sock);
     const drop = (): void => {
+      clients.delete(sock);
       controllers.delete(sock);
       for (const sub of owned) {
         const socks = dataSubs.get(sub);
@@ -221,7 +276,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
       owned.clear();
       waiters.delete(sock);
-      rearmLinger();
+      settleTerminal();
     };
     sock.on("data", (chunk) => {
       let messages: unknown[];
@@ -283,6 +338,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           return;
         }
         session.setAuthed(true);
+        seenClient = true;
+        if (handoffTimer) {
+          clearTimeout(handoffTimer);
+          handoffTimer = undefined;
+        }
         if (alive && childGone()) markExited({});
         send(sock, {
           id: req.id,
@@ -296,7 +356,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           ...(exit ? { exit } : {}),
         });
         controllers.add(sock);
-        rearmLinger();
         if (!alive) send(sock, { event: "exit" });
         return;
       }
@@ -381,14 +440,19 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   }
 
+  const listening = server;
+  if (!listening) throw new Error("custodian server missing");
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(launch.socket, () => {
+    listening.once("error", reject);
+    listening.listen(launch.socket, () => {
       chmodSync(launch.socket, 0o600);
       writeRecord(launch.recordPath, record);
-      const ready = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
-      if (launch.logPath) appendFileSync(launch.logPath, ready, { mode: 0o600 });
-      else process.stdout.write(ready);
+      ready = true;
+      const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
+      if (launch.logPath) appendFileSync(launch.logPath, announced, { mode: 0o600 });
+      else process.stdout.write(announced);
+      armUnobservedHandoff();
+      settleTerminal();
       resolve();
     });
   });

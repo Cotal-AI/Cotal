@@ -6,6 +6,7 @@ import {
   DEV_OWNER,
   createSpaceAuth,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   principalKey,
   registry,
@@ -181,7 +182,7 @@ const control = async (manager: Manager, _tier: string, op: string, args: Record
     opModels: (a: Record<string, unknown>) => Promise<Reply>;
     opStop: (a: Record<string, unknown>, caller: string, admin: boolean) => Promise<Reply>;
     list: (filter?: string) => unknown[];
-    psOwnerFilter: (caller: string, admin: boolean) => Promise<string | undefined>;
+    psOwnerFilter: (caller: { owner: string; actor: string; uid: string }, admin: boolean) => Promise<string | undefined>;
     admitControl: (caller: string) => { refusal?: string; release?: () => void };
   };
   if (op === "resumePreserved") return m.opResumePreserved(args);
@@ -194,7 +195,7 @@ const control = async (manager: Manager, _tier: string, op: string, args: Record
   try {
     if (op === "models") return await m.opModels(args);
     if (op === "stop") return await m.opStop(args, "local.operator", true);
-    if (op === "ps") return { ok: true, data: m.list(await m.psOwnerFilter("local.operator", true)) };
+    if (op === "ps") return { ok: true, data: m.list(await m.psOwnerFilter({ owner: "local", actor: "operator", uid: mintLifecycleUid() }, true)) };
     return { ok: false, error: `unknown op: ${op}` };
   } finally {
     admission.release?.();
@@ -536,8 +537,117 @@ let openInventory: ManagerResumeAgent;
   check("replacement refuses an already-live retained principal before spawn", !resumed.ok && /already live/.test(resumed.error ?? "") && spawns === 0, resumed.error);
   ep.waitForPresenceSnapshot = async () => {};
   survivorOffline = true;
-  const retried = await control(replacement, "admin", "resumePreserved", { attemptId, inventory: survivorInventory });
+  const retried = await replacement.resumePreserved(survivorInventory);
   check("replacement retry ignores an offline survivor ghost", retried.ok && spawns === 1, retried.error);
+}
+
+// A same-principal survivor stays authoritative even when its lifecycle uid differs from the
+// requested inventory. A successor or foreign incarnation cannot be bypassed as a predecessor ghost.
+{
+  let spawns = 0;
+  const manager = managerWith((name) => { spawns++; return fakeHandle(name); });
+  (manager as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principalKey(DEV_OWNER, openInventory.identity.mode === "open" ? openInventory.identity.id : "").key, name: openInventory.name },
+    lifecycleUid: uidFor("survivor-successor"),
+    status: "idle",
+  }];
+  const wrongUidLive = await manager.resumePreserved(inventoryOf(openInventory));
+  check("resume refuses a live same-principal row even when its lifecycle uid differs", !wrongUidLive.ok && /already live/.test(wrongUidLive.error ?? "") && spawns === 0, wrongUidLive.error);
+}
+
+// Terminal confirmation makes only that exact predecessor lifecycle's lingering roster row stale.
+// A fresh lifecycle may pass it, while an attempt to resume the retired uid itself remains refused.
+{
+  let spawns = 0;
+  const manager = managerWith((name) => { spawns++; return fakeHandle(name); });
+  const principal = principalKey(DEV_OWNER, openInventory.identity.mode === "open" ? openInventory.identity.id : "").key;
+  const predecessorUid = openInventory.identity.lifecycleUid;
+  const retire = (target: Manager): void => {
+    (target as unknown as { retiring: Map<string, unknown> }).retiring.set(openInventory.name, {
+      opId: "retire_worker",
+      lifecycleUid: predecessorUid,
+      owner: DEV_OWNER,
+      actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
+      agentId: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
+      startedAt: Date.now(),
+    });
+    (target as unknown as { confirmRetirement: (a: { id: string; name: string; lifecycleUid: string }) => void })
+      .confirmRetirement({ id: principal, name: openInventory.name, lifecycleUid: predecessorUid });
+  };
+  retire(manager);
+  const freshUid = uidFor("freshsuccessor");
+  const freshInventory: ManagerResumeAgent = {
+    ...openInventory,
+    identity: { ...openInventory.identity, lifecycleUid: freshUid } as ManagerResumeIdentity,
+  };
+  (manager as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principal, name: openInventory.name },
+    lifecycleUid: spawns === 0 ? predecessorUid : freshUid,
+    status: "idle",
+  }];
+  const fresh = await manager.resumePreserved(inventoryOf(freshInventory));
+  check("resume ignores only a terminal-confirmed exact predecessor row for a fresh lifecycle", fresh.ok && spawns === 1, fresh.error);
+
+  const retired = managerWith((name) => { spawns++; return fakeHandle(name); });
+  retire(retired);
+  (retired as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principal, name: openInventory.name },
+    lifecycleUid: predecessorUid,
+    status: "idle",
+  }];
+  const sameUid = await retired.resumePreserved(inventoryOf(openInventory));
+  check("resume still refuses a live row for the requested terminal-confirmed lifecycle", !sameUid.ok && /already live/.test(sameUid.error ?? "") && spawns === 1, sameUid.error);
+
+  const unconfirmed = managerWith((name) => { spawns++; return fakeHandle(name); });
+  (unconfirmed as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principal, name: openInventory.name },
+    lifecycleUid: predecessorUid,
+    status: "idle",
+  }];
+  const unknownOutcome = await unconfirmed.resumePreserved(inventoryOf(freshInventory));
+  check("resume refuses an unconfirmed predecessor row even for a fresh lifecycle", !unknownOutcome.ok && /already live/.test(unknownOutcome.error ?? "") && spawns === 1, unknownOutcome.error);
+
+  const missingUid = managerWith((name) => { spawns++; return fakeHandle(name); });
+  retire(missingUid);
+  (missingUid as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principal, name: openInventory.name },
+    status: "idle",
+  }];
+  const unknownLifecycle = await missingUid.resumePreserved(inventoryOf(freshInventory));
+  check("resume refuses a live same-principal row with no lifecycle uid", !unknownLifecycle.ok && /already live/.test(unknownLifecycle.error ?? "") && spawns === 1, unknownLifecycle.error);
+
+  const wrongRow = managerWith((name) => { spawns++; return fakeHandle(name); });
+  retire(wrongRow);
+  (wrongRow as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principal, name: openInventory.name },
+    lifecycleUid: uidFor("foreignliveuid"),
+    status: "idle",
+  }];
+  const foreignLive = await wrongRow.resumePreserved(inventoryOf(freshInventory));
+  check("resume refuses a live lifecycle not named by the terminal predecessor confirmation", !foreignLive.ok && /already live/.test(foreignLive.error ?? "") && spawns === 1, foreignLive.error);
+}
+
+// A failed or unknown retirement owns the alias before retained-principal liveness. Resume must
+// refuse and re-drive that exact lifecycle's teardown rather than launching through the hold.
+{
+  let spawns = 0;
+  const redriven: Array<{ id: string; name: string; lifecycleUid: string }> = [];
+  const manager = managerWith((name) => { spawns++; return fakeHandle(name); });
+  (manager as unknown as { deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void> }).deprovision = async (a) => { redriven.push(a); };
+  (manager as unknown as { retiring: Map<string, unknown> }).retiring.set("worker", {
+    opId: "retire_worker",
+    lifecycleUid: openInventory.identity.lifecycleUid,
+    owner: DEV_OWNER,
+    actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
+    agentId: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
+    startedAt: Date.now(),
+    lastError: "terminal outcome unknown",
+  });
+  const held = await manager.resumePreserved(inventoryOf(openInventory));
+  check("resume refuses an unresolved retirement hold before launch", !held.ok && /pending retirement/.test(held.error ?? "") && /terminal outcome unknown/.test(held.error ?? "") && spawns === 0, held.error);
+  await new Promise((resolveTick) => setTimeout(resolveTick, 0));
+  const heldId = openInventory.identity.mode === "open" ? openInventory.identity.id : "";
+  check("resume re-drives the exact held lifecycle teardown", redriven.length === 1 && redriven[0]?.id === heldId && redriven[0]?.name === openInventory.name && redriven[0]?.lifecycleUid === openInventory.identity.lifecycleUid, redriven);
 }
 
 // Wire resume is admin-only, attempt-bound, and relaunches the exact retained principal.

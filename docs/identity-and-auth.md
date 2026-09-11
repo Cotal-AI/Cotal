@@ -275,9 +275,15 @@ registration, contracts, status, endpoint rails, gate and credential family; it 
 write another owner or instance. It never exposes a signer, static provisioner credential, owner
 secret, raw stream/KV/consumer authority, or a generic credential-mint API. The host creates the
 public-nkey JWT material through the typed lifecycle-bound protocol: **prepare → activate →
-renew**. Each request is replay-safe and idempotent at its lifecycle/instance operation
+renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Each request is replay-safe and idempotent at its lifecycle/instance operation
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
-usable material.
+usable material. The retire phase fresh-checks the current manager instance, server-derived serve
+principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
+credential pinned to that target. The manager sends it on the existing auth retirement rail with the
+operation id derived from the target lifecycle UID. The terminal rail recomputes it from the
+broker-pinned target before any durable access. A caller cannot substitute another valid operation
+identity for the same target, and retries plus auth-service boot recovery finish the same terminal
+barrier. It never exposes the barrier executor or a general mint surface.
 
 A remote manager can provision only descendants of the same derived owner, and the host
 validates that relation and the current manager grant for every provision. It cannot broaden the

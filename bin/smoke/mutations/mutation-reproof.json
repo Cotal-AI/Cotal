@@ -130,8 +130,8 @@
     {
       "name": "verdict lines are matched without stripping ANSI colour, so every verdict reads as absent",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "[...output.replace(ANSI, \"\").matchAll(verdictRe)]",
-      "replace": "[...output.matchAll(verdictRe)]",
+      "find": "  for (const line of output.replace(ANSI, \"\").split(\"\\n\")) {",
+      "replace": "  for (const line of output.split(\"\\n\")) {",
       "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
       "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
     },
@@ -190,6 +190,30 @@
       "replace": "    if (!line || /^(?:Node\\.js v|npm |pnpm |Scope:|Lockfile |Progress:|Packages:|Done in |\\[?ELIFECYCLE\\]?|\\[WARN\\]|Command failed)/i.test(line)) continue;",
       "expectRed": "different line-initial semantic [WARN] failures remain different when stable sibling assertion lines match",
       "cell": "different line-initial semantic [WARN] failures remain different when stable sibling assertion lines match"
+    },
+    {
+      "name": "fatal attribution ignores the same mutation's base-to-head transition",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const transition = compareFatalVerdicts(headRecordsClean, baseRecords);",
+      "replace": "    const transition = { inherited: [], attributable: headRecordsClean.filter((rec) => FATAL_VERDICTS.has(rec.verdict)) };",
+      "expectRed": "an inherited SURVIVED selected only by a comment-only guarded-source change remains nonfatal",
+      "cell": "an inherited SURVIVED selected only by a comment-only guarded-source change remains nonfatal"
+    },
+    {
+      "name": "fatal attribution keys same-name mutations by displayed label",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const same = take((candidate) => candidate.identity === rec.identity && candidate.verdict === rec.verdict);\n    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = take((candidate) => candidate.identity === rec.identity);",
+      "replace": "    const same = baseRecords.find((candidate) => candidate.label === rec.label);\n    if (same && same.verdict === rec.verdict) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = same;",
+      "expectRed": "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR",
+      "cell": "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR"
+    },
+    {
+      "name": "fatal attribution keys mutations by array position",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const same = take((candidate) => candidate.identity === rec.identity && candidate.verdict === rec.verdict);\n    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = take((candidate) => candidate.identity === rec.identity);\n    attributable.push({ ...rec, baseVerdict: other?.verdict ?? \"ABSENT\" });",
+      "replace": "    const same = take((candidate) => candidate.index === rec.index && candidate.verdict === rec.verdict);\n    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = take((candidate) => candidate.index === rec.index);\n    attributable.push({ ...rec, baseVerdict: other?.verdict ?? \"ABSENT\" });",
+      "expectRed": "reordering unchanged mutations does not attribute a still-SURVIVED mutant by array position",
+      "cell": "reordering unchanged mutations does not attribute a still-SURVIVED mutant by array position"
     },
     {
       "name": "a depth-zero temp-root filename is erased as though it were a randomized directory",

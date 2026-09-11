@@ -608,6 +608,28 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // which one it is; `state` says which to expect.
         const issueField =
           issue === undefined ? {} : state === "stopped" ? { lastConnectionIssue: issue } : { connectionIssue: issue };
+        // #1356: a bound endpoint can be `ready` on every field above while its presence writes are
+        // being refused - it stays connected, keeps heartbeating into a stream that accepts nothing,
+        // and the roster keeps serving its last good row. Reported as its own fact rather than folded
+        // into connectionIssue, because `ready` and "presence has been unwritable for 47s" are BOTH
+        // true and a caller needs to see the pair. The name says what was observed; it does not bound
+        // the fault, since JetStream can be down account-wide with connected/transportConnected true.
+        // Gated on a live transport for the same reason the connector's retry line is: the field's
+        // own note tells a reader the connection is up, so it must not be reachable when it is not.
+        // A machine-readable lie outranks a human-readable one - a caller PARSES this - so the guard
+        // matters more here than in the log string, not less. The endpoint clears the record on every
+        // connection teardown, which is the primary fix; this stops a transport that dropped without
+        // one from being described as healthy.
+        const presence = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+        const presenceField = presence === undefined ? {} : {
+          presenceWriteFailure: {
+            bucket: presence.bucket,
+            since: new Date(presence.since).toISOString(),
+            forMs: presence.forMs,
+            ...(presence.error !== undefined ? { error: presence.error } : {}),
+            note: "presence writes are the first thing to fail here, not necessarily the only thing - a broker can refuse writes far more widely while this connection stays up",
+          },
+        };
         return ok(
           JSON.stringify(
             {
@@ -623,6 +645,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               bufferedCount: agent.inboxCount(),
               automaticCount: agent.inboxCount("automatic"),
               ...issueField,
+              ...presenceField,
               ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
               ...(oldestAutomaticAt !== undefined ? { oldestAutomaticAt: new Date(oldestAutomaticAt).toISOString() } : {}),
             },

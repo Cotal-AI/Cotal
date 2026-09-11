@@ -101,11 +101,40 @@ const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
  */
 const referencesRoot = (suiteSource, root) =>
   new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(suiteSource);
+const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
+/**
+ * The names a suite calls the child_process launchers by: the canonical four plus whatever a
+ * `{ spawnSync as run }` import binds them to. A member call (`cp.spawnSync(`) already matches
+ * the bare name.
+ */
+const launcherNames = (suiteSource) => {
+  const names = new Set(LAUNCHERS);
+  for (const m of suiteSource.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g)) {
+    for (const part of m[1].split(",")) {
+      const alias = part.match(/^\s*(\w+)\s+as\s+(\w+)\s*$/);
+      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);
+    }
+  }
+  return [...names];
+};
+/** Identifiers the suite binds to a quoted mention of the file (`const ENTRY = join(ROOT, "scripts",
+ *  "x.mjs")`), so a later `spawnSync(process.execPath, [ENTRY])` still names the target. */
+const boundNames = (suiteSource, basename) =>
+  [...suiteSource.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=[^;\\n]{0,300}${quoted(basename)}`, "g"))].map((m) => m[1]);
 const invokesFile = (suiteSource, file) => {
   const parts = file.split("/");
   const basename = parts.at(-1);
   if (basename === undefined || !referencesRoot(suiteSource, file)) return false;
-  return new RegExp(`(?:spawnSync|spawn|execFileSync|execFile)\\s*\\([\\s\\S]{0,500}${quoted(basename)}`).test(suiteSource);
+  const call = `(?:${launcherNames(suiteSource).join("|")})\\s*\\(`;
+  if (new RegExp(`${call}[\\s\\S]{0,500}${quoted(basename)}`).test(suiteSource)) return true;
+  // A bound name has to sit inside the launcher's argument list (one level of nesting allowed);
+  // merely appearing after the call is not an invocation.
+  const names = boundNames(suiteSource, basename);
+  if (names.length === 0) return false;
+  for (const m of suiteSource.matchAll(new RegExp(`${call}((?:[^()]|\\([^()]*\\))*)\\)`, "g"))) {
+    if (names.some((name) => new RegExp(`\\b${name}\\b`).test(m[1]))) return true;
+  }
+  return false;
 };
 
 /** Does THIS one suite run the bytes the mutation edits? The witnesses are tried in the order they

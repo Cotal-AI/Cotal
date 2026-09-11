@@ -7,12 +7,6 @@ export const SCROLLBACK_ROWS = 1000;
 export const CONFIRM_INTERVAL_MS = 1_000;
 export const MAX_CONFIRMS = 5;
 export const GRACE_MS = 3_000;
-/** How long a custodian outlives its exited child with no controller connected: enough for a
- *  late adopter to fetch the final screen, then the custodian exits and forgets its record. */
-export const EXIT_LINGER_MS = 3_000;
-/** The hard bound on that linger while a controller stays connected: a manager that never closes
- *  its handle must not keep a childless custodian alive forever. */
-export const EXIT_LINGER_MAX_MS = 30_000;
 /**
  * Max JSON body the local protocol accepts in one frame.
  * A 1000-row, 120-col 16-color serialize is ~744 KiB, and JSON-escaping that

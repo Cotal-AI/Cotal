@@ -314,9 +314,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     // (§13.7 create-only, once, before the gate/head terminals) — exact arity, never frontier.>.
     "$KV.cotal_records_d32m.frontier.*",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
-  // The two SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
-  // profiles on the authority streams, each pinned to its ONE literal consumer name; the records
-  // scanner's CREATE filter is additionally confined to the `oblig.` subtree.
+  // The SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
+  // profiles on the authority streams. Every consumer is pinned to one literal name; the records
+  // profile owns separate consumers confined to the `oblig.` and manager `goalidx` subtrees.
   "auth-scanner": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
@@ -332,6 +332,10 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
+    "$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-manager-goalidx-scan.$KV.cotal_records_d32m.goalidx.manager.>",
+    "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "auth-connect-reader": { publish: [
     "$JS.API.INFO",
@@ -475,8 +479,8 @@ const allRows: { principal: string; row: string }[] = [];
 for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publish, ...v.subscribe]) allRows.push({ principal, row });
 
 // (2a) consumer-name literalness — NO exceptions. The former auth-store name-wildcard
-// enumeration family is GONE (sites 1-3, #8274): dynamic enumeration lives only in the two
-// sealed scanner profiles, whose names are the pinned literals checked in (2a') below.
+// enumeration family is GONE (sites 1-3, #8274): dynamic enumeration lives only in the sealed
+// scanner profiles, whose complete literal consumer set is pinned in (2a') below.
 {
   const bad: string[] = [];
   for (const { principal, row } of allRows) {
@@ -494,8 +498,9 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
 
 // (2a') the 13.9 authority-stream consumer surface, mechanically COMPLETE (fact/distsys/security/
 // engineer's a559d9c re-verify). Every CONSUMER verb AND `$JS.ACK` on either authority stream is
-// pinned to its exact (principal, row): the two sealed scanners' own-name lifecycle (the sole
-// DYNAMIC-ENUMERATION CREATE holders), the provisioner's pre-created records-READER durable
+// pinned to its exact (principal, row): the three sealed consumers' own-name lifecycle across the
+// auth and records scanner profiles (the sole DYNAMIC-ENUMERATION CREATE holders), the
+// provisioner's pre-created records-READER durable
 // (CREATE+DELETE only), and the read mediator's BIND on it (INFO/MSG.NEXT/ACK). The `oblig`-partition
 // is ENFORCED at the seam, not sampled: recordReaderConfig REFUSES an authority-control kind (2a''
 // below proves it), so no reader durable can exist over `oblig.` and the records scanner is the
@@ -515,19 +520,24 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "records-scanner: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
     "records-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "records-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
+    "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-manager-goalidx-scan.$KV.cotal_records_d32m.goalidx.manager.>",
+    "records-scanner: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "records-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "records-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
     `provisioner-consumers: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.${READER_D}.$KV.cotal_records_d32m.svc.jobsrv.>`,
     `provisioner-consumers: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.ACK.KV_cotal_records_d32m.${READER_D}.>`,
   ].sort();
-  c("the authority-stream consumer surface is EXACTLY the two sealed scanners + the provisioner's reader CREATE/DELETE + the read mediator's reader bind (INFO/NEXT/ACK); ACK included, nothing else",
+  c("the authority-stream consumer surface is EXACTLY three sealed consumers across two scanner profiles: records CREATE filters are only oblig.> + goalidx.manager.>, plus the provisioner's reader CREATE/DELETE and the read mediator's reader bind (INFO/NEXT/ACK); ACK included, nothing else",
     JSON.stringify(actual) === JSON.stringify(expected), actual);
 }
 
 // (2a'') the partition is ENFORCED at the reader-config SEAM, driven by the CANONICAL collection
-// (panel + freelance a559d9c re-verify): the records scanner's CREATE filter is confined to
-// `oblig.>`, and recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
+// (panel + freelance a559d9c re-verify): the records scanner profile's two CREATE filters are
+// confined to `oblig.>` and `goalidx.manager.>` by the complete equality above, and
+// recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
 // caller-readable record kind. Iterating AUTHORITY_KIND_DEFS (the same collection the registry is
 // built from) proves the exclusion is by construction, not a hand-kept parallel list: a new
 // authority def is covered automatically. Dual-token `lifecycle` admits deeper audit but head-guards.

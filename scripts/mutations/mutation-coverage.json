@@ -32,6 +32,27 @@
       "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
       "replace": "  if (m.file === suite || referencesRoot(suiteSource, m.file)) return true;",
       "expectRed": "a quoted script path without an invocation is refused"
+    },
+    {
+      "name": "launcher aliases are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);",
+      "replace": "      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[1]);",
+      "expectRed": "a launcher imported under an alias still witnesses the script it runs"
+    },
+    {
+      "name": "bound entry names are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const names = boundNames(suiteSource, basename);",
+      "replace": "  const names = [];",
+      "expectRed": "a target bound to a const before the launcher call still witnesses it"
+    },
+    {
+      "name": "a bound entry anywhere after a launcher is treated as its argument",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  for (const m of suiteSource.matchAll(new RegExp(`${call}((?:[^()]|\\\\([^()]*\\\\))*)\\\\)`, \"g\"))) {",
+      "replace": "  for (const m of suiteSource.matchAll(new RegExp(`${call}([\\\\s\\\\S]{0,500})`, \"g\"))) {",
+      "expectRed": "a name bound to the target but never passed to a launcher is still refused"
     }
   ]
 }

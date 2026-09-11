@@ -65,8 +65,12 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  fixtures whose guarded source changed. It is the 7th workflow and is push-to-main startable (its
  *  `changed` job runs on push to main), so both the total and the push-to-main count move by one.
  *  It declares NO concurrency group, so EXPECTED_GROUPED is unchanged — see the note below for why a
- *  group was considered and deliberately not added here. */
-const EXPECTED_WORKFLOWS = 7;
+ *  group was considered and deliberately not added here.
+ *
+ *  Bumped for `attribution.yml` (the 8th): it runs on pull_request only, so it is not push-to-main
+ *  startable and neither of the other two counts moves. Its group keys on the PR ref and cancels
+ *  in progress, which is the only policy a PR-only workflow needs. */
+const EXPECTED_WORKFLOWS = 8;
 const EXPECTED_PUSH_TO_MAIN = 6;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow carries one now: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,

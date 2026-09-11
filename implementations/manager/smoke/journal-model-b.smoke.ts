@@ -80,14 +80,21 @@ const sweepStart = src.indexOf("private async reconcileGoalIndex");
 const sweepBody = sweepStart < 0 ? "" : src.slice(sweepStart, src.indexOf("\n  private ", sweepStart + 1));
 c("the sweep body was located and is non-trivial (so the cell below reads something)",
   sweepBody.length > 500, { bytes: sweepBody.length });
-c("the boot sweep EXISTS and enumerates goalidx over a scoped provisioner credential — "
+c("the boot sweep EXISTS and enumerates goalidx through a bounded local provisioner or authenticated host-owned remote scan — "
   + "SPEC:2391 REQUIRES this mechanism; J2 replaces its IMPLEMENTATION and never the mechanism itself. "
   + "IF THIS CELL IS FAILING BECAUSE YOU DELETED THE SWEEP, THAT IS THE BUG, NOT THIS CELL. "
   + "A crash after goalidx and before the bind produces no decision message ever, so the effects "
   + "durable cannot see it and the row leaks forever with no sweep.",
   sweepBody.includes("listGoalIndex(")
-  && sweepBody.includes('mintCreds(this.auth, newIdentity(), "provisioner")'),
-  { hasList: sweepBody.includes("listGoalIndex("), hasProvisioner: sweepBody.includes('"provisioner"') });
+  && sweepBody.includes('mintCreds(this.auth, newIdentity(), "provisioner")')
+  && sweepBody.includes("this.remoteAuthority.scanGoalIndex()")
+  && !sweepBody.includes("this.withEndpointServeExecutor(({ recordsKv }) => listGoalIndex("),
+  {
+    hasLocalList: sweepBody.includes("listGoalIndex("),
+    hasProvisioner: sweepBody.includes('"provisioner"'),
+    hasRemoteHostScan: sweepBody.includes("this.remoteAuthority.scanGoalIndex()"),
+    hasRemoteExecutorEnumeration: sweepBody.includes("this.withEndpointServeExecutor(({ recordsKv }) => listGoalIndex("),
+  });
 
 console.log(`\nJOURNAL MODEL-B SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 if (fail > 0) process.exitCode = 1;
