@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { processStartToken, readBootId, readRecord, recordPath, type SeatRecord } from "./record.js";
 import { unsupportedTransport } from "./protocol.js";
 
 /** What a reap proved. `absent`: no custody record exists for that seat id, so there is no process
@@ -43,6 +43,7 @@ function groupMembers(pgid: number): number[] {
 }
 
 function signal(pid: number, sig: NodeJS.Signals): "signalled" | "gone" {
+  if (pid === 1 || pid === -1) throw new Error(`refusing to signal pid ${pid} (init / all-processes)`);
   try {
     process.kill(pid, sig);
     return "signalled";
@@ -83,8 +84,17 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
     throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
   }
+  if (rec.custodianPid <= 1 || rec.childPid <= 1)
+    throw new Error(`seat ${id} record names pid ${rec.custodianPid}/${rec.childPid}; refusing to signal pid <= 1`);
   if (rec.custodianStart === undefined)
     throw new Error(`seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`);
+  // A record with a boot id from a different kernel boot cannot be reused: pid + starttime pairs
+  // reset across reboots, so the identity match would be coincidental. Refuse rather than signal.
+  if (rec.bootId !== undefined) {
+    const currentBoot = readBootId();
+    if (currentBoot !== undefined && currentBoot !== rec.bootId)
+      throw new Error(`seat ${id} was recorded under boot id ${rec.bootId} but this kernel booted as ${currentBoot}; refusing to signal across reboots (pid + starttime are not durable across boots)`);
+  }
   const custodianStart = rec.custodianStart;
   // A pinned record without a child identity means the child was gone before custody began.
   const childLive = (): boolean => rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";

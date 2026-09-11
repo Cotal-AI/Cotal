@@ -18,7 +18,7 @@ import {
   type ClientRequest,
   type ServerMessage,
 } from "./protocol.js";
-import { RECORD_VERSION, processStartToken, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, processStartToken, readBootId, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -67,6 +67,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const custodianStart = processStartToken(process.pid);
   if (custodianStart === undefined) throw new Error(`cannot read the process start identity of custodian ${process.pid} from /proc`);
   const childStart = processStartToken(proc.pid);
+  const bootId = readBootId();
 
   const term = new Headless.Terminal({
     cols: DEFAULT_COLS,
@@ -267,6 +268,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     childPid: proc.pid,
     custodianStart,
     ...(childStart === undefined ? {} : { childStart }),
+    ...(bootId !== undefined ? { bootId } : {}),
   };
 
   server = createServer((sock) => {

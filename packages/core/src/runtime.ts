@@ -88,23 +88,9 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
-  /**
-   * Mint the durable custody reference for a seat this runtime is ABOUT to spawn, before any
-   * process exists. The caller records it durably and then hands the SAME reference back to
-   * {@link spawn}, so the reference precedes the processes it addresses: a crash anywhere after
-   * the spawn leaves an orphan a successor can still address, never a live seat nobody can name.
-   * Minting the id inside `spawn` cannot give that ordering, because the processes are already
-   * running by the time it returns.
-   *
-   * OPTIONAL, and absent means this runtime has no durable custody to reserve (it also has no
-   * {@link reap}); the caller spawns without a reference, as before. A runtime that implements
-   * this MUST spawn the seat under exactly the reference it returned, and report it back on the
-   * handle: a spawn that quietly mints its own id would leave the recorded reference addressing
-   * nothing, which is worse than recording none.
-   */
-  reserve?(): RuntimeReference;
-  /** Spawn the agent. `reference` is a custody reference from {@link reserve}, and a runtime that
-   *  offers `reserve` must honour it exactly; it is absent for a runtime without durable custody. */
+  /** Spawn the agent. `reference` is a custody reference from a custodial runtime's `reserve`,
+   *  and a runtime that offers `reserve` must honour it exactly; it is absent for a runtime
+   *  without durable custody. */
   spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle;
   /**
    * Reattach this runtime to a handle it created previously. This is a local runtime operation,
@@ -113,18 +99,9 @@ export interface Runtime {
    * here would drop custody on the floor.
    */
   adopt?(reference: RuntimeReference): AgentHandle;
-  /**
-   * Reap a process this runtime custodies that no live manager owns any more: the orphan a crashed
-   * manager left behind, addressed by the reference its handle carried. It must signal only a
-   * process whose identity it can verify against its own custody record, prove the process and its
-   * descendants gone, and forget the record. OPTIONAL, and absent means REFUSE, never "assume
-   * gone": a runtime without durable custody has no verified process to address, and the caller
-   * must throw naming that runtime so the lifecycle stays held instead of retiring over a live seat.
-   */
-  reap?(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
 }
 
-/** What a {@link Runtime.reap} proved. `absent`: no custody record exists for that reference (the
+/** What a reap proved. `absent`: no custody record exists for that reference (the
  *  runtime already forgot it, so nothing it addresses is running). `reaped`: every process the record
  *  named was signalled and verified gone, or found already gone by identity. */
 export type RuntimeReapEvidence = { outcome: "absent" } | { outcome: "reaped"; detail: string };

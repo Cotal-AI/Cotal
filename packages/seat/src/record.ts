@@ -4,6 +4,17 @@ import { randomBytes } from "node:crypto";
 
 export const RECORD_VERSION = 1;
 
+/** Read the kernel boot id from /proc, or undefined when unavailable. A custody record pins this
+ *  at launch so a successor that rebooted between the spawn and the reap cannot signal a pid whose
+ *  start identity coincidentally matches across boots. */
+export function readBootId(): string | undefined {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface SeatRecord {
   version: number;
   id: string;
@@ -19,6 +30,9 @@ export interface SeatRecord {
   /** The child's process start identity, same rule. Absent on a pinned record when the child had
    *  already exited before the custodian could read it (a failed exec); a reader takes that as gone. */
   childStart?: string;
+  /** The kernel boot id at launch time (`/proc/sys/kernel/random/boot_id`). A reap that sees a
+   *  different boot id refuses: pid + starttime pairs can collide across reboots. */
+  bootId?: string;
 }
 
 export function seatId(): string {
@@ -85,6 +99,8 @@ export function readRecord(path: string): SeatRecord {
     throw new Error("seat record custodianStart is not a start token");
   if (raw.childStart !== undefined && (typeof raw.childStart !== "string" || raw.childStart.length === 0))
     throw new Error("seat record childStart is not a start token");
+  if (raw.bootId !== undefined && (typeof raw.bootId !== "string" || raw.bootId.length === 0))
+    throw new Error("seat record bootId is not a valid boot identifier");
   return {
     version: RECORD_VERSION,
     id: raw.id,
@@ -95,5 +111,6 @@ export function readRecord(path: string): SeatRecord {
     childPid: raw.childPid,
     ...(raw.custodianStart !== undefined ? { custodianStart: raw.custodianStart } : {}),
     ...(raw.childStart !== undefined ? { childStart: raw.childStart } : {}),
+    ...(raw.bootId !== undefined ? { bootId: raw.bootId } : {}),
   };
 }

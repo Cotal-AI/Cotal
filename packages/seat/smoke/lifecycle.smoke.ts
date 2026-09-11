@@ -14,6 +14,18 @@ if (process.platform !== "linux") {
   process.exit(0);
 }
 
+// OS-level socket teardown race: test blocks close their handles (h.close()) before the linger
+// tests, but the custodian process's SIGKILL-or-settle tears down the Unix domain socket at the
+// kernel level. If the FIN for our close() is still in flight when the custodian exits, the kernel
+// delivers RST to this process's socket fd, which Node surfaces as an uncaught ECONNRESET on the
+// internal Pipe read callback. The socket is already closed from our side; this is the OS race,
+// not a missing close. Suppress it so the test exits cleanly rather than crashing between cells.
+process.on("uncaughtException", (err) => {
+  if ((err as NodeJS.ErrnoException).code === "ECONNRESET") return;
+  console.error(err);
+  process.exit(1);
+});
+
 let pass = 0;
 let fail = 0;
 const check = (name: string, condition: boolean, detail?: unknown): void => {
@@ -345,6 +357,11 @@ await h.waitForExit();
   }
 
   {
+    // Close all handles from prior blocks before the linger tests: those blocks' custodians can
+    // settle once their child has exited, and the settle tears the socket down. An open socket at
+    // that point fires ECONNRESET as an uncaught exception on this process.
+    for (const h of handles) { try { h.close?.(); } catch { /* already gone */ } }
+
     // A custodian whose child has exited is not custody of anything. With no controller connected it
     // exits after the linger and forgets its record; before this policy it lived forever, one idle
     // node process per seat the manager ever ran.
@@ -359,6 +376,7 @@ await h.waitForExit();
       cwd: process.cwd(),
     });
     check("record pins both start identities", typeof rec.custodianStart === "string" && typeof rec.childStart === "string", rec);
+    check("record pins the kernel boot id", typeof rec.bootId === "string" && rec.bootId.length > 0, rec.bootId);
     check(
       "unadopted custodian exits after its child exits",
       await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", EXIT_LINGER_MS + 5_000),
@@ -383,6 +401,7 @@ await h.waitForExit();
     });
     const h = adoptSeatSync(rec);
     await h.waitForExit().catch(() => undefined);
+    h.close();
     const held = adoptSeatSync(rec);
     await held.attach().backlog();
     await wait(EXIT_LINGER_MS + 1_000);
@@ -526,4 +545,4 @@ await h.waitForExit();
 }
 
 console.log(`\nSEAT LIFECYCLE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-process.exitCode = fail === 0 ? 0 : 1;
+process.exit(fail === 0 ? 0 : 1);

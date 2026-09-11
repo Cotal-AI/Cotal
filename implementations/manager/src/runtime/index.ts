@@ -5,6 +5,40 @@ import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
+export type { RuntimeReapEvidence } from "@cotal-ai/core";
+
+/**
+ * A runtime with durable process custody: it can reserve a seat reference before the seat exists,
+ * and reap an orphaned seat by that reference after the owning manager died. Only runtimes that
+ * own real OS processes (the custodial PTY runtime on Linux) implement this. Runtimes that attach
+ * to externally-owned processes (tmux/cmux/orca/herdr) do not.
+ *
+ * The manager type-guards at each spawn site with {@link isCustodialRuntime} and narrows to this
+ * interface, so the core Runtime contract stays free of custody concerns.
+ */
+export interface CustodialRuntime extends Runtime {
+  /**
+   * Mint the durable custody reference for a seat this runtime is ABOUT to spawn, before any
+   * process exists. The caller records it durably and then hands the SAME reference back to
+   * {@link Runtime.spawn}, so the reference precedes the processes it addresses: a crash anywhere
+   * after the spawn leaves an orphan a successor can still address, never a live seat nobody can
+   * name. A runtime that implements this MUST spawn the seat under exactly the reference it
+   * returned, and report it back on the handle.
+   */
+  reserve(): RuntimeReference;
+  /**
+   * Reap a process this runtime custodies that no live manager owns any more: the orphan a crashed
+   * manager left behind, addressed by the reference its handle carried. It must signal only a
+   * process whose identity it can verify against its own custody record, prove the process and its
+   * descendants gone, and forget the record.
+   */
+  reap(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
+}
+
+/** Type guard: true when the runtime implements the custodial sub-interface. */
+export function isCustodialRuntime(rt: Runtime): rt is CustodialRuntime {
+  return typeof (rt as CustodialRuntime).reserve === "function" && typeof (rt as CustodialRuntime).reap === "function";
+}
 
 /** Adopt a durable handle, or refuse by name when this runtime has no adopt method. */
 export function requireRuntimeAdopt(runtime: Runtime, reference: RuntimeReference): AgentHandle {
@@ -15,7 +49,7 @@ export function requireRuntimeAdopt(runtime: Runtime, reference: RuntimeReferenc
 
 /** Reap an orphaned custody by reference, or refuse by name when this runtime has no reap method. */
 export function requireRuntimeReap(runtime: Runtime, reference: RuntimeReference): Promise<RuntimeReapEvidence> {
-  if (typeof runtime.reap !== "function")
+  if (!isCustodialRuntime(runtime))
     throw new Error(`runtime "${runtime.kind}" does not support reap; the orphaned process for ${reference.kind}:${reference.id} cannot be proved gone`);
   return runtime.reap(reference);
 }
