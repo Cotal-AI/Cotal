@@ -394,6 +394,7 @@
     "smoke:manager-service-invoke": "tsx implementations/manager/smoke/manager-service-invoke.smoke.ts",
     "smoke:journal-model-b": "tsx implementations/manager/smoke/journal-model-b.smoke.ts",
     "smoke:journal-declaration": "tsx implementations/manager/smoke/journal-declaration.smoke.ts",
+    "smoke:max-agents-single-source": "tsx implementations/manager/smoke/max-agents-single-source.smoke.ts",
     "smoke:contract-vocabulary": "tsx implementations/manager/smoke/contract-vocabulary.smoke.ts",
     "smoke:manager-spawn-action": "tsx implementations/manager/smoke/spawn-action.smoke.ts",
     "smoke:manager-supervise-restart": "tsx implementations/manager/smoke/supervise-restart.smoke.ts",
