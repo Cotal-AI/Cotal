@@ -3,10 +3,18 @@ import { credsFromJwt, newIdentity, type RemoteManagerAuthorityMaterial } from "
 import { materialCredential } from "../src/remote-authority.js";
 
 let pass = 0;
+const NOW_MS = 1_700_000_000_000;
+const NOW_SECONDS = NOW_MS / 1000;
 const cell = (name: string, fn: () => void) => {
-  fn();
-  pass++;
-  console.log(`  ✓ ${name}`);
+  const realNow = Date.now;
+  Date.now = () => NOW_MS;
+  try {
+    fn();
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } finally {
+    Date.now = realNow;
+  }
 };
 const jwt = (sub: string, exp: number) => `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify({ sub, exp })).toString("base64url")}.sig`;
 const credential = (identity: ReturnType<typeof newIdentity>, exp: number) => ({ jwt: jwt(identity.id, exp), exp });
@@ -23,27 +31,33 @@ const material = (credentials: RemoteManagerAuthorityMaterial["credentials"], ex
 
 const supervisor = newIdentity();
 const executor = newIdentity();
-const sup = credential(supervisor, 200);
-const exec = credential(executor, 150);
+const sup = credential(supervisor, NOW_SECONDS + 200);
+const exec = credential(executor, NOW_SECONDS + 150);
 
 cell("a longer-lived supervisor is valid inside an envelope whose earliest member is the executor", () => {
   assert.equal(
-    materialCredential(material({ supervisor: sup, executor: exec }, 150_000), "supervisor", supervisor),
-    credsFromJwt(sup.jwt, supervisor),
+    materialCredential(material({ supervisor: sup, executor: exec }, exec.exp * 1000), "supervisor", supervisor) ===
+      credsFromJwt(sup.jwt, supervisor),
+    true,
   );
 });
 cell("the shortest-lived executor remains valid at the envelope expiry", () => {
   assert.equal(
-    materialCredential(material({ supervisor: sup, executor: exec }, 150_000), "executor", executor),
-    credsFromJwt(exec.jwt, executor),
+    materialCredential(material({ supervisor: sup, executor: exec }, exec.exp * 1000), "executor", executor) ===
+      credsFromJwt(exec.jwt, executor),
+    true,
   );
 });
 cell("a forged envelope expiry is refused", () => {
-  assert.throws(() => materialCredential(material({ supervisor: sup, executor: exec }, 200_000), "supervisor", supervisor), /expiry does not match/);
+  assert.throws(() => materialCredential(material({ supervisor: sup, executor: exec }, sup.exp * 1000), "supervisor", supervisor), /expiry does not match/);
 });
 cell("a credential entry that disagrees with its JWT expiry is refused", () => {
-  const bad = { jwt: sup.jwt, exp: 201 };
-  assert.throws(() => materialCredential(material({ supervisor: bad, executor: exec }, 150_000), "supervisor", supervisor), /expiry does not match/);
+  const bad = { jwt: sup.jwt, exp: sup.exp + 1 };
+  assert.throws(() => materialCredential(material({ supervisor: bad, executor: exec }, exec.exp * 1000), "supervisor", supervisor), /expiry does not match/);
+});
+cell("a credential expiring at the current clock boundary is refused", () => {
+  const expired = credential(executor, NOW_SECONDS);
+  assert.throws(() => materialCredential(material({ executor: expired }, NOW_MS), "executor", executor), /already expired/);
 });
 
 console.log(`\nremote-authority-expiry: ${pass} passed`);
