@@ -1,12 +1,11 @@
 /**
  * Say which provider is actually carrying a seat's model.
  *
- * The connector already refuses to join under a model label it did not receive, and that guarantee
- * stopped at the model. A seat could be truthfully labelled with the model an operator asked for
- * while its traffic was carried by a component nobody named: one seat was requested as a given
- * model, logged every line under a different provider's name, and died inside a third component's
- * plugin. Nothing in the roster, the spawn confirmation, or the manager's exit line named the route,
- * so establishing it meant reading the seat's private log by hand (#785).
+ * A seat can be pinned to the model an operator asked for while its traffic is carried by a component
+ * nobody named: one seat was requested as a given model, logged every line under a different
+ * provider's name, and died inside a third component's plugin. Nothing in the roster, the spawn
+ * confirmation, or the manager's exit line named the route, so establishing it meant reading the
+ * seat's private log by hand (#785).
  *
  * `RuntimeInfo` carries `provider` and `routes` in the same response the model check already reads,
  * so this is a reporting gap, not a discovery problem.
@@ -37,10 +36,10 @@ export function activeModelRoute(runtime: RuntimeIdentity | undefined, model: st
 /**
  * One line naming the effective route for `model`.
  *
- * The route matching the requested model wins, because `runtime.provider` is the session default and
- * can differ from the provider actually serving this model. When neither is known the line says so
- * explicitly rather than guessing or going quiet: an unknown route is itself worth reporting, since
- * silence is what made this expensive to diagnose.
+ * The requested pin selects the model whose route is described. RuntimeInfo.model can lag behind a
+ * successful setModel, while RuntimeInfo.provider identifies the active route among duplicate model
+ * ids. When no matching route is known, the provider remains useful diagnostic context. When neither
+ * is known the line says so explicitly rather than guessing or going quiet.
  */
 export function describeRoute(runtime: RuntimeIdentity | undefined, model: string): string {
   const matched = activeModelRoute(runtime, model);
