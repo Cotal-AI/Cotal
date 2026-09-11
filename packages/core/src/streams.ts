@@ -422,10 +422,10 @@ export async function reconcileBucketTtl(
   const wantNs = nanos(ttlMs);
   const canarySubject = `$KV.${bucket}.${TTL_RECONCILE_CANARY_KEY}`;
   const info = await jsm.streams.info(streamName);
+  // A prior attempt may have left its durable canary behind. Reissue the desired config in case the
+  // store recovered, then prove it. Never accept the matching in-memory config on its own.
   if (info.config.max_age === wantNs) {
     if (await ttlCanaryCount(jsm, streamName, canarySubject) === 0) return undefined;
-    // A prior attempt left its durable canary behind. Reissue the desired config in case the store
-    // has recovered, then prove it. Never accept the matching in-memory config on its own.
     const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs);
     await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
     await js.publish(canarySubject, new TextEncoder().encode("cotal ttl enforcement canary"));
