@@ -34,11 +34,11 @@ if (configs.length === 0) {
   process.exit(1);
 }
 
-let head = "unknown";
+let checkoutHead = "unknown";
 try {
-  head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  checkoutHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 } catch {
-  head = "unknown";
+  checkoutHead = "unknown";
 }
 let cells = 0, named = 0, mutations = 0, unkillable = 0;
 let examined = 0, graded = 0, unparsed = 0, failed = 0;
@@ -275,8 +275,10 @@ const parseSummary = (cfg, output) => {
   // fraction. Presence of the marker string is never itself a total.
   if (typeof cfg.completionMarker === "string") {
     const line = output.split(/\r?\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);
-    const fraction = line?.match(/\b(\d+)\s*\/\s*(\d+)\b/);
-    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };
+    const completeFraction = line?.match(/\b(\d+)\s*\/\s*(\d+)\b/);
+    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {
+      return { executed: Number(completeFraction[2]), failures: 0 };
+    }
   }
   return undefined;
 };
@@ -428,7 +430,7 @@ if (refused.length) {
   console.log(`${refused.length} live-shaped config(s) refused.`);
 }
 console.log(
-  `MUTATION COVERAGE SUMMARY head=${head} enumerated=${configs.length} examined=${examined} graded=${graded} ` +
+  `MUTATION COVERAGE SUMMARY head=${checkoutHead} enumerated=${configs.length} examined=${examined} graded=${graded} ` +
   `refused-with-reason=${refusals.length} unparsed=${unparsed} command-failed=${failed} ` +
   `fenced-live=${refused.length} fenced-discovered=${fencedDiscovered}`,
 );

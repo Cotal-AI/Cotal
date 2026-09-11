@@ -76,16 +76,16 @@
     {
       "name": "completed all-passed fractions are not parsed",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };",
-      "replace": "    void fraction;",
+      "find": "    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }",
+      "replace": "    void completeFraction;",
       "expectRed": "a completed all-passed fraction supplies the executed total",
       "cell": "a completed all-passed fraction supplies the executed total"
     },
     {
       "name": "banner presence is restored as an executed-cell total",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const fraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };\n  }\n  return undefined;\n};",
-      "replace": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const fraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (fraction && Number(fraction[1]) === Number(fraction[2])) return { executed: Number(fraction[2]), failures: 0 };\n  }\n  if (typeof cfg.progressPattern === \"string\" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {\n    const terminal = output.trimEnd().split(/\\r?\\n/).at(-1) ?? \"\";\n    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);\n    const executed = (output.match(new RegExp(cfg.progressPattern, \"gm\")) ?? []).length;\n    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };\n  }\n  return undefined;\n};",
+      "find": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const completeFraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }\n  }\n  return undefined;\n};",
+      "replace": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const completeFraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }\n  }\n  if (typeof cfg.progressPattern === \"string\" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {\n    const terminal = output.trimEnd().split(/\\r?\\n/).at(-1) ?? \"\";\n    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);\n    const executed = (output.match(new RegExp(cfg.progressPattern, \"gm\")) ?? []).length;\n    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };\n  }\n  return undefined;\n};",
       "expectRed": "a declared terminal banner is not an executed-cell total",
       "cell": "a declared terminal banner is not an executed-cell total"
     },
@@ -100,8 +100,8 @@
     {
       "name": "the audit summary omits the checkout tree",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  `MUTATION COVERAGE SUMMARY head=${head} enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
-      "replace": "  `MUTATION COVERAGE SUMMARY head=unknown enumerated=${configs.length} examined=${examined} graded=${graded} ` +",
+      "find": "  checkoutHead = execFileSync(\"git\", [\"rev-parse\", \"HEAD\"], { encoding: \"utf8\" }).trim();",
+      "replace": "  checkoutHead = \"unknown\";",
       "expectRed": "the audit summary names the exact checkout tree",
       "cell": "the audit summary names the exact checkout tree"
     },
