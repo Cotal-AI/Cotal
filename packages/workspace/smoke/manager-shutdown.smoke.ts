@@ -56,6 +56,20 @@ try {
     /stop attempt target does not match/,
   );
   check("a successor target cannot reuse the predecessor's spare capability", existsSync(capabilityPath));
+  writeFileSync(capabilityPath, JSON.stringify({
+    version: 1,
+    process: { pid: process.pid + 1, token: stopperToken },
+  }));
+  await assert.rejects(
+    Promise.resolve().then(() => assertManagerCanSpare(
+      context,
+      tokens,
+      attempt.target as { pid: number; token: string },
+    )),
+    /malformed, stale, or belongs to a different manager process/,
+  );
+  check("a successor capability record cannot authorize the predecessor target", true);
+  publishManagerSpareCapability(context, true, tokens);
 
   armManagerShutdownIntent(context, attempt, tokens);
   check("arm publishes a regular one-shot intent", existsSync(intentPath));

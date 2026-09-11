@@ -11,6 +11,22 @@
   ],
   "mutations": [
     {
+      "name": "a successor stop target may reuse the predecessor spare capability",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "  if (target && (target.pid !== expected.pid || target.token !== expected.token))\n    throw new Error(\"refusing bare manager stop: stop attempt target does not match the recorded manager process\");",
+      "replace": "  void target;",
+      "expectRed": "a successor target cannot reuse the predecessor's spare capability",
+      "cell": "a successor target cannot reuse the predecessor's spare capability"
+    },
+    {
+      "name": "the spare capability record itself is not checked",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "  if (Object.keys(row).sort().join(\",\") !== \"process,version\" || row.version !== 1 || !process ||\n      Object.keys(process).sort().join(\",\") !== \"pid,token\" || process.pid !== expected.pid || process.token !== expected.token)\n    throw new Error(`refusing bare manager stop: spare capability at ${path} is malformed, stale, or belongs to a different manager process`);",
+      "replace": "  void row; void process;",
+      "expectRed": "a successor capability record cannot authorize the predecessor target",
+      "cell": "a successor capability record cannot authorize the predecessor target"
+    },
+    {
       "name": "a different stop attempt is allowed to inherit the destructive intent",
       "file": "packages/workspace/src/manager-shutdown.ts",
       "find": "    if (reservationOwner !== parsed.stopper.pid)\n      return { withAgents: false, warning: \"ignored stale manager shutdown intent from a different stop attempt; managed agents were spared\" };",
