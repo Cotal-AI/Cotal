@@ -37,6 +37,14 @@
       "cell": "an unsuffixed broker-starting suite is refused without executing"
     },
     {
+      "name": "node options before a suite path skip source inspection",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "      if (flag?.startsWith(\"-\")) {\n        if (EVAL_FLAGS.has(flag)) break;\n        if (takesValue(flag) && !token.includes(\"=\")) j++;\n        continue;\n      }\n",
+      "replace": "      if (flag?.startsWith(\"-\")) break;\n",
+      "expectRed": "a node option before a marked suite path is refused",
+      "cell": "a node option before a marked suite path is refused"
+    },
+    {
       "name": "reproof proves live-shaped fixtures instead of refusing them",
       "file": "scripts/mutation-reproof.mjs",
       "find": "const prove = selected.filter((fixture) => !liveRefusedPaths.has(fixture.path));\n",

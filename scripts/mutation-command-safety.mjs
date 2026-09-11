@@ -22,7 +22,31 @@ export const INFRASTRUCTURE_MARKERS = Object.freeze([
 
 const SMOKE_TOKEN = /\bsmoke:[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*/g;
 const LIVE_NAMED = /(?::live|-live)$/;
-const LAUNCHED_FILE = /(?:^|[\s;|&])(?:tsx|(?:\S*\/)?node)\s+([^\s;|&]+)/g;
+const TOKEN = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;|&]+/g;
+const SOURCE_FILE = /[\\/]|\.(?:[cm]?[jt]s|tsx)$/;
+const EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print"]);
+const VALUE_FLAGS = new Set([
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "-r",
+  "--require",
+  "--import",
+  "--loader",
+  "--experimental-loader",
+  "-C",
+  "--conditions",
+  "--env-file",
+  "--title",
+  "--tsconfig",
+  "--input-type",
+  "--inspect-port",
+  "--max-old-space-size",
+  "--max-semi-space-size",
+]);
+const LAUNCHER = /^(?:tsx|(?:.*\/)?node)$/;
+const FLAG_NAME = /^([^=]+)(?:=.*)?$/;
 
 export function smokeTokens(command) {
   if (typeof command !== "string") return [];
@@ -48,11 +72,58 @@ function packageScripts(cwd, readFile) {
   }
 }
 
+function unquote(token) {
+  if (
+    (token.startsWith('"') && token.endsWith('"')) ||
+    (token.startsWith("'") && token.endsWith("'"))
+  ) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+function flagName(token) {
+  const match = FLAG_NAME.exec(token);
+  return match?.[1];
+}
+
+function takesValue(flag) {
+  return VALUE_FLAGS.has(flag);
+}
+
+function isSourcePath(token) {
+  return SOURCE_FILE.test(token);
+}
+
+/**
+ * Collect suite files launched by `node` / `tsx`, skipping valid Node/tsx
+ * options that sit between the launcher and the positional path. Inline
+ * eval (`-e` / `--eval` / `-p`) is not a suite source.
+ */
 function launchedFiles(command) {
   if (typeof command !== "string") return [];
-  return [...command.matchAll(LAUNCHED_FILE)]
-    .map((m) => m[1])
-    .filter((file) => file !== undefined && !file.startsWith("-"));
+  const tokens = [...command.matchAll(TOKEN)].map((m) => unquote(m[0]));
+  const files = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (!LAUNCHER.test(tokens[i])) continue;
+    for (let j = i + 1; j < tokens.length; j++) {
+      const token = tokens[j];
+      if (token === "--") {
+        const next = tokens[j + 1];
+        if (next !== undefined && isSourcePath(next)) files.push(next);
+        break;
+      }
+      const flag = flagName(token);
+      if (flag?.startsWith("-")) {
+        if (EVAL_FLAGS.has(flag)) break;
+        if (takesValue(flag) && !token.includes("=")) j++;
+        continue;
+      }
+      if (isSourcePath(token)) files.push(token);
+      break;
+    }
+  }
+  return files;
 }
 
 function resolveFile(cwd, file) {
