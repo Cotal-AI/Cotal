@@ -17,7 +17,7 @@
     {
       "name": "Jcode capability classification accepts copied untrusted Error text",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "    error instanceof HarnessError &&\n    error.code === \"invalid_request\" &&",
+      "find": "    error instanceof HarnessError &&",
       "replace": "    error instanceof Error &&",
       "expectRed": "a plain Error with copied capability text stays a generic refusal"
     },
