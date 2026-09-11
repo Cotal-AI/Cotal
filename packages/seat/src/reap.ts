@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { bootToken, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
 import { unsupportedTransport } from "./protocol.js";
 
 /** What a reap proved. `absent`: no custody record exists for that seat id, so there is no process
@@ -85,6 +85,14 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   }
   if (rec.custodianStart === undefined)
     throw new Error(`seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`);
+  // A start token counts ticks since ITS OWN boot, so it only tells two processes apart within one
+  // boot, and this record may have outlived a reboot on disk. An unbound or foreign-boot record is
+  // refused rather than signalled: the pids in it now name whatever this boot put at those numbers.
+  const boot = bootToken();
+  if (rec.bootId === undefined)
+    throw new Error(`seat ${id} record carries no boot identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (its start tokens cannot be compared across a reboot)`);
+  if (boot !== undefined && rec.bootId !== boot)
+    throw new Error(`seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`);
   const custodianStart = rec.custodianStart;
   // A pinned record without a child identity means the child was gone before custody began.
   const childLive = (): boolean => rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";

@@ -4,8 +4,8 @@
 // custody reference so the suite can read the record and watch both pids.
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileSync } from "node:fs";
-import { Manager } from "../src/manager.js";
+import { existsSync, writeFileSync } from "node:fs";
+import { Manager, type SpawnHooks } from "../src/manager.js";
 import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
@@ -43,12 +43,28 @@ if (process.env.REPRO_HANG_AFTER_SPAWN === "1") {
     return handle;
   };
 }
+// A spawn that LAUNCHED its seat and then threw, inside the manager that launched it. `onLaunched`
+// is the production callback the spawn-as-action seam already passes, and it fires between the
+// launch and the slot activation CAS below it: the window where the handle lives only in a local,
+// so the rollback can address the seat only through the reference the spawn reserved. The hook
+// parks the manager there until the suite has seen both seat processes live, so a reap observed
+// afterwards cannot be a seat that never started.
+const hooks: SpawnHooks | undefined = process.env.REPRO_THROW_AFTER_LAUNCH === "1"
+  ? {
+      onLaunched: () => {
+        const marker = process.env.REPRO_MARKER!;
+        writeFileSync(marker, `${JSON.stringify({ managerPid: process.pid })}\n`);
+        for (let i = 0; i < 600 && !existsSync(`${marker}.go`); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        throw new Error("the spawn threw after the seat launched");
+      },
+    }
+  : undefined;
 await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 if (process.env.REPRO_SPAWN === "1") {
-  let reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo });
-  for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo }); }
+  let reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo }, undefined, hooks);
+  for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo }, undefined, hooks); }
   if (!reply.ok) {
     process.stdout.write(`REPRO_SPAWN ${JSON.stringify({ managerPid: process.pid, managerInstanceId, reply })}\n`);
     await new Promise<void>(() => {});

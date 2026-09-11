@@ -451,6 +451,36 @@ await h.waitForExit();
   }
 
   {
+    // Boot binding: a start token counts ticks SINCE BOOT, so it tells two processes apart only
+    // within one boot, while a custody record outlives a reboot on disk. A record carried across a
+    // reboot names pids that now belong to whatever this boot put at those numbers, so it is
+    // refused rather than signalled - and so is a record written before the boot stamp existed.
+    const rec = launchSeat({
+      root,
+      name: "reap-reboot",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    handles.push(adoptSeatSync(rec));
+    const path = join(root, rec.id, "record.json");
+    const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    check("the custodian stamps the boot its pids belong to", onDisk.bootId === readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), onDisk.bootId);
+    writeFileSync(path, `${JSON.stringify({ ...onDisk, bootId: "00000000-0000-0000-0000-000000000000" })}\n`);
+    let foreign = "";
+    try { await reapSeat(root, rec.id); } catch (e) { foreign = (e as Error).message; }
+    check("a record from another boot refuses to signal", /belongs to boot 00000000-0000-0000-0000-000000000000/.test(foreign) && state(rec.childPid) !== "gone", { foreign, child: state(rec.childPid) });
+    const { bootId: _dropped, ...unbound } = onDisk;
+    writeFileSync(path, `${JSON.stringify(unbound)}\n`);
+    let refusedUnbound = "";
+    try { await reapSeat(root, rec.id); } catch (e) { refusedUnbound = (e as Error).message; }
+    check("a record with no boot identity refuses to signal", /carries no boot identity/.test(refusedUnbound) && state(rec.childPid) !== "gone", { refusedUnbound, child: state(rec.childPid) });
+  }
+
+  {
     const rec = launchSeat({
       root,
       name: "grace",

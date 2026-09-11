@@ -1,0 +1,30 @@
+{
+  "suite": [
+    "implementations/manager/smoke/orphan-seat-rollback.smoke.ts"
+  ],
+  "guard": "a spawn that launched its seat and then threw is rolled back by the manager that launched it, and the seat process is proved gone before the lifecycle retires",
+  "command": "pnpm smoke:orphan-seat-rollback",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/orphan-seat-rollback.mutations.json",
+  "why": [
+    "The suite parks a real manager in the onLaunched callback, after the seat's custodian and child exist and before the slot activation CAS, checks both processes are running, then releases it into a throw. The rollback runs in the same process, where the handle is gone with the stack frame.",
+    "The two sibling orphan-seat suites survive both mutations: in each of them the reap is driven by a SUCCESSOR that reads the custody reference off the slot row, and neither mutation touches that row."
+  ],
+  "mutations": [
+    {
+      "name": "leave the reserved custody reference off the rollback object",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) };",
+      "replace": "provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath } };",
+      "expectRed": "the rollback reaps the launched seat by the reference the spawn reserved",
+      "cell": "the rollback reaps the launched seat by the reference the spawn reserved"
+    },
+    {
+      "name": "drop the custody reference on the way from deprovision to the static terminal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      return this.driveStaticRetirement(a);",
+      "replace": "      return this.driveStaticRetirement({ ...a, runtime: undefined });",
+      "expectRed": "the rollback reaps the launched seat by the reference the spawn reserved",
+      "cell": "the rollback reaps the launched seat by the reference the spawn reserved"
+    }
+  ]
+}

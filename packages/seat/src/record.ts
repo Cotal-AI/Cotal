@@ -19,6 +19,12 @@ export interface SeatRecord {
   /** The child's process start identity, same rule. Absent on a pinned record when the child had
    *  already exited before the custodian could read it (a failed exec); a reader takes that as gone. */
   childStart?: string;
+  /** The boot this record's pids belong to (`/proc/sys/kernel/random/boot_id`). A start token counts
+   *  clock ticks SINCE BOOT, so it is only unique within one boot, and custody records outlive a
+   *  reboot on disk. Without this, a surviving record could match an unrelated process that reached
+   *  the same pid at the same tick after a reboot, and be signalled for it. Absent on a record
+   *  written before boot binding; such a record is never signalled. */
+  bootId?: string;
 }
 
 export function seatId(): string {
@@ -47,6 +53,19 @@ export function recordPath(root: string, id: string): string {
 
 export function socketPath(root: string, id: string): string {
   return join(root, assertSeatId(id), "seat.sock");
+}
+
+/** This boot's identity. Read at the moment a record is written and again when it is read back: a
+ *  start token is ticks since THIS boot, so two records from different boots share a namespace they
+ *  cannot distinguish on their own. Undefined where the kernel does not publish it, which leaves a
+ *  record unbound and therefore unsignallable rather than wrongly signallable. */
+export function bootToken(): string | undefined {
+  try {
+    const id = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
