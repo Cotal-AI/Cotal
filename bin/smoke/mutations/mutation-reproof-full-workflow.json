@@ -32,6 +32,14 @@
       "cell": "the full aggregate rejects matrix=cancelled"
     },
     {
+      "name": "the aggregate probe keeps Cotal session variables",
+      "file": "bin/smoke/mutation-reproof-full-workflow.smoke.ts",
+      "find": "    env: { ...childEnv(), SHARD_RESULT: result },",
+      "replace": "    env: { ...process.env, SHARD_RESULT: result },",
+      "expectRed": "aggregate probes do not inherit Cotal session credentials",
+      "cell": "aggregate probes do not inherit Cotal session credentials"
+    },
+    {
       "name": "the full alarm watches shards instead of the aggregate gate",
       "file": ".github/workflows/mutation-reproof.yml",
       "find": "    needs: full\n    if: always() && (needs.full.result == 'failure' || needs.full.result == 'cancelled')",

@@ -12,6 +12,11 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const childEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+};
 const workflow = parse(readFileSync(join(ROOT, ".github/workflows/mutation-reproof.yml"), "utf8"));
 const jobs = workflow?.jobs ?? {};
 const shardJob = jobs.full_shard;
@@ -47,18 +52,28 @@ check("full is the named always-running aggregate gate over full_shard",
     && JSON.stringify(aggregate?.needs) === JSON.stringify(["full_shard"])
     && aggregate?.["continue-on-error"] !== true);
 
+const previousSentinel = process.env.COTAL_REPROOF_SENTINEL;
+process.env.COTAL_REPROOF_SENTINEL = "synthetic-session-secret";
 const gate = aggregate?.steps?.find((step: { name?: string }) => step.name === "Gate");
+let aggregateEnvClean = true;
 for (const [result, accepts] of [["success", true], ["failure", false], ["cancelled", false], ["skipped", false]] as const) {
-  const run = typeof gate?.run === "string" ? spawnSync("bash", ["-c", gate.run], {
+  const command = typeof gate?.run === "string"
+    ? `if [ "\${COTAL_REPROOF_SENTINEL+x}" ]; then echo SESSION_LEAK; fi\n${gate.run}`
+    : undefined;
+  const run = command ? spawnSync("bash", ["-c", command], {
     encoding: "utf8",
-    env: { ...process.env, SHARD_RESULT: result },
+    env: { ...childEnv(), SHARD_RESULT: result },
   }) : undefined;
+  aggregateEnvClean &&= run !== undefined && !`${run.stdout ?? ""}${run.stderr ?? ""}`.includes("SESSION_LEAK");
   check(`the full aggregate ${accepts ? "accepts" : "rejects"} matrix=${result}`,
     gate?.env?.SHARD_RESULT === "${{ needs.full_shard.result }}"
       && run?.status !== null && run?.status !== undefined
       && (accepts ? run.status === 0 : run.status !== 0),
     `status=${run?.status ?? "not run"}`);
 }
+check("aggregate probes do not inherit Cotal session credentials", aggregateEnvClean);
+if (previousSentinel === undefined) delete process.env.COTAL_REPROOF_SENTINEL;
+else process.env.COTAL_REPROOF_SENTINEL = previousSentinel;
 check("full-alarm remains pointed at the full aggregate gate",
   alarm?.needs === "full"
     && alarm?.if === "always() && (needs.full.result == 'failure' || needs.full.result == 'cancelled')"
