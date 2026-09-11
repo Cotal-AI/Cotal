@@ -11,7 +11,7 @@
  * Run: COTAL_OWNER_NATIVE_ACCEPTANCE=1 tsx implementations/manager/smoke/hosted-retirement-native.acceptance.ts
  */
 
-function ownedChildEnv(owned: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function ownedChildEnv(owned: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return { ...env, ...owned };
