@@ -7,8 +7,8 @@
  *   - the public workspace manifests that `pnpm publish -r` can select.
  *
  * It then reads every exact package@version from npm. A clean release has every version absent.
- * A mixed present/absent census is a prior partial publish and is refused. An all-present census is
- * a harmless retry after a completed release and becomes a no-op. Unknown registry answers refuse.
+ * Any present exact version is refused. A mixed census is a prior partial publish; an all-present
+ * census has no complete fixed group left to publish. Unknown registry answers refuse too.
  * When GitHub Actions exposes its OIDC token requester, a distinct id_token is exchanged for every
  * package before any build, assembly, or publish command begins.
  */
@@ -174,15 +174,10 @@ export async function preflightNpmPublish({
   const present = rows.filter((row) => row.registry === "present");
   const absent = rows.filter((row) => row.registry === "absent");
 
-  if (unknown.length || (present.length > 0 && absent.length > 0)) {
+  if (unknown.length || present.length > 0) {
     printPublishCensus(rows, log);
     if (unknown.length) throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);
-    throw new Error(`partial prior publish detected: ${present.length}/${rows.length} exact versions already exist`);
-  }
-  if (present.length === rows.length) {
-    printPublishCensus(rows, log);
-    log("all exact versions are already published; nothing to publish");
-    return { state: "already-published", rows };
+    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);
   }
   if (absent.length !== rows.length) {
     printPublishCensus(rows, log);

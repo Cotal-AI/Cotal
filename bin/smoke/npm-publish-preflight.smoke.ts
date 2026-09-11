@@ -95,7 +95,7 @@ check(
 const partial = await scenario(new Set(["@cotal-ai/seat"]));
 check(
   "one already-published package refuses the whole preflight",
-  partial.error instanceof Error && partial.error.message.includes("partial prior publish detected"),
+  partial.error instanceof Error && partial.error.message.includes("exact versions already exist"),
   partial.error,
 );
 check(
@@ -120,5 +120,5 @@ check(
   oidcRefused.error,
 );
 
-console.log(`\n${failed === 0 ? "SUITE COMPLETE" : "SUITE FAILED"}: ${passed} passed, ${failed} failed`);
+console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

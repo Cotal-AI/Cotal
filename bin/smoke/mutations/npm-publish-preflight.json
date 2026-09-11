@@ -23,7 +23,7 @@
     {
       "name": "a mixed present and absent census is allowed to continue",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  if (unknown.length || (present.length > 0 && absent.length > 0)) {\n",
+      "find": "  if (unknown.length || present.length > 0) {\n",
       "replace": "  if (unknown.length) {\n",
       "expectRed": "one already-published package refuses the whole preflight",
       "cell": "one already-published package refuses the whole preflight"
