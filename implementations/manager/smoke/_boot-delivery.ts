@@ -16,6 +16,9 @@
  *
  * The caller must hold the space's `SpaceAuth` WITH its in-memory system-account signing seed —
  * i.e. the auth object `createSpaceAuth` just returned, since the $SYS seed is never persisted.
+ *
+ * `reloadStoreIdentity` is the same store the Manager remints through. Manager.start challenges
+ * this hook before the first remint; an unnamed or divergent identity is a construction refusal.
  */
 import {
   CotalEndpoint,
@@ -24,6 +27,7 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  type SecretStoreIdentity,
   type SpaceAuth,
 } from "@cotal-ai/core";
 
@@ -41,8 +45,9 @@ export async function bootDeliveryDaemon(opts: {
   space: string;
   servers: string;
   auth: SpaceAuth;
+  reloadStoreIdentity: SecretStoreIdentity;
 }): Promise<DeliveryDaemon> {
-  const { space, servers, auth } = opts;
+  const { space, servers, auth, reloadStoreIdentity } = opts;
   // The $SYS pair the eviction executor connects with: an observer that can CONNZ-scan the account
   // and an evictor that can KICK it. Mintable only from a space auth still holding the in-memory
   // system-account seed.
@@ -69,6 +74,7 @@ export async function bootDeliveryDaemon(opts: {
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
         options: { maxVerifyRounds: 12 },
       }),
+    reloadStoreIdentity: () => reloadStoreIdentity,
   });
   let stopped = false;
   return {

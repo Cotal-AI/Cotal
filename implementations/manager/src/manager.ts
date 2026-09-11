@@ -10,6 +10,9 @@ import {
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
+  divergentSecretStoreRefusal,
+  parseSecretStoreIdentity,
+  sameSecretStoreIdentity,
   agentFilePath,
   clearSpaceHistory,
   dialerFor,
@@ -57,7 +60,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   requireRuntimeAdopt,
@@ -327,8 +330,13 @@ export interface ManagerOptions {
    *  sentinel creds). ONE store, so a hosted composition (KMS/Vault) can never end up with the manager
    *  re-signing daemon creds into one store while it reads/writes agent creds through another (split
    *  authority). Defaults to the workstation FS store over `workspaceRoot`, so a local `cotal up` is
-   *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`), or a
-   *  hosted remint writes one store while the daemon reads another and rides to expiry. */
+   *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`).
+   *  `start()` and every later remint challenge the daemon's `reloadStoreIdentity` and refuse
+   *  naming both stores when they diverge. No bound daemon is not a named store, so start
+   *  proceeds and remint writes this store; a later daemon on a foreign store is refused on
+   *  the next remint rather than certified by the earlier absence. A hung rail (request
+   *  timeout) fails closed. An injected store declares its identity, or both processes set
+   *  `COTAL_SECRET_STORE` to the same coordinate. */
   secretStore?: SecretStore;
   /** P2 item 6: the global ceiling on concurrently live §13.6 sessions this manager will serve.
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
@@ -867,6 +875,22 @@ function foreignEventChannels(channels: readonly string[], owner: string, actor:
 
 type LeaseState = "held" | "held-unrenewed" | "gone" | "taken" | "unknown";
 
+function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
+  if (store.identity !== undefined) return parseSecretStoreIdentity(store.identity);
+  const coordinate = process.env.COTAL_SECRET_STORE;
+  if (!coordinate)
+    throw new Error(
+      "ManagerOptions.secretStore must declare its identity or set COTAL_SECRET_STORE so the manager and delivery daemon can name the same authority (never a silent local-root fallback)",
+    );
+  return { kind: "injected", coordinate };
+}
+
+/** True only when the delivery-admin rail has no bound responder. A timeout is a hung rail, not absence. */
+function isAbsentDeliveryAdmin(msg: string): boolean {
+  if (/timeout/i.test(msg)) return false;
+  return /no responders|\b503\b/i.test(msg);
+}
+
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -880,6 +904,8 @@ export class Manager {
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
    *  See {@link ManagerOptions.secretStore}. */
   private readonly secrets: SecretStore;
+  /** Named identity of {@link secrets}: the same coordinate the delivery daemon must reload from. */
+  private readonly secretStoreIdentity: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
@@ -1124,6 +1150,9 @@ export class Manager {
     this.remoteAuthority = opts.remoteAuthority;
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
+    this.secretStoreIdentity = opts.secretStore
+      ? injectedManagerStoreIdentity(opts.secretStore)
+      : { kind: "fs", root: resolve(this.workspaceRoot) };
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
@@ -1364,6 +1393,7 @@ export class Manager {
     // every half-TTL: re-sign the daemon creds files for their EXISTING nkeys, request the explicit
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
+      await this.assertDaemonSharesSecretStore();
       await this.renewDaemonCreds();
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
@@ -1417,6 +1447,37 @@ export class Manager {
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
   }
 
+  /** Proof that this manager remints into the store the delivery daemon reloads from.
+   *  Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores
+   *  refuse the pass. A daemon that is not bound yet is not a named store: start and
+   *  remint still proceed (tests, delayed delivery), writing this manager's store. The
+   *  challenge runs again before every remint, so a later daemon on a foreign store is
+   *  refused then rather than certified by an earlier absence. A request timeout is not
+   *  absence: a hung rail would skip the proof, so it fails closed. */
+  private async assertDaemonSharesSecretStore(): Promise<"shared" | "absent"> {
+    let reply: ControlReply;
+    try {
+      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (isAbsentDeliveryAdmin(msg)) return "absent";
+      throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
+    }
+    if (!reply.ok)
+      throw new Error(
+        reply.error ?? "delivery daemon refused to name the SecretStore it reloads from",
+      );
+    let daemon: SecretStoreIdentity;
+    try {
+      daemon = parseSecretStoreIdentity(reply.data);
+    } catch (e) {
+      throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
+    }
+    if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon))
+      throw new Error(divergentSecretStoreRefusal(this.secretStoreIdentity, daemon));
+    return "shared";
+  }
+
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
    *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
@@ -1427,6 +1488,7 @@ export class Manager {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
+      await this.assertDaemonSharesSecretStore();
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).

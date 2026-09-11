@@ -656,7 +656,9 @@ export function controlServiceSubject(space: string, service: string, owner: str
 export const CONTROL_DELIVERY = "delivery" as const;
 /** The delivery daemon's PRIVILEGED admin rail (the D5 rail-split): control-plane ops the daemon
  *  EXECUTES for the mesh's renewal/repair owner — credential reload (`reloadCreds`, the class-2
- *  standing-renewal adoption step) now; the live-eviction executor rides here next. Cred-enforced
+ *  standing-renewal adoption step); the store-identity challenge (`reloadStoreIdentity`,
+ *  so a two-root composition is refused before that remint, including a late-binding daemon); the live-eviction executor
+ *  rides here next. Cred-enforced
  *  caller set: only the manager's `supervisor` profile holds the request-publish grant (every agent
  *  cred is default-denied — nats-server is the boundary);
  *  the `delivery` cred holds the serve + bounded-reply side. */

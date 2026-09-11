@@ -93,6 +93,7 @@ try {
   await setupSpaceStreams({ servers, space: spaceA, creds: await mintCreds(authA, newIdentity(), "provisioner") });
   process.chdir(root);
   check("INJECTED ADMISSION control: cwd is pinned to the empty hosted root", findCotalRoot() === root, findCotalRoot());
+  process.env.COTAL_SECRET_STORE = "memory:injected-admission";
 
   const composition = { injected: true as const };
   const deliveryKey = deliveryCredsKey(spaceA, composition);

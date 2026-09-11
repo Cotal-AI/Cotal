@@ -28,6 +28,13 @@
  * (e.g. `mintCreds`).
  */
 export interface SecretStore {
+  /** Stable, non-secret identity of the authority this adapter reads and writes. A first-party
+   *  filesystem adapter declares this intrinsically. A hosted adapter may declare its Vault/KMS
+   *  coordinate here, so callers do not have to reconstruct the adapter's authority from cwd or
+   *  another local root. Optional for compatibility; a composition that needs identity proof must
+   *  otherwise supply an explicit coordinate at its boundary. */
+  readonly identity?: SecretStoreIdentity;
+
   /** The stored value for `key`, or `undefined` if absent. */
   get(key: string): Promise<string | undefined>;
 
@@ -44,4 +51,75 @@ export interface SecretStore {
    *  stays valid until its credential lifetime ends or broker/key rotation invalidates it (those
    *  are mint / renewal / eviction concerns, not `SecretStore`). */
   delete(key: string): Promise<void>;
+}
+
+/**
+ * How a process names the SecretStore it uses as the standing-daemon credential authority.
+ *
+ * Fingerprint-only `reloadCreds` is safe only when the renewal owner and the delivery daemon
+ * genuinely read one store. This identity is that proof: it names the store, never a secret.
+ * Two workstation filesystem stores agree only when they resolve the same directory. An
+ * injected (hosted) store is identified by an operator-supplied coordinate, never guessed from
+ * a local root. A store may declare this identity itself; otherwise the composition root must
+ * provide it explicitly. There is no fallback between the two shapes.
+ */
+export type SecretStoreIdentity =
+  | { kind: "fs"; root: string }
+  | { kind: "injected"; coordinate: string };
+
+/** Compare two store identities. Filesystem roots are compared after POSIX-style trailing-slash trim. */
+export function sameSecretStoreIdentity(a: SecretStoreIdentity, b: SecretStoreIdentity): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "fs" && b.kind === "fs") return trimStorePath(a.root) === trimStorePath(b.root);
+  if (a.kind === "injected" && b.kind === "injected") return a.coordinate === b.coordinate;
+  return false;
+}
+
+function trimStorePath(p: string): string {
+  return p.replace(/[/\\]+$/, "") || p;
+}
+
+/** Operator-facing label used in the construction-time refusal that names both stores. */
+export function formatSecretStoreIdentity(id: SecretStoreIdentity): string {
+  return id.kind === "fs" ? id.root : `injected:${id.coordinate}`;
+}
+
+/**
+ * Parse a store identity off the delivery-admin rail. Unknown fields, extra keys, blank
+ * values, and mixed fs/injected shapes are refused rather than guessed.
+ */
+export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("secret-store identity must be an object");
+  const o = raw as Record<string, unknown>;
+  const keys = Object.keys(o);
+  if (o.kind === "fs") {
+    if (keys.some((k) => k !== "kind" && k !== "root"))
+      throw new Error("secret-store identity of kind fs admits only {kind, root}");
+    if (typeof o.root !== "string" || !o.root.trim())
+      throw new Error("secret-store identity of kind fs requires a non-blank root");
+    return { kind: "fs", root: o.root };
+  }
+  if (o.kind === "injected") {
+    if (keys.some((k) => k !== "kind" && k !== "coordinate"))
+      throw new Error("secret-store identity of kind injected admits only {kind, coordinate}");
+    if (typeof o.coordinate !== "string" || !o.coordinate.trim())
+      throw new Error("secret-store identity of kind injected requires a non-blank coordinate");
+    return { kind: "injected", coordinate: o.coordinate };
+  }
+  throw new Error('secret-store identity kind must be "fs" or "injected"');
+}
+
+/**
+ * The construction-time refusal when the manager's remint store and the daemon's reload
+ * source are not one authority. Both identities appear in the message; a refusal that
+ * declines to start without naming them is the same defect wearing a different error.
+ */
+export function divergentSecretStoreRefusal(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
+  return (
+    `daemon credential renewal cannot be constructed across two SecretStores: ` +
+    `the manager remints through ${formatSecretStoreIdentity(owner)} while the delivery daemon ` +
+    `reloads from ${formatSecretStoreIdentity(daemon)}. Pass both processes the same store ` +
+    `(one explicit SecretStore coordinate, or one shared filesystem root).`
+  );
 }
