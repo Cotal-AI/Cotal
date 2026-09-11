@@ -161,7 +161,7 @@ setInterval(() => {}, 1_000);
     check(`${name}: the seat reaches normal input`, await until(() => output.includes("NORMAL INPUT"), 3_000), output);
     check(`${name}: exactly one Enter reaches the child`, file(sink) === "\r", file(sink));
     handle.stop({ graceful: false });
-    await handle.waitForExit();
+    await handle.waitForExit?.();
     off();
     drop(handle);
   };
@@ -179,7 +179,7 @@ setInterval(() => {}, 1_000);
   await wait(5_750);
   check("no prompt: no stray Enter reaches the child after the old confirmation window", file(noPromptSink) === "", file(noPromptSink));
   noPrompt.stop({ graceful: false });
-  await noPrompt.waitForExit();
+  await noPrompt.waitForExit?.();
   drop(noPrompt);
 
   const unmatched = rt.spawn("unmatched prompt", {
@@ -191,7 +191,7 @@ setInterval(() => {}, 1_000);
   const unmatchedSession = unmatched.attach();
   let unmatchedOutput = "";
   const unmatchedOff = unmatchedSession.onData((chunk) => { unmatchedOutput += chunk.toString("utf8"); });
-  await unmatched.waitForExit();
+  await unmatched.waitForExit?.();
   check(
     "unmatched prompt: the seat fails bounded with the connector-owned prompt named",
     unmatchedOutput.includes('startup confirmation failed: prompt "Enter to confirm" did not appear within 15000ms'),
