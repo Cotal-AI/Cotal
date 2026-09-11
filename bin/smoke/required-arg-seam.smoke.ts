@@ -319,7 +319,9 @@ const SEAMS: Seam[] = [
   // 142/102 -> 144/104: hosted-retirement-native.acceptance.ts adds two provisioner connections:
   // one readiness probe after starting its authenticated broker, and one terminal-observer connection
   // inside the final public retirement cell. Both are fixture-side calls under smoke/ and state tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 144, untypecheckedSites: 104 },
+  // 144/104 -> 145/105: hosted-retirement-stock-supervise.acceptance.ts adds one fixture-side
+  // provisioner connection for its authenticated broker readiness probe and states tls: false.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 145, untypecheckedSites: 105 },
 ];
 
 /**
