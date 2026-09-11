@@ -27,6 +27,13 @@ const PULL_REQUEST_ACTIVITY_TYPES = new Set([
   "milestoned", "demilestoned",
 ]);
 
+function hasMergeKey(value) {
+  if (Array.isArray(value)) return value.some(hasMergeKey);
+  if (!plainObject(value)) return false;
+  if (Object.hasOwn(value, "<<")) return true;
+  return Object.values(value).some(hasMergeKey);
+}
+
 function pullRequestConfig(file, on) {
   if (typeof on === "string") {
     if (on.length === 0) throw new Error(`${file}: top-level on event must not be empty`);
@@ -38,6 +45,9 @@ function pullRequestConfig(file, on) {
     return on.includes("pull_request") ? null : undefined;
   }
   if (!plainObject(on)) throw new Error(`${file}: top-level on declaration must name one or more events`);
+  // GitHub never expands <<, so the rest of on is unevaluable. Refuse the merge key
+  // first and skip later checks such as types, rather than reporting both.
+  if (hasMergeKey(on)) throw new Error(`${file}: unsupported YAML merge key in the on mapping`);
   const events = Object.keys(on);
   if (events.length === 0) throw new Error(`${file}: top-level on mapping must not be empty`);
   return Object.hasOwn(on, "pull_request") ? on.pull_request : undefined;
