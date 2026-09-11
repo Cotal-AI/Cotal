@@ -4,7 +4,6 @@
   ],
   "guard": "TTL reconciliation reports success only after a real canary expires from the backing store. A file store whose metadata update rolls back while STREAM.INFO false-greens must raise TtlPersistenceError on both the update pass and a later matching-INFO pass.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:presence-ttl-persistence",
-  "completionMarker": "PRESENCE-TTL-PERSISTENCE SMOKE",
   "progressPattern": "  ✓ ",
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/presence-ttl-persistence.json",
   "why": [
