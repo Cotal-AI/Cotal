@@ -305,6 +305,7 @@
     "smoke:spawn-manifest:live": "tsx implementations/cli/smoke/spawn-manifest-live.smoke.ts",
     "smoke:manager-singleton:live": "tsx implementations/cli/smoke/manager-singleton-live.smoke.ts",
     "smoke:component-health": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/component-health.smoke.ts",
+    "smoke:systemd-supervision": "tsx implementations/cli/smoke/systemd-supervision.smoke.ts",
     "smoke:web-seed:live": "tsx implementations/cli/smoke/web-seed-live.smoke.ts",
     "smoke:delivery-cred:auth": "tsx packages/core/smoke/delivery-cred-confinement.smoke.ts",
     "smoke:delivery-reply-injection:auth": "tsx packages/core/smoke/delivery-reply-injection.smoke.ts",

@@ -110,6 +110,7 @@ import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
+import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
 import { managerHasDeliveryMarker, managerLogDisplayPath, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
@@ -940,6 +941,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     console.log(c.dim(`Started nats-server (${source}).`));
     console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager })));
+    const supervisionWarning = detachedSystemdSupervisionWarning();
+    if (supervisionWarning) console.error(c.yellow(supervisionWarning));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
     // A user mesh whose auth service never became ready is recorded + running (a re-`cotal up`

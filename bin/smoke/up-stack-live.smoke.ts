@@ -17,7 +17,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createConnection, createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
@@ -43,11 +43,14 @@ const home = mkdtempSync(join(tmpdir(), "cotal-upstack-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-upstack-root-"));
 const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
 const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
+const warningRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-warning-"));
+const fakeBin = mkdtempSync(join(tmpdir(), "cotal-upstack-bin-"));
 const configDir = join(home, "xdg");
 const anchors = new Map([
   [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })],
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
+  [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
@@ -59,6 +62,11 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const cliIn = (cwd: string, ...args: string[]) => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
+  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  return spawnSync(TSX, [CLI, ...args], options);
+};
+const cliInEnv = (cwd: string, extraEnv: NodeJS.ProcessEnv, ...args: string[]) => {
+  const options = { cwd, env: { ...env, ...extraEnv }, encoding: "utf8" as const, timeout: 120_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
   return spawnSync(TSX, [CLI, ...args], options);
 };
@@ -117,6 +125,19 @@ try {
   ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
   cliIn(autoRoot, "down");
   if (startedOccupant) cliIn(occupantRoot, "down");
+
+  const fakeSystemctl = join(fakeBin, "systemctl");
+  writeFileSync(fakeSystemctl, "#!/bin/sh\nprintf '%s\\n' 'Type=oneshot' 'RemainAfterExit=yes' 'Id=cotal-warning.service' 'InvocationID=warning-smoke'\n");
+  chmodSync(fakeSystemctl, 0o755);
+  const warned = cliInEnv(warningRoot, {
+    INVOCATION_ID: "warning-smoke",
+    PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+  }, "up", "--detach", "--open", "--space", "warning");
+  const warnedOutput = plain(warned.stdout + warned.stderr);
+  ok("up --detach keeps starting under the false-green unit shape", warned.status === 0, warnedOutput);
+  ok("up --detach warns about the exact systemd unit", warnedOutput.includes("cotal-warning.service is Type=oneshot with RemainAfterExit=yes"), warnedOutput);
+  ok("up --detach warning names the operator guide section", warnedOutput.includes("Supervising the detached stack"), warnedOutput);
+  cliIn(warningRoot, "down");
 
   // 1) the full stack comes up from ONE command, JWT-authed by default.
   const up = cli("up", "--detach", "--server", SERVER);
@@ -202,7 +223,8 @@ try {
   cliIn(root, "down");
   cliIn(autoRoot, "down");
   if (startedOccupant) cliIn(occupantRoot, "down");
+  cliIn(warningRoot, "down");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
-  for (const d of [root, autoRoot, occupantRoot]) rmSync(d, { recursive: true, force: true });
+  for (const d of [root, autoRoot, occupantRoot, warningRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
 }
