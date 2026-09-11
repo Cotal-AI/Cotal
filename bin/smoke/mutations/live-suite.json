@@ -1,0 +1,35 @@
+{
+  "suite": [
+    "bin/smoke/live-suite.smoke.ts"
+  ],
+  "guard": "live-suite classification is a source-level declaration, so a rename of the public script cannot hide a REAL Manager / REAL agent / REAL pty suite and a :live name cannot invent one",
+  "command": "pnpm smoke:live-suite",
+  "completionMarker": "LIVE SUITE SMOKE",
+  "grades": "tool",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/live-suite.json",
+  "why": [
+    "Issue #1430: the standing host rule matched -live / :live on the script name. Six suites that",
+    "drive a REAL Manager, REAL agent processes, or REAL pty children carry no such suffix, and",
+    "smoke:seat-input is the sharp case — the file is seat-input-live.smoke.ts and the script drops",
+    "the suffix. A suffix matcher on the public name is the defect, so the mutations restore that",
+    "matcher and must redden the rename and non-infrastructure-name cells by name."
+  ],
+  "mutations": [
+    {
+      "name": "classification keys on the public script suffix again",
+      "file": "bin/smoke/live-suite.mjs",
+      "find": "  const declarations = LIVE_INFRASTRUCTURE_DECLARATIONS.filter((d) => header.includes(d));\n  const brokerDeclarations = LIVE_BROKER_DECLARATIONS.filter((d) => header.includes(d));\n  return { live: declarations.length > 0, declarations, brokerDeclarations };",
+      "replace": "  const declarations = LIVE_INFRASTRUCTURE_DECLARATIONS.filter((d) => header.includes(d));\n  const brokerDeclarations = LIVE_BROKER_DECLARATIONS.filter((d) => header.includes(d));\n  return { live: false, declarations, brokerDeclarations };",
+      "expectRed": "renaming a script does not change classification when the source still declares real infrastructure",
+      "cell": "renaming a script does not change classification when the source still declares real infrastructure"
+    },
+    {
+      "name": "a :live script name is treated as live regardless of source",
+      "file": "bin/smoke/live-suite.mjs",
+      "find": "  const source = suiteSourceFromScript(command);\n  if (source === null) {\n    return { live: false, declarations: [], brokerDeclarations: [], source: null };\n  }\n  return { ...classifyLiveSuiteFile(root, source), source };",
+      "replace": "  const source = suiteSourceFromScript(command);\n  if (source === null) {\n    return { live: /(?:-live|:live)$/.test(scriptName), declarations: [], brokerDeclarations: [], source: null };\n  }\n  const classified = classifyLiveSuiteFile(root, source);\n  return { ...classified, live: classified.live || /(?:-live|:live)$/.test(scriptName), source };",
+      "expectRed": "a :live script name does not classify a non-infrastructure suite as live",
+      "cell": "a :live script name does not classify a non-infrastructure suite as live"
+    }
+  ]
+}
