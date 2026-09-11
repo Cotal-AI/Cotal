@@ -16,7 +16,7 @@
     {
       "name": "M1 remove the bounded retry after the pre-MCP snapshot",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      const firstTurn = runReadinessTurn();\n      // Prove on the orientation call itself; do not wait for this turn to end (#1440).\n      await Promise.race([orientationObserved, firstTurn]);\n      if (!observedOrientation && !(readiness && hasOrientation(readiness))) {\n        writeJcodeDiagnostic(\n          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\\n`,\n        );\n        const secondTurn = runReadinessTurn();\n        await Promise.race([orientationObserved, secondTurn]);\n      }",
+      "find": "      const firstTurn = runReadinessTurn();\n      await Promise.race([orientationObserved, firstTurn]);\n      if (!observedOrientation && !(readiness && hasOrientation(readiness))) {\n        writeJcodeDiagnostic(\n          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\\n`,\n        );\n        const secondTurn = runReadinessTurn();\n        await Promise.race([orientationObserved, secondTurn]);\n      }",
       "replace": "      const firstTurn = runReadinessTurn();\n      await Promise.race([orientationObserved, firstTurn]);\n      if (!observedOrientation && !(readiness && hasOrientation(readiness))) {\n        writeJcodeDiagnostic(\n          `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\\n`,\n        );\n      }",
       "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
     },
@@ -86,8 +86,8 @@
     {
       "name": "M11 ignore orientation tool_done until the turn completes",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      // Prove on the orientation call itself; do not wait for this turn to end (#1440).\n      await Promise.race([orientationObserved, firstTurn]);",
-      "replace": "      await firstTurn;",
+      "find": "      const firstTurn = runReadinessTurn();\n      await Promise.race([orientationObserved, firstTurn]);",
+      "replace": "      const firstTurn = runReadinessTurn();\n      await firstTurn;",
       "expectRed": "an early orientation tool_done does not take the destructive timeout path"
     },
     {

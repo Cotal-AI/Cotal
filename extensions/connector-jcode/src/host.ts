@@ -925,8 +925,8 @@ export async function runJcodeHost(): Promise<void> {
       return turn;
     };
     const proveReadiness = async (): Promise<void> => {
-      const firstTurn = runReadinessTurn();
       // Prove on the orientation call itself; do not wait for this turn to end (#1440).
+      const firstTurn = runReadinessTurn();
       await Promise.race([orientationObserved, firstTurn]);
       if (!observedOrientation && !(readiness && hasOrientation(readiness))) {
         writeJcodeDiagnostic(
