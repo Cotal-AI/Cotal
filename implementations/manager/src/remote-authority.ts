@@ -159,6 +159,14 @@ export function currentRegistrationProof(material: RemoteManagerAuthorityMateria
   return proof;
 }
 
+/** Renewal is authorized by the current host proof and does not change registration coordinates.
+ * The response must therefore bind both its request echo and next proof to that exact value. */
+export function renewedRegistrationProof(material: RemoteManagerAuthorityMaterial, expected: string): string {
+  if (material.operation !== "renew" || material.registrationProof !== expected || material.nextRegistrationProof !== expected)
+    throw new Error("manager-service renewal did not preserve the current host-authenticated registration proof");
+  return expected;
+}
+
 /** Bind a host result back to every request coordinate before Manager consumes its authority row. */
 export function retainedAgentAuthority(
   result: RemoteRetainedAgentValidationResult,
@@ -241,6 +249,8 @@ export function materialCredential(
   // advertised expiry. A forged later envelope or a JWT/entry disagreement still fails closed.
   if (claims.exp !== credential.exp || !Number.isFinite(envelopeExpiry) || material.expiresAt !== envelopeExpiry || credential.exp * 1000 < material.expiresAt)
     throw new Error(`manager-service ${name} expiry does not match the material envelope`);
+  if (credential.exp * 1000 <= Date.now())
+    throw new Error(`manager-service ${name} credential is already expired`);
   return credsFromJwt(credential.jwt, identity);
 }
 

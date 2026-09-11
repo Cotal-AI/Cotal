@@ -6,4 +6,4 @@
 "cotal-ai": minor
 ---
 
-Add a target-pinned hosted manager retirement phase that preserves host release ordering, uses the existing crash-resumable auth barrier, and keeps remote manager maintenance on scoped authority.
+Add target-pinned hosted manager retirement and host-issued remote manager authority renewal. Preserve host release ordering, use the existing crash-resumable auth barrier, renew every retained credential through the current registration proof, and keep remote manager maintenance on scoped authority.
