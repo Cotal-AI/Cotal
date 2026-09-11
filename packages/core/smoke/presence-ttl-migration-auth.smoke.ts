@@ -101,8 +101,9 @@ try {
   // proof: after the store rollback in #404, every later INFO falsely reports the matching max_age.
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   check("second reconcile keeps max_age at 6s after re-proving enforcement", (await maxAge(presenceBucket(space))) === nanos(PRESENCE_MS));
-  const canary = await (await kvm.open(presenceBucket(space))).get(TTL_RECONCILE_CANARY_KEY);
-  check("the reserved canary expires and leaves no synthetic presence key", canary === null);
+  const canarySubject = `$KV.${presenceBucket(space)}.${TTL_RECONCILE_CANARY_KEY}`;
+  const canaryCount = (await jsm.streams.info(`KV_${presenceBucket(space)}`, { subjects_filter: canarySubject })).state.subjects?.[canarySubject] ?? 0;
+  check("the reserved canary expires and leaves no synthetic presence key", canaryCount === 0, canaryCount);
 
   // ---- the ALREADY-CORRECT bucket, proven at the branch rather than at the value ----------------
   // The assert above cannot tell "skipped" from "re-updated": re-running the UPDATE with the same
