@@ -132,12 +132,13 @@ import { appendFileSync } from "node:fs";
 const sink = process.env.SINK;
 const prompt = "\u001b[1mEnter\u001b[0m     to confirm";
 const delay = Number(process.env.PROMPT_DELAY_MS ?? "0");
+let gateVisible = false;
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
-setTimeout(() => process.stdout.write(prompt), delay);
+setTimeout(() => { gateVisible = true; process.stdout.write(prompt); }, delay);
 process.stdin.on("data", (chunk) => {
   appendFileSync(sink, chunk);
-  if (chunk.includes(13)) process.stdout.write("\\r\\nNORMAL INPUT\\r\\n");
+  if (gateVisible && chunk.includes(13)) process.stdout.write("\\r\\nNORMAL INPUT\\r\\n");
 });
 setInterval(() => {}, 1_000);
 `);
