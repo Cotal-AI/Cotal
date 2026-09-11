@@ -37,8 +37,8 @@
     {
       "name": "runtime model mismatches collapse back to the unknown startup code",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "          \"model_mismatch\",\n          `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} \u2014 refusing a mislabelled mesh seat`,",
-      "replace": "          \"unknown\" as never,\n          `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} \u2014 refusing a mislabelled mesh seat`,",
+      "find": "        \"model_mismatch\",\n        `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime?.model)} \u2014 refusing a mislabelled mesh seat`,",
+      "replace": "        \"unknown\" as never,\n        `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime?.model)} \u2014 refusing a mislabelled mesh seat`,",
       "expectRed": "model_mismatch names the connector-owned refusal"
     },
     {
