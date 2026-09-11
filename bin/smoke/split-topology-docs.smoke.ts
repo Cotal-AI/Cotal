@@ -40,6 +40,9 @@ const deliveryProc = read("implementations/cli/src/lib/delivery-proc.ts");
 const authPaths = read("packages/workspace/src/auth-paths.ts");
 const localProcess = read("packages/workspace/src/local-process.ts");
 const systemd = read("implementations/cli/src/lib/systemd-supervision.ts");
+const upReport = read("implementations/cli/src/lib/up-report.ts");
+const managerProc = read("implementations/cli/src/lib/manager-proc.ts");
+const supervise = read("implementations/manager/src/commands.ts");
 
 // ── 1. generated server.conf path + --host boot vs live refresh ──────────────
 check(
@@ -73,10 +76,27 @@ check(
   runAMesh.includes("There is no broker-only `up`") &&
     runAMesh.includes("cotal down manager") &&
     runAMesh.includes("cotal supervise --space main --server") &&
-    runAMesh.includes("Wait for `✓ manager up`") &&
     cli.includes("There is no broker-only mode") &&
     control.includes("Only one manager per space") &&
     control.includes("cotal supervise"),
+);
+check(
+  "claim 2: wait signal is manager serving / log line, not detach stdout",
+  runAMesh.includes("✓ running in the background:") &&
+    runAMesh.includes("manager pidfile is live") &&
+    runAMesh.includes("That is not `✓ manager up`") &&
+    runAMesh.includes("`.cotal/manager.<spaceKey>.log`") &&
+    runAMesh.includes("`cotal status --components` to report `manager serving`") &&
+    !runAMesh.includes("Wait for `✓ manager up` before `cotal down manager`") &&
+    cli.includes("pidfile liveness, not `✓ manager up`") &&
+    control.includes("`manager serving`"),
+);
+check(
+  "claim 2: detach summary and ensureManager are pidfile-live; supervise prints manager up after start",
+  upReport.includes("return `✓ running in the background: ${components.join(\", \")} - stop with: cotal down`;") &&
+    /startManagerDetached\(o\);\n  return \{ running: true \};/.test(managerProc) &&
+    supervise.includes('await mgr.start();') &&
+    supervise.includes('c.green("✓ manager up")'),
 );
 
 // ── 3. project-local file logs, not the unit journal ─────────────────────────
@@ -131,7 +151,11 @@ check(
     runAMesh.includes("Type=simple") &&
     runAMesh.includes("nats in the unit's cgroup") &&
     runAMesh.includes("Neither trade is universal from") &&
-    runAMesh.includes("`Type=simple` alone"),
+    runAMesh.includes("`Type=simple` alone") &&
+    runAMesh.includes("KillMode=control-group") &&
+    runAMesh.includes("`cotal status --components` liveness check, not a") &&
+    runAMesh.includes("`--detach` launcher") &&
+    !runAMesh.includes("nats is orphaned outside the cgroup"),
 );
 
 console.log(`SPLIT TOPOLOGY DOCS: ${pass}/${pass + fail}`);

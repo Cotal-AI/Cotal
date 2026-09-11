@@ -50,17 +50,22 @@ is a topology choice, not a singleton invariant. The supported split is:
 ```bash
 # broker host (project root that owns the generated conf, pidfiles, and logs)
 cotal up --detach --host 0.0.0.0 --space main
-cotal down manager   # after ✓ manager up, so this host keeps broker + delivery
+# stdout: `✓ running in the background: nats-server (pid …), delivery daemon, manager`
+cotal down manager   # after manager serving, so this host keeps broker + delivery
 
 # manager host (registered remote mesh, same space)
 cotal meshes add --server nats://broker.example:4222 --root ~/meshes/main
 cotal supervise --space main --server nats://broker.example:4222
 ```
 
-Wait for `✓ manager up` before `cotal down manager` on the broker host. Stopping earlier can
-leave the endpoint governance slot held until the holder's gate reopens past the stamp
-(the successor's boot heal, or [`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot
-cannot run). See [Gate recovery](#gate-recovery). Broker-only `up` remains a product request.
+`cotal up --detach` prints `✓ running in the background:` with `manager` listed once the
+manager pidfile is live. That is not `✓ manager up`. `✓ manager up` is supervise's post-start
+line in the project `.cotal/manager.<spaceKey>.log`. Wait for that log line, or for
+`cotal status --components` to report `manager serving`, before `cotal down manager` on the
+broker host. Stopping earlier can leave the endpoint governance slot held until the holder's
+gate reopens past the stamp (the successor's boot heal, or
+[`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot cannot run). See
+[Gate recovery](#gate-recovery). Broker-only `up` remains a product request.
 
 Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
 the manager and the daemon to address one credential store. Separate host filesystems still
@@ -159,9 +164,14 @@ whole-stack unit on a host intended to be broker-only.
 
 That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
 `Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote
-managers drop for the time it takes the broker to come back. The oneshot + `--detach` launcher
-below does the opposite: the unit exits, nats is orphaned outside the cgroup, and a later unit
-restart can relaunch delivery without touching that nats PID. Neither trade is universal from
+managers drop for the time it takes the broker to come back. Wrapping `cotal up --detach` in
+`Type=oneshot` with `RemainAfterExit=yes` does not move nats out of that cgroup. Detached
+spawn starts a new process group, not a new systemd cgroup, and the default
+`KillMode=control-group` still signals every process left in the service cgroup on stop or
+restart, including the nats PID. Escaping that cgroup needs an explicit unit setting such as
+`KillMode=process`, or a separate nats unit; this CLI does not ship that escape. The
+`Type=oneshot` unit below is a `cotal status --components` liveness check, not a
+`--detach` launcher. Neither trade is universal from
 `Type=simple` alone; it follows from which processes the unit actually owns. There is still no
 supported installer, so pick the example that matches the ownership you want, and treat
 `systemctl is-active` as unit health, not mesh health.
