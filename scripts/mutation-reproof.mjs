@@ -316,15 +316,38 @@ if (selected.length === 0) {
 const ANSI = /\x1b\[[0-9;]*m/g;
 const VERDICTS = ["KILLED", "SURVIVED", "INCONCLUSIVE", "UNGRADABLE", "WRONG-RED", "ERROR"];
 const FATAL_VERDICTS = new Set(["SURVIVED", "UNGRADABLE", "WRONG-RED", "ERROR"]);
-// mutation-proof prints `${verdict.padEnd(12)} ${label}`. That 12-wide field is the identity of a
-// report line: ERROR why-text can name KILLED, and duplicate mutation names are valid, so neither a
-// loose `^VERDICT ` match nor a label-keyed map is a mutation identity.
-const labeledVerdictsIn = (output) => {
+// mutation-proof prints `${verdict.padEnd(12)} ${label}`. That 12-wide field is the parse of a
+// report line: ERROR why-text can name KILLED, so a loose `^VERDICT ` match is not a parse.
+// Duplicate names are valid, and array position is not identity: reordering or inserting
+// unchanged objects must not attribute a still-SURVIVED mutant. Identity is the mutation's
+// `file` plus `find` from the snapshot fixture — the code the mutation edits. Same key more
+// than once compares the multiset of verdicts under that key.
+const mutationIdentity = (mutation, index) => {
+  if (!mutation || typeof mutation !== "object") return `\0unbound:${index}`;
+  return JSON.stringify([
+    typeof mutation.file === "string" ? mutation.file : null,
+    mutation.find ?? null,
+  ]);
+};
+const readFixtureMutations = (snapshotRoot, configPath) => {
+  try {
+    const config = JSON.parse(readFileSync(join(snapshotRoot, configPath), "utf8"));
+    return Array.isArray(config.mutations) ? config.mutations : [];
+  } catch {
+    return [];
+  }
+};
+const labeledVerdictsIn = (output, mutations = []) => {
   const records = [];
   for (const line of output.replace(ANSI, "").split("\n")) {
     const verdict = VERDICTS.find((token) => line.startsWith(`${token.padEnd(12)} `));
     if (!verdict) continue;
-    records.push({ index: records.length, verdict, label: line.slice(13).trim() });
+    records.push({
+      index: records.length,
+      verdict,
+      label: line.slice(13).trim(),
+      identity: mutationIdentity(mutations[records.length], records.length),
+    });
   }
   return records;
 };
@@ -338,14 +361,22 @@ function runProof(cwd, configPath, env) {
 }
 
 function compareFatalVerdicts(headRecords, baseRecords) {
+  const unused = baseRecords.map((_, i) => i);
   const inherited = [];
   const attributable = [];
+  const take = (pred) => {
+    const at = unused.findIndex((i) => pred(baseRecords[i]));
+    if (at === -1) return undefined;
+    const rec = baseRecords[unused[at]];
+    unused.splice(at, 1);
+    return rec;
+  };
   for (const rec of headRecords) {
     if (!FATAL_VERDICTS.has(rec.verdict)) continue;
-    const baseRec = baseRecords.find((candidate) => candidate.index === rec.index);
-    const baseVerdict = baseRec?.verdict;
-    if (baseVerdict === rec.verdict) inherited.push({ ...rec, baseVerdict });
-    else attributable.push({ ...rec, baseVerdict: baseVerdict ?? "ABSENT" });
+    const same = take((candidate) => candidate.identity === rec.identity && candidate.verdict === rec.verdict);
+    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }
+    const other = take((candidate) => candidate.identity === rec.identity);
+    attributable.push({ ...rec, baseVerdict: other?.verdict ?? "ABSENT" });
   }
   return { inherited, attributable };
 }
@@ -572,8 +603,10 @@ for (const { path, command, mutations } of selected) {
     }
     const headProof = runProof(snapshots.head.path, path, snapshotComparisonEnv());
     const baseProof = runProof(snapshots.base.path, path, snapshotComparisonEnv());
-    const headRecordsClean = labeledVerdictsIn(headProof.output);
-    const rootFatals = labeledVerdictsIn(output).filter((rec) => FATAL_VERDICTS.has(rec.verdict));
+    const headMutations = readFixtureMutations(snapshots.head.path, path);
+    const baseMutations = readFixtureMutations(snapshots.base.path, path);
+    const headRecordsClean = labeledVerdictsIn(headProof.output, headMutations);
+    const rootFatals = labeledVerdictsIn(output, mutations).filter((rec) => FATAL_VERDICTS.has(rec.verdict));
     const cleanFatals = headRecordsClean.filter((rec) => FATAL_VERDICTS.has(rec.verdict));
     if (JSON.stringify(rootFatals) !== JSON.stringify(cleanFatals)) {
       unmeasuredFatal.push({ path, reason: "root fatal verdicts were not reproduced in the clean head snapshot" });
@@ -584,7 +617,7 @@ for (const { path, command, mutations } of selected) {
       unmeasuredFatal.push({ path, reason: `base proof ${baseReason ?? "could not run"}` });
       continue;
     }
-    const baseRecords = labeledVerdictsIn(baseProof.output);
+    const baseRecords = labeledVerdictsIn(baseProof.output, baseMutations);
     if (!baseRecords.length && baseProof.status !== 0) {
       unmeasuredFatal.push({ path, reason: "base proof produced no comparable mutation verdicts" });
       continue;

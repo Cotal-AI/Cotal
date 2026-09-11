@@ -460,19 +460,19 @@ try {
     );
   }
 
-  // 1d. Duplicate mutation names are valid. Index, not displayed label, is the identity. A PR that
-  //     turns a later same-name KILLED into ERROR must fail even though an earlier same-name ERROR
-  //     is inherited.
+  // 1d. Duplicate mutation names are valid. Identity is file+find, not the displayed label. A PR
+  //     that turns a later same-name KILLED into ERROR must fail even though an earlier same-name
+  //     ERROR is inherited.
   {
     const { root, base, head } = makeSingle(
       (r) => {
-        writeFileSync(join(r, "dup.mjs"), "export const dup = () => 1;\n");
+        writeFileSync(join(r, "dup.mjs"), "export const dup = () => 1;\nexport const extra = () => 0;\n");
         writeFileSync(join(r, "suites", "dup.suite.mjs"), "import { dup } from '../dup.mjs';\nif (dup() !== 1) { console.error('✗ FAIL: dup is one'); process.exit(1); }\nconsole.log('✓ dup is one');\n");
         writeFileSync(join(r, "smoke", "mutations", "dup.mutations.json"), JSON.stringify({
           suite: ["suites/dup.suite.mjs"],
           command: "node suites/dup.suite.mjs",
           mutations: [
-            { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 1;", expectRed: "dup is one" },
+            { name: "same name", file: "dup.mjs", find: "export const extra = () => 0;", replace: "export const extra = () => 0;", expectRed: "dup is one" },
             { name: "same name", file: "dup.mjs", find: "export const dup = () => 1;", replace: "export const dup = () => 2;", expectRed: "dup is one" },
           ],
         }, null, 2));
@@ -491,6 +491,190 @@ try {
         && eq(offenderPaths(out), ["smoke/mutations/dup.mutations.json"])
         && /^MUTATION REPROOF FAILED /m.test(out),
       `status=${status} offenders=${JSON.stringify(offenderPaths(out))} inherited=${JSON.stringify(inheritedFatalPaths(out))}\n${out}`,
+    );
+  }
+
+  // 1e. Array position is not mutation identity. Reversing two unchanged objects must not attribute
+  //     the still-SURVIVED mutant just because it now sits at a later index.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "s.mjs"), "export const s = () => 1;\n");
+        writeFileSync(join(r, "suites", "s.suite.mjs"), "import { s } from '../s.mjs';\nif (s() !== 1) { console.error('✗ FAIL: s is one'); process.exit(1); }\nconsole.log('✓ s is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "s.mutations.json"), JSON.stringify({
+          suite: ["suites/s.suite.mjs"],
+          command: "node suites/s.suite.mjs",
+          mutations: [
+            { name: "equivalent survivor", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 1 + 0;", expectRed: "s is one" },
+            { name: "positive control kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 2;", expectRed: "s is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "s.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.mutations = [...config.mutations].reverse();
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        writeFileSync(join(r, "s.mjs"), "// select without moving the survivor\nexport const s = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "reordering unchanged mutations does not attribute a still-SURVIVED mutant by array position",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/s.mutations.json"])
+        && eq(inheritedFatalPaths(out), ["smoke/mutations/s.mutations.json"])
+        && offenderPaths(out).length === 0
+        && out.includes("mutation: equivalent survivor; transition: base SURVIVED -> head SURVIVED"),
+      `status=${status} inherited=${JSON.stringify(inheritedFatalPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+  }
+
+  // 1f. Inserting a killed sibling before an unchanged survivor must not shift that survivor onto
+  //     another mutation's base verdict.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "s.mjs"), "export const s = () => 1;\n");
+        writeFileSync(join(r, "suites", "s.suite.mjs"), "import { s } from '../s.mjs';\nif (s() !== 1) { console.error('✗ FAIL: s is one'); process.exit(1); }\nconsole.log('✓ s is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "s.mutations.json"), JSON.stringify({
+          suite: ["suites/s.suite.mjs"],
+          command: "node suites/s.suite.mjs",
+          mutations: [
+            { name: "equivalent survivor", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 1 + 0;", expectRed: "s is one" },
+            { name: "positive control kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 2;", expectRed: "s is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "s.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.mutations = [
+          { name: "inserted kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 3;", expectRed: "s is one" },
+          ...config.mutations,
+        ];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        writeFileSync(join(r, "s.mjs"), "// select without moving the survivor\nexport const s = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "inserting a killed sibling before an unchanged SURVIVED mutant remains nonfatal",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/s.mutations.json"])
+        && eq(inheritedFatalPaths(out), ["smoke/mutations/s.mutations.json"])
+        && offenderPaths(out).length === 0
+        && out.includes("mutation: equivalent survivor; transition: base SURVIVED -> head SURVIVED"),
+      `status=${status} inherited=${JSON.stringify(inheritedFatalPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+  }
+
+  // 1g. Deleting a killed sibling that sat before an unchanged survivor must not treat that
+  //     survivor as newly introduced.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "s.mjs"), "export const s = () => 1;\n");
+        writeFileSync(join(r, "suites", "s.suite.mjs"), "import { s } from '../s.mjs';\nif (s() !== 1) { console.error('✗ FAIL: s is one'); process.exit(1); }\nconsole.log('✓ s is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "s.mutations.json"), JSON.stringify({
+          suite: ["suites/s.suite.mjs"],
+          command: "node suites/s.suite.mjs",
+          mutations: [
+            { name: "leading kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 2;", expectRed: "s is one" },
+            { name: "equivalent survivor", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 1 + 0;", expectRed: "s is one" },
+            { name: "positive control kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 3;", expectRed: "s is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "s.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.mutations = config.mutations.slice(1);
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        writeFileSync(join(r, "s.mjs"), "// select without moving the survivor\nexport const s = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "deleting a killed sibling before an unchanged SURVIVED mutant remains nonfatal",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/s.mutations.json"])
+        && eq(inheritedFatalPaths(out), ["smoke/mutations/s.mutations.json"])
+        && offenderPaths(out).length === 0
+        && out.includes("mutation: equivalent survivor; transition: base SURVIVED -> head SURVIVED"),
+      `status=${status} inherited=${JSON.stringify(inheritedFatalPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+  }
+
+  // 1h. A 3-way rotation of unchanged objects must still inherit the same SURVIVED mutant.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "s.mjs"), "export const s = () => 1;\n");
+        writeFileSync(join(r, "suites", "s.suite.mjs"), "import { s } from '../s.mjs';\nif (s() !== 1) { console.error('✗ FAIL: s is one'); process.exit(1); }\nconsole.log('✓ s is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "s.mutations.json"), JSON.stringify({
+          suite: ["suites/s.suite.mjs"],
+          command: "node suites/s.suite.mjs",
+          mutations: [
+            { name: "equivalent survivor", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 1 + 0;", expectRed: "s is one" },
+            { name: "positive control kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 2;", expectRed: "s is one" },
+            { name: "second kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 3;", expectRed: "s is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "s.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        const [a, b, c] = config.mutations;
+        config.mutations = [c, a, b];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        writeFileSync(join(r, "s.mjs"), "// select without moving the survivor\nexport const s = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "rotating unchanged mutations does not attribute a still-SURVIVED mutant",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/s.mutations.json"])
+        && eq(inheritedFatalPaths(out), ["smoke/mutations/s.mutations.json"])
+        && offenderPaths(out).length === 0
+        && out.includes("mutation: equivalent survivor; transition: base SURVIVED -> head SURVIVED"),
+      `status=${status} inherited=${JSON.stringify(inheritedFatalPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+  }
+
+  // 1i. Distinct labels reordered is the same identity defect as same-name reorder.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "s.mjs"), "export const s = () => 1;\n");
+        writeFileSync(join(r, "suites", "s.suite.mjs"), "import { s } from '../s.mjs';\nif (s() !== 1) { console.error('✗ FAIL: s is one'); process.exit(1); }\nconsole.log('✓ s is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "s.mutations.json"), JSON.stringify({
+          suite: ["suites/s.suite.mjs"],
+          command: "node suites/s.suite.mjs",
+          mutations: [
+            { name: "alpha survivor", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 1 + 0;", expectRed: "s is one" },
+            { name: "beta kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 2;", expectRed: "s is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "s.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.mutations = [...config.mutations].reverse();
+        writeFileSync(path, JSON.stringify(config, null, 2));
+        writeFileSync(join(r, "s.mjs"), "// select without moving the survivor\nexport const s = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "reordering distinct-label unchanged mutations remains nonfatal",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/s.mutations.json"])
+        && eq(inheritedFatalPaths(out), ["smoke/mutations/s.mutations.json"])
+        && offenderPaths(out).length === 0
+        && out.includes("mutation: alpha survivor; transition: base SURVIVED -> head SURVIVED"),
+      `status=${status} inherited=${JSON.stringify(inheritedFatalPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
     );
   }
 

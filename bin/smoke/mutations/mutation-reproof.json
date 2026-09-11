@@ -202,10 +202,18 @@
     {
       "name": "fatal attribution keys same-name mutations by displayed label",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    const baseRec = baseRecords.find((candidate) => candidate.index === rec.index);",
-      "replace": "    const baseRec = baseRecords.find((candidate) => candidate.label === rec.label);",
+      "find": "    const same = take((candidate) => candidate.identity === rec.identity && candidate.verdict === rec.verdict);\n    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = take((candidate) => candidate.identity === rec.identity);",
+      "replace": "    const same = baseRecords.find((candidate) => candidate.label === rec.label);\n    if (same && same.verdict === rec.verdict) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = same;",
       "expectRed": "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR",
       "cell": "a later same-name mutation that newly becomes ERROR still fails and is not cleared by an earlier inherited ERROR"
+    },
+    {
+      "name": "fatal attribution keys mutations by array position",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const same = take((candidate) => candidate.identity === rec.identity && candidate.verdict === rec.verdict);\n    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = take((candidate) => candidate.identity === rec.identity);\n    attributable.push({ ...rec, baseVerdict: other?.verdict ?? \"ABSENT\" });",
+      "replace": "    const same = take((candidate) => candidate.index === rec.index && candidate.verdict === rec.verdict);\n    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }\n    const other = take((candidate) => candidate.index === rec.index);\n    attributable.push({ ...rec, baseVerdict: other?.verdict ?? \"ABSENT\" });",
+      "expectRed": "reordering unchanged mutations does not attribute a still-SURVIVED mutant by array position",
+      "cell": "reordering unchanged mutations does not attribute a still-SURVIVED mutant by array position"
     },
     {
       "name": "a depth-zero temp-root filename is erased as though it were a randomized directory",
