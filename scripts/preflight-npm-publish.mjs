@@ -184,7 +184,13 @@ export async function preflightNpmPublish({
     throw new Error("the packages that would publish are not the complete fixed group");
   }
 
-  for (const row of rows) row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
+  for (const row of rows) {
+    try {
+      row.oidc = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
+    } catch (error) {
+      row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   printPublishCensus(rows, log);
   const refused = rows.filter((row) => row.oidc !== "ready");
   if (refused.length) throw new Error(`npm OIDC exchange refused ${refused.length}/${rows.length} packages`);

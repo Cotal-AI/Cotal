@@ -41,6 +41,7 @@ const env = {
 type Seen = { method: string; url: string };
 async function scenario(present: Set<string>, workspacePackages = workspace, exchangeStatus = 201) {
   const seen: Seen[] = [];
+  const logs: string[] = [];
   const server = createServer((req, res) => {
     seen.push({ method: req.method ?? "", url: req.url ?? "" });
     if (req.url?.startsWith("/oidc?")) {
@@ -67,11 +68,11 @@ async function scenario(present: Set<string>, workspacePackages = workspace, exc
       workspacePackages,
       registryBase: base,
       env: { ...env, ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc` },
-      log: () => {},
+      log: (line) => logs.push(line),
     });
-    return { result, seen, error: undefined };
+    return { result, seen, logs, error: undefined };
   } catch (error) {
-    return { result: undefined, seen, error };
+    return { result: undefined, seen, logs, error };
   } finally {
     server.close();
     await once(server, "close");
@@ -104,6 +105,11 @@ check(
     && partial.seen.every((call) => !call.url.includes("/-/pnpm/v1/publish")),
   partial.seen,
 );
+check(
+  "partial prior publish prints the complete package and version census",
+  fixed.every((name) => partial.logs.some((line) => line.includes(`${name}\t9.9.9\t`))),
+  partial.logs,
+);
 
 const incomplete = await scenario(new Set(), workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat"));
 check(
@@ -118,6 +124,11 @@ check(
   "one refused OIDC exchange refuses the full release",
   oidcRefused.error instanceof Error && oidcRefused.error.message.includes("npm OIDC exchange refused"),
   oidcRefused.error,
+);
+check(
+  "OIDC refusal prints the complete census before exiting non-zero",
+  fixed.every((name) => oidcRefused.logs.some((line) => line.includes(`${name}\t9.9.9\t`))),
+  oidcRefused.logs,
 );
 
 console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);

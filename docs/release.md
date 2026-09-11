@@ -76,6 +76,20 @@ Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
 
 `ci:publish` in the root `package.json` is:
 
+- an exact-version census of every package in the Changesets fixed group against the registry;
+- a check that the public recursive workspace set is exactly that fixed group;
+- one GitHub OIDC exchange per package when the release job exposes the OIDC requester;
+- only after those checks, the workspace build, native assembly, and recursive publish.
+
+The census prints every package and version before it refuses. If any exact version already exists,
+or the recursive publish set is not the full fixed group, the command exits before `pnpm publish`.
+
+pnpm's `--batch` option was evaluated. It exists from pnpm 11.7 and is all-or-nothing only on a
+registry implementing `PUT /-/pnpm/v1/publish` (pnpr does). npm's published Registry API does not
+document that endpoint, and pnpm batch publishing also rejects provenance and requires one shared
+credential for the batch instead of the per-package OIDC exchanges used here. The repository stays
+on the normal npm publish protocol and treats the preflight as the fail-before-first-write control.
+
 ```bash
 pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
 ```
