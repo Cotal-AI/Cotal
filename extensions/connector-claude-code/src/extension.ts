@@ -334,9 +334,10 @@ export const claudeConnector: Connector = {
       command: opts.resolvedBinaries?.claude ?? "claude",
       args,
       env,
-      // The dev-channels flag shows a one-time "Enter to confirm" prompt; the
-      // manager auto-clears it so a supervised launch needs no human keypress.
-      confirm: "Enter to confirm",
+      // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic
+      // "Enter to confirm" footer, which the workspace-trust dialog also renders with a different
+      // default action. The runtime presses Enter once when this connector-owned text appears.
+      confirm: "WARNING: Loading development channels",
       control,
     };
   },
