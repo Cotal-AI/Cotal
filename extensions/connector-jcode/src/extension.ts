@@ -110,9 +110,9 @@ export const jcodeConnector: Connector = {
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
   // bootstrap sequence (#827).
   readinessTimeoutMs: JCODE_READINESS_TIMEOUT_MS,
-  // variant = Jcode's per-session reasoning effort (`set_reasoning_effort`). The accepted tiers are
-  // per provider AND per model, and the Harness API publishes no ladder to check against — so the
-  // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog.
+  // variant = Jcode's per-session reasoning effort (`set_reasoning_effort`). The accepted surface is
+  // per provider/profile/model. RuntimeInfo verifies the active route before the tier is carried
+  // verbatim to Jcode, which owns the capability and ladder decisions.
   supportsModelVariant: true,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   listModels: listJcodeModels,

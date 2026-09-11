@@ -9,10 +9,9 @@ import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
-import { bareModelId, describeRoute } from "./route-identity.js";
+import { activeModelRoute, bareModelId, describeRoute } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
-  effortRefusalModel,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
   jcodeEffortRefusal,
@@ -820,19 +819,32 @@ export async function runJcodeHost(): Promise<void> {
         throw new JcodeConnectorError("model_refused", "Jcode refused the requested model", { cause: error });
       }
     }
+    // RuntimeInfo's active provider and routes are the Harness authority for the route setModel
+    // selected. RuntimeInfo.model can lag behind the persisted session pin, so a requested model is
+    // identified by that pin plus its active route. Variant-only launches still use RuntimeInfo.model.
+    // Verify the route before applying a variant, not after a provider-backed readiness turn. A
+    // duplicated model id can appear on several routes, so the active provider disambiguates it.
+    const runtime = config.model || config.variant ? await client.getRuntimeInfo(sessionId) : undefined;
+    const effectiveModel = config.model ?? runtime?.model;
+    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;
+    if (config.variant && (!effectiveModel || !route || !route.provider))
+      throw new JcodeConnectorError(
+        "model_mismatch",
+        `jcode connector: the Harness API did not identify the active provider route for model ${JSON.stringify(effectiveModel ?? "(the provider default)")} — refusing to apply launch settings to an unverified route`,
+      );
+    if (effectiveModel && runtime) writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
     // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
     if (config.variant) {
-      // The requested pin is the operator-visible model. RuntimeInfo can still name the session
-      // default after setModel (measured: a CLI spawn that died on a variant-tier refusal recorded
-      // deepseek-v4-pro despite --model grok-4.6). Prefer the pin; fall back to RuntimeInfo only
-      // when no pin was requested.
-      const model = effortRefusalModel(config.model, (await client.getRuntimeInfo(sessionId)).model);
       try {
         await client.setReasoningEffort(sessionId, config.variant);
       } catch (error) {
-        throw jcodeEffortRefusal(error, config.variant, model);
+        throw jcodeEffortRefusal(error, config.variant, {
+          model: effectiveModel!,
+          provider: route!.provider,
+          apiMethod: route!.api_method,
+        });
       }
     }
     // On a resume the persona/instructions are already the first thing in this transcript. Re-sending
@@ -915,21 +927,6 @@ export async function runJcodeHost(): Promise<void> {
         : `[cotal-jcode] pre-join readiness outcome: orientation proved; joining with no spawn --prompt\n`,
     );
     watchClient(client);
-    if (config.model) {
-      const runtime = await client.getRuntimeInfo(sessionId);
-      if (runtime.model !== config.model)
-        throw new JcodeConnectorError(
-          "model_mismatch",
-          `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} — refusing a mislabelled mesh seat`,
-        );
-      // The model is checked above; the PROVIDER carrying it was fetched in the same response and
-      // then thrown away. That gap cost real time: a seat requested as one model logged under a
-      // second provider's name and died inside a third component, and establishing which was true
-      // meant reading the seat's private log by hand. RuntimeInfo already knows, so record it where
-      // an operator looks first (#785).
-      writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, config.model)}\n`);
-    }
-
     initialized = true;
     await agent.start();
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap

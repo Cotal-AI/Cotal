@@ -196,15 +196,15 @@ shows those messages without clearing them.
 ## Model limits
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
-against the active provider, then the connector reads runtime identity back and refuses startup if
-it is not the requested model; a seat is never allowed to join under a model label it did not
-receive.
+against the active provider, and an accepted selection becomes the session pin and the seat's model
+label. The connector does not require `RuntimeInfo.model` to echo that pin immediately because the
+runtime field can temporarily report the previous model after selection.
 
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
-Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
-different effective model. `private_state` names a different step: the seat's private home, its
-credential mirror, or its short socket alias could not be prepared.
+Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
+active provider route for the selected model. `private_state` names a different step: the seat's
+private home, its credential mirror, or its short socket alias could not be prepared.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
@@ -212,7 +212,9 @@ and any declared `reasoning_efforts`. This is the same config Jcode copies into 
 instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
 without model entries.
 
-The listed effort tiers are declarations, not provider-verified capabilities. `cotal models` prints
+The listed effort tiers are display declarations, not Jcode runtime capabilities. Jcode's named
+model config does not assign effort support per model. A named provider profile enables it through
+provider configuration or Jcode's model-family detection. `cotal models` prints
 that caveat inline as `variants (declared, not provider-verified)` beside each configured tier list,
 so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
 so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
@@ -230,13 +232,15 @@ default and `--variant` overrides it, the same way `model:` and `--model` work:
 cotal spawn --agent jcode --model gpt-5.6-sol --variant high
 ```
 
-Which tiers exist depends on the provider **and** model. The connector does not carry a copy of
-those ladders: it passes the requested tier to Jcode, which validates it against the active model's
-ladder. A rejected tier, or a model with no reasoning-effort surface, ends the launch rather than
-quietly starting the seat at another effort. The external observer/UI receives only the requested
-tier, effective model, fixed `invalid_request` provider code, and an accepted-tier ladder when it
-can be safely parsed; arbitrary provider rejection text stays private. Omit `--variant` to keep
-Jcode's configured default.
+Which tiers exist depends on the provider, profile, and model. The connector does not carry a copy
+of those rules. After model selection it uses the accepted session pin with Jcode's runtime provider
+and route catalog to verify one active provider route, then passes the tier to that route. For a
+variant-only launch, where there is no requested pin, the runtime model identifies the selection.
+A duplicate model id on another route cannot receive the setting by accident. A rejected tier ends
+the launch with a safely parsed accepted ladder when Jcode supplies one. A verified route with no
+reasoning-effort surface also ends before the first turn, but reports unsupported capability instead
+of suggesting another tier. Arbitrary provider rejection text stays private. Omit `--variant` to
+keep Jcode's configured default.
 
 If the mandatory readiness turn receives a provider `invalid_request` refusal for a model id or
 reasoning-effort value, the launch diagnostic names only the provider error code and rejected

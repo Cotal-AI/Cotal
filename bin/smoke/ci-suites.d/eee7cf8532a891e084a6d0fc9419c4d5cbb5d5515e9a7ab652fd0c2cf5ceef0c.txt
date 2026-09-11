@@ -1,3 +1,2 @@
-# The jcode effort-refusal message names the requested model pin, not the session default
-# RuntimeInfo can still report after setModel (#972).
+# The Jcode effort classifier distinguishes a verified unsupported capability from a tier refusal.
 smoke:jcode-effort-model
