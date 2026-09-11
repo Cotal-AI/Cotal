@@ -14,7 +14,9 @@
  *   - an explicit ceiling on the current invocation still wins;
  *   - a mesh that never asked records nothing and resolves to undefined, so the plane keeps 64 —
  *     the fix must not invent a chosen number;
- *   - re-recording an entry the way a repair/resume does keeps the field.
+ *   - re-recording an entry the way a repair/resume does keeps the field;
+ *   - a live manager's supervise argv is the applied ceiling, so a refresh that asked for a
+ *     different number must refuse rather than persist an unapplied setting.
  *
  * The end-to-end wiring (argv + the live plane) is covered by session-cap + flag-inventory; this
  * pins the resolution rule the wiring depends on.
@@ -28,6 +30,7 @@ process.env.COTAL_HOME = home; // sandbox the registry BEFORE the modules that r
 
 const { recordMesh, findMesh, parsePositiveIntegerFlag } = await import("@cotal-ai/workspace");
 const { maxSessionsFor } = await import("../src/commands/up.js");
+const { liveManagerWouldApplyMaxSessions, maxSessionsFromSuperviseArgv } = await import("../src/lib/manager-proc.js");
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -65,6 +68,17 @@ try {
   check("re-recording the way a repair does KEEPS the ceiling", findMesh("sized")?.maxSessions === 256, findMesh("sized")?.maxSessions);
   recordMesh({ ...base, space: "sized" });
   check("...and dropping it on re-record is what silently demoted the cap to 64", findMesh("sized")?.maxSessions === undefined);
+
+  // THE SECOND REGRESSION. A refresh of an already-running manager cannot apply a new ceiling, and
+  // recording one anyway is a durable lie: MeshEntry said 1 while the live argv had none.
+  const liveBare = "/usr/bin/node /opt/cotal/bin/dist/cotal.js supervise --space sized --server nats://127.0.0.1:35715";
+  const liveSized = `${liveBare} --max-sessions 3`;
+  check("absent --max-sessions on a live supervisor is the plane default, not a recorded 64", maxSessionsFromSuperviseArgv(liveBare) === undefined);
+  check("a live supervisor argv reports the applied ceiling", maxSessionsFromSuperviseArgv(liveSized) === 3);
+  check("equals-form argv reports the applied ceiling", maxSessionsFromSuperviseArgv(`${liveBare} --max-sessions=3`) === 3);
+  check("a matching refresh may proceed", liveManagerWouldApplyMaxSessions(liveSized, 3) === true);
+  check("a different requested ceiling on a live manager is unapplied", liveManagerWouldApplyMaxSessions(liveBare, 1) === false);
+  check("an unreadable command line cannot prove a match, so persist would guess", liveManagerWouldApplyMaxSessions(undefined, 1) === false);
 } finally {
   rmSync(home, { recursive: true, force: true });
 }

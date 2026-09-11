@@ -113,7 +113,7 @@ import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLogDisplayPath, managerUp, stopManager } from "../lib/manager-proc.js";
+import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -748,6 +748,22 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           ),
         );
         process.exit(1);
+      }
+      // `--max-sessions` is fixed when the manager starts. A refresh reuses a live manager as-is
+      // (`ensureManager` returns immediately), then used to persist the requested ceiling anyway.
+      // That printed `✓ already running` over an unchanged plane and left MeshEntry lying about it.
+      // Refuse rather than warn: the flag either applies or the command fails. Matching the live
+      // argv is a no-op and may proceed. An unreadable command line cannot prove a match.
+      if (maxSessions !== undefined) {
+        const live = managerRecordState(undefined, undefined, held.space);
+        if (live.state === "alive" && !liveManagerWouldApplyMaxSessions(live.command, maxSessions)) {
+          console.error(
+            c.red(
+              `✗ mesh "${held.space}" is already running at ${server} - a running manager can't change --max-sessions (it is fixed at start); \`cotal down\` it first, then \`cotal up --max-sessions ${maxSessions}\``,
+            ),
+          );
+          process.exit(1);
+        }
       }
       // Live INFO must agree with the recorded/requested transport. A bare refresh that greets
       // "already running" over a plaintext listener while policy claims TLS is S5's second half —
