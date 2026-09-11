@@ -19,6 +19,15 @@
   ],
   "mutations": [
     {
+      "name": "the reconnect-denial observation window starts before the original expiry log settles",
+      "file": "packages/core/smoke/standing-renewal-auth.smoke.ts",
+      "find": "        originalExpiryObservedBeforeReconnectWindow = await until(\n          () => /cotal:expired-creds.*User Authentication Expired/.test(brokerLog),\n          2_000,\n          10,\n        );\n        failedRebuildLogStart = brokerLog.length;\n",
+      "replace": "        failedRebuildLogStart = brokerLog.length;\n",
+      "expectRed": "the original wire's expiry log lands before the reconnect-denial observation window opens",
+      "cell": "the original wire's expiry log lands before the reconnect-denial observation window opens",
+      "note": "The control records the original connection's expiry diagnostic before opening the reconnect-denial window. Removing that wait leaves the control false and deterministically reds the named cell, instead of relying on pipe scheduling to make a later substring count flaky."
+    },
+    {
       "name": "the creds pre-dial expiry guard is removed",
       "file": "packages/core/src/endpoint.ts",
       "find": "    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;\n    if (typeof credsExp === \"number\" && credsExp * 1000 <= Date.now())\n      throw new Error(\n        this.credsSource\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",

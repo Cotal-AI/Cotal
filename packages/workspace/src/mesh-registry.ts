@@ -44,6 +44,15 @@ export interface MeshEntry {
    *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
    *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
   attachHost?: string;
+  /**
+   * The operator-set live-session ceiling for this mesh's manager (`cotal up --max-sessions` /
+   * `cotal supervise --max-sessions`). Recorded because it is a DECISION, not a derivable fact:
+   * the plane defaults to 64 when the option is omitted, and a
+   * same-root repair, resume, or `spawn -f` that restarts the manager without this field silently
+   * drops a raised ceiling back to 64. Absent means the operator never asked: the default stands.
+   * The browser console opens one session per pane, so the right number is roughly agents × panes.
+   */
+  maxSessions?: number;
   /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
    *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
    *  decision was recorded (and is what any record written before this field means).

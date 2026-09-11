@@ -1,7 +1,7 @@
 /**
  * Production adopt path through the manager's pty runtime. Isolated. No fleet.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
@@ -19,6 +19,19 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   }
   fail++;
   console.log(`  ✗ FAIL: ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
+};
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const until = async (predicate: () => boolean, timeoutMs: number): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await wait(25);
+  return predicate();
+};
+const file = (path: string): string => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
 };
 
 {
@@ -112,6 +125,80 @@ if (process.platform !== "linux") {
   await h.waitForExit?.();
   drop(adopted);
   drop(h);
+
+  const fixture = join(root, "confirm-child.mjs");
+  writeFileSync(fixture, `
+import { appendFileSync } from "node:fs";
+const sink = process.env.SINK;
+const prompt = "\u001b[1mEnter\u001b[0m     to confirm";
+const delay = Number(process.env.PROMPT_DELAY_MS ?? "0");
+let gateVisible = false;
+process.stdin.setRawMode?.(true);
+process.stdin.resume();
+setTimeout(() => {
+  process.stdout.write(prompt.slice(0, 9));
+  setTimeout(() => { gateVisible = true; process.stdout.write(prompt.slice(9)); }, 25);
+}, delay);
+process.stdin.on("data", (chunk) => {
+  appendFileSync(sink, chunk);
+  if (gateVisible && chunk.includes(13)) process.stdout.write("\\r\\nNORMAL INPUT\\r\\n");
+});
+setInterval(() => {}, 1_000);
+`);
+
+  const confirmationCell = async (name: string, delayMs: number): Promise<void> => {
+    const sink = join(root, `${name}.input`);
+    const handle = rt.spawn(name, {
+      command: process.execPath,
+      args: [fixture],
+      env: { PATH: process.env.PATH ?? "", SINK: sink, PROMPT_DELAY_MS: String(delayMs) },
+      confirm: "Enter to confirm",
+    }, process.cwd());
+    const session = handle.attach();
+    let output = "";
+    const off = session.onData((chunk) => { output += chunk.toString("utf8"); });
+    check(`${name}: the declared prompt appears`, await until(() => output.includes("to confirm"), delayMs + 3_000), output);
+    check(`${name}: the seat reaches normal input`, await until(() => output.includes("NORMAL INPUT"), 3_000), output);
+    check(`${name}: exactly one Enter reaches the child`, file(sink) === "\r", file(sink));
+    handle.stop({ graceful: false });
+    await handle.waitForExit?.();
+    off();
+    drop(handle);
+  };
+
+  await confirmationCell("early prompt", 50);
+  await confirmationCell("late prompt after the old five-second window", 5_500);
+
+  const noPromptSink = join(root, "no-prompt.input");
+  const noPrompt = rt.spawn("no prompt", {
+    command: process.execPath,
+    args: ["-e", "process.stdin.setRawMode?.(true);process.stdin.resume();process.stdin.on('data',c=>require('node:fs').appendFileSync(process.env.SINK,c));setInterval(()=>{},1000)"],
+    env: { PATH: process.env.PATH ?? "", SINK: noPromptSink },
+    confirm: "Enter to confirm",
+  }, process.cwd());
+  await wait(5_750);
+  check("no prompt: no stray Enter reaches the child after the old confirmation window", file(noPromptSink) === "", file(noPromptSink));
+  noPrompt.stop({ graceful: false });
+  await noPrompt.waitForExit?.();
+  drop(noPrompt);
+
+  const unmatched = rt.spawn("unmatched prompt", {
+    command: process.execPath,
+    args: ["-e", "process.stdin.setRawMode?.(true);process.stdin.resume();setInterval(()=>{},1000)"],
+    env: { PATH: process.env.PATH ?? "" },
+    confirm: "Enter to confirm",
+  }, process.cwd());
+  const unmatchedSession = unmatched.attach();
+  let unmatchedOutput = "";
+  const unmatchedOff = unmatchedSession.onData((chunk) => { unmatchedOutput += chunk.toString("utf8"); });
+  await unmatched.waitForExit?.();
+  check(
+    "unmatched prompt: the seat fails bounded with the connector-owned prompt named",
+    unmatchedOutput.includes('startup confirmation failed: prompt "Enter to confirm" did not appear within 15000ms'),
+    unmatchedOutput,
+  );
+  unmatchedOff();
+  drop(unmatched);
   rmSync(root, { recursive: true, force: true });
 }
 

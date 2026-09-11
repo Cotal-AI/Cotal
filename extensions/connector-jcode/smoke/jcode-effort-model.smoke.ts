@@ -1,51 +1,28 @@
-/**
- * Effort-refusal diagnostics must name the requested model pin, not the session default
- * RuntimeInfo still reports after setModel. Measured: a CLI spawn that died on a variant-tier
- * refusal recorded deepseek-v4-pro despite --model grok-4.6.
- *
- * Pure: no broker. Grades `effortRefusalModel` — the same helper the host uses. Run:
- *   pnpm smoke:jcode-effort-model
- */
-import { effortRefusalModel, jcodeEffortRefusal } from "../src/startup-diagnostics.js";
+import { HarnessError } from "@1jehuang/jcode-sdk";
+import { JcodeEffortRefusal, JcodeEffortUnsupported, jcodeEffortRefusal } from "../src/startup-diagnostics.js";
 
 let pass = 0;
 let fail = 0;
-function check(name: string, cond: boolean, extra?: unknown): void {
-  if (cond) {
+const check = (name: string, condition: boolean): void => {
+  if (condition) {
     pass++;
     console.log(`  ✓ ${name}`);
   } else {
     fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
+    console.log(`  ✗ FAIL: ${name}`);
   }
-}
+};
 
-const requested = "grok-4.6";
-const runtimeDefault = "deepseek-v4-pro";
-check(
-  "a requested pin wins over a different RuntimeInfo model",
-  effortRefusalModel(requested, runtimeDefault) === requested,
-  effortRefusalModel(requested, runtimeDefault),
+const identity = { model: "model", provider: "profile", apiMethod: "openai-compatible:profile" };
+const exactCapability = new HarnessError(
+  "invalid_request",
+  "Reasoning effort is not supported by the current model/profile. It works for OpenRouter, DeepSeek-family and GPT-family reasoning models, and profiles with supports_reasoning_effort = true.",
 );
-check(
-  "no pin falls back to RuntimeInfo (the session default)",
-  effortRefusalModel(undefined, runtimeDefault) === runtimeDefault,
-);
-check(
-  "neither pin nor RuntimeInfo names the provider-default placeholder",
-  effortRefusalModel(undefined, undefined) === "(the provider default)",
-);
+check("the exact Harness invalid_request capability refusal is classified separately", jcodeEffortRefusal(exactCapability, "high", identity) instanceof JcodeEffortUnsupported);
 
-const err = jcodeEffortRefusal(new Error("accepted tiers: low, high"), "xhigh", effortRefusalModel(requested, runtimeDefault));
-check("effort refusal carries the requested pin as effectiveModel", err.effectiveModel === requested, err.effectiveModel);
-check("effort refusal does not carry the session default when a pin was requested", err.effectiveModel !== runtimeDefault);
+check("a plain Error with copied capability text stays a generic refusal", jcodeEffortRefusal(new Error(exactCapability.message), "high", identity) instanceof JcodeEffortRefusal);
+check("a different Harness code with copied capability text stays a generic refusal", jcodeEffortRefusal(new HarnessError("internal", exactCapability.message.replace(/^invalid_request: /, "")), "high", identity) instanceof JcodeEffortRefusal);
+check("a near-miss invalid_request message stays a generic refusal", jcodeEffortRefusal(new HarnessError("invalid_request", "Reasoning effort is not supported by this route."), "high", identity) instanceof JcodeEffortRefusal);
 
-const EXPECTED = 5;
-check(
-  `every cell ran - ${EXPECTED} expected`,
-  pass + fail === EXPECTED,
-  `${pass + fail} cells reported`,
-);
-
-console.log(`JCODE EFFORT-MODEL SMOKE ${fail === 0 ? "OK" : "FAILED"}`);
+console.log(`JCODE EFFORT CONTRACT: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

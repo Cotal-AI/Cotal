@@ -22,7 +22,7 @@ export interface SeatHandle {
   stop(opts?: { graceful?: boolean }): void;
   waitForExit(): Promise<void>;
   interrupt(): void;
-  write(data: string): void;
+  write(data: string): Promise<number>;
   attach(): SeatAttachSession;
   close(): void;
 }
@@ -88,9 +88,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     interrupt: () => {
       later((c) => c.interrupt());
     },
-    write: (data) => {
-      later((c) => c.write(data));
-    },
+    write: async (data) => (await whenReady()).write(data),
     attach: () => {
       const sessionUnsubs = new Set<() => void>();
       // Fast-exit children print and die before hello. onData must replay the

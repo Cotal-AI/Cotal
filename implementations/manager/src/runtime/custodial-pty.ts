@@ -36,7 +36,7 @@ export class CustodialPtyRuntime implements Runtime {
     const rec = launchSeat({
       root: this.root,
       name,
-      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: Boolean(spec.confirm) },
+      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm },
       cwd,
       ...(reference ? { id: reference.id } : {}),
     });

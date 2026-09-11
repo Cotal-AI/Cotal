@@ -343,7 +343,9 @@ export interface ManagerOptions {
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
    *  own connection, and establishment is caller-triggered, so this is the process-level resource
    *  bound; exceeding it refuses `resource-exhausted` before either happens. Operator-set because
-   *  the right number is deployment-shaped — the browser console holds one session per open pane.
+   *  the right number is deployment-shaped — the browser console holds one session per open pane,
+   *  so size for agents × panes, not agent count. Set it with `cotal supervise --max-sessions` or
+   *  `cotal up --max-sessions` (recorded on the mesh so a repair does not silently drop to 64).
    *  {@link ManagerSessionPlaneDeps.maxSessions} carries the per-caller-scoping residual. */
   maxSessions?: number;
   /** Remote manager-service prepare material. The participant owns every private seed; the host
@@ -7729,7 +7731,7 @@ export class Manager {
    *
    *  `enter` defaults to true: a harness command typed but not submitted has not been delivered.
    *  Nothing is echoed back; the caller reads the resulting turns from the event plane. */
-  private inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): { name: string; bytes: number } {
+  private async inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): Promise<{ name: string; bytes: number }> {
     if (this.agents.get(a.name) !== a)
       throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`);
     if (a.handle.status() !== "running")
@@ -7741,8 +7743,16 @@ export class Manager {
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
     const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
-    write(data);
-    return { name: a.name, bytes: Buffer.byteLength(data, "utf8") };
+    const intendedBytes = Buffer.byteLength(data, "utf8");
+    let bytes: number;
+    try {
+      bytes = await write(data);
+    } catch (error) {
+      throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+    }
+    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)
+      throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);
+    return { name: a.name, bytes };
   }
 
   /** The post-authorization attach effect (P2 item 6): mint the holder-bound §13.6 offer, redeem it

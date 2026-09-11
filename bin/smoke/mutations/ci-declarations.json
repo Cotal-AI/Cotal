@@ -28,6 +28,14 @@
       "replace": "export function changedSuiteIndices(base, head, strict = true) {\n  void strict;",
       "expectRed": "shard-stability.d.mts matches compiler output from its .mjs module",
       "cell": "shard-stability.d.mts matches compiler output from its .mjs module"
+    },
+    {
+      "name": "live-suite export changes without regenerating its declaration",
+      "file": "bin/smoke/live-suite.mjs",
+      "find": "export function classifyLiveSuiteSource(source) {",
+      "replace": "export function classifyLiveSuiteSource(source, unused = false) {\n  void unused;",
+      "expectRed": "live-suite.d.mts matches compiler output from its .mjs module",
+      "cell": "live-suite.d.mts matches compiler output from its .mjs module"
     }
   ]
 }

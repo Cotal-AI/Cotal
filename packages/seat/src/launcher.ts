@@ -9,7 +9,7 @@ export interface SeatLaunchSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
-  confirm?: boolean;
+  confirm?: string;
 }
 
 export interface LaunchSeatOpts {
@@ -68,7 +68,7 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
     token,
     recordPath: recPath,
     logPath,
-    confirm: Boolean(opts.spec.confirm),
+    confirm: opts.spec.confirm,
   });
   // Payload carries spec.env (provider keys) and the capability token.
   // argv is world-readable via /proc/<pid>/cmdline (0444). Inherit a 0600

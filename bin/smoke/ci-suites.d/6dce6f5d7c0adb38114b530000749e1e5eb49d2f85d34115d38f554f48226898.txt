@@ -1,0 +1,2 @@
+# Issue #1482 full-sweep control.
+smoke:mutation-reproof-full-workflow

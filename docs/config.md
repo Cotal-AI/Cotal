@@ -267,7 +267,7 @@ project paths on the live machine.
 
 | Path | What it is |
 |---|---|
-| `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode, TLS-required client intent when recorded); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
+| `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode, TLS-required client intent when recorded, attach bind host and live-session ceiling when the operator set them); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
 | `current-mesh` | Default space a bare `cotal spawn` joins (set by `cotal use`) |
 | `onboarded.json` | First-run marker (with `ONBOARD_VERSION`) that flips setup between first-run and status-card |
 | the Claude plugin marketplace | The installed `cotal-mesh` plugin assets |

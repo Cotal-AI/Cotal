@@ -1,0 +1,20 @@
+{
+  "suite": [
+    "implementations/manager/smoke/custodial-pty.smoke.ts"
+  ],
+  "guard": "the production PTY runtime waits for the connector-owned confirmation text instead of sending blind timed Enter presses",
+  "command": "pnpm --filter @cotal-ai/seat build && pnpm --filter @cotal-ai/manager build && pnpm exec tsx implementations/manager/smoke/custodial-pty.smoke.ts",
+  "completionMarker": "CUSTODIAL PTY",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/startup-confirm.mutations.json",
+  "mutations": [
+    {
+      "name": "restore the old five blind timed carriage returns and ignore the connector-owned prompt text",
+      "file": "packages/seat/src/custodian.ts",
+      "find": "  const confirmMatcher = launch.confirm ? new StartupConfirmMatcher(launch.confirm) : undefined;",
+      "replace": "  const confirmMatcher = launch.confirm ? Object.assign(new StartupConfirmMatcher(launch.confirm), { push: () => false }) : undefined;\n  if (launch.confirm) {\n    let presses = 0;\n    const blindTimer = setInterval(() => {\n      if (!alive || presses++ >= 5) { clearInterval(blindTimer); return; }\n      proc.write(\"\\r\");\n    }, 1_000);\n  }",
+      "expectRed": "late prompt after the old five-second window: the seat reaches normal input",
+      "cell": "late prompt after the old five-second window: the seat reaches normal input",
+      "note": "This restores the reported mechanism exactly: five output-blind carriage returns at one-second intervals. The late prompt deliberately renders after that window, so it must remain blocked and red while the early prompt remains green."
+    }
+  ]
+}

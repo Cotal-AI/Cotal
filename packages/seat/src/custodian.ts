@@ -6,12 +6,11 @@ import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { peerCredentials } from "./peercred.js";
 import {
-  CONFIRM_INTERVAL_MS,
+  CONFIRM_TIMEOUT_MS,
   DEFAULT_COLS,
   DEFAULT_ROWS,
   FrameReader,
   GRACE_MS,
-  MAX_CONFIRMS,
   MAX_FRAME_SIZE,
   PROTOCOL_VERSION,
   SCROLLBACK_ROWS,
@@ -20,6 +19,7 @@ import {
   type ServerMessage,
 } from "./protocol.js";
 import { RECORD_VERSION, processStartToken, writeRecord, type SeatRecord } from "./record.js";
+import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
   id: string;
@@ -32,7 +32,7 @@ export interface CustodianLaunch {
   token: string;
   recordPath: string;
   logPath?: string;
-  confirm?: boolean;
+  confirm?: string;
 }
 
 function send(sock: Socket, msg: ServerMessage): void {
@@ -90,7 +90,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const clients = new Set<Socket>();
   let nextSub = 1;
   let early = "";
-  let confirmTimer: ReturnType<typeof setInterval> | undefined;
+  const confirmMatcher = launch.confirm ? new StartupConfirmMatcher(launch.confirm) : undefined;
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let handoffTimer: ReturnType<typeof setTimeout> | undefined;
   let reap: ReturnType<typeof setInterval> | undefined;
@@ -98,16 +99,19 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   /** Wait for the first adopter when the child has already exited at listen. */
   const LAUNCH_HANDOFF_MS = 5_000;
 
-  if (launch.confirm) {
-    let presses = 0;
-    confirmTimer = setInterval(() => {
-      if (!alive || presses++ >= MAX_CONFIRMS) {
-        clearInterval(confirmTimer);
-        confirmTimer = undefined;
-        return;
+  if (confirmMatcher) {
+    confirmTimer = setTimeout(() => {
+      if (!alive) return;
+      const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
+      term.write(`\r\n${message}\r\n`);
+      const encoded = Buffer.from(`\r\n${message}\r\n`, "utf8").toString("base64");
+      for (const [sub, socks] of dataSubs) {
+        for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
       }
-      proc.write("\r");
-    }, CONFIRM_INTERVAL_MS);
+      if (launch.logPath) appendFileSync(launch.logPath, `${message}\n`, { mode: 0o600 });
+      proc.kill("SIGTERM");
+      killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
+    }, CONFIRM_TIMEOUT_MS);
   }
 
   const snapshot = (): Promise<string> =>
@@ -135,7 +139,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     if (!seenClient) return;
     settling = true;
     if (confirmTimer) {
-      clearInterval(confirmTimer);
+      clearTimeout(confirmTimer);
       confirmTimer = undefined;
     }
     if (killTimer) {
@@ -205,7 +209,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     alive = false;
     exit = info ?? exit ?? {};
     if (confirmTimer) {
-      clearInterval(confirmTimer);
+      clearTimeout(confirmTimer);
       confirmTimer = undefined;
     }
     for (const sock of controllers) send(sock, { event: "exit" });
@@ -222,6 +226,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     const encoded = Buffer.from(d, "utf8").toString("base64");
     for (const [sub, socks] of dataSubs) {
       for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
+    }
+    if (confirmMatcher?.push(d)) {
+      proc.write("\r");
+      if (confirmTimer) clearTimeout(confirmTimer);
+      confirmTimer = undefined;
     }
   });
   proc.onExit(({ exitCode, signal }) => {
@@ -386,8 +395,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "write": {
-        if (alive) proc.write(req.data);
-        send(sock, { id: req.id, ok: true, op: "write" });
+        if (!alive) throw new Error(`seat ${launch.name} is not running; the PTY rejected the write`);
+        proc.write(req.data);
+        send(sock, { id: req.id, ok: true, op: "write", bytes: Buffer.byteLength(req.data, "utf8") });
         return;
       }
       case "resize": {

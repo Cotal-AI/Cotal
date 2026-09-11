@@ -34,7 +34,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "idp:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
       // The optional PUBLIC remote-exchange face, threaded to the auth-service daemon.
       // `--advertised-server` (2026-08): with --exchange-public-port, the broker address the public
       // discovery bundle advertises - what participants dial, which is not the address the callout
@@ -140,7 +140,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391). It is

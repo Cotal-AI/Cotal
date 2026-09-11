@@ -5,3 +5,4 @@ export { assertSeatId, processStartToken, readRecord, recordPath, seatId, socket
 export { identityVerdict, reapSeat, type SeatReapEvidence } from "./reap.js";
 export { SeatClient } from "./client.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
+export { StartupConfirmMatcher, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";

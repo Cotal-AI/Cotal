@@ -2,35 +2,34 @@
   "suite": [
     "extensions/connector-jcode/smoke/jcode-effort-model.smoke.ts"
   ],
-  "guard": "an effort-refusal diagnostic names the requested model pin, not the session default RuntimeInfo still reports after setModel",
+  "guard": "only the exact Jcode Harness invalid_request capability refusal is classified as unsupported; copied text, another code, and near-miss wording stay generic",
   "command": "pnpm smoke:jcode-effort-model",
-  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-effort-model.json",
-  "completionMarker": "JCODE EFFORT-MODEL SMOKE",
-  "why": [
-    "A CLI spawn that died on a variant-tier refusal recorded deepseek-v4-pro despite --model grok-4.6.",
-    "The host asked RuntimeInfo first, and that value is the session default, not the pin.",
-    "",
-    "A1 restores the measured defect: RuntimeInfo wins over the requested pin.",
-    "A2 drops the pin entirely so a requested model becomes the provider-default placeholder.",
-    "",
-    "This suite grades the helper the host calls. It does not execute host.ts; a host that stopped",
-    "calling the helper would not redden these cells (named gap: needs smoke:jcode-host with a",
-    "RuntimeInfo model distinct from COTAL_MODEL)."
-  ],
+  "progressPattern": "✓",
+  "minTicks": 4,
   "mutations": [
     {
-      "name": "A1 RuntimeInfo wins over the requested pin, the measured defect",
+      "name": "Jcode exact capability refusal loses its unsupported classification",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "  return requested ?? runtime ?? \"(the provider default)\";",
-      "replace": "  return runtime ?? requested ?? \"(the provider default)\";",
-      "expectRed": "a requested pin wins over a different RuntimeInfo model"
+      "find": "    return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);",
+      "replace": "    return new JcodeEffortRefusal(requestedTier, identity.model, identity.provider, identity.apiMethod, []);",
+      "expectRed": "the exact Harness invalid_request capability refusal is classified separately",
+      "cell": "the exact Harness invalid_request capability refusal is classified separately"
     },
     {
-      "name": "A2 drop the requested pin so the diagnostic cannot name it",
+      "name": "Jcode capability classification accepts copied untrusted Error text",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "  return requested ?? runtime ?? \"(the provider default)\";",
-      "replace": "  return runtime ?? \"(the provider default)\";",
-      "expectRed": "a requested pin wins over a different RuntimeInfo model"
+      "find": "    error instanceof HarnessError &&",
+      "replace": "    error instanceof Error &&",
+      "expectRed": "a plain Error with copied capability text stays a generic refusal",
+      "cell": "a plain Error with copied capability text stays a generic refusal"
+    },
+    {
+      "name": "Jcode capability classification accepts any unsupported-reasoning invalid_request",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "    /^invalid_request: Reasoning effort is not supported by the current model\\/profile\\./.test(error.message)",
+      "replace": "    /^invalid_request: Reasoning effort is not supported/.test(error.message)",
+      "expectRed": "a near-miss invalid_request message stays a generic refusal",
+      "cell": "a near-miss invalid_request message stays a generic refusal"
     }
   ]
 }

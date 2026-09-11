@@ -28,8 +28,9 @@
  *      is operator-only on purpose; see the cell for what the one-word edit would cost.
  *   7. A seat that is not running refuses (see the cell for exactly what is forced and why).
  *   8. THE CLI PATH, end to end: the real binary as a subprocess runs
- *      `cotal input --name <seat> --text "/compact"`, exits 0, prints the byte count, and the child
- *      receives `/compact\r`. An external UI calls the CLI before it calls anything else, and a
+ *      `cotal input --name <seat> --text "/compact"`, exits 0, prints the acknowledged byte count,
+ *      and the child receives `/compact\r`. A dropped runtime write instead exits non-zero, names
+ *      the seat and prints no sent receipt. An external UI calls the CLI before anything else, and a
  *      defect anywhere in agents.ts -> control.ts -> the mint -> the subject leaves cells 2-7 green.
  *
  * COVERAGE BOUNDARY, stated so it is not over-read. This is a STATIC-auth mesh, so cell 4's refusal
@@ -45,6 +46,8 @@
  *      -> cell 4 "a caller that did NOT spawn the seat is refused" goes red.
  *   `input-enter`: flip `args.enter !== false ? "\r" : ""` in `inputAuthorized` to always append
  *      -> cell 3 "enter:false types the text with NO trailing carriage return" goes red.
+ *   `input-ack`: discard the runtime acknowledgement and restore intended-buffer arithmetic
+ *      -> cell 8 "a dropped PTY write exits NON-ZERO" goes red.
  *
  * Run: pnpm smoke:seat-input   (needs nats-server + node on PATH; boots its own broker; the CLI
  * cell drives bin/cotal.ts, which imports dist, so build first)
@@ -112,7 +115,7 @@ const sinkDir = join(dir, "sinks");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 mkdirSync(sinkDir, { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["typist", "guarded", "opseat", "cliseat", "deadseat"])
+for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -166,7 +169,7 @@ const echoCon: Connector = { kind: "connector", name: "input-echo", requires: ["
 registry.register(echoCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
-type PrivHandle = { status: () => "running" | "exited"; kind: string };
+type PrivHandle = { status: () => "running" | "exited"; kind: string; write?: (data: string) => Promise<number> };
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, { id: string; lifecycleUid: string; handle: PrivHandle }>;
@@ -419,6 +422,37 @@ try {
     const got = await sinkReaches(cliseat.name, 9);
     check("THE SEAT'S HARNESS RECEIVED EXACTLY `/compact\\r`: a slash command typed in a UI reaches the child verbatim",
       got.equals(Buffer.from("/compact\r", "utf8")), { hex: got.toString("hex"), want: Buffer.from("/compact\r", "utf8").toString("hex") });
+
+    // The receipt is derived from the runtime acknowledgement, not from `data`. A dropped write that
+    // resolves without an accepted-byte count is the mutation control from issue #1333: before the
+    // fix this exited 0 and printed `sent 9 bytes` while the child received nothing.
+    const dropseat = await spawnLive(A.call, { name: "dropseat", agent: "input-echo", cwd: repoRoot });
+    const dropped = M.agents.get(dropseat.name);
+    if (!dropped?.handle.write) throw new Error(`FIXTURE FAILURE: ${dropseat.name} has no writable managed handle`);
+    const realWrite = dropped.handle.write;
+    let rejectedRun: Run;
+    let droppedRun: Run;
+    try {
+      dropped.handle.write = async () => { throw new Error("custodian write rejected"); };
+      rejectedRun = await cotal(["input", "--name", dropseat.name, "--text", "/compact", "--space", space]);
+      dropped.handle.write = async () => undefined as unknown as number;
+      droppedRun = await cotal(["input", "--name", dropseat.name, "--text", "/compact", "--space", space]);
+    } finally {
+      dropped.handle.write = realWrite;
+    }
+    mustHaveRun(rejectedRun, "`cotal input` with a rejected PTY write");
+    const rejectedOut = strip(rejectedRun.out);
+    check("a rejected PTY write exits NON-ZERO, names the seat and the rejection, and prints NO `sent` receipt",
+      rejectedRun.status !== 0 && rejectedOut.includes(dropseat.name) && /failed: custodian write rejected/.test(rejectedOut)
+      && !/sent \d+ bytes/.test(rejectedOut), { status: rejectedRun.status, tail: rejectedOut.slice(-500) });
+    mustHaveRun(droppedRun, "`cotal input` with a dropped PTY write");
+    const droppedOut = strip(droppedRun.out);
+    check("a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
+      droppedRun.status !== 0 && droppedOut.includes(dropseat.name) && /failed: runtime accepted undefined of 9 bytes/.test(droppedOut)
+      && !/sent \d+ bytes/.test(droppedOut), { status: droppedRun.status, tail: droppedOut.slice(-500) });
+    await wait(750);
+    check("...and the dropped bytes never reached the child", sinkBytes(dropseat.name).length === 0,
+      { hex: sinkBytes(dropseat.name).toString("hex") });
 
     // `--no-enter` through the same real binary, carrying the HARDEST payload: text that is itself
     // a flag spelling. `--text=<value>` is the form node's `parseArgs` requires for a dash-leading

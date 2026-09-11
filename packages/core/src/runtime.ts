@@ -63,8 +63,12 @@ export interface AgentHandle {
    *  OPTIONAL, and absent means REFUSE, never degrade: a backend that does not own the child's
    *  input stream (tmux/cmux/orca/herdr attach to an externally-owned process) leaves it off, and
    *  the manager answers `input is not supported by runtime <kind>`. A silent no-op here would be
-   *  a dropped keystroke, which is worse than an error. */
-  write?(data: string): void;
+   *  a dropped keystroke, which is worse than an error.
+   *
+   *  Resolves only after the runtime has accepted the write, with the number of UTF-8 bytes it
+   *  accepted. Rejects when the runtime cannot accept it. A caller must derive any delivery receipt
+   *  from this acknowledgement, never from the buffer it intended to send. */
+  write?(data: string): Promise<number>;
   /** What the runtime OBSERVED when the child ended: the OS exit code, and/or the signal number
    *  that killed it. Meaningful only once {@link status} reports `exited`; before that a backend
    *  returns undefined.
