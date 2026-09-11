@@ -295,8 +295,12 @@ if (selected.length === 0) {
 //             inherited and non-fatal. An absent or unmeasurable base comparison fails loud. Under
 //             --all there is deliberately no base comparison, so PRE-RED remains non-fatal.
 //   exit 1  — at least one mutation did not produce a clean, named red. That splits again:
-//               SURVIVED / UNGRADABLE — the guard does not discriminate. A real finding. FAIL.
-//               ERROR                 — a dead or ambiguous anchor: the fixture is broken. FAIL.
+//               SURVIVED / UNGRADABLE / WRONG-RED / ERROR — fatal at head. In diff mode, re-run the
+//                                       same fixture proof against clean head and base snapshots.
+//                                       An unchanged fatal verdict is inherited and non-fatal; a
+//                                       verdict the PR actually moves still fails. An absent or
+//                                       unmeasurable base comparison fails loud. Under --all there
+//                                       is no base comparison, so these remain absolute findings.
 //               INCONCLUSIVE (only)   — a timeout or a teardown hang left no evidence either way.
 //                                       Collapsing it into SURVIVED is a false blocker and into
 //                                       KILLED a false clearance, so it is its own reported state
@@ -312,9 +316,72 @@ if (selected.length === 0) {
 const ANSI = /\x1b\[[0-9;]*m/g;
 const VERDICTS = ["KILLED", "SURVIVED", "INCONCLUSIVE", "UNGRADABLE", "WRONG-RED", "ERROR"];
 const FATAL_VERDICTS = new Set(["SURVIVED", "UNGRADABLE", "WRONG-RED", "ERROR"]);
-const verdictRe = new RegExp(`^(${VERDICTS.join("|")}) `, "gm");
-const verdictsIn = (output) =>
-  [...output.replace(ANSI, "").matchAll(verdictRe)].map((m) => m[1]);
+// mutation-proof prints `${verdict.padEnd(12)} ${label}`. That 12-wide field is the parse of a
+// report line: ERROR why-text can name KILLED, so a loose `^VERDICT ` match is not a parse.
+// Duplicate names are valid, and array position is not identity: reordering or inserting
+// unchanged objects must not attribute a still-SURVIVED mutant. Identity is the mutation's
+// `file`, `find`, and `replace` from the snapshot fixture — the code the mutation edits.
+// `find` alone is not enough when two mutants in the same file share an anchor and differ
+// only in the replacement. Same key more than once compares the multiset of verdicts.
+const mutationIdentity = (mutation, index) => {
+  if (!mutation || typeof mutation !== "object") return `\0unbound:${index}`;
+  return JSON.stringify([
+    typeof mutation.file === "string" ? mutation.file : null,
+    mutation.find ?? null,
+    mutation.replace ?? null,
+  ]);
+};
+const readFixtureMutations = (snapshotRoot, configPath) => {
+  try {
+    const config = JSON.parse(readFileSync(join(snapshotRoot, configPath), "utf8"));
+    return Array.isArray(config.mutations) ? config.mutations : [];
+  } catch {
+    return [];
+  }
+};
+const labeledVerdictsIn = (output, mutations = []) => {
+  const records = [];
+  for (const line of output.replace(ANSI, "").split("\n")) {
+    const verdict = VERDICTS.find((token) => line.startsWith(`${token.padEnd(12)} `));
+    if (!verdict) continue;
+    records.push({
+      index: records.length,
+      verdict,
+      label: line.slice(13).trim(),
+      identity: mutationIdentity(mutations[records.length], records.length),
+    });
+  }
+  return records;
+};
+const verdictsIn = (output) => labeledVerdictsIn(output).map((rec) => rec.verdict);
+
+function runProof(cwd, configPath, env) {
+  const run = spawnSync(process.execPath, [PROOF, "--config", configPath], {
+    cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env,
+  });
+  return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+}
+
+function compareFatalVerdicts(headRecords, baseRecords) {
+  const unused = baseRecords.map((_, i) => i);
+  const inherited = [];
+  const attributable = [];
+  const take = (pred) => {
+    const at = unused.findIndex((i) => pred(baseRecords[i]));
+    if (at === -1) return undefined;
+    const rec = baseRecords[unused[at]];
+    unused.splice(at, 1);
+    return rec;
+  };
+  for (const rec of headRecords) {
+    if (!FATAL_VERDICTS.has(rec.verdict)) continue;
+    const same = take((candidate) => candidate.identity === rec.identity && candidate.verdict === rec.verdict);
+    if (same) { inherited.push({ ...rec, baseVerdict: same.verdict }); continue; }
+    const other = take((candidate) => candidate.identity === rec.identity);
+    attributable.push({ ...rec, baseVerdict: other?.verdict ?? "ABSENT" });
+  }
+  return { inherited, attributable };
+}
 
 /** mutation-proof aborts at its first red distinct command, so exactly one refusal is its contract.
  *  The all-command matrix below comes from fixture config without changing that contract. */
@@ -450,7 +517,9 @@ function rootContaminationReason(provenance, cleanHeadRun) {
   return undefined;
 }
 
-const fatal = [];       // SURVIVED / UNGRADABLE / WRONG-RED / ERROR — the gate's real findings
+const fatal = [];       // SURVIVED / UNGRADABLE / WRONG-RED / ERROR the PR actually moved
+const inheritedFatal = []; // same fatal verdict already present at base
+const unmeasuredFatal = []; // fatal at head but base comparison absent or unrunnable
 const preRed = [];      // exit 4 + base RED, or any exit 4 under --all — inherited/non-attributed
 const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head RED
 const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base comparison — loud failure
@@ -523,7 +592,44 @@ for (const { path, command, mutations } of selected) {
   // no verdict is adverse and at least one is INCONCLUSIVE, i.e. the run produced no evidence against
   // the guard. Anything else — an empty parse, an exit-1 with only KILLED lines, a token this gate
   // does not know — is an unexplained non-zero and is treated as a finding, never as a pass.
-  if (verdicts.some((v) => FATAL_VERDICTS.has(v))) fatal.push(path);
+  if (verdicts.some((v) => FATAL_VERDICTS.has(v))) {
+    if (a.all) { fatal.push(path); continue; }
+    ensureSnapshotPrepared(snapshots.head, "head");
+    ensureSnapshotPrepared(snapshots.base, "base");
+    const preparationError = snapshots.head.error ?? snapshots.head.preparationError
+      ?? snapshots.base.error ?? snapshots.base.preparationError;
+    if (preparationError) { unmeasuredFatal.push({ path, reason: preparationError }); continue; }
+    if (!existsSync(join(snapshots.head.path, path)) || !existsSync(join(snapshots.base.path, path))) {
+      unmeasuredFatal.push({ path, reason: "fixture is absent from a comparison snapshot" });
+      continue;
+    }
+    const headProof = runProof(snapshots.head.path, path, snapshotComparisonEnv());
+    const baseProof = runProof(snapshots.base.path, path, snapshotComparisonEnv());
+    const headMutations = readFixtureMutations(snapshots.head.path, path);
+    const baseMutations = readFixtureMutations(snapshots.base.path, path);
+    const headRecordsClean = labeledVerdictsIn(headProof.output, headMutations);
+    const rootFatals = labeledVerdictsIn(output, mutations).filter((rec) => FATAL_VERDICTS.has(rec.verdict));
+    const cleanFatals = headRecordsClean.filter((rec) => FATAL_VERDICTS.has(rec.verdict));
+    if (JSON.stringify(rootFatals) !== JSON.stringify(cleanFatals)) {
+      unmeasuredFatal.push({ path, reason: "root fatal verdicts were not reproduced in the clean head snapshot" });
+      continue;
+    }
+    const baseReason = unmeasurableFailure(baseProof);
+    if (baseProof.error || baseProof.status === null || baseProof.signal) {
+      unmeasuredFatal.push({ path, reason: `base proof ${baseReason ?? "could not run"}` });
+      continue;
+    }
+    const baseRecords = labeledVerdictsIn(baseProof.output, baseMutations);
+    if (!baseRecords.length && baseProof.status !== 0) {
+      unmeasuredFatal.push({ path, reason: "base proof produced no comparable mutation verdicts" });
+      continue;
+    }
+    const transition = compareFatalVerdicts(headRecordsClean, baseRecords);
+    if (transition.attributable.length) fatal.push(path);
+    else if (transition.inherited.length) inheritedFatal.push({ path, mutations: transition.inherited });
+    else fatal.push(path);
+    continue;
+  }
   else if (verdicts.includes("INCONCLUSIVE") && verdicts.every((v) => v === "KILLED" || v === "INCONCLUSIVE")) inconclusive.push(path);
   else fatal.push(path);
 }
@@ -539,6 +645,13 @@ if (preRed.length) {
       : `  ${path} -> command: ${command}; transition: base RED (exit ${baseStatus}) -> head RED (exit ${headStatus})`);
   }
 }
+if (inheritedFatal.length) {
+  console.log(`\nFATAL INHERITED (${fixtureCount(inheritedFatal)} fixture(s)) — the same mutation verdict was already fatal at base; not caused by this diff:`);
+  for (const { path, mutations } of inheritedFatal) {
+    for (const rec of mutations)
+      console.log(`  ${path} -> mutation: ${rec.label}; transition: base ${rec.baseVerdict} -> head ${rec.verdict}`);
+  }
+}
 if (inconclusive.length) {
   console.log(`\nINCONCLUSIVE (${inconclusive.length} fixture(s)) — a timeout, a teardown hang, or a swallowed exit code left no evidence either way; not treated as SURVIVED and not treated as KILLED: ${inconclusive.join(", ")}`);
 }
@@ -552,12 +665,17 @@ if (unmeasuredPreRed.length) {
   for (const { path, command, reason } of unmeasuredPreRed)
     console.error(`  ${path} -> command: ${command}; transition: UNMEASURED (${reason}) -> head RED`);
 }
+if (unmeasuredFatal.length) {
+  console.error(`\nFATAL TRANSITION UNMEASURED (${fixtureCount(unmeasuredFatal)} fixture(s)) — base comparison was absent or could not run; refusing to clear:`);
+  for (const { path, reason } of unmeasuredFatal)
+    console.error(`  ${path} -> transition: UNMEASURED (${reason})`);
+}
 if (fatal.length) {
   console.error(`\nMUTATION REPROOF FAILED (${fatal.length} fixture(s)): ${fatal.join(", ")}`);
 }
-if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length) {
+if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length || unmeasuredFatal.length) {
   process.exit(1);
 }
 console.log(a.all
   ? `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive; base not compared under --all)`
-  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - fixtureCount(preRed) - inconclusive.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);
+  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${selected.length - fixtureCount(preRed) - fixtureCount(inheritedFatal) - inconclusive.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);
