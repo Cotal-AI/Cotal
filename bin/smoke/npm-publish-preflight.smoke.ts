@@ -21,6 +21,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
+
 let passed = 0;
 let failed = 0;
 function check(name: string, condition: unknown, detail?: unknown): void {
@@ -152,7 +155,7 @@ async function repositoryEntrypoint() {
   const child = spawn(process.execPath, ["scripts/preflight-npm-publish.mjs"], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...cleanEnv,
       ...env,
       npm_config_registry: base,
       ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc`,
