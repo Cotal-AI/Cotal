@@ -5750,13 +5750,13 @@ export class Manager {
       // through one fixed-lifetime connection. A closed connection during heal retries the SAME
       // frozen predecessor op via reconcile's durable cursor; a closed connection during
       // registration retries THIS boot's operationId without heal, so Phase-2 progress stays bound.
+      // #783/#871: a predecessor that died mid-barrier leaves this gate frozen under a
+      // registration op. registerServiceInstance will then refuse SPEC 13.8 forever, even
+      // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
+      // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
+      // CONNZ oracle rides delivery-admin, which an open mesh does not have.
       await retryExpiredExecutor("boot-heal", () => this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {
         await publishAndProvision({ recordsKv, authKv, nc: execNc });
-        // #783/#871: a predecessor that died mid-barrier leaves this gate frozen under a
-        // registration op. registerServiceInstance will then refuse SPEC 13.8 forever, even
-        // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
-        // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
-        // CONNZ oracle rides delivery-admin, which an open mesh does not have.
         if (auth) {
           await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
         }
