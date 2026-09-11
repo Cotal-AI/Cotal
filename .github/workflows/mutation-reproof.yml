@@ -154,7 +154,6 @@ jobs:
     runs-on: tenki-standard-medium-4c-8g
     permissions:
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -185,27 +184,43 @@ jobs:
         run: pnpm build
       - name: Re-prove every mutation fixture
         run: node scripts/mutation-reproof.mjs --all
-      - name: File a tracking issue when the sweep fails
-        # The scheduled sweep runs on no pull request, so a red run is otherwise visible only to
-        # whoever opens the Actions tab. This turns a failed sweep into one open, labelled tracking
-        # issue: a run that fails while the marker issue is still open comments on it instead of
-        # opening a second. The key is the label, read through the Issues API, not title search
-        # (tokenised and eventually consistent). No failure here is swallowed: the job is already
-        # red, so an aborted filing step hides nothing, while a false "no marker" would file a
-        # duplicate, which is the one thing this step exists to prevent.
-        if: failure()
+
+  full-alarm:
+    # The alarm lives outside the job it watches. A job-level timeout ends `full` as `cancelled`,
+    # which `failure()` never matches, and a step trailing the sweep inside the same job can be
+    # killed with it: every retained scheduled sweep ended cancelled and none filed an issue. A
+    # dependent job still runs after the sweep's timeout, so this one reads the sweep's result and
+    # turns a failed or cancelled sweep into one open, labelled tracking issue: a run that ends
+    # that way while the marker issue is still open comments on it instead of opening a second.
+    # The key is the label, read through the Issues API, not title search (tokenised and
+    # eventually consistent). A skipped sweep (any other event) leaves this job skipped too.
+    needs: full
+    if: always() && (needs.full.result == 'failure' || needs.full.result == 'cancelled')
+    timeout-minutes: 10
+    runs-on: tenki-standard-small-2c-4g
+    permissions:
+      issues: write
+    steps:
+      - name: File a tracking issue for the sweep
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SWEEP_RESULT: ${{ needs.full.result }}
         run: |
           set -euo pipefail
           label="ci:mutation-reproof"
           title="mutation-reproof: full sweep failing"
           gh label create "$label" --description "Open while the scheduled mutation-reproof full sweep is failing" --color B60205 --force
           existing="$(gh issue list --state open --label "$label" --json number --jq '.[0].number // empty')"
-          body="The daily mutation-reproof full sweep failed: $RUN_URL
+          if [ "$SWEEP_RESULT" = cancelled ]; then
+            outcome="did not finish (job result: cancelled; the sweep's 360-minute timeout ends it this way)"
+          else
+            outcome="failed (job result: $SWEEP_RESULT)"
+          fi
+          body="The daily mutation-reproof full sweep $outcome: $RUN_URL
 
-          Read the run log. A fatal verdict (SURVIVED, UNGRADABLE, WRONG-RED, ERROR) means a guarded suite no longer discriminates its named mutant or the fixture's anchor is broken; an UNMEASURED refusal names dangling or malformed fixtures; a failure before the sweep step (checkout, install, build) has no verdict lines at all. Repair the fixture or file the named finding, then close this issue once a scheduled sweep is green."
+          Read the run log. A fatal verdict (SURVIVED, UNGRADABLE, WRONG-RED, ERROR) means a guarded suite no longer discriminates its named mutant or the fixture's anchor is broken; an UNMEASURED refusal names dangling or malformed fixtures; a failure before the sweep step (checkout, install, build) has no verdict lines at all; a sweep that hit its timeout has a partial log and no final tally. Repair the fixture or the budget, then close this issue once a scheduled sweep is green."
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
