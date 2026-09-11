@@ -8,7 +8,7 @@ import {
 import { loadMeshes, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { openTransient, transientCaller } from "../lib/transient.js";
+import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 
@@ -35,13 +35,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     );
     process.exit(1);
   }
-  const caller = transientCaller();
-  if (!caller) {
-    console.error(c.red("`cotal send` requires COTAL_NAME plus either COTAL_ID or both COTAL_OWNER and COTAL_ACTOR."));
-    console.error(c.dim("Run it from that seat's shell, or use the in-session cotal_dm / cotal_send / cotal_anycast tool."));
-    process.exit(1);
-  }
-  const opened = await openTransient(values, caller);
+  const opened = await openTransient(values, "cotal-send");
   if (mode === "dm") return dm(opened, rest);
   if (mode === "msg") return msg(opened, rest);
   return ask(opened, rest);

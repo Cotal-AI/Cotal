@@ -1096,15 +1096,10 @@ One-shot messaging: connect, send a single direct message (`dm`), channel post (
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
 
-`cotal send` requires `COTAL_NAME` plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
-If that tuple is missing, `send` refuses before connecting so the recipient never sees a message
-attributed to a nameless command principal. A child that inherited a
-seat's environment is attributed as that seat; this command does not distinguish the two. An operator
-who is not a live seat can set both variables for the one shot:
-
-```bash
-COTAL_NAME=<name> COTAL_ID=<id> cotal send ...
-```
+`cotal send` works from an operator shell or from a seat. It uses `cotal-send` as the advisory
+display name. The wire principal comes from the resolved operator credential or user bearer, not
+from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or `COTAL_ACTOR`. On an open mesh the transient
+endpoint self-mints its principal.
 
 ## channels
 
