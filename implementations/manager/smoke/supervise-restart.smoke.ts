@@ -101,7 +101,10 @@ let userMgr: Manager | undefined;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: broker.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+  });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
@@ -254,6 +257,13 @@ try {
   mkdirSync(userAuthStateDir(userRoot, space), { recursive: true });
   writeFileSync(join(userAuthStateDir(userRoot, space), "idp.json"), "{}\n");
   recordMesh({ space, server: broker.servers, root: userRoot, mode: "user", ts: new Date().toISOString() });
+  // A second workspace root is required (the lease refuses a second manager on the
+  // same root). The daemon already bound at `workspaceRoot` would then fail the
+  // store-identity challenge. Unbind it first so start sees an absent rail, which
+  // is not a named store, and the cell can still grade the user-mode accept
+  // refusal. Later cells do not need the daemon.
+  await delivery?.stop().catch(() => {});
+  delivery = undefined;
   userMgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot: userRoot });
   await userMgr.start();
   const user = await userMgr.startAgent({ name: "user", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1_000 } });

@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
@@ -131,6 +131,8 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
       });
       return { ok: true, data: result };
     }
+    if (req.op === "reloadStoreIdentity")
+      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
     return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
   }, { boundReply: true });
   return ep;

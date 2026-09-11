@@ -95,7 +95,7 @@ type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
-const { join } = await import("node:path");
+const { join, resolve } = await import("node:path");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fsb-home-"));
 process.env.COTAL_HOME = home;
@@ -342,6 +342,7 @@ try {
     evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
       servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
     }),
+    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
   });
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });

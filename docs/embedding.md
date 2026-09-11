@@ -176,7 +176,21 @@ stripped; a legitimate local re-sign is continuous and proceeds without a networ
 `Manager` runs it on a schedule against its **own**
 `secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
-into it, and the daemon adopts each generation on a preflight-proven 75% timer. It never throws: it
+into it, and the daemon adopts each generation on a preflight-proven 75% timer. The stock
+cross-host composition cannot satisfy that by writing one filesystem and fingerprinting another:
+`Manager.start()` and every later remint challenge the daemon's `reloadStoreIdentity` and a
+divergent pair is refused naming both stores. The identity is the store the daemon actually
+reloads: an injected coordinate, the workstation root only when `--creds` is
+`<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
+file's own directory for any other `--creds` path, or the workstation root. Uninjected
+`--creds` that names one real workstation while process cwd resolves another is refused
+at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
+path that is not under any `.cotal` tree is not that case and is not refused here. It never
+walks ancestors with `findCotalRoot`. No bound daemon is not a named
+store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
+The first-party filesystem adapter declares its workspace-root identity on the store itself. Other
+injected adapters declare their stable coordinate on `SecretStore.identity`, or name it in
+`COTAL_SECRET_STORE` on both processes. It never throws: it
 returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
 KMS/Vault simply injects that store; no bespoke renewal is needed. A `--creds` file path must be
@@ -211,7 +225,10 @@ registry record and the workspace user-auth marker to start in user mode. `Manag
 injects the one `SecretStore` the manager uses for **the signer itself (the split trust
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
-hosted renewal. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+hosted renewal. The store declares the same identity on both processes, or both set
+`COTAL_SECRET_STORE` to the same coordinate. The manager
+refuses to remint when the daemon names a different store, including a daemon that binds after
+start. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.

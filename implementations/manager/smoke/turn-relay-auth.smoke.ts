@@ -77,7 +77,10 @@ let seatNc: Awaited<ReturnType<typeof connect>> | undefined;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: broker.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+  });
   // The timer writer the delivery daemon hosts on a live mesh, under the delivery credential: the
   // deadline cell below waits on a pause armed through it, never through a suite pump.
   writerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }), maxReconnectAttempts: 0 });

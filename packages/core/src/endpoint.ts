@@ -18,6 +18,10 @@ import {
 import { wsconnect } from "@nats-io/nats-core";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
+import {
+  parseSecretStoreIdentity,
+  type SecretStoreIdentity,
+} from "./secret-store.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
@@ -443,6 +447,10 @@ export class CotalEndpoint extends EventEmitter {
      *  call). The READ half of {@link evictPrincipal}: read-only by construction, so a repair path
      *  can refuse on a live holder's behalf instead of killing it to find out. */
     principalLiveness?: (principal: string) => Promise<unknown>;
+    /** Composition-root hook: name the SecretStore this daemon reloads standing creds from.
+     *  The manager challenges it at start and before every remint so a two-root composition
+     *  is refused rather than twelve hours later on a fingerprint mismatch. */
+    reloadStoreIdentity?: () => SecretStoreIdentity;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -3764,10 +3772,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity };
     await this.armPlane3();
   }
 
@@ -4068,6 +4076,20 @@ export class CotalEndpoint extends EventEmitter {
       if (!principal) return { ok: false, error: "principalLiveness: a principal (owner.actor dot-form) is required" };
       try {
         return { ok: true, data: await this.plane3.principalLiveness(principal) };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "reloadStoreIdentity") {
+      // Proof that this daemon reloads standing creds from ONE named store. The manager
+      // compares it to its remint store before every renewal pass. Absent hook
+      // is a daemon that cannot name its store, which is itself a divergent composition.
+      if (!this.plane3?.reloadStoreIdentity)
+        return { ok: false, error: "reloadStoreIdentity: this daemon did not name the SecretStore it reloads from" };
+      try {
+        const identity = this.plane3.reloadStoreIdentity();
+        // Round-trip through the closed parser so a hook cannot smuggle extra fields onto the rail.
+        return { ok: true, data: parseSecretStoreIdentity(identity) };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
