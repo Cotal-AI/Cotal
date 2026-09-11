@@ -25,6 +25,7 @@ import {
   recoveryPending,
   sanitizeCorruptCrashState,
   seedChildStatus,
+  type ReconcileCursor,
   writeCursor,
   writePendingChildMarker,
   writeRecovery,
@@ -119,7 +120,29 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
         if (child.kind === "ambiguous")
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
-        throw new Error("a previous connector seed or repair was interrupted - run `cotal ext seed --repair`");
+        const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
+        if (migration && cursor) {
+          console.error(
+            c.dim(
+              `resuming an interrupted connector upgrade (seed store ${migration.from} -> ${generation}; ` +
+                `package "${cursor.package}", phase ${cursor.phase}) …`,
+            ),
+          );
+          await reconcile("repair");
+          return NOOP;
+        }
+        if (cursor) {
+          const storeGeneration = readStamp()?.generation ?? "absent";
+          throw new Error(
+            `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}; ` +
+              `seed store generation ${storeGeneration}, running generation ${generation}; ` +
+              "no live reconcile or seed child found) - run `cotal ext seed --repair`",
+          );
+        }
+        throw new Error(
+          "a previous connector repair was interrupted (recovery journal present; no live reconcile or seed child found) - " +
+            "run `cotal ext seed --repair`",
+        );
       }
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -145,6 +168,18 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
   } finally {
     lock.release();
   }
+}
+
+/** A cursor left while the durable stamp still names an older generation is evidence that this
+ * running generation began the ordinary upgrade refresh and did not reach its final commit. The
+ * cursor identifies the exact package to reinstall, the child marker proves no installer remains,
+ * and the reconcile/extension locks serialize the recovery, so the same verified repair used by the
+ * maintenance command is safe to resume unattended. A same-generation (or unstamped/corrupt-stamp)
+ * cursor is not attributed to an upgrade and remains fail-loud. */
+function interruptedUpgrade(cursor: ReconcileCursor, generation: string): { readonly from: string } | undefined {
+  const stamp = readStamp();
+  if (!stamp || !isValidSemver(stamp.generation) || !isStrictlyNewer(generation, stamp.generation)) return undefined;
+  return { from: stamp.generation };
 }
 
 /** Authority present, readable, and structurally valid (a corrupt one is NOT intact — it routes to
