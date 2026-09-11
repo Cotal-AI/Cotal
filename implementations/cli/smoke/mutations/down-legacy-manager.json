@@ -35,7 +35,7 @@
     {
       "name": "M3 report a tokenless manager's pre-signal inventory as confirmed spared",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty(spared);\n  else if (spared) printSparedAgents(spared);",
+      "find": "  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();\n  else if (spared) printSparedAgents(spared);",
       "replace": "  if (legacyManagerSpareUnverified) printSparedAgents(spared ?? []);\n  else if (spared) printSparedAgents(spared);",
       "expectRed": "bare down never reports a historical destructive manager's reaped agent as spared",
       "cell": "bare down never reports a historical destructive manager's reaped agent as spared",

@@ -239,7 +239,7 @@ export async function down(args: ParsedArgs): Promise<void> {
     console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
     process.exit(1);
   }
-  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty(spared);
+  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
   else if (spared) printSparedAgents(spared);
 }
 
@@ -298,14 +298,8 @@ function printSparedAgents(rows: DownSeatRow[]): void {
   console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
 }
 
-function printLegacyManagerSpareUncertainty(rows: DownSeatRow[] | undefined): void {
+function printLegacyManagerSpareUncertainty(): void {
   console.log(c.dim("manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents"));
-  if (!rows?.length) return;
-  console.log(c.dim(`${rows.length} managed agent${rows.length === 1 ? " was" : "s were"} present before shutdown, but cannot be confirmed running:`));
-  for (const row of rows) {
-    const facts = [row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, row.status].filter(Boolean);
-    console.log(`  ${facts.join("  ·  ")}`);
-  }
 }
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
