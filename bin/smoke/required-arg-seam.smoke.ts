@@ -321,7 +321,10 @@ const SEAMS: Seam[] = [
   // inside the final public retirement cell. Both are fixture-side calls under smoke/ and state tls: false.
   // 144/104 -> 145/105: hosted-retirement-stock-supervise.acceptance.ts adds one fixture-side
   // provisioner connection for its authenticated broker readiness probe and states tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 145, untypecheckedSites: 105 },
+  // 145/105 -> 147/107: remote-executor-renewal-stock.acceptance.ts adds two fixture-side
+  // provisioner connections for broker readiness and exact registration-removal observation.
+  // Both are under smoke/ and state tls: false.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 147, untypecheckedSites: 107 },
 ];
 
 /**

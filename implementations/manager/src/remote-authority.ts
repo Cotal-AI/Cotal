@@ -202,6 +202,55 @@ export function currentRegistrationProof(material: RemoteManagerAuthorityMateria
   return proof;
 }
 
+/** Bind an untrusted renewal response to the exact request sent before consuming any credential.
+ * A still-live response from an earlier request is not current merely because renewal preserves the
+ * registration proof, so requestId and every lifecycle/identity coordinate are part of the check. */
+export function renewedRegistrationProof(
+  material: RemoteManagerAuthorityMaterial,
+  request: RemoteManagerAuthorityRequest,
+  expectedOwner: string,
+): string {
+  const fields = [
+    "v", "kind", "operation", "space", "owner", "actor", "instanceId", "lifecycleUid",
+    "requestId", "registrationProof", "issuedAt", "expiresAt", "actors", "identities",
+    "nextRegistrationProof", "credentials",
+  ];
+  if (material === null || typeof material !== "object" || Array.isArray(material) ||
+      Object.keys(material).sort().join(",") !== fields.sort().join(","))
+    throw new Error("manager-service renewal returned a non-closed result");
+  const credentialNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+  if (material.credentials === null || typeof material.credentials !== "object" || Array.isArray(material.credentials) ||
+      Object.keys(material.credentials).sort().join(",") !== [...credentialNames].sort().join(",") ||
+      Object.values(material.credentials).some((credential) => credential === null || typeof credential !== "object" || Array.isArray(credential) ||
+        Object.keys(credential).sort().join(",") !== "exp,jwt" || typeof credential.jwt !== "string" ||
+        typeof credential.exp !== "number" || !Number.isSafeInteger(credential.exp) || credential.exp <= 0) ||
+      typeof material.issuedAt !== "number" || !Number.isSafeInteger(material.issuedAt) || material.issuedAt <= 0 ||
+      typeof material.expiresAt !== "number" || !Number.isSafeInteger(material.expiresAt) || material.expiresAt <= 0)
+    throw new Error("manager-service renewal returned an invalid or non-closed credential family");
+  const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+  const identitiesMatch = material.identities !== null && typeof material.identities === "object" && !Array.isArray(material.identities) &&
+    Object.keys(material.identities).sort().join(",") === [...identityNames].sort().join(",") &&
+    identityNames.every((name) => {
+      const identity = material.identities[name];
+      return identity !== null && typeof identity === "object" && !Array.isArray(identity) &&
+        Object.keys(identity).join(",") === "id" && identity.id === request.identities[name].id;
+    });
+  const expectedActors = remoteManagerActors(request.instanceId);
+  const actorsMatch = material.actors !== null && typeof material.actors === "object" && !Array.isArray(material.actors) &&
+    Object.keys(material.actors).sort().join(",") === [...identityNames].sort().join(",") &&
+    identityNames.every((name) => material.actors[name] === expectedActors[name]);
+  if (request.operation !== "renew" || material.v !== request.v || material.kind !== request.kind ||
+      material.operation !== request.operation || material.space !== request.space ||
+      material.owner !== expectedOwner || material.actor !== request.actor ||
+      material.instanceId !== request.instanceId || material.lifecycleUid !== request.managerLifecycleUid ||
+      material.requestId !== request.requestId || material.registrationProof !== request.registrationProof ||
+      material.nextRegistrationProof !== request.registrationProof ||
+      !actorsMatch ||
+      !identitiesMatch)
+    throw new Error("manager-service renewal returned different request, lifecycle, identity, owner, or proof coordinates");
+  return request.registrationProof!;
+}
+
 /** Bind a host result back to every request coordinate before Manager consumes its authority row. */
 export function retainedAgentAuthority(
   result: RemoteRetainedAgentValidationResult,
@@ -284,6 +333,8 @@ export function materialCredential(
   // advertised expiry. A forged later envelope or a JWT/entry disagreement still fails closed.
   if (claims.exp !== credential.exp || !Number.isFinite(envelopeExpiry) || material.expiresAt !== envelopeExpiry || credential.exp * 1000 < material.expiresAt)
     throw new Error(`manager-service ${name} expiry does not match the material envelope`);
+  if (credential.exp * 1000 <= Date.now())
+    throw new Error(`manager-service ${name} credential is already expired`);
   return credsFromJwt(credential.jwt, identity);
 }
 

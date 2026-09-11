@@ -14,6 +14,7 @@ import {
   clearSpaceHistory,
   dialerFor,
   connectorServers,
+  credsRenewalDelayMs,
   spawnEnvAllow,
   deprovisionAgent,
   firstFreeName,
@@ -357,6 +358,15 @@ export interface ManagerOptions {
     serveCreds: string;
     goalWriterCreds: string;
     sessionLedgerCreds: string;
+    registrationProof: string;
+    renew: () => Promise<{
+      registrationProof: string;
+      supervisorCreds: string;
+      executorCreds: string;
+      serveCreds: string;
+      goalWriterCreds: string;
+      sessionLedgerCreds: string;
+    }>;
     serveGrant: EpServeGrant;
     mintSessionServing: (args: { identity: Identity; endpoint: string; sessionId: string; epoch: number; exp: number }) => Promise<string>;
     mintRetirementRequester: (args: {
@@ -1102,6 +1112,12 @@ export class Manager {
   private resumeDurableCommitToken?: string;
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
+  /** Remote authority generations are a single credential family. Only this serialized scheduler
+   * may replace it, and it installs a fully validated host response before reconnecting any holder. */
+  private remoteAuthorityRenewTimer?: ReturnType<typeof setTimeout>;
+  private remoteAuthorityRenewInFlight?: Promise<void>;
+  private remoteSupervisorCreds?: string;
+  private remoteExecutorCreds?: string;
 
   /** Every broker dial this manager makes, through ONE transport decision.
    *
@@ -1122,7 +1138,11 @@ export class Manager {
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
-    if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
+    if (opts.remoteAuthority) {
+      this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
+      this.remoteSupervisorCreds = opts.remoteAuthority.supervisorCreds;
+      this.remoteExecutorCreds = opts.remoteAuthority.executorCreds;
+    }
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
@@ -1276,7 +1296,7 @@ export class Manager {
     if (this.remoteAuthority) {
       const remote = this.remoteAuthority;
       id = remote.identities.supervisor.id;
-      creds = async () => remote.supervisorCreds;
+      creds = async () => this.remoteSupervisorCreds!;
     } else if (this.auth) {
       const identity = newIdentity();
       const auth = this.auth;
@@ -1387,6 +1407,7 @@ export class Manager {
     // rides the serve grant's epoch + the family-staged session-ledger cred), on its own standing
     // connection disjoint from both the serve and goal-writer creds.
     await this.startSessionPlane();
+    if (this.remoteAuthority) this.armRemoteAuthorityRenewal();
     // P2 item 2 must-5 Q-B: reconcile any accepted-but-unterminal goals inherited from a predecessor
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
@@ -1415,6 +1436,105 @@ export class Manager {
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
     // manager records each agent's read ACL at spawn (`commitAcl`, in provisionAgent) so the daemon can
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
+  }
+
+  /** Arm at the earliest member's normal 75% renewal point. The short executor therefore drives the
+   * first pass, and every pass replaces all retained material as one host-validated family. */
+  private armRemoteAuthorityRenewal(delayMs?: number): void {
+    if (!this.remoteAuthority || this.staticReconcileStopping) return;
+    if (this.remoteAuthorityRenewTimer) clearTimeout(this.remoteAuthorityRenewTimer);
+    const family = [
+      this.remoteSupervisorCreds,
+      this.remoteExecutorCreds,
+      this.serviceServe?.creds,
+      this.goalWriterCreds,
+      this.sessionLedgerCreds,
+    ];
+    if (family.some((creds) => !creds)) {
+      console.error("! remote authority renewal: the retained credential family is incomplete; not arming a partial renewal");
+      return;
+    }
+    let next = delayMs;
+    if (next === undefined) {
+      try { next = Math.min(...family.map((creds) => credsRenewalDelayMs(creds!))); }
+      catch (e) {
+        console.error(`! remote authority renewal: ${(e as Error).message} - not arming an unbounded or unreadable generation`);
+        return;
+      }
+    }
+    this.remoteAuthorityRenewTimer = setTimeout(() => { void this.renewRemoteAuthority(); }, Math.max(1_000, next));
+    this.remoteAuthorityRenewTimer.unref?.();
+  }
+
+  private renewRemoteAuthority(): Promise<void> {
+    if (this.remoteAuthorityRenewInFlight) return this.remoteAuthorityRenewInFlight;
+    const task = this.runRemoteAuthorityRenewal();
+    this.remoteAuthorityRenewInFlight = task.finally(() => { this.remoteAuthorityRenewInFlight = undefined; });
+    return this.remoteAuthorityRenewInFlight;
+  }
+
+  private remoteRenewalRetryDelayMs(): number {
+    const family = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe?.creds, this.goalWriterCreds, this.sessionLedgerCreds];
+    try {
+      const expiries = family.map((creds) => inspectCredHealth(creds!).exp);
+      if (expiries.some((exp) => typeof exp !== "number")) return 1_000;
+      const remaining = Math.min(...(expiries as number[])) * 1000 - Date.now();
+      return Math.max(1_000, Math.min(30_000, Math.floor(remaining / 4)));
+    } catch {
+      return 1_000;
+    }
+  }
+
+  /** Fetch, validate, atomically install, then reload or reconnect every standing holder. A failed response
+   * leaves the complete old family untouched and retries while its broker-valid window remains. */
+  private async runRemoteAuthorityRenewal(): Promise<void> {
+    const remote = this.remoteAuthority;
+    if (!remote || this.staticReconcileStopping) return;
+    let committed = false;
+    try {
+      const fresh = await remote.renew();
+      const family = [fresh.supervisorCreds, fresh.executorCreds, fresh.serveCreds, fresh.goalWriterCreds, fresh.sessionLedgerCreds];
+      const delay = Math.min(...family.map((creds) => credsRenewalDelayMs(creds)));
+      if (!/^sha256:[0-9a-f]{64}$/.test(fresh.registrationProof) || family.some((creds) => inspectCredHealth(creds).state === "expired"))
+        throw new Error("the host returned expired or incomplete remote authority material");
+      const probes = await Promise.all(family.map((creds) => this.probeStaticCredential(creds)));
+      const refused = probes.find((probe) => !probe.ok);
+      if (refused) throw new Error(`the broker refused a renewed remote authority credential (${refused.reason}); nothing installed`);
+      const serve = this.serviceServe;
+      const goalWriter = this.goalWriter;
+      const sessionLedger = this.sessionLedgerConn;
+      if (!serve || !goalWriter || !sessionLedger)
+        throw new Error("the manager has not installed every standing remote authority holder");
+
+      // One synchronous commit point. Authenticators read these mutable holders only on reconnect.
+      this.remoteSupervisorCreds = fresh.supervisorCreds;
+      this.remoteExecutorCreds = fresh.executorCreds;
+      remote.registrationProof = fresh.registrationProof;
+      serve.creds = fresh.serveCreds;
+      this.goalWriterCreds = fresh.goalWriterCreds;
+      goalWriter.creds = fresh.goalWriterCreds;
+      this.sessionLedgerCreds = fresh.sessionLedgerCreds;
+      sessionLedger.creds = fresh.sessionLedgerCreds;
+      committed = true;
+
+      const adopted = await Promise.allSettled([
+        this.ep.reloadCreds(),
+        serve.nc.reconnect(),
+        goalWriter.nc.reconnect(),
+        sessionLedger.nc.reconnect(),
+      ]);
+      const failures = adopted.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length)
+        console.error(`! remote authority renewal: ${failures.length} standing connection(s) did not immediately adopt the fresh generation; their reconnect loops retain it and will retry`);
+      if (this.staticReconcileStopping) return;
+      this.armRemoteAuthorityRenewal(delay);
+    } catch (e) {
+      console.error(committed
+        ? `! remote authority renewal adoption: ${(e as Error).message} - the complete fresh generation remains installed for reconnect recovery`
+        : `! remote authority renewal: ${(e as Error).message} - retaining the last complete generation and retrying before expiry`);
+      if (this.staticReconcileStopping) return;
+      this.armRemoteAuthorityRenewal(this.remoteRenewalRetryDelayMs());
+    }
   }
 
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
@@ -2025,6 +2145,8 @@ export class Manager {
     await starting?.catch(() => {});
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
+    if (this.remoteAuthorityRenewTimer) clearTimeout(this.remoteAuthorityRenewTimer);
+    await this.remoteAuthorityRenewInFlight?.catch(() => {});
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     if (this.maintenanceState === "active" && !this.resumeRequired) {
       await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)
@@ -5346,7 +5468,7 @@ export class Manager {
    *  This is NEVER the manager's standing seed/supervisor connection. */
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    const creds = this.remoteAuthority?.executorCreds ?? (this.auth
+    const creds = this.remoteAuthority ? this.remoteExecutorCreds : (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
         })

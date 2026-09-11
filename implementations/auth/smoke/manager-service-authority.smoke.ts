@@ -46,6 +46,7 @@ const credentials = {
   executor: { jwt: "a.b.c", exp: 150 },
 };
 const registrationProof = `sha256:${"a".repeat(64)}`;
+const renewRequest = { ...request, operation: "renew" as const, registrationProof };
 const retirementTarget = { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "worker", lifecycleUid: mintLifecycleUid() };
 const retirement = {
   id: newIdentity().id,
@@ -87,6 +88,28 @@ await rejects("retire requires a non-negative safe serve epoch", () => parseRemo
 await rejects("retire requires a derived target owner", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, owner: "local" } } }), /derived owner/);
 await rejects("retire requires a subject-safe target actor", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, actor: "bad.actor" } } }), /single NATS-safe token/);
 await rejects("missing identity family members are refused", () => parseRemoteManagerAuthorityRequest({ ...request, identities: { supervisor: identities.supervisor } }), /identities must contain exactly/);
+await rejects("renew requires the current host registration proof", () => parseRemoteManagerAuthorityRequest({ ...renewRequest, registrationProof: undefined }), /renew requires a sha256 registrationProof/);
+await rejects("renew accepts no caller-supplied contract artifacts", () => parseRemoteManagerAuthorityRequest({ ...renewRequest, contractArtifacts: [{}] }), /renew must not carry contractArtifacts/);
+await rejects("renew refuses a partial credential family", () => issueRemoteManagerAuthority({
+  request: renewRequest, owner: retirementTarget.owner, scope: ["supervise"],
+  issue: async () => ({ credentials }),
+}), /did not issue required credential serve/);
+await cell("renew returns every retained authority member and echoes the current proof", async () => {
+  const all = {
+    ...credentials,
+    serve: { jwt: "a.b.c", exp: 200 },
+    goalWriter: { jwt: "a.b.c", exp: 200 },
+    sessionLedger: { jwt: "a.b.c", exp: 200 },
+  };
+  const material = await issueRemoteManagerAuthority({
+    request: renewRequest, owner: retirementTarget.owner, scope: ["supervise"], now: () => 10,
+    issue: async () => ({ credentials: all, nextRegistrationProof: registrationProof }),
+  });
+  assert.deepEqual(Object.keys(material.credentials).sort(), ["executor", "goalWriter", "serve", "sessionLedger", "supervisor"]);
+  assert.equal(material.registrationProof, registrationProof);
+  assert.equal(material.nextRegistrationProof, registrationProof);
+  assert.equal(material.expiresAt, 150_000);
+});
 await rejects("the retirement requester nkey cannot collapse into a standing identity", () => issueRemoteManagerAuthority({
   request: { ...retireRequest, retirement: { ...retirement, id: identities.serve.id } }, owner: retirementTarget.owner, scope: ["supervise"],
   issue: async () => ({ credentials: { retirementRequester: { jwt: "a.b.c", exp: 200 } } }),
@@ -189,11 +212,14 @@ await cell("neither remote manager credential carries records consumer authority
 await cell("host issuer grant has no signer or generic profile endpoint", () => {
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id);
   assert.equal(grants.publish.some((row) => row === ">" || row === "$JS.>" || row === "$KV.>"), false);
+  assert.equal(grants.publish.some((row) => row.includes("CONSUMER.CREATE")), false);
+  assert.equal(grants.publish.includes("$JS.API.DIRECT.GET.EPC_demo"), true);
 });
 await cell("host issuer alone owns the manager endpoint gate and credential write families", () => {
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id).publish;
   assert.equal(grants.includes("$KV.cotal_auth_demo.epgate.manager.>"), true);
   assert.equal(grants.includes("$KV.cotal_auth_demo.epcred.manager.>"), true);
+  assert.equal(grants.includes("$KV.cotal_auth_demo.renewclean.manager.>"), true);
   assert.equal(grants.some((row) => row.includes("epgate.") && !row.includes("epgate.manager.")), false);
   assert.equal(grants.some((row) => row.includes("epcred.") && !row.includes("epcred.manager.")), false);
   const participant = permissionsFor("remote-manager", "demo", {

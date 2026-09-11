@@ -55,7 +55,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeServeGrant, authorizeTrustedServeSnapshot, commitSiblingIssuance, contractRefToHex, contractStoreContext, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, fetchContractArtifact, isReachable, mintPublicUserJwt, rawDigest, recordsBucket, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -84,6 +84,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
+import { ManagerRenewalCompensation, type RenewalCleanupFault } from "./renewal-compensation.js";
 import {
   AGENT_BEARER_TTL_SEC,
   findInteractiveActor,
@@ -218,6 +219,8 @@ export async function openAuthAuthorityPlane(opts: {
    *  Production compositions never set this: the real oracle is the delivery daemon's
    *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminPlaneOracle}). */
   probePlaneOracle?: PlaneLivenessOracle;
+  /** SMOKE-ONLY renewal compensation fault injector. Production compositions never set this. */
+  probeRenewalFault?: RenewalCleanupFault;
   /** SMOKE-ONLY scanner-death injector: receives kill switches for the two plane-owned scanner
    *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
    *  no natural failure to inject). Production compositions never set this. */
@@ -410,6 +413,19 @@ export async function openAuthAuthorityPlane(opts: {
     throw e;
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
+  const renewalTails = new Map<string, Promise<void>>();
+  const serializeRenewal = async <T>(instanceId: string, run: () => Promise<T>): Promise<T> => {
+    const previous = renewalTails.get(instanceId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
+    renewalTails.set(instanceId, mine);
+    await previous;
+    try { return await run(); }
+    finally {
+      release();
+      if (renewalTails.get(instanceId) === mine) renewalTails.delete(instanceId);
+    }
+  };
   // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
   // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
   // window, not the operator — the agent cannot "restart the auth service", so it gets a retryable
@@ -459,33 +475,34 @@ export async function openAuthAuthorityPlane(opts: {
     },
     issueManagerServiceAuthority: async ({ owner, scope, request }) => {
       refuseIfFenced();
-      return issueRemoteManagerAuthority({
-        owner,
-        scope,
-        request,
-        issue: async ({ actors, request: r }) => {
-          const credential = async (
-            key: keyof RemoteManagerAuthorityRequest["identities"],
-            profile: Parameters<typeof mintPublicUserJwt>[2],
-            actor: string,
-            opts: Parameters<typeof mintPublicUserJwt>[3],
-          ) => mintPublicUserJwt(
-            { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
-            r.identities[key].id,
-            profile,
-            { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
-          );
-          const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
-          if (r.operation === "prepare" || r.operation === "renew") {
+      const run = async () => {
+        let renewal: ManagerRenewalCompensation | undefined;
+        try {
+          const material = await issueRemoteManagerAuthority({
+            owner,
+            scope,
+            request,
+            issue: async ({ actors, request: r }) => {
+              const credential = async (
+                key: keyof RemoteManagerAuthorityRequest["identities"],
+                profile: Parameters<typeof mintPublicUserJwt>[2],
+                actor: string,
+                opts: Parameters<typeof mintPublicUserJwt>[3],
+              ) => mintPublicUserJwt(
+                { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+                r.identities[key].id,
+                profile,
+                { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
+              );
+              const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
+          if (r.operation === "prepare") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
               expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
             });
             // The executor receives the exact instance-scoped registration/maintenance surface under
-            // a separate nkey and bounded five-minute lifetime. The participant retains it for the
-            // immediate goalidx boot sweep and clean service deregistration. In-place remote renewal
-            // is not wired into Manager yet, so a long-running manager fails deregistration loud at
-            // expiry rather than falling back to an anonymous dial.
+            // a separate nkey and bounded five-minute lifetime. The prepare generation is used for
+            // registration; later generations are issued only after the current registration proof.
             credentials.executor = await credential("executor", "remote-manager", actors.executor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
               expiresInSeconds: 5 * 60,
@@ -538,18 +555,57 @@ export async function openAuthAuthorityPlane(opts: {
             );
             return { credentials };
           }
-          if (r.operation === "activate") {
-            const expectedProof = remoteManagerRegistrationProof(owner, r);
-            if (r.registrationProof !== expectedProof)
-              throw new EpEnvelopeError("permission-denied", "manager-service registration proof does not match this owner/lifecycle/artifact set");
-            // The serve JWT is issued from the registered-surface snapshot the participant
-            // returned from the branded local core path. That brand is process-local and cannot
-            // cross HTTP, so the host independently validates the deterministic proof + canonical
-            // artifact set and scopes the JWT to the already-registered instance rails. The grant
-            // rows are reconstructed from the canonical manager command set by the host protocol.
-            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
-            const observed = await gate.observe();
-             if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
+            if (r.operation === "activate" || r.operation === "renew") {
+              const kvm = new Kvm(remoteIssuer.nc);
+              const authKv = await kvm.open(epAuthBucket(space));
+              const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId: r.instanceId });
+              const observed = await gate.observe();
+            if (!observed) throw new EpEnvelopeError("failed-precondition", `manager-service ${r.operation} found no issuance gate`);
+            if (r.operation === "activate") {
+              const expectedProof = remoteManagerRegistrationProof(owner, r);
+              if (r.registrationProof !== expectedProof)
+                throw new EpEnvelopeError("permission-denied", "manager-service registration proof does not match this owner/lifecycle/artifact set");
+            } else {
+              const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
+              if (r.registrationProof !== expectedProof)
+                throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registered lifecycle");
+            }
+            const familyIssuance = new ManagerRenewalCompensation(authKv, gate, r.instanceId, r.requestId, opts.probeRenewalFault);
+            renewal = familyIssuance;
+            await familyIssuance.begin();
+            if (r.operation === "renew") {
+              credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
+                remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
+                expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+              });
+              credentials.executor = await credential("executor", "remote-manager", actors.executor, {
+                remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
+                expiresInSeconds: 5 * 60,
+              });
+            }
+            // Activation validates the participant-submitted canonical contract artifacts. Renewal
+            // accepts no artifacts from the participant: it re-authorizes the serve grant from the
+            // durable registered spec plus the content-addressed host store, under the current gate.
+            const store = r.operation === "renew" ? await contractStoreContext(remoteIssuer.nc, space) : undefined;
+            const serveGrant = r.operation === "activate"
+              ? reconstructRemoteManagerServeGrant(r, owner, actors.serve, observed)
+              : await authorizeServeGrant(await kvm.open(recordsBucket(space)), {
+                  space,
+                  endpoint: "manager",
+                  instanceId: r.instanceId,
+                  epoch: observed.processEpoch,
+                  holder: { owner },
+                  authority: { authorize: (endpoint, candidateOwner) => ({ authorized: endpoint === "manager" && candidateOwner === owner, revision: 0 }) },
+                  readProcessEpoch: async () => {
+                    const current = await gate.observe();
+                    if (!current) throw new Error("manager-service renewal issuance gate vanished");
+                    return current.processEpoch;
+                  },
+                  readClusterArtifact: async (digest) => {
+                    const bytes = await fetchContractArtifact(store!, contractRefToHex(digest));
+                    return bytes ? JSON.parse(new TextDecoder().decode(bytes)) : undefined;
+                  },
+                });
             credentials.serve = await mintPublicUserJwt(
               { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
               r.identities.serve.id,
@@ -558,14 +614,14 @@ export async function openAuthAuthorityPlane(opts: {
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
                 expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
-                endpointServe: reconstructRemoteManagerServeGrant(r, owner, actors.serve, observed),
-                serveIssuance: gate,
+                endpointServe: serveGrant,
+                serveIssuance: familyIssuance.wrap("serve"),
               },
             );
-            if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
+            await familyIssuance.checkpoint("after-serve-finalize");
             const sibling = async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
               const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: STANDING_RENEWABLE_TTL_SEC } : { expiresInSeconds: STANDING_RENEWABLE_TTL_SEC });
-              await commitSiblingIssuance(gate, observed, {
+              await commitSiblingIssuance(familyIssuance.wrap(key), observed, {
                 credentialId: rawDigest(issued.jwt).replace("sha256:", "sha256-"),
                 credentialKey: r.identities[key].id,
                 holderPrincipal: `${owner}.${actor}`,
@@ -582,18 +638,33 @@ export async function openAuthAuthorityPlane(opts: {
               return issued;
             };
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
+            await familyIssuance.checkpoint("after-goal-finalize");
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
-            return {
-              credentials,
-              nextRegistrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, {
-                registrationRevision: observed.registrationRevision,
-                processEpoch: observed.processEpoch,
-              }),
-            };
+            await familyIssuance.checkpoint("after-session-finalize");
+              return {
+                credentials,
+                nextRegistrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed),
+              };
+            }
+            return { credentials };
+          },
+        });
+          if (renewal) {
+            await renewal.beforeResponse();
+            await renewal.complete();
           }
-          return { credentials };
-        },
-      });
+          return material;
+        } catch (error) {
+          if (renewal) return renewal.compensate(error);
+          throw error;
+        }
+      };
+      // Activation and renewal issue the same deterministic endpoint-family JWTs and rows. Keep
+      // their atomic stage/commit sequences ordered per instance so a creator cannot lose its gate
+      // CAS after a later byte-identical reuser has already released the shared credential.
+      return request.operation === "activate" || request.operation === "renew"
+        ? serializeRenewal(request.instanceId, run)
+        : run();
     },
     validateRetainedAgent: async ({ owner, scope, request }) => {
       refuseIfFenced();

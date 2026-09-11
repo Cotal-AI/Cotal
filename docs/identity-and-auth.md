@@ -275,7 +275,19 @@ registration, contracts, status, endpoint rails, gate and credential family; it 
 write another owner or instance. It never exposes a signer, static provisioner credential, owner
 secret, raw stream/KV/consumer authority, or a generic credential-mint API. The host creates the
 public-nkey JWT material through the typed lifecycle-bound protocol: **prepare → activate →
-renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Each request is replay-safe and idempotent at its lifecycle/instance operation
+renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Renewal presents the
+host-authenticated current registration proof, accepts no caller contract artifacts, re-authorizes
+the serve grant from the durable registered surface, and returns the supervisor, five-minute
+executor, serve, goal-writer, and session-ledger credentials as one complete family. The manager
+accepts only a closed response bound to that request's id, lifecycle, identity family, owner, and
+proof. It schedules from the earliest member's normal 75% point, installs the proof and all five
+credentials atomically, and reconnects every standing holder onto them. For activation and renewal, the host records a durable
+request-scoped cleanup intent before finalizing the serve, goal-writer, or session-ledger row,
+including whether that request won the atomic row create or reused an identical prior issuance.
+If issuance cannot complete, it retains the ledger history and marks only rows that request created
+revoked. A revoke failure or interrupted ownership checkpoint stays as cleanup debt and blocks
+another renewal until the same rows reconcile. Each request is replay-safe and idempotent at its
+lifecycle/instance operation
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester

@@ -1,0 +1,32 @@
+{
+  "suite": [
+    "implementations/manager/smoke/remote-executor-renewal-stock.acceptance.ts"
+  ],
+  "guard": "stock cotal supervise renews the complete remote authority family before the initial five-minute executor expires, remains live through that exact expiry plus five seconds, and cleanly removes its registration",
+  "command": "pnpm --filter @cotal-ai/manager build && COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm probe:remote-authority-renewal:expired",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/remote-authority-renewal-stock.json",
+  "why": [
+    "The owner-native acceptance preserves the reviewed 4788 PID/start/cgroup signal and cleanup guards, carries the explicit arm through ambient COTAL stripping, and observes the real registry-pinned HTTPS authority exchange.",
+    "The expired arm records the initial executor expiry independently, requires a successful proof-preserving five-member renew before it, waits through the original expiry plus five seconds, then grades clean signal shutdown and exact registration removal. The early arm remains a no-renew control."
+  ],
+  "mutations": [
+    {
+      "name": "remote authority renewal scheduler is disabled",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (this.remoteAuthority) this.armRemoteAuthorityRenewal();",
+      "replace": "    if (this.remoteAuthority) void this.remoteAuthority;",
+      "expectRed": "a successful typed renew crossed HTTPS before the first executor expiry",
+      "cell": "a successful typed renew crossed HTTPS before the first executor expiry",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "renewed executor is validated but stale executor remains installed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.remoteExecutorCreds = fresh.executorCreds;",
+      "replace": "      void fresh.executorCreds;",
+      "expectRed": "stock supervisor cleanly deregisters without the expiry remedy",
+      "cell": "stock supervisor cleanly deregisters without the expiry remedy",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

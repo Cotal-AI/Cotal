@@ -1,0 +1,199 @@
+{
+  "suite": [
+    "implementations/manager/smoke/remote-authority-operations.smoke.ts"
+  ],
+  "guard": "Remote manager renewal accepts only the closed response for the exact captured request and atomically installs the proof plus all five credential holders before reconnect adoption",
+  "command": "pnpm smoke:remote-authority-operations",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/remote-authority-renewal-binding.json",
+  "why": [
+    "The response-binding mutations remove one exact coordinate check at a time. The broker-free suite supplies a still-live response from a different request and altered closed envelope coordinates, so proof stability cannot make an old response current.",
+    "The installation mutations leave one credential member stale. The suite observes the manager field or standing holder directly for supervisor, executor, serve, goal-writer, and session-ledger. The registration-proof assignment is intentionally not a mutation: renewal preserves the current proof, so removing that assignment is behaviorally identical and cannot discriminate without fabricating an invalid rotation.",
+    "The adoption mutations suppress one reconnect action at a time. The suite records endpoint reload and each direct holder reconnect independently, so validating or assigning a credential without adopting it is red."
+  ],
+  "mutations": [
+    {
+      "name": "renewal accepts a response from a different requestId",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      material.requestId !== request.requestId || material.registrationProof !== request.registrationProof ||",
+      "replace": "      material.registrationProof !== request.registrationProof ||",
+      "expectRed": "a still-live response from an earlier renewal request is refused",
+      "cell": "a still-live response from an earlier renewal request is refused"
+    },
+    {
+      "name": "renewal accepts unknown response fields",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "  if (material === null || typeof material !== \"object\" || Array.isArray(material) ||\n      Object.keys(material).sort().join(\",\") !== fields.sort().join(\",\"))\n    throw new Error(\"manager-service renewal returned a non-closed result\");\n",
+      "replace": "",
+      "expectRed": "unknown renewal result fields are refused",
+      "cell": "unknown renewal result fields are refused"
+    },
+    {
+      "name": "renewal accepts altered protocol version",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "  if (request.operation !== \"renew\" || material.v !== request.v || material.kind !== request.kind ||",
+      "replace": "  if (request.operation !== \"renew\" || material.kind !== request.kind ||",
+      "expectRed": "altered renewal protocol version is refused",
+      "cell": "altered renewal protocol version is refused"
+    },
+    {
+      "name": "renewal accepts altered result kind",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "  if (request.operation !== \"renew\" || material.v !== request.v || material.kind !== request.kind ||",
+      "replace": "  if (request.operation !== \"renew\" || material.v !== request.v ||",
+      "expectRed": "altered renewal result kind is refused",
+      "cell": "altered renewal result kind is refused"
+    },
+    {
+      "name": "renewal accepts a different identity family",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      !identitiesMatch)",
+      "replace": "      false)",
+      "expectRed": "a renewal response for a different identity family is refused",
+      "cell": "a renewal response for a different identity family is refused"
+    },
+    {
+      "name": "renewal accepts a different next registration proof",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      material.nextRegistrationProof !== request.registrationProof ||",
+      "replace": "      false ||",
+      "expectRed": "a renewal response with a different next proof is refused",
+      "cell": "a renewal response with a different next proof is refused"
+    },
+    {
+      "name": "renewal accepts an extra credential family member",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      Object.keys(material.credentials).sort().join(\",\") !== [...credentialNames].sort().join(\",\") ||",
+      "replace": "      !credentialNames.every((name) => name in material.credentials) ||",
+      "expectRed": "an extra renewal credential family member is refused",
+      "cell": "an extra renewal credential family member is refused"
+    },
+    {
+      "name": "renewal accepts an extra field inside one credential",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "        Object.keys(credential).sort().join(\",\") !== \"exp,jwt\" || typeof credential.jwt !== \"string\" ||",
+      "replace": "        typeof credential.jwt !== \"string\" ||",
+      "expectRed": "an extra field inside a renewal credential is refused",
+      "cell": "an extra field inside a renewal credential is refused"
+    },
+    {
+      "name": "fresh supervisor is not installed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.remoteSupervisorCreds = fresh.supervisorCreds;",
+      "replace": "      void fresh.supervisorCreds;",
+      "expectRed": "fresh supervisor credential was installed",
+      "cell": "fresh supervisor credential was installed"
+    },
+    {
+      "name": "fresh executor is not installed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.remoteExecutorCreds = fresh.executorCreds;",
+      "replace": "      void fresh.executorCreds;",
+      "expectRed": "fresh executor credential was installed",
+      "cell": "fresh executor credential was installed"
+    },
+    {
+      "name": "fresh serve credential is not installed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      serve.creds = fresh.serveCreds;",
+      "replace": "      void fresh.serveCreds;",
+      "expectRed": "fresh serve credential was installed",
+      "cell": "fresh serve credential was installed"
+    },
+    {
+      "name": "fresh goal-writer credential is not installed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.goalWriterCreds = fresh.goalWriterCreds;",
+      "replace": "      void fresh.goalWriterCreds;",
+      "expectRed": "fresh goal-writer credential field was installed",
+      "cell": "fresh goal-writer credential field was installed"
+    },
+    {
+      "name": "fresh goal-writer credential is not installed on its standing holder",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      goalWriter.creds = fresh.goalWriterCreds;",
+      "replace": "      void fresh.goalWriterCreds;",
+      "expectRed": "fresh goal-writer holder credential was installed",
+      "cell": "fresh goal-writer holder credential was installed"
+    },
+    {
+      "name": "fresh session-ledger credential is not installed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.sessionLedgerCreds = fresh.sessionLedgerCreds;",
+      "replace": "      void fresh.sessionLedgerCreds;",
+      "expectRed": "fresh session-ledger credential field was installed",
+      "cell": "fresh session-ledger credential field was installed"
+    },
+    {
+      "name": "fresh session-ledger credential is not installed on its standing holder",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      sessionLedger.creds = fresh.sessionLedgerCreds;",
+      "replace": "      void fresh.sessionLedgerCreds;",
+      "expectRed": "fresh session-ledger holder credential was installed",
+      "cell": "fresh session-ledger holder credential was installed"
+    },
+    {
+      "name": "supervisor endpoint does not adopt fresh credentials",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.ep.reloadCreds(),",
+      "replace": "        Promise.resolve(),",
+      "expectRed": "supervisor holder adopted the fresh credential",
+      "cell": "supervisor holder adopted the fresh credential"
+    },
+    {
+      "name": "serve holder does not reconnect onto fresh credentials",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        serve.nc.reconnect(),",
+      "replace": "        Promise.resolve(),",
+      "expectRed": "serve holder adopted the fresh credential",
+      "cell": "serve holder adopted the fresh credential"
+    },
+    {
+      "name": "goal-writer holder does not reconnect onto fresh credentials",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        goalWriter.nc.reconnect(),",
+      "replace": "        Promise.resolve(),",
+      "expectRed": "goal-writer holder adopted the fresh credential",
+      "cell": "goal-writer holder adopted the fresh credential"
+    },
+    {
+      "name": "session-ledger holder does not reconnect onto fresh credentials",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        sessionLedger.nc.reconnect(),",
+      "replace": "        Promise.resolve(),",
+      "expectRed": "session-ledger holder adopted the fresh credential",
+      "cell": "session-ledger holder adopted the fresh credential"
+    },
+    {
+      "name": "supervisor reconnect begins before its credential assignment",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.remoteSupervisorCreds = fresh.supervisorCreds;\n      this.remoteExecutorCreds = fresh.executorCreds;\n      remote.registrationProof = fresh.registrationProof;\n      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),",
+      "replace": "      await this.ep.reloadCreds();\n      this.remoteSupervisorCreds = fresh.supervisorCreds;\n      this.remoteExecutorCreds = fresh.executorCreds;\n      remote.registrationProof = fresh.registrationProof;\n      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        Promise.resolve(),",
+      "expectRed": "supervisor adoption saw fresh credential",
+      "cell": "supervisor adoption saw fresh credential"
+    },
+    {
+      "name": "serve reconnect begins before its credential assignment",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),",
+      "replace": "      await serve.nc.reconnect();\n      serve.creds = fresh.serveCreds;\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        Promise.resolve(),",
+      "expectRed": "serve adoption saw fresh credential",
+      "cell": "serve adoption saw fresh credential"
+    },
+    {
+      "name": "goal-writer reconnect begins before its credential assignments",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        goalWriter.nc.reconnect(),",
+      "replace": "      await goalWriter.nc.reconnect();\n      this.goalWriterCreds = fresh.goalWriterCreds;\n      goalWriter.creds = fresh.goalWriterCreds;\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        Promise.resolve(),",
+      "expectRed": "goal adoption saw fresh field",
+      "cell": "goal adoption saw fresh field"
+    },
+    {
+      "name": "session-ledger reconnect begins before its credential assignments",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        goalWriter.nc.reconnect(),\n        sessionLedger.nc.reconnect(),",
+      "replace": "      await sessionLedger.nc.reconnect();\n      this.sessionLedgerCreds = fresh.sessionLedgerCreds;\n      sessionLedger.creds = fresh.sessionLedgerCreds;\n      committed = true;\n\n      const adopted = await Promise.allSettled([\n        this.ep.reloadCreds(),\n        serve.nc.reconnect(),\n        goalWriter.nc.reconnect(),\n        Promise.resolve(),",
+      "expectRed": "session adoption saw fresh field",
+      "cell": "session adoption saw fresh field"
+    }
+  ]
+}

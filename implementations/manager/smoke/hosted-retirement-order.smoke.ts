@@ -25,6 +25,8 @@ const base = {
   lifecycleUid: managerUid,
   identities,
   supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
+  registrationProof: `sha256:${"a".repeat(64)}`,
+  renew: async () => { throw new Error("not used by retirement ordering smoke"); },
   serveGrant: {} as never,
   agentBearerExchangeUrl: "https://auth.example.test",
   mintSessionServing: async () => "",

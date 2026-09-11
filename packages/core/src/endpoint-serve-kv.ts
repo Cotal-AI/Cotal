@@ -22,21 +22,28 @@ import type { EpIssuanceGate, EpServeLedgerRow } from "./endpoint-service.js";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** Create a credential-ledger row CREATE-ONLY, idempotent iff BYTE-IDENTICAL: staging a key that
- *  already exists succeeds only when the stored bytes match (a retry of the SAME issuance), and
+/** Create a credential-ledger row CREATE-ONLY, returning internally whether this call won the atomic
+ *  create or reused an existing byte-identical row. Staging a key that already exists succeeds only
+ *  when the stored bytes match (a retry of the SAME issuance), and
  *  CONFLICTs when they differ (a staged name never silently re-binds the row revocation/audit
  *  relies on). A create loss whose cause is not a CAS conflict fails the mint CLOSED. */
-export async function createRowByteIdempotent(kv: KV, key: string, value: unknown): Promise<void> {
+async function createRowByteIdempotentOwned(kv: KV, key: string, value: unknown): Promise<"created" | "reused"> {
   const bytes = JSON.stringify(value);
   try {
     await kv.create(key, enc.encode(bytes));
+    return "created";
   } catch (e) {
     if (!isRawCasLoss(e))
       throw new EpEnvelopeError("unavailable", `creating the row ${key} is ambiguous; the mint fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
     const existing = await kv.get(key);
     if (!existing || existing.operation !== "PUT" || dec.decode(existing.value) !== bytes)
       throw new EpEnvelopeError("conflict", `the row ${key} exists with FOREIGN content; a staged name never silently re-binds (SPEC 13.1)`);
+    return "reused";
   }
+}
+
+export async function createRowByteIdempotent(kv: KV, key: string, value: unknown): Promise<void> {
+  await createRowByteIdempotentOwned(kv, key, value);
 }
 
 /** CAS a credential-ledger row `active` -> `revoked` at its observed revision (retrying on a CAS
@@ -97,10 +104,31 @@ export async function readEndpointGateGeneration(
  *  and the manager's endpoint-serve wiring drive ONE fence; the auth `kvServeIssuanceGate` wraps
  *  this by unwrapping its branded `SessionAuthStore` to `(kv, space)`. `space` is carried on the
  *  observed gate for the core mint's space-bond defense (the KV IS the space bucket). */
-export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: string; instanceId: string }): EpIssuanceGate {
+export function serveIssuanceGateKv(
+  kv: KV,
+  space: string,
+  args: { endpoint: string; instanceId: string },
+): EpIssuanceGate & { stageOwned: (row: EpServeLedgerRow) => Promise<"created" | "reused"> } {
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
+  const stageOwned = async (row: EpServeLedgerRow): Promise<"created" | "reused"> => {
+    // The staged row must BE this gate's instance — a foreign endpoint/instance row through this
+    // adapter is a caller bug, never silently redirected into another family.
+    if (row.endpoint !== endpoint || row.lifecycleUid !== instanceId)
+      throw new EpEnvelopeError("failed-precondition", `the staged serve row names ${row.endpoint}/${row.lifecycleUid} but this gate serves ${endpoint}/${instanceId}; a row never crosses families (SPEC 13.1)`);
+    if (typeof row.exp !== "number")
+      throw new EpEnvelopeError("failed-precondition", `the staged serve row for ${endpoint}/${instanceId} carries no expiry; the normative ledger row requires one (SPEC 13.1)`);
+    const ledgerRow: CredentialLedgerRow = {
+      credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
+      lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
+    };
+    const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
+    // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
+    // this trusted path would itself refuse to read never lands durably.
+    parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
+    return createRowByteIdempotentOwned(kv, rowKey, ledgerRow);
+  };
   return {
     observe: async () => {
       const entry = await kv.get(key);
@@ -119,23 +147,8 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
         ...(gate.op !== undefined ? { op: gate.op } : {}),
       };
     },
-    stage: async (row: EpServeLedgerRow) => {
-      // The staged row must BE this gate's instance — a foreign endpoint/instance row through this
-      // adapter is a caller bug, never silently redirected into another family.
-      if (row.endpoint !== endpoint || row.lifecycleUid !== instanceId)
-        throw new EpEnvelopeError("failed-precondition", `the staged serve row names ${row.endpoint}/${row.lifecycleUid} but this gate serves ${endpoint}/${instanceId}; a row never crosses families (SPEC 13.1)`);
-      if (typeof row.exp !== "number")
-        throw new EpEnvelopeError("failed-precondition", `the staged serve row for ${endpoint}/${instanceId} carries no expiry; the normative ledger row requires one (SPEC 13.1)`);
-      const ledgerRow: CredentialLedgerRow = {
-        credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
-        lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
-      };
-      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
-      // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
-      // this trusted path would itself refuse to read never lands durably.
-      parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
-      await createRowByteIdempotent(kv, rowKey, ledgerRow);
-    },
+    stage: async (row: EpServeLedgerRow) => { await stageOwned(row); },
+    stageOwned,
     commit: async (expectedRevision: number) => {
       const entry = await kv.get(key);
       if (!entry || entry.operation !== "PUT" || entry.revision !== expectedRevision) return false;
