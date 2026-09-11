@@ -83,6 +83,18 @@ try {
   write("scripts/direct.mjs", "console.log('direct');\n");
   write("bin/smoke/direct-script.smoke.ts",
     'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/aliased-launcher.smoke.ts",
+    'import { spawnSync as run } from "node:child_process";\n' +
+    'run(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/bound-entry.smoke.ts",
+    'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+    'execFileSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/node-by-name.smoke.ts",
+    'spawnSync("node", [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/bound-entry-unused.smoke.ts",
+    'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+    'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+    'console.log(ENTRY);\n');
   write("bin/smoke/mentions-script.smoke.ts",
     'const note = "scripts/direct.mjs";\n');
   write("bin/smoke/unused-root.smoke.ts",
@@ -128,9 +140,25 @@ try {
   result = run("direct-script");
   check("a suite is gradable when it launches the exact mutated script path", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
+  config("aliased-launcher", { suite: ["bin/smoke/aliased-launcher.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("aliased-launcher");
+  check("a launcher imported under an alias still witnesses the script it runs", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("bound-entry", { suite: ["bin/smoke/bound-entry.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("bound-entry");
+  check("a target bound to a const before the launcher call still witnesses it", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("node-by-name", { suite: ["bin/smoke/node-by-name.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("node-by-name");
+  check("spawning \"node\" by name is the same witness as process.execPath", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
   config("mentions-script", { suite: ["bin/smoke/mentions-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("mentions-script");
   check("a quoted script path without an invocation is refused", result.status !== 0 && /REFUSED mentions-script/.test(result.stderr), report(result));
+
+  config("bound-entry-unused", { suite: ["bin/smoke/bound-entry-unused.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("bound-entry-unused");
+  check("a name bound to the target but never passed to a launcher is still refused", result.status !== 0 && /REFUSED bound-entry-unused/.test(result.stderr), report(result));
 
   config("malformed-assembles", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: "packages/seat", mutations: [mutation("packages/seat/package.json")] });
   result = run("malformed-assembles");

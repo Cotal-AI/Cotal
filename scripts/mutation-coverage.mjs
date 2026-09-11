@@ -58,10 +58,30 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
 const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
 const referencesRoot = (source, root) =>
   new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(source);
+const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
+const launcherNames = (source) => {
+  const names = new Set(LAUNCHERS);
+  for (const m of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g)) {
+    for (const part of m[1].split(",")) {
+      const alias = part.match(/^\s*(\w+)\s+as\s+(\w+)\s*$/);
+      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);
+    }
+  }
+  return [...names];
+};
+const boundNames = (source, basename) =>
+  [...source.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=[^;\\n]{0,300}${quoted(basename)}`, "g"))].map((m) => m[1]);
 const invokesFile = (source, file) => {
   const basename = file.split("/").at(-1);
   if (basename === undefined || !referencesRoot(source, file)) return false;
-  return new RegExp(`(?:spawnSync|spawn|execFileSync|execFile)\\s*\\([\\s\\S]{0,500}${quoted(basename)}`).test(source);
+  const call = `(?:${launcherNames(source).join("|")})\\s*\\(`;
+  if (new RegExp(`${call}[\\s\\S]{0,500}${quoted(basename)}`).test(source)) return true;
+  const names = boundNames(source, basename);
+  if (names.length === 0) return false;
+  for (const m of source.matchAll(new RegExp(`${call}((?:[^()]|\\([^()]*\\))*)\\)`, "g"))) {
+    if (names.some((name) => new RegExp(`\\b${name}\\b`).test(m[1]))) return true;
+  }
+  return false;
 };
 
 const validStringArray = (value) =>
