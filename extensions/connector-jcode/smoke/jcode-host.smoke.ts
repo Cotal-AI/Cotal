@@ -492,7 +492,10 @@ try {
   });
   let variantOnlyErr = "";
   variantOnly.stderr?.on("data", (chunk: Buffer) => (variantOnlyErr += chunk.toString()));
-  await waitFor("variant-only mesh presence", () => announced.has("variantonlypeer") ? true : undefined);
+  await Promise.race([
+    once(variantOnly, "exit"),
+    waitFor("variant-only mesh presence", () => announced.has("variantonlypeer") ? true : undefined),
+  ]);
   const variantOnlyRequests = readJsonLines<{ ev: string; frame?: { req?: string; effort?: string; no_reply?: boolean } }>(variantOnlyLog)
     .filter((entry) => entry.ev === "request");
   const variantOnlyRuntimeAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "get_runtime_info");
@@ -500,7 +503,7 @@ try {
   const variantOnlyTurnAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "send_message" && !entry.frame?.no_reply);
   check(
     "variant without an explicit model verifies its runtime route before applying effort",
-    variantOnlyRuntimeAt >= 0 && variantOnlyEffortAt > variantOnlyRuntimeAt &&
+    announced.has("variantonlypeer") && variantOnlyRuntimeAt >= 0 && variantOnlyEffortAt > variantOnlyRuntimeAt &&
       variantOnlyRequests[variantOnlyEffortAt]?.frame?.effort === "high" && variantOnlyTurnAt > variantOnlyEffortAt,
     { variantOnlyRuntimeAt, variantOnlyEffortAt, variantOnlyTurnAt, variantOnlyErr },
   );

@@ -38,8 +38,8 @@
     {
       "name": "Jcode host refuses the launch when the provider rejects the tier",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        throw jcodeEffortRefusal(error, config.variant, {",
-      "replace": "        error;\n        if (false) throw jcodeEffortRefusal(error, config.variant, {",
+      "find": "        throw jcodeEffortRefusal(error, config.variant, {\n          model: effectiveModel!,\n          provider: route!.provider,\n          apiMethod: route!.api_method,\n        });",
+      "replace": "        void error;",
       "expectRed": "a tier the provider refuses ends the launch",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
