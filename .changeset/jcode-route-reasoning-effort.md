@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/connector-jcode": patch
+"@cotal-ai/connector-core": patch
 ---
 
 Verify the active Jcode model and provider route before applying `--variant`. A route that accepts
