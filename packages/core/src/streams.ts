@@ -404,13 +404,14 @@ async function awaitTtlCanaryExpiry(
  * in-memory copy. A file-store metadata fault can therefore report UPDATE success and the requested
  * `max_age` while the store rolls back and never starts age enforcement.
  *
- * Before an update, this writes one message on a reserved KV subject, then waits for the subject-filtered
- * stream state to report it gone within `max_age` plus fixed grace. Publishing first is intentional: the
- * canary is durable evidence of an interrupted or false-green update, so a later matching INFO pass cannot
- * skip it. A clean matching bucket has no canary and stays a fast read-only no-op. The transition is proof
- * of enforcement rather than config: the false-green store leaves the canary present and causes a named
- * {@link TtlPersistenceError}, which `cotal up` surfaces. Successful canaries self-delete through the
- * policy they verify. */
+ * Before an update, this writes a durable marker on a reserved KV subject so an interrupted or false-green
+ * attempt cannot disappear behind a later matching INFO read. After the update, it writes the enforcement
+ * canary on that same subject and waits for subject-filtered stream state to report it gone within
+ * `max_age` plus fixed grace. The post-update write is the timed proof even when the prior TTL was shorter
+ * and expired the marker during the update. A clean matching bucket has no canary and stays a fast read-only
+ * no-op. The transition is proof of enforcement rather than config: the false-green store leaves the canary
+ * present and causes a named {@link TtlPersistenceError}, which `cotal up` surfaces. Successful canaries
+ * self-delete through the policy they verify. */
 export async function reconcileBucketTtl(
   jsm: JetStreamManager,
   js: Pick<JetStreamClient, "publish">,
@@ -427,6 +428,7 @@ export async function reconcileBucketTtl(
     // has recovered, then prove it. Never accept the matching in-memory config on its own.
     const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs);
     await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
+    await js.publish(canarySubject, new TextEncoder().encode("cotal ttl enforcement canary"));
     await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);
     return undefined;
   }
@@ -446,6 +448,7 @@ export async function reconcileBucketTtl(
   // written to remove. (Semantics confirmed at the NATS source rather than reasoned from our seam.)
   if ((after.config.duplicate_window ?? 0) > wantNs)
     throw new Error(`TTL reconcile left ${streamName} inconsistent: duplicate_window is ${after.config.duplicate_window}ns, which exceeds max_age ${wantNs}ns (a conforming server rejects this combination, so the update was applied partially)`);
+  await js.publish(canarySubject, new TextEncoder().encode("cotal ttl enforcement canary"));
   await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);
   return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };
 }
