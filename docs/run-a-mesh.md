@@ -50,21 +50,20 @@ is a topology choice, not a singleton invariant. The supported split is:
 ```bash
 # broker host (project root that owns the generated conf, pidfiles, and logs)
 cotal up --detach --host 0.0.0.0 --space main
-# stdout: `✓ running in the background: nats-server (pid …), delivery daemon, manager`
-cotal down manager   # after manager serving, so this host keeps broker + delivery
+# wait for stdout: `✓ running in the background: ... manager`
+cotal down manager   # so this host keeps broker + delivery
 
 # manager host (registered remote mesh, same space)
 cotal meshes add --server nats://broker.example:4222 --root ~/meshes/main
 cotal supervise --space main --server nats://broker.example:4222
 ```
 
-`cotal up --detach` prints `✓ running in the background:` with `manager` listed once the
-manager pidfile is live. That is not `✓ manager up`. `✓ manager up` is supervise's post-start
-line in the project `.cotal/manager.<spaceKey>.log`. Wait for that log line, or for
-`cotal status --components` to report `manager serving`, before `cotal down manager` on the
-broker host. Stopping earlier can leave the endpoint governance slot held until the holder's
-gate reopens past the stamp (the successor's boot heal, or
-[`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot cannot run). See
+Wait for `✓ running in the background:` with `manager` listed before `cotal down manager` on the
+broker host. That is the detach launcher's stdout, emitted once the manager pidfile is live. It
+is not `✓ manager up`. `✓ manager up` is supervise's post-start line in the project
+`.cotal/manager.<spaceKey>.log`. Stopping the manager before that detach line can leave the
+endpoint governance slot held until the holder's gate reopens past the stamp (the successor's
+boot heal, or [`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot cannot run). See
 [Gate recovery](#gate-recovery). Broker-only `up` remains a product request.
 
 Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs

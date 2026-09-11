@@ -81,19 +81,22 @@ check(
     control.includes("cotal supervise"),
 );
 check(
-  "claim 2: wait signal is manager serving / log line, not detach stdout",
-  runAMesh.includes("✓ running in the background:") &&
+  "claim 2: wait signal is detach stdout, not supervise's manager-up line",
+  runAMesh.includes("Wait for `✓ running in the background:` with `manager` listed") &&
     runAMesh.includes("manager pidfile is live") &&
-    runAMesh.includes("That is not `✓ manager up`") &&
+    runAMesh.includes("is not `✓ manager up`") &&
     runAMesh.includes("`.cotal/manager.<spaceKey>.log`") &&
-    runAMesh.includes("`cotal status --components` to report `manager serving`") &&
-    !runAMesh.includes("Wait for `✓ manager up` before `cotal down manager`") &&
+    !runAMesh.includes("Wait for `✓ manager up`") &&
+    !runAMesh.includes("`cotal status --components` to report `manager serving`") &&
+    cli.includes("wait for `cotal up --detach` to") &&
+    cli.includes("print `✓ running in the background:` with `manager` listed") &&
     cli.includes("pidfile liveness, not `✓ manager up`") &&
-    control.includes("`manager serving`"),
+    control.includes("after `✓ running in the background:` lists"),
 );
 check(
   "claim 2: detach summary and ensureManager are pidfile-live; supervise prints manager up after start",
   upReport.includes("return `✓ running in the background: ${components.join(\", \")} - stop with: cotal down`;") &&
+    managerProc.includes('if (state === "alive") return { running: true }') &&
     /startManagerDetached\(o\);\n  return \{ running: true \};/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
     supervise.includes('c.green("✓ manager up")'),
@@ -150,12 +153,16 @@ check(
     runAMesh.includes("examples of process models") &&
     runAMesh.includes("Type=simple") &&
     runAMesh.includes("nats in the unit's cgroup") &&
+    runAMesh.includes("does not move nats out of that cgroup") &&
+    runAMesh.includes("new process group, not a new systemd cgroup") &&
     runAMesh.includes("Neither trade is universal from") &&
     runAMesh.includes("`Type=simple` alone") &&
     runAMesh.includes("KillMode=control-group") &&
+    runAMesh.includes("this CLI does not ship that escape") &&
     runAMesh.includes("`cotal status --components` liveness check, not a") &&
     runAMesh.includes("`--detach` launcher") &&
-    !runAMesh.includes("nats is orphaned outside the cgroup"),
+    !runAMesh.includes("nats is orphaned outside the cgroup") &&
+    !runAMesh.includes("oneshot + `--detach` launcher"),
 );
 
 console.log(`SPLIT TOPOLOGY DOCS: ${pass}/${pass + fail}`);

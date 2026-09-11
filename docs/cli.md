@@ -181,12 +181,11 @@ per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory 
 `--server`, it auto-selects a free port if the default address is taken; an explicit `--server`
 stays fail-loud on collision. `--detach` also brings up the control plane (delivery daemon in auth
 mode, then the manager). There is no broker-only mode: a local manager still starts, even on a host
-you intend to leave as broker + delivery. For a split topology, `cotal up --detach` prints
-`✓ running in the background:` with `manager` listed (pidfile liveness, not `✓ manager up`).
-Wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, or for
-`cotal status --components` to report `manager serving`, then `cotal down manager` on that
+you intend to leave as broker + delivery. For a split topology, wait for `cotal up --detach` to
+print `✓ running in the background:` with `manager` listed, then `cotal down manager` on that
 host and run [`supervise`](#supervise) against the remote broker; see
-[Run a mesh](run-a-mesh.md). The `-f` form is a [manifest deploy](#manifest-deploys).
+[Run a mesh](run-a-mesh.md). That stdout is pidfile liveness, not `✓ manager up` (supervise's
+post-start line in `.cotal/manager.<spaceKey>.log`). The `-f` form is a [manifest deploy](#manifest-deploys).
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
