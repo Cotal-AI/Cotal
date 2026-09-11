@@ -25,7 +25,7 @@
       "name": "Jcode capability classification ignores the stable invalid_request code",
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "    error.code === \"invalid_request\" &&",
-      "replace": "    typeof error.code === \"string\" &&",
+      "replace": "    error.code !== \"disconnected\" &&",
       "expectRed": "a different Harness code with copied capability text stays a generic refusal"
     },
     {
