@@ -71,15 +71,14 @@ export class LegacyPtyRuntime implements Runtime {
     const confirmMatcher = spec.confirm ? new StartupConfirmMatcher(spec.confirm) : undefined;
     let confirmTimer: ReturnType<typeof setTimeout> | undefined;
     if (confirmMatcher) {
-      const confirmTimeoutMs = Number(spec.env?.COTAL_CONFIRM_TIMEOUT_MS ?? CONFIRM_TIMEOUT_MS);
       confirmTimer = setTimeout(() => {
         if (!alive) return;
-        const message = unmatchedConfirmMessage(confirmMatcher.prompt, confirmTimeoutMs);
+        const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
         term.write(`\r\n${message}\r\n`);
         const b = Buffer.from(`\r\n${message}\r\n`, "utf8");
         for (const fn of dataSubs) fn(b);
         proc.kill(process.platform === "win32" ? undefined : "SIGTERM");
-      }, confirmTimeoutMs);
+      }, CONFIRM_TIMEOUT_MS);
     }
 
     proc.onData((d) => {

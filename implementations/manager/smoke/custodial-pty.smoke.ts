@@ -135,7 +135,10 @@ const delay = Number(process.env.PROMPT_DELAY_MS ?? "0");
 let gateVisible = false;
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
-setTimeout(() => { gateVisible = true; process.stdout.write(prompt); }, delay);
+setTimeout(() => {
+  process.stdout.write(prompt.slice(0, 9));
+  setTimeout(() => { gateVisible = true; process.stdout.write(prompt.slice(9)); }, 25);
+}, delay);
 process.stdin.on("data", (chunk) => {
   appendFileSync(sink, chunk);
   if (gateVisible && chunk.includes(13)) process.stdout.write("\\r\\nNORMAL INPUT\\r\\n");
@@ -170,7 +173,7 @@ setInterval(() => {}, 1_000);
   const noPrompt = rt.spawn("no prompt", {
     command: process.execPath,
     args: ["-e", "process.stdin.setRawMode?.(true);process.stdin.resume();process.stdin.on('data',c=>require('node:fs').appendFileSync(process.env.SINK,c));setInterval(()=>{},1000)"],
-    env: { PATH: process.env.PATH ?? "", SINK: noPromptSink, COTAL_CONFIRM_TIMEOUT_MS: "7000" },
+    env: { PATH: process.env.PATH ?? "", SINK: noPromptSink },
     confirm: "Enter to confirm",
   }, process.cwd());
   await wait(5_750);
@@ -182,7 +185,7 @@ setInterval(() => {}, 1_000);
   const unmatched = rt.spawn("unmatched prompt", {
     command: process.execPath,
     args: ["-e", "process.stdin.setRawMode?.(true);process.stdin.resume();setInterval(()=>{},1000)"],
-    env: { PATH: process.env.PATH ?? "", COTAL_CONFIRM_TIMEOUT_MS: "250" },
+    env: { PATH: process.env.PATH ?? "" },
     confirm: "Enter to confirm",
   }, process.cwd());
   const unmatchedSession = unmatched.attach();
@@ -191,7 +194,7 @@ setInterval(() => {}, 1_000);
   await unmatched.waitForExit();
   check(
     "unmatched prompt: the seat fails bounded with the connector-owned prompt named",
-    unmatchedOutput.includes('startup confirmation failed: prompt "Enter to confirm" did not appear within 250ms'),
+    unmatchedOutput.includes('startup confirmation failed: prompt "Enter to confirm" did not appear within 15000ms'),
     unmatchedOutput,
   );
   unmatchedOff();
