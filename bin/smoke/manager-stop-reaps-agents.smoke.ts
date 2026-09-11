@@ -50,12 +50,13 @@
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeScratch } from "./_scratch.js";
 
 // Seat-env hygiene BEFORE any cotal import: whatever runs this suite may itself be a managed
 // session whose COTAL_* names a live mesh; nothing may leak into the rig or its children.
-const home = mkdtempSync(join(tmpdir(), "cotal-964-home-"));
+const scratch = makeScratch("cotal-964-scratch-");
+const home = mkdtempSync(join(scratch, "home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
@@ -63,7 +64,7 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
 const { createSpaceAuth, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, parseCommandArgs, probeConnect, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
-const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, saveSpaceAuth, spaceSegment } = await import("@cotal-ai/workspace");
+const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, saveSpaceAuth, spaceSegment, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
@@ -119,7 +120,7 @@ const SPACE = "reap964";
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
 const REPO = join(import.meta.dirname, "..", "..");
 
-const base = mkdtempSync(join(tmpdir(), "cotal-964-"));
+const base = mkdtempSync(join(scratch, "rig-"));
 const root = join(base, "root");
 const pidDir = join(base, "pids");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -214,7 +215,7 @@ try {
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
   const auth = await createSpaceAuth(SPACE);
   saveSpaceAuth(authDir(root), auth);
-  brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}964-js-`));
+  brokerStore = mkdtempSync(join(scratch, `${SMOKE_BROKER_TOKEN}964-js-`));
   const conf = join(base, "server.conf");
   writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: brokerStore, host: "127.0.0.1" }));
   brokerProc = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
@@ -228,6 +229,11 @@ try {
   must("the authed broker is serving", serving, { server: SERVER });
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: SPACE, server: SERVER, root, mode: "auth", ts: new Date().toISOString() });
+  // Both managers deliberately use different runtime/workspace roots, but credential renewal and
+  // the one delivery daemon must share ONE signing/credential authority. #1447 now challenges this
+  // identity at start and renewal time, so make the intended composition explicit instead of
+  // letting mgr2 silently derive a second filesystem store from rootB.
+  const sharedSecretStore = workspaceSecretStore(root);
 
   // The REAL delivery daemon, co-located with the broker as in a live stack (a direct daemon run,
   // never `up`): on an auth mesh the manager's deprovision/re-registration verify-evicts through
@@ -264,7 +270,7 @@ try {
   );
 
   // ── SPARE phase: one live seat, then a plain manager stop ─────────────────────────────────────
-  mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
+  mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root, secretStore: sharedSecretStore });
   await mgr1.start();
   await spawnSeat("seatA");
   must("seat A spawned through the manager (the throwaway connector built its launch)", optsByName.has("seatA"));
@@ -294,7 +300,7 @@ try {
   writeFileSync(join(rootB, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: worker\nsubscribe: []\n---\nA supervised seat that exists to be reaped.\n");
   saveSpaceAuth(authDir(rootB), auth);
   recordMesh({ space: SPACE, server: SERVER, root: rootB, mode: "auth", ts: new Date().toISOString() });
-  mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: rootB });
+  mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: rootB, secretStore: sharedSecretStore });
   await mgr2.start();
   must("a second manager starts on a separate root", true);
   const prev = process.cwd();
@@ -337,6 +343,7 @@ try {
   if (daemon) await killAndAwaitExit(daemon, "SIGKILL");
   if (brokerProc) await killAndAwaitExit(brokerProc, "SIGKILL");
   for (const d of [base, home, brokerStore]) if (d) rmSync(d, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
   releaseBroker?.();
   console.log("manager-stop-reap: finally-complete");
 }

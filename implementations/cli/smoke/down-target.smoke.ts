@@ -7,15 +7,24 @@
  *
  * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
  * into the registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh
- * root's web.pid. Run: pnpm smoke:down-target
+ * root's web.pid. The same public `down()` surface also proves both no-token manager policy branches
+ * and the pinned-mismatch refusal. This existing CI-selected suite remains the integration owner.
+ * Run: pnpm smoke:down-target
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
-import { probeLiveness, defaultStartToken, type LocalProcess } from "@cotal-ai/workspace";
+import {
+  canonicalLocalProcessPath,
+  defaultStartToken,
+  MANAGER_PIDFILE,
+  probeLiveness,
+  type LocalProcess,
+  writeIdentityPin,
+} from "@cotal-ai/workspace";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
@@ -87,6 +96,103 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
 const run = (positionals: string[], values: Record<string, string | boolean> = {}) =>
   down({ values, positionals, raw: [] });
 
+type LegacyManagerStop = {
+  managerAlive: boolean;
+  agentAlive: boolean;
+  pidfilePreserved: boolean;
+  pinPreserved?: boolean;
+  managerDecision?: string;
+  warning: string;
+};
+
+/** Drive the public bare-down manager branch with a live planted process record. */
+async function stopPlantedManager(withAgents: boolean, pin: "legacy" | "mismatch"): Promise<LegacyManagerStop> {
+  const root = mkdtempSync(join(tmpdir(), `cotal-${pin}-manager-${withAgents ? "reap" : "spare"}-`));
+  mkdirSync(join(root, ".cotal"), { recursive: true });
+  const agent = spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{}, 1000);"],
+    { stdio: "ignore" },
+  );
+  spawnedChildren.push(agent);
+  assert.ok(agent.pid, "legacy manager fixture must have an agent pid");
+  const managerProgram = [
+    "import {writeFileSync} from 'node:fs';",
+    "let stopping=false;",
+    "process.on('SIGTERM',async()=>{",
+    " if(stopping)return; stopping=true;",
+    " try {",
+    "  const {consumeManagerShutdownIntent}=await import(process.env.WORKSPACE_ENTRY);",
+    "  const decision=consumeManagerShutdownIntent({root:process.env.FIXTURE_ROOT,space:'main'});",
+    "  writeFileSync(process.env.DECISION_PATH,JSON.stringify(decision));",
+    "  if(decision.withAgents)process.kill(Number(process.env.AGENT_PID),'SIGTERM');",
+    "  setTimeout(()=>process.exit(0),100);",
+    " } catch(error) { writeFileSync(process.env.DECISION_PATH,String(error?.stack??error)); process.exit(2); }",
+    "});",
+    "setInterval(()=>{},1000);",
+  ].join("");
+  const decisionPath = join(root, "manager-decision.json");
+  const workspaceEntry = new URL("../../../packages/workspace/dist/index.js", import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", managerProgram, "supervise"],
+    { cwd: prevCwd, env: { ...process.env, FIXTURE_ROOT: root, AGENT_PID: String(agent.pid), DECISION_PATH: decisionPath, WORKSPACE_ENTRY: workspaceEntry }, stdio: "ignore" },
+  );
+  spawnedChildren.push(child);
+  assert.ok(child.pid, "legacy manager fixture must have a manager pid");
+  const context = { root, space: "main" };
+  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, context);
+  writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+  const pinPath = `${pidPath}.identity`;
+  if (pin === "mismatch") writeFileSync(pinPath, `${child.pid} 1`, { mode: 0o600 });
+  else writeIdentityPin(pidPath, child.pid, () => undefined); // Windows/ps-less host: honest no-pin shape
+
+  let warning = "";
+  const originalError = console.error;
+  const originalExitCode = process.exitCode;
+  const cwd = process.cwd();
+  try {
+    process.exitCode = undefined;
+    process.chdir(root);
+    console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
+    await sleep(100); // the child must install its SIGTERM handler before down can signal it
+    try { await run([], withAgents ? { "with-agents": true } : {}); }
+    catch (error) { warning += `${(error as Error).message}\n`; }
+  } finally {
+    console.error = originalError;
+    process.chdir(cwd);
+  }
+
+  for (let i = 0; i < 100 && alive(child.pid); i++) await sleep(20);
+  if (withAgents) for (let i = 0; i < 100 && alive(agent.pid); i++) await sleep(20);
+
+  const result = {
+    managerAlive: alive(child.pid),
+    agentAlive: alive(agent.pid),
+    pidfilePreserved: existsSync(pidPath),
+    pinPreserved: pin === "mismatch" ? existsSync(pinPath) : undefined,
+    managerDecision: existsSync(decisionPath) ? readFileSync(decisionPath, "utf8") : undefined,
+    warning,
+  };
+  process.exitCode = originalExitCode;
+  if (result.managerAlive) {
+    try { process.kill(child.pid, "SIGKILL"); } catch { /* raced to exit */ }
+    for (let i = 0; i < 100 && alive(child.pid); i++) await sleep(20);
+  }
+  if (alive(agent.pid)) {
+    try { process.kill(agent.pid, "SIGKILL"); } catch { /* raced to exit */ }
+    for (let i = 0; i < 100 && alive(agent.pid); i++) await sleep(20);
+  }
+  for (const ownedChild of [child, agent]) {
+    if (ownedChild.pid && !alive(ownedChild.pid)) {
+      const owned = spawnedChildren.indexOf(ownedChild);
+      if (owned !== -1) spawnedChildren.splice(owned, 1);
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+  return result;
+}
+
 const entry = (space: string, root: string) =>
   ({ space, server: "nats://127.0.0.1:4222", root, mode: "open" as const, ts: "2026-07-27T00:00:00.000Z" });
 
@@ -116,6 +222,8 @@ try {
   });
   check("manifest cache round-trips rootedAt", cached.length === 1 && cached[0].rootedAt === "target");
   registry.register(webProcess);
+  const managerProcess: LocalProcess = { kind: "local-process", name: "manager", label: "manager", pidFile: MANAGER_PIDFILE, order: 10 };
+  registry.register(managerProcess);
   const fixtured: LocalProcess = { kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" };
   registry.register(fixtured);
 
@@ -162,6 +270,34 @@ try {
   check("--with-agents with --run is refused", true);
   await assert.rejects(run([], { "with-agents": true, space: "teamA" }), /--with-agents is bare-whole-stack only/);
   check("--with-agents with --space is refused", true);
+
+  // Pre-pin managers remain common on upgraded operator boxes. The shared identity seam already
+  // emits its reduced-guarantee warning. Both policy branches must still reach SIGTERM and remove
+  // the proven-dead pidfile: bare down warns that sparing cannot be verified, while --with-agents
+  // does not require an impossible identity-bound intent from a manager launched before pinning.
+  const legacyBare = await stopPlantedManager(false, "legacy");
+  const legacyWithAgents = await stopPlantedManager(true, "legacy");
+  check(
+    "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
+    !legacyBare.managerAlive && legacyBare.agentAlive && !legacyBare.pidfilePreserved &&
+      /predates process identity pinning/.test(legacyBare.warning) &&
+      /could not verify that this legacy manager can spare/.test(legacyBare.warning),
+    legacyBare,
+  );
+  check(
+    "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
+    !legacyWithAgents.managerAlive && !legacyWithAgents.agentAlive && !legacyWithAgents.pidfilePreserved &&
+      /predates process identity pinning/.test(legacyWithAgents.warning) &&
+      /"withAgents":true/.test(legacyWithAgents.managerDecision ?? ""),
+    legacyWithAgents,
+  );
+  const mismatched = await stopPlantedManager(false, "mismatch");
+  check(
+    "a pinned manager identity mismatch is refused before SIGTERM and preserves both records",
+    mismatched.managerAlive && mismatched.agentAlive && mismatched.pidfilePreserved && mismatched.pinPreserved === true &&
+      /pid has been reused/.test(mismatched.warning),
+    mismatched,
+  );
 
   // A pinned record can become ESRCH-dead before the manager policy hook runs. That path performs
   // no signal and therefore needs neither spare capability nor destructive intent. It must clear the

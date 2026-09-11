@@ -1,0 +1,34 @@
+{
+  "grades": "integration",
+  "suite": [
+    "implementations/cli/smoke/down-target.smoke.ts",
+    "packages/workspace/smoke/manager-shutdown.smoke.ts"
+  ],
+  "guard": "both cotal down policy branches signal a live pre-pin manager after the documented legacy warning, while pinned manager policy remains identity-bound",
+  "command": "pnpm build > /dev/null && pnpm smoke:down-target",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-legacy-manager.json",
+  "why": [
+    "A manager launched before identity pins existed, or on a platform whose injected start-token reader returns undefined, has no token for the full identity-pinned handoff. The documented upgrade contract still signals that live record after warning. Bare down additionally says that agent sparing cannot be verified; --with-agents publishes the reduced-guarantee pid-and-reservation-inode handoff so the manager still selects destructive teardown.",
+    "The mutations restore each tokenless refusal that shipped at the blocked head. The smoke plants real unpinned manager records and drives both real down policy branches before checking either result, so neither mutation can pass by exercising only the hook or only one flag path. The same public suite observes pinned mismatch refusal, while bin/smoke/mutations/pid-identity.json remains its dedicated mechanical guard."
+  ],
+  "mutations": [
+    {
+      "name": "M1 restore the unconditional legacy-manager refusal before SIGTERM",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "              if (attempt.target.token === undefined) {\n                // Upgrade compatibility follows the shared identity contract: a live pre-pin record\n                // is signalled after the warning emitted by stopLocalProcess. Bare down cannot verify\n                // the newer spare capability. Destructive down uses the helper's reduced-guarantee\n                // pid + reservation-inode handoff. A present pin still takes the fully identity-bound\n                // paths below, and a mismatching pin was already refused before this hook.\n                if (!values[\"with-agents\"])\n                  console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n              }",
+      "replace": "              if (attempt.target.token === undefined)\n                throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");",
+      "expectRed": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
+      "cell": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
+      "note": "Restores the blocked-head behavior exactly: both live legacy records stop before SIGTERM, remain alive, and keep their pidfiles. The suite executes bare and --with-agents first, then the named bare cell is the first red."
+    },
+    {
+      "name": "M2 restore the tokenless destructive-intent refusal",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "  if (attempt.target.token === undefined) {\n    const recordedPid = parsePid(readFileSync(pidPath, \"utf8\"));\n    if (recordedPid !== attempt.target.pid)\n      throw new Error(\"cannot arm --with-agents: stop attempt target does not match the recorded legacy manager process; destructive policy was not published\");\n    publishAtomic(path, {\n      version: 2,\n      policy: \"with-agents\",\n      target: { pid: attempt.target.pid },\n      stopper: { pid: stopperPid, reservation: reservationIdentity(attempt.stopper.marker) },\n    } satisfies LegacyManagerShutdownIntent);\n    return;\n  }",
+      "replace": "  if (attempt.target.token === undefined)\n    throw new Error(\"cannot arm --with-agents: manager process identity is not pinned; destructive policy was not published\");",
+      "expectRed": "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
+      "cell": "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
+      "note": "Restores the stale helper throw. The public --with-agents branch still calls the helper, so the live legacy manager is not signalled and its pidfile remains, reddening the destructive-path cell."
+    }
+  ]
+}

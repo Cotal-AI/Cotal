@@ -41,6 +41,14 @@
       "replace": "    void stopperVerdict;",
       "expectRed": "a crashed stopper cannot poison a later bare shutdown",
       "cell": "a crashed stopper cannot poison a later bare shutdown"
+    },
+    {
+      "name": "a no-token destructive intent is not bound to the live stop reservation",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "      if (reservationOwner !== parsed.stopper.pid)\n        return { withAgents: false, warning: \"ignored stale legacy manager shutdown intent from a different stop attempt; managed agents were spared\" };",
+      "replace": "      void reservationOwner;",
+      "expectRed": "a no-token platform cannot replay destructive policy into another stop reservation",
+      "cell": "a no-token platform cannot replay destructive policy into another stop reservation"
     }
   ]
 }

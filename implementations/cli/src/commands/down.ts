@@ -189,10 +189,17 @@ export async function down(args: ParsedArgs): Promise<void> {
         try {
           await stopLocalProcess(component, context, {
             beforeSignal: (attempt) => {
-              if (attempt.target.token === undefined)
-                throw new Error("refusing manager stop: the exact manager process identity is not pinned");
+              if (attempt.target.token === undefined) {
+                // Upgrade compatibility follows the shared identity contract: a live pre-pin record
+                // is signalled after the warning emitted by stopLocalProcess. Bare down cannot verify
+                // the newer spare capability. Destructive down uses the helper's reduced-guarantee
+                // pid + reservation-inode handoff. A present pin still takes the fully identity-bound
+                // paths below, and a mismatching pin was already refused before this hook.
+                if (!values["with-agents"])
+                  console.error(c.dim("could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility"));
+              }
               if (values["with-agents"]) armManagerShutdownIntent(context, attempt);
-              else assertManagerCanSpare(context, undefined, attempt.target);
+              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);
             },
           });
         } catch (e) {

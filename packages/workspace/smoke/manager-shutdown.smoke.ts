@@ -1,6 +1,7 @@
 /**
  * Process-bound one-shot policy handoff for `cotal down --with-agents`.
- * Hermetic: only temp files and injected start-token readers, no signals or broker.
+ * Hermetic: only temp files and injected start-token readers, including a no-token platform
+ * control; no signals or broker.
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -101,11 +102,27 @@ try {
   check("mismatched manager identity refuses to arm destructive policy", !existsSync(intentPath));
 
   rmSync(`${pidPath}.identity`, { force: true });
-  await assert.rejects(
-    Promise.resolve().then(() => armManagerShutdownIntent(context, { ...attempt, target: { pid: process.pid } }, tokens)),
-    /is not pinned/,
+  writeFileSync(markerPath, String(process.pid));
+  const legacyAttempt = { target: { pid: process.pid }, stopper: { pid: process.pid, marker: markerPath } };
+  armManagerShutdownIntent(context, legacyAttempt, tokens);
+  check("an omitted process binding publishes the legacy destructive intent", existsSync(intentPath));
+  const legacyArmed = consumeManagerShutdownIntent(context, process.pid, tokens);
+  check("a live no-token reservation selects with-agents", legacyArmed.withAgents === true, legacyArmed);
+  check("the legacy destructive intent is one-shot", !existsSync(intentPath));
+
+  // A platform with no stable process-start token (Windows today, or another ps-less host) writes
+  // the same honest bare-pid shape as a pre-pin manager. The CLI compatibility path must signal that
+  // record rather than call this helper. Keep the helper's narrower contract explicit here: injected
+  // tokenAt=>undefined cannot manufacture either a manager pin or a destructive intent.
+  armManagerShutdownIntent(
+    context,
+    legacyAttempt,
+    () => undefined,
   );
-  check("omitted process binding refuses to arm destructive policy", !existsSync(intentPath));
+  writeFileSync(markerPath, String(process.pid + 1));
+  const legacyDifferentAttempt = consumeManagerShutdownIntent(context, process.pid, () => undefined);
+  check("a no-token platform cannot replay destructive policy into another stop reservation",
+    legacyDifferentAttempt.withAgents === false && /different stop attempt/.test(legacyDifferentAttempt.warning ?? ""), legacyDifferentAttempt);
 
   writeFileSync(`${pidPath}.identity`, `${process.pid} ${token}`);
   writeFileSync(markerPath, String(process.pid + 1));
