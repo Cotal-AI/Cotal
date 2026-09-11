@@ -790,6 +790,8 @@ try {
     serveCreds: materialCredential(activate, "serve", state.identities.serve),
     goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
     sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
+    registrationProof: retainedRegistrationProof,
+    renew: async () => { throw new Error("native retirement acceptance does not exercise remote authority renewal"); },
     serveGrant: registered.serveGrant,
     agentBearerExchangeUrl: secureExchangeUrl,
     mintSessionServing: async () => { throw new Error("native retirement acceptance opens no terminal sessions"); },

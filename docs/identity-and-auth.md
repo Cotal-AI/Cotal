@@ -275,7 +275,12 @@ registration, contracts, status, endpoint rails, gate and credential family; it 
 write another owner or instance. It never exposes a signer, static provisioner credential, owner
 secret, raw stream/KV/consumer authority, or a generic credential-mint API. The host creates the
 public-nkey JWT material through the typed lifecycle-bound protocol: **prepare → activate →
-renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Each request is replay-safe and idempotent at its lifecycle/instance operation
+renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Renewal presents the
+host-authenticated current registration proof, accepts no caller contract artifacts, re-authorizes
+the serve grant from the durable registered surface, and returns the supervisor, five-minute
+executor, serve, goal-writer, and session-ledger credentials as one complete family. The manager
+schedules from the earliest member's normal 75% point, installs only a fully validated family, and
+reconnects every standing holder onto it. Each request is replay-safe and idempotent at its lifecycle/instance operation
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester

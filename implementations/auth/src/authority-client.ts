@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -90,6 +90,12 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
   return {
     publish: [
       ...base.publish,
+      // Renewal re-authorizes the serve grant from the durable registered spec and the
+      // content-addressed contract store. The records point reads are already in the base issuer
+      // grant. These EPC point reads add no consumer-create authority, and no participant receives
+      // this host-side connection or its grant.
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}`,
       // The typed activation phase mints the manager instance's endpoint-serve credential through
       // serveIssuanceGateKv. That fence stages one `epcred.manager.<instance>.<credential>` row and
       // revision-touches the matching `epgate.manager.<instance>` row. The host issuer serves many

@@ -36,7 +36,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, renewedRegistrationProof, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -226,6 +226,21 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
+      const credentialFamily = (issued: typeof activate, expectedProof: string) => {
+        if (issued.owner !== material.owner || issued.actor !== request.actor || issued.space !== space ||
+            issued.instanceId !== state.instanceId || issued.lifecycleUid !== state.lifecycleUid ||
+            JSON.stringify(issued.actors) !== JSON.stringify(actors) || issued.operation !== "renew")
+          throw new Error("the host returned renewed manager-service material for different lifecycle coordinates");
+        const nextProof = renewedRegistrationProof(issued, expectedProof);
+        return {
+          registrationProof: nextProof,
+          supervisorCreds: materialCredential(issued, "supervisor", state.identities.supervisor),
+          executorCreds: materialCredential(issued, "executor", state.identities.executor),
+          serveCreds: materialCredential(issued, "serve", state.identities.serve),
+          goalWriterCreds: materialCredential(issued, "goalWriter", state.identities.goalWriter),
+          sessionLedgerCreds: materialCredential(issued, "sessionLedger", state.identities.sessionLedger),
+        };
+      };
       remoteAuthority = {
         owner: material.owner,
         actors,
@@ -287,7 +302,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const request = remoteRetainedAgentValidationRequest(
             state,
             "cli",
-            retainedRegistrationProof,
+            remoteAuthority!.registrationProof,
             registered.processEpoch,
             { owner: targetOwner, actor, lifecycleUid },
             actorToken,
@@ -309,7 +324,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             instanceId: state.instanceId,
             managerLifecycleUid: state.lifecycleUid,
             requestId: `scan${mintLifecycleUid()}`,
-            registrationProof: retainedRegistrationProof,
+            registrationProof: remoteAuthority!.registrationProof,
             serveEpoch: registered.processEpoch,
             identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as {
               supervisor: { id: string }; executor: { id: string }; serve: { id: string };
@@ -323,11 +338,22 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           });
           return remoteManagerGoalIndexEntries(result, request, material.owner);
         },
+        registrationProof: retainedRegistrationProof,
+        renew: async () => {
+          const expectedProof = remoteAuthority!.registrationProof;
+          const issued = await provider.managerServiceAuthority!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request: remoteManagerAuthorityRequest(state, "cli", "renew", expectedProof),
+          });
+          const fresh = credentialFamily(issued, expectedProof);
+          return fresh;
+        },
         authorizeAdmin: async (caller) => {
           const request = remoteManagerAdminAuthorizationRequest(
             state,
             "cli",
-            retainedRegistrationProof,
+            remoteAuthority!.registrationProof,
             registered.processEpoch,
             caller,
           );
