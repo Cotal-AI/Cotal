@@ -512,28 +512,27 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
 }
 
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
- *  registry rather than a stack trace. Prunes dead registry entries first so a crashed mesh doesn't
- *  block a bare command or appear in the "pick one" list — but ONLY when resolving without an
- *  explicit `--space`. A named `--space` is resolved + preflighted directly, so pre-pruning can't
- *  erase a dead-recorded mesh the operator is recovering with a live `--server` override; preflight
- *  still prunes it (with the friendly message) when no override revives it. */
+ *  registry rather than a stack trace. Sweeps first when resolving without an explicit `--space`,
+ *  and hands the sweep's `offline` set to the resolver so a crashed mesh's kept record does not
+ *  count as running. A named `--space` is resolved + preflighted directly, so the sweep cannot
+ *  hide a dead-recorded mesh the operator is recovering with a live `--server` override. */
 export async function resolveTargetOrThrow(flags: {
   server?: string;
   space?: string;
 }): Promise<MeshTarget> {
-  if (!flags.space) await pruneStaleMeshes();
+  const sweep = flags.space ? { pruned: [] as string[], offline: [] as string[] } : await pruneStaleMeshes();
   let target: MeshTarget;
   try {
-    target = resolveMeshTarget(process.cwd(), flags);
+    target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
     if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }));
     throw e;
   }
-  // If a dangling `current` was silently bypassed — it named a mesh that's since gone and we fell
-  // back to the only live one — say so. The N>1 case errors loudly; this is the one spot that would
-  // otherwise quietly redirect a stale default.
+  // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
+  // or kept as offline) and we fell back to the only live one — say so. The N>1 case errors
+  // loudly; this is the one spot that would otherwise quietly redirect a stale default.
   const cur = getCurrent();
-  if (cur && !findMesh(cur) && target.source === "registry")
+  if (cur && (!findMesh(cur) || sweep.offline.includes(cur)) && target.source === "registry")
     console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }
@@ -546,20 +545,21 @@ export async function resolveTargetOrThrow(flags: {
  *  own trust material. */
 export async function preflightOrThrow(target: MeshTarget, probeCreds?: string): Promise<void> {
   // USER-mode targets are never credless-probed here: the callout denies a bare connect, the
-  // classifier reads that as a stale registry entry, and the PRUNE deletes a healthy mesh's
-  // record (found live: foreground `spawn` did exactly this and every later command fell into
-  // raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a user
-  // target is the user connect / bearer chain itself.
+  // classifier reads that as a stale-entry mismatch, and a mismatch prune would drop a healthy
+  // `up` record (found live: foreground `spawn` did exactly this and every later command fell
+  // into raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a
+  // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(`✗ mesh "${target.space}" at ${target.server} is not reachable - start it with \`cotal up\` from its project folder`);
+    throw new ConnectRefusal(`✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`);
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
   // The classifier says whether this failure is a stale-entry signal; `pruneMesh` says whether the
-  // record is one an automatic sweep may delete (an operator-registered mesh is not). The message
-  // reports what ACTUALLY happened, so it never claims a removal that the registry refused.
-  const pruned = r.prune ? pruneMesh(target.space) : false;
+  // record is one an automatic sweep may delete. Liveness (`unreachable`) keeps an `up` record as
+  // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
+  // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
+  const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
   throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }));
 }
 

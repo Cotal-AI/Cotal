@@ -7,7 +7,7 @@
  *     actually CONNECTS to it (not the hardcoded DEFAULT_SERVER).
  *  B. probeConnect's split against REAL brokers: ok (live, open) vs auth-required (real auth broker)
  *     vs unreachable (killed) — the input that drives preflight's error routing.
- *  C. prune-on-real-death: a killed broker's entry is dropped by pruneStaleMeshes.
+ *  C. keep-on-real-death: a killed broker's entry is kept as offline by pruneStaleMeshes.
  *  D. the registry dir is really 0700 after a real recordMesh.
  *
  * Needs `nats-server` on PATH (like the other broker smokes). Kills ONLY the PIDs it spawns —
@@ -148,7 +148,7 @@ try {
   await new Promise<void>((res) => notNats!.listen(PORT_NOTNATS, "127.0.0.1", res));
   ok("E: isReachable(non-NATS listener) → false (not 'any open port')", (await isReachable(SRV_NOTNATS)) === false);
 
-  // C: prune-on-real-death. Kill ONLY our 4455 child, then the entry must prune.
+  // C: keep-on-real-death. Kill ONLY our 4455 child, then the entry is kept as offline.
   const opener = kids[0]!;
   opener.kill("SIGTERM");
   for (let i = 0; i < 50 && opener.exitCode === null && opener.signalCode === null; i++) await sleep(100);
@@ -157,7 +157,7 @@ try {
   ok("E: isReachable(killed broker) → false", (await isReachable(SRV_OPEN)) === false);
   ok("C: registry still holds alpha before prune", loadMeshes().some((m) => m.space === "alpha"));
   await pruneStaleMeshes();
-  ok("C: pruneStaleMeshes drops the dead entry", !loadMeshes().some((m) => m.space === "alpha"), loadMeshes());
+  ok("C: pruneStaleMeshes keeps the dead entry as offline", loadMeshes().some((m) => m.space === "alpha"), loadMeshes());
 
   console.log(`\nspawn-from-anywhere live e2e: ${pass} checks passed`);
 } finally {

@@ -36,6 +36,12 @@ import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROOF = resolve(dirname(SCRIPT), "mutation-proof.mjs");
 const COMMAND_TIMEOUT_MS = 900_000;
+// mutation-proof already budgets each suite command at COMMAND_TIMEOUT_MS. The proof
+// CHILD is one fixture: baseline plus every mutant. Putting 900s on that child killed
+// mutation-reproof.json at 901s on PR #1445 shard 0/12 (hang-fix d3b693e62) while the
+// 145-minute step still had ~130 minutes left. Bound the child under that step instead
+// so a hung proof cannot sit until the job times out, and a 20-mutation fixture can finish.
+const PROOF_TIMEOUT_MS = 140 * 60 * 1000;
 
 function usage(message) {
   if (message) console.error(message);
@@ -372,8 +378,14 @@ const labeledVerdictsIn = (output, mutations = []) => {
 const verdictsIn = (output) => labeledVerdictsIn(output).map((rec) => rec.verdict);
 
 function runProof(cwd, configPath, env) {
+  // Proof-child budget, not per-command. A snapshot compare that re-runs
+  // attach-reconnect after WRONG-RED/SURVIVED sat unbounded until the 145-minute
+  // job step timed out (PR #1445, shard 10/12, 8712s). spawnSync with no timeout
+  // is that hang. COMMAND_TIMEOUT_MS here is too small: one fixture is baseline
+  // plus every mutant.
   const run = spawnSync(process.execPath, [PROOF, "--config", configPath], {
-    cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env,
+    cwd, encoding: "utf8", timeout: PROOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
+    killSignal: "SIGKILL", env,
   });
   return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 }
@@ -543,7 +555,8 @@ const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neithe
 for (const { path, command, mutations } of prove) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
-    cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: rootComparisonEnv(),
+    cwd: root, encoding: "utf8", timeout: PROOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
+    killSignal: "SIGKILL", env: rootComparisonEnv(),
   });
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");

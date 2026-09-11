@@ -326,12 +326,12 @@ This gate is on **registration**. `cotal join --creds --server <url>` deliberate
 explicit connection at face value and does not consult the registry, so it is not covered. Join
 that way only to an address you would have registered.
 
-Records added this way are removed only by something that names them. A mesh this machine started
-can be dropped on a hunch, such as a failed liveness probe or a `cotal down` in its project, because
-`cotal up` writes the record straight back. One you registered by hand cannot be reconstructed, so
-nothing removes it by inference: an unreachable broker is shown as `offline` in `cotal meshes`, and
-`cotal down` / `cotal clean all` leave it alone even when `--root` pointed at the project they are
-tearing down. A `cotal up` for that space refuses outright (naming `cotal meshes rm`) unless it is
+Records added this way are removed only by something that names them. A failed liveness probe
+does not delete any record: an unreachable broker, local or registered by hand, is shown as
+`offline` in `cotal meshes`. A bare command does not count that offline record as running;
+name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the
+project they are tearing down, and they leave a hand-registered one alone even when `--root`
+pointed at that project. A `cotal up` for that space refuses outright (naming `cotal meshes rm`) unless it is
 that same endpoint: finding a broker already answering there is a refresh that starts nothing and
 leaves the record's provenance alone, while actually starting the broker for that space, server and
 root makes this machine the one running it, so the record becomes an ordinary local one that

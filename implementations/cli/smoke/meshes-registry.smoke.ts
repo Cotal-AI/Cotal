@@ -6,8 +6,10 @@
  * this machine could write back — a sleeping laptop silently unregistered a healthy remote mesh.
  * So the load-bearing assertions here are the ones about ORIGIN:
  *
- *  • an `up` record whose broker is dead is pruned; a `manual` one is KEPT and reported `offline`,
- *    on that sweep and on every later one;
+ *  • an `up` record whose broker is dead is KEPT and reported `offline`, same as a `manual` one,
+ *    on that sweep and on every later one; a pre-origin record is `up` and is kept the same way.
+ *    (REVERSAL of the previous origin split: redness of "sweep prunes a dead mesh this machine
+ *    started" / "absent origin = `up`" is expected and intended.)
  *  • `add` verifies against the real broker before recording, and records nothing when that fails;
  *  • `--force` is the explicit record-without-verifying / replace escape;
  *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here.
@@ -25,7 +27,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -581,13 +583,21 @@ try {
   // genuine project, and demand `--root` only when there isn't one.
   const bare = mkdtempSync(join(tmpdir(), "cotal-noproject-"));
   roots.push(bare);
-  let ancestorProject: string | undefined;
-  for (let dir = dirname(bare); ; dir = dirname(dir)) {
-    if (existsSync(join(dir, ".cotal"))) { ancestorProject = dir; break; }
-    if (dirname(dir) === dir) break;
-  }
   const prevCwd2 = process.cwd();
   process.chdir(bare);
+  // Walk the path `add` actually walks. `process.cwd()` after chdir is the realpath,
+  // and TMPDIR on this harness is a symlink into $HOME, so a lexical walk of `bare`
+  // finds `/tmp/.cotal` while `findCotalRoot` finds `$HOME`. Skip the machine-home
+  // `.cotal` the same way `checkRoot` does.
+  let ancestorProject: string | undefined;
+  for (let dir = process.cwd(); ; dir = dirname(dir)) {
+    const marker = join(dir, ".cotal");
+    if (existsSync(marker) && resolve(marker) !== resolve(home)) {
+      ancestorProject = dir;
+      break;
+    }
+    if (dirname(dir) === dir) break;
+  }
   const rootless = await run(["add", "rootless"], { server: LIVE });
   process.chdir(prevCwd2);
   // ONE cell either way, so the TOTAL COUNT IS THE SAME ON EVERY BOX. The two arms used to run a
@@ -621,19 +631,25 @@ try {
   const pathy = await run(["add", "pathy"], { server: `${LIVE}/subject`, root });
   check("add refuses a --server with a path", pathy.code === 1 && findMesh("pathy") === undefined, pathy.out);
 
-  // ── THE INVARIANT: a sweep prunes an `up` record and keeps an operator-registered one ──────────
+  // ── THE INVARIANT: a sweep keeps a dead `up` record the same way it keeps a manual one ─────────
+  // REVERSAL of the previous origin split (meshes-registry.smoke.ts:631-632): a dead `up` record
+  // and a dead pre-origin record used to be deleted. Their redness is expected and intended.
   rmSync(join(home, "meshes"), { recursive: true, force: true });
   const localRoot = projectRoot("local");
   recordMesh({ space: "local-dead", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   recordMesh({ space: "legacy-dead", server: DEAD, root: localRoot, mode: "open", ts: new Date(0).toISOString() });
   recordMesh({ space: "remote-dead", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const sweep = await pruneStaleMeshes();
-  check("sweep prunes a dead mesh this machine started", findMesh("local-dead") === undefined, loadMeshes());
-  check("sweep prunes a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead") === undefined, loadMeshes());
+  check("sweep KEEPS a dead mesh this machine started", findMesh("local-dead")?.space === "local-dead", loadMeshes());
+  check("sweep KEEPS a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead")?.space === "legacy-dead", loadMeshes());
   check("sweep KEEPS a dead operator-registered mesh", findMesh("remote-dead")?.space === "remote-dead", loadMeshes());
-  check("sweep reports the kept one as offline", sweep.offline.includes("remote-dead") && sweep.pruned.includes("local-dead"), sweep);
+  check("sweep reports every dead record as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("local-dead") && sweep.offline.includes("legacy-dead") && sweep.pruned.length === 0, sweep);
   const sweep2 = await pruneStaleMeshes();
-  check("a second sweep still keeps it (not a one-time reprieve)", findMesh("remote-dead") !== undefined && sweep2.offline.includes("remote-dead"), sweep2);
+  check("a second sweep still keeps them (not a one-time reprieve)", findMesh("remote-dead") !== undefined && findMesh("local-dead") !== undefined && sweep2.offline.includes("remote-dead") && sweep2.offline.includes("local-dead"), sweep2);
+  // The keep invariant is proven. Drop the local `up` fixtures so later `rm` emptiness
+  // checks (written when a liveness miss deleted them) still see only the records they plant.
+  removeMesh("local-dead");
+  removeMesh("legacy-dead");
 
   // …and the same rule for the paths that delete by ROOT rather than by liveness. `add` defaults
   // --root to the project you run it in, so a hand-registered remote mesh routinely shares a root

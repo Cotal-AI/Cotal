@@ -69,8 +69,12 @@ export interface MeshEntry {
    *  says so" into "encrypted or refuse". */
   tlsRequired?: boolean;
   /** Who put this record here — and therefore what may take it out. `up` (the default, and what any
-   *  record written without the field is) means THIS machine started the mesh: it is safe to drop
-   *  on a liveness verdict or a local teardown, because `cotal up` writes it straight back.
+   *  record written without the field is) means THIS machine started the mesh. A liveness verdict
+   *  does not delete it: the record is the restart authority for this root, so a dead broker is
+   *  reported `offline` until `cotal down` or `cotal meshes rm` names it. A mismatch (credentials
+   *  rejected, mode flipped, or the root's on-disk auth now belonging to a different space) still
+   *  drops an `up` record, because connecting through it would be wrong. `cotal down` / `cotal
+   *  clean all` still drop it when they tear down this root, because `cotal up` writes it back.
    *  `manual` means an operator registered it by hand (`cotal meshes add`) — typically a mesh
    *  running on another machine, whose record nothing here can reconstruct.
    *
@@ -248,21 +252,26 @@ export function removeMesh(space: string): void {
 }
 
 /**
- * Drop a record because its mesh looks GONE — the auto-prune path, as opposed to the operator
+ * Drop a record because an automatic sweep decided it should leave — as opposed to the operator
  * saying so. Returns whether the record was actually removed.
  *
  * Every automatic deletion goes through here rather than {@link removeMesh}, because the rule is one
- * rule and forgetting it at a single site is the whole failure: a `manual` record (`cotal meshes
- * add`) is NEVER auto-pruned. An `up` record is safe to drop — `cotal up` writes it back — but a
- * manual one usually describes a mesh on ANOTHER machine, and nothing on this machine can
- * reconstruct the server URL, root and mode the operator typed. A sleeping laptop or a VPN blip
- * would otherwise unregister a perfectly healthy remote mesh for good (observed exactly once, and
- * once was enough). An unreachable manual record is a STATE the surfaces report ("offline"), not a
- * deletion; `cotal meshes rm` is how it leaves.
+ * rule and forgetting it at a single site is the whole failure. A `manual` record (`cotal meshes
+ * add`) is NEVER auto-pruned. An `up` record (and a pre-origin record, which is `up`) is kept on a
+ * liveness miss: the broker being down is a STATE the surfaces report (`offline`), not proof the
+ * operator no longer wants the root. A mismatch — credentials rejected, an open record whose
+ * broker now requires auth, or a root whose on-disk auth is now for a different space — still
+ * drops an `up` record, because connecting through it would mint against the wrong mesh. A sleeping
+ * laptop or a VPN blip must not unregister a perfectly healthy remote mesh (observed exactly once,
+ * and once was enough), and the same erasure of a stopped local stack is the existence denial this
+ * helper exists to prevent. `cotal meshes rm` / `cotal down` are how a kept record leaves.
  */
-export function pruneMesh(space: string): boolean {
+export type PruneReason = "gone" | "mismatch";
+
+export function pruneMesh(space: string, reason: PruneReason = "gone"): boolean {
   const m = findMesh(space);
   if (!m || m.origin === "manual") return false;
+  if (reason === "gone") return false;
   removeMesh(space);
   return true;
 }

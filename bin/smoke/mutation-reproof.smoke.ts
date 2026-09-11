@@ -1900,5 +1900,16 @@ try {
   for (const r of repos) rmSync(r, { recursive: true, force: true });
 }
 
+const source = readFileSync(SCAN, "utf8");
+check(
+  "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
+  /const COMMAND_TIMEOUT_MS = 900_000;/.test(source)
+    && /const PROOF_TIMEOUT_MS = 140 \* 60 \* 1000;/.test(source)
+    && /function runProof\([\s\S]{0,700}?timeout: PROOF_TIMEOUT_MS,[\s\S]{0,160}?killSignal: "SIGKILL"/.test(source)
+    && /spawnSync\(process\.execPath, \[PROOF, "--config", path\], \{[\s\S]{0,180}?timeout: PROOF_TIMEOUT_MS,[\s\S]{0,80}?killSignal: "SIGKILL"/.test(source)
+    && /function runCommand\([\s\S]{0,240}?timeout: COMMAND_TIMEOUT_MS,[\s\S]{0,80}?killSignal: "SIGKILL"/.test(source),
+  "runProof and the root PROOF spawn must pass timeout: PROOF_TIMEOUT_MS; runCommand keeps COMMAND_TIMEOUT_MS",
+);
+
 console.log(`mutation-reproof smoke: ${passed} passed, ${failed} failed`);
 process.exitCode = failed === 0 ? 0 : 1;
