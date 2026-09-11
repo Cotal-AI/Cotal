@@ -10,8 +10,8 @@
     {
       "name": "restore the old five blind timed carriage returns and ignore the connector-owned prompt text",
       "file": "packages/seat/src/custodian.ts",
-      "find": "  const confirmMatcher = launch.confirm ? new StartupConfirmMatcher(launch.confirm) : undefined;\n  let confirmTimer: ReturnType<typeof setTimeout> | undefined;\n\n  if (confirmMatcher) {\n    const confirmTimeoutMs = Number(launch.env.COTAL_CONFIRM_TIMEOUT_MS ?? CONFIRM_TIMEOUT_MS);",
-      "replace": "  const confirmMatcher = undefined;\n  let confirmTimer: ReturnType<typeof setTimeout> | undefined;\n\n  if (launch.confirm) {\n    let presses = 0;\n    confirmTimer = setInterval(() => {\n      if (!alive || presses++ >= 5) {\n        clearInterval(confirmTimer);\n        confirmTimer = undefined;\n        return;\n      }\n      proc.write(\"\\r\");\n    }, 1_000);\n  }\n\n  if (confirmMatcher) {\n    const confirmTimeoutMs = Number(launch.env.COTAL_CONFIRM_TIMEOUT_MS ?? CONFIRM_TIMEOUT_MS);",
+      "find": "  if (confirmMatcher) {\n    const confirmTimeoutMs = Number(launch.env.COTAL_CONFIRM_TIMEOUT_MS ?? CONFIRM_TIMEOUT_MS);",
+      "replace": "  if (launch.confirm) {\n    let presses = 0;\n    const blindTimer = setInterval(() => {\n      if (!alive || presses++ >= 5) { clearInterval(blindTimer); return; }\n      proc.write(\"\\r\");\n    }, 1_000);\n  }\n\n  if (false && confirmMatcher) {\n    const confirmTimeoutMs = Number(launch.env.COTAL_CONFIRM_TIMEOUT_MS ?? CONFIRM_TIMEOUT_MS);",
       "expectRed": "late prompt after the old five-second window: the seat reaches normal input",
       "cell": "late prompt after the old five-second window: the seat reaches normal input",
       "note": "This restores the reported mechanism exactly: five output-blind carriage returns at one-second intervals. The late prompt deliberately renders after that window, so it must remain blocked and red while the early prompt remains green."
