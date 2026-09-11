@@ -88,6 +88,52 @@ There is no supported `cotal service install` command yet. Running the manager a
 systemd user service remains operator-managed; service installation is separate from this boot-time
 detection behavior.
 
+### Supervising the detached stack
+
+`cotal up --detach` is a launcher: it starts the broker, delivery daemon, and manager, reports what
+started, then exits. Do not wrap it in a systemd service with `Type=oneshot` and
+`RemainAfterExit=yes` and treat `systemctl is-active` as stack health. That unit becomes `active
+(exited)` when the launcher exits successfully and stays active even if every detached process dies.
+When `up --detach` can identify that exact unit shape, it prints a warning but keeps the requested
+startup behavior.
+
+For a single-host stack, keep `cotal up` itself in the foreground so systemd tracks a long-running
+process and restarts the stack if that process fails:
+
+```ini
+[Service]
+Type=simple
+WorkingDirectory=/srv/cotal-mesh
+ExecStart=/usr/bin/cotal up --space main --host 0.0.0.0
+Restart=on-failure
+RestartSec=5s
+```
+
+An active unit then proves the foreground launcher and broker are still running, but it still does
+not prove that every child component serves. Pair it with the component check below. Also remember
+that `cotal up` starts a local manager as well as the broker and delivery daemon; do not run this
+whole-stack unit on a host intended to be broker-only.
+
+If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state
+instead of the launcher's exit:
+
+```ini
+[Unit]
+Description=Check Cotal component liveness
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/cotal-mesh
+ExecStart=/usr/bin/cotal status --components --space main
+```
+
+Run that check from a systemd timer or another monitor and alert on a nonzero exit. The command
+distinguishes `absent`, `not-serving`, and `refused` components and never treats a sibling's health as
+proof. Its delivery-process check is local to the broker host, so run it there. On a split topology,
+also probe the broker URL from the manager host and monitor the manager's own service there. A remote
+manager cannot observe the broker host's delivery PID, and an `active` unit on either host says
+nothing about the other host.
+
 Stop one part without tearing down the mesh by naming its registered component: `cotal down
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
 join the same surface; `cotal down` with no names retains whole-stack behavior.
