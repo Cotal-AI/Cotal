@@ -91,6 +91,10 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
+  /** True only when every handle this runtime creates can release manager-local custody without
+   * stopping the underlying agent. Absent is false for PTY runtimes and irrelevant for runtimes
+   * that hold no process-owning PTY master. */
+  readonly supportsRelease?: boolean;
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
   /**
    * Reattach this runtime to a handle it created previously. This is a local runtime operation,

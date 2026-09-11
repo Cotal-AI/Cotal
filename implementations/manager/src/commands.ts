@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writeIdentityPin,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -77,13 +77,17 @@ export function recordManagerPid(root: string, space: string): () => void {
   const markerPath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx);
   const mine = String(process.pid);
   writeFileSync(pidPath, mine);
+  writeIdentityPin(pidPath, process.pid);
   // Written together and removed together: the marker proves the LIVE pid is a non-hosting build,
   // and it is only meaningful while it names that same pid.
   writeFileSync(markerPath, mine);
   return () => {
     for (const p of [markerPath, pidPath]) {
       try {
-        if (readFileSync(p, "utf8").trim() === mine) rmSync(p, { force: true });
+        if (readFileSync(p, "utf8").trim() === mine) {
+          if (p === pidPath) removeIdentityPin(pidPath);
+          rmSync(p, { force: true });
+        }
       } catch {
         /* already gone, or unreadable: leaving a record we cannot prove is ours is the safe error */
       }
@@ -406,17 +410,27 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   await mgr.start();
   // AFTER start, not before: a manager that failed to come up must not leave a record claiming it
   // did. `findCotalRoot` is the same root the Manager itself defaulted to.
-  const releasePidRecord = recordManagerPid(findCotalRoot(), space);
+  const managerRoot = findCotalRoot();
+  const releasePidRecord = recordManagerPid(managerRoot, space);
+  const managerContext = { root: managerRoot, space };
+  publishManagerSpareCapability(managerContext, mgr.canSpareAgents);
   console.log(
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
       `\n  console: ${mgr.consoleUrl}` +
       c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
-  // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
-  // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
-  const shutdown = () => void mgr.stop()
+  // Register shutdown handlers before any spawning. Signals use the sparing default; the exact,
+  // process-bound `cotal down --with-agents` intent is the only mass-reap request.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const decision = consumeManagerShutdownIntent({ root: managerRoot, space });
+    if (decision.warning) console.error(c.yellow(`! ${decision.warning}`));
+    void mgr.stop({ withAgents: decision.withAgents })
     .then(() => {
+      publishManagerSpareCapability(managerContext, false);
       releasePidRecord();
       process.exit(0);
     })
@@ -427,6 +441,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       // orphan-the-process defect the pidfile contract exists to prevent.
       console.error(c.red(`✗ ${(e as Error).message}`));
     });
+  };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   // Declarative boot: bring up each rostered agent through the same spawn path as a detached spawn.

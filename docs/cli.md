@@ -264,6 +264,7 @@ and the manager's log both name the credential and this repair.
 
 ```bash
 cotal down
+cotal down --with-agents
 cotal down --preserve-state [--store-dir <dir>]
 cotal down manager [delivery auth web nats ...]
 cotal down web [--space <name>]
@@ -276,10 +277,16 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--run <id>` | none | Tear down one `spawn -f` run by id |
 | `--space <name>` | current mesh | With components: the mesh whose target-addressed components (e.g. `web`) to stop |
 | `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
+| `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 
-Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
+Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running.
+Before signalling the manager it verifies that the exact recorded manager supports releasing its
+local custody, and it reports the agents left behind plus `cotal down --with-agents` as the explicit
+reap. `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
+and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
+cannot turn a later bare shutdown destructive. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
 the broker running, and `cotal down web` is available when the web extension is installed. A
 component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
@@ -309,8 +316,9 @@ with no identity pin is signalled after a loud warning that it predates identity
 the component writes the pin, so later teardowns receive full match and mismatch protection. The
 same warning applies on platforms where no stable start token is available.
 
-Normal `down` remains destructive at the logical identity/durable layer. `--preserve-state` is a
-different maintenance transition: it suppresses leave/deprovision cleanup, persists the manager's
+`--with-agents` performs the old destructive logical teardown: managed processes stop and their
+credentials, ACL rows, and delivery footprints are deprovisioned. `--preserve-state` is a different
+maintenance transition: it stops retained processes while suppressing leave/deprovision cleanup, persists the manager's
 same-principal resume inventory, stops the entire stack without removing run/auth artifacts, and
 publishes a stable inode-bound cut only after every recorded process is proven stopped and the exact
 recorded NATS endpoint is unreachable. A missing or stale broker pidfile never counts as stopped. The

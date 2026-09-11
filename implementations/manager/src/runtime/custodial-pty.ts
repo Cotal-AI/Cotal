@@ -16,6 +16,7 @@ function defaultCustodyRoot(): string {
  */
 export class CustodialPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
+  readonly supportsRelease = true;
 
   constructor(private readonly root: string = process.env.COTAL_SEAT_ROOT ?? defaultCustodyRoot()) {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });

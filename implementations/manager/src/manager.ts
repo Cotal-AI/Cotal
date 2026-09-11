@@ -1199,6 +1199,11 @@ export class Manager {
     return this.runtime.kind;
   }
 
+  /** Whether a default process stop can drop manager-local custody without taking agents with it. */
+  get canSpareAgents(): boolean {
+    return this.runtime.kind !== "pty" || this.runtime.supportsRelease === true;
+  }
+
   /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
   adoptRuntimeHandle(reference: RuntimeReference): AgentHandle {
     return requireRuntimeAdopt(this.runtime, reference);

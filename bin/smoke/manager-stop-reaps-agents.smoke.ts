@@ -1,6 +1,5 @@
 /**
- * HONEST REPRODUCTION of #964: a stack stop reaps every managed agent, and there is no way to
- * opt out - pnpm smoke:manager-stop-reap
+ * REGRESSION for #964: default manager stop spares managed agents and explicit stop reaps them - pnpm smoke:manager-stop-reap
  *
  * The incident: one stop signal to the stack took six live seats with it, several holding
  * uncommitted work, and the logs read as a deliberate teardown. The mechanism is
@@ -90,9 +89,9 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-/** Cells that ran, before the count cell itself: 6 must + 8 ok. A throw lands in the catch as a
- *  counted failure, so a partial run can never print the OK banner. */
-const EXPECTED_CELLS = 15;
+/** Seventeen scenario cells run before the final count cell. A throw lands in the catch as a
+ * counted failure, so a partial run can never print the OK banner. */
+const EXPECTED_CELLS = 18;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   const end = Date.now() + ms;
@@ -213,7 +212,7 @@ const daemonSink = { out: "", exited: false };
 let mgr1: InstanceType<typeof Manager> | undefined;
 let mgr2: InstanceType<typeof Manager> | undefined;
 
-console.log("\n── #964: a stack stop reaps every managed agent ─────────────\n");
+console.log("\n── #964: default stop spares, explicit stop reaps ─────────────\n");
 try {
   console.log("manager-stop-reap: first-line");
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
@@ -268,7 +267,7 @@ try {
     daemonSink.out.slice(-500),
   );
 
-  // ── DEFECT phase: one live seat, then a plain stack stop ──────────────────────────────────────
+  // ── SPARE phase: one live seat, then a plain manager stop ─────────────────────────────────────
   mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await mgr1.start();
   await spawnSeat("seatA");
@@ -278,7 +277,7 @@ try {
   const credsA = optsByName.get("seatA")?.creds;
   ok("seat A's minted creds file exists on disk (the footprint a deprovision removes)", credsA !== undefined && existsSync(credsA), { credsA });
   await sleep(1500);
-  ok("instrument: seat A is still live after a settle window (its death below is stop-caused, not self-inflicted)", pidA !== undefined && alive(pidA));
+  ok("instrument: seat A is still live after a settle window", pidA !== undefined && alive(pidA));
 
   let stopError: string | undefined;
   console.log("manager-stop-reap: before-mgr1-stop");
@@ -288,36 +287,42 @@ try {
     stopError = (e as Error).message;
   }
   console.log("manager-stop-reap: manager-stop-returned");
-  mgr1 = undefined;
-  ok(
-    "#964 unfixed: a plain Manager.stop() - the stack-stop path bare `cotal down` drives - proceeds against a live managed seat with no refusal and no sparing mode",
-    stopError === undefined,
-    { stopError },
-  );
-  const deadA = pidA !== undefined && (await until(() => !alive(pidA), 10_000));
-  ok("#964 unfixed: the stack stop hard-stopped the live managed seat (its process is dead)", deadA, { pidA });
-  const credsAGone = credsA !== undefined && (await until(() => !existsSync(credsA), 10_000));
-  ok("#964 unfixed: the reaped seat was deprovisioned (its minted creds file is gone)", credsAGone, { credsA });
+  ok("plain Manager.stop() succeeds against a detachable live seat", stopError === undefined, { stopError });
+  ok("#964: default stop leaves the managed child running", pidA !== undefined && alive(pidA), { pidA });
+  ok("#964: default stop retains the minted credential", credsA !== undefined && existsSync(credsA), { credsA });
+  ok("#964: default stop drops the old manager table", (mgr1 as unknown as { agents: Map<string, unknown> }).agents.size === 0);
 
-  // ── CONTROL phase: a fresh manager, a second seat, a DELIBERATE despawn ───────────────────────
-  mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
+  // ── REAP phase: a second manager owns a separate root and deliberately reaps its seat ─────────
+  const rootB = join(base, "rootB");
+  mkdirSync(join(rootB, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(rootB, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: worker\nsubscribe: []\n---\nA supervised seat that exists to be reaped.\n");
+  saveSpaceAuth(authDir(rootB), auth);
+  recordMesh({ space: SPACE, server: SERVER, root: rootB, mode: "auth", ts: new Date().toISOString() });
+  mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: rootB });
   await mgr2.start();
-  must("a fresh manager starts over the same root (control phase)", true);
-  await spawnSeat("seatB");
+  must("a second manager starts on a separate root", true);
+  const prev = process.cwd();
+  process.chdir(rootB);
+  try {
+    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--agent", "seatcon", "--space", SPACE, "--name", "seatB"]));
+  } finally {
+    process.chdir(prev);
+  }
   const pidB = await until(() => pidOf(join(pidDir, "seatB.pid")) !== undefined, 15_000) ? pidOf(join(pidDir, "seatB.pid"))! : undefined;
-  must("seat B is live under the fresh manager", pidB !== undefined && alive(pidB) && optsByName.has("seatB"), { pidB });
+  must("seat B is live under the second manager", pidB !== undefined && alive(pidB) && optsByName.has("seatB"), { pidB });
   const credsB = optsByName.get("seatB")?.creds;
-  ok("seat B's creds file exists before the deliberate despawn", credsB !== undefined && existsSync(credsB), { credsB });
-  const stopped = await cliStop("seatB");
-  ok("control: a deliberate per-seat stop through the real CLI succeeds", stopped.code === 0, { code: stopped.code, out: stopped.out.slice(-400) });
-  const bReaped =
-    pidB !== undefined && (await until(() => !alive(pidB), 10_000)) &&
-    credsB !== undefined && (await until(() => !existsSync(credsB), 10_000));
-  ok(
-    "control: the deliberately-despawned seat shows the SAME terminal observables (process dead, creds gone) - on disk a mass reap is indistinguishable from an operator despawn",
-    bReaped,
-    { pidB, credsB },
-  );
+  ok("seat B's creds file exists before explicit reap", credsB !== undefined && existsSync(credsB), { credsB });
+  let reapError: string | undefined;
+  try {
+    await mgr2.stop({ withAgents: true });
+  } catch (e) {
+    reapError = (e as Error).message;
+  }
+  mgr2 = undefined;
+  ok("stop({ withAgents: true }) succeeds", reapError === undefined, { reapError });
+  ok("#964: explicit stop kills the managed child", pidB !== undefined && (await until(() => !alive(pidB), 10_000)), { pidB });
+  ok("#964: explicit stop deprovisions the minted credential", credsB !== undefined && (await until(() => !existsSync(credsB), 10_000)), { credsB });
+  ok("#964: explicit reap does not kill the independently spared child", pidA !== undefined && alive(pidA), { pidA });
 
   ok("every cell ran (silently skipped cells must not read as green)", pass + fail === EXPECTED_CELLS - 1, { pass, fail, expected: EXPECTED_CELLS - 1 });
 } catch (e) {
@@ -325,7 +330,7 @@ try {
   console.log(`  ✗ scenario threw: ${e instanceof Error ? e.message : String(e)}`);
 } finally {
   for (const m of [mgr1, mgr2]) {
-    try { if (m) await m.stop(); } catch { /* teardown only */ }
+    try { if (m) await m.stop({ withAgents: true }); } catch { /* teardown only */ }
   }
   // Backstop for seats the managers no longer track: only PIDs OUR children wrote to OUR pidfiles.
   for (const seat of ["seatA", "seatB"]) {
@@ -341,8 +346,8 @@ try {
 }
 
 if (fail > 0) {
-  console.log(`\nMANAGER-STOP-REAPS-AGENTS SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
+  console.log(`\nMANAGER-STOP-POLICY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } else {
-  console.log(`\nMANAGER-STOP-REAPS-AGENTS SMOKE OK ✅  (${pass} passed, ${fail} failed)`);
+  console.log(`\nMANAGER-STOP-POLICY SMOKE OK ✅  (${pass} passed, ${fail} failed)`);
 }
