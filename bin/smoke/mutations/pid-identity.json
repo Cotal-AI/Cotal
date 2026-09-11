@@ -68,8 +68,8 @@
     {
       "name": "M4 writeIdentityPin never writes a sibling (the #1437 pin-absent defect)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  if (!(\"token\" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud\n  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));",
-      "replace": "  if (!(\"token\" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud\n  return;",
+      "find": "  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));",
+      "replace": "  return;",
       "expectRed": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "cell": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
