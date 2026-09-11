@@ -66,12 +66,23 @@ const unmeasuredPreRedPaths = (out: string): string[] => {
   const block = out.match(/^PRE-RED TRANSITION UNMEASURED \(\d+ fixture\(s\)\)[^\n]*\n((?:  .+\n?)+)/m);
   return block ? [...block[1].matchAll(/^ {2}(\S+\.json) -> command:/gm)].map((m) => m[1]) : [];
 };
+/** Parse inherited fatal mutation verdicts: the same named verdict was already fatal at base. */
+const inheritedFatalPaths = (out: string): string[] => {
+  const block = out.match(/^FATAL INHERITED \(\d+ fixture\(s\)\)[^\n]*\n((?:  .+\n?)+)/m);
+  return block ? [...block[1].matchAll(/^ {2}(\S+\.json) -> mutation:/gm)].map((m) => m[1]) : [];
+};
+/** Parse fatal verdicts whose base comparison could not run. */
+const unmeasuredFatalPaths = (out: string): string[] => {
+  const block = out.match(/^FATAL TRANSITION UNMEASURED \(\d+ fixture\(s\)\)[^\n]*\n((?:  .+\n?)+)/m);
+  return block ? [...block[1].matchAll(/^ {2}(\S+\.json) -> transition:/gm)].map((m) => m[1]) : [];
+};
 /** Parse every fatal offender, retaining PRE-RED transition states as distinct output categories. */
 const offenderPaths = (out: string): string[] => [
   ...[...out.matchAll(/^MUTATION REPROOF FAILED \(\d+ fixture\(s\)\): (.+)$/gm)]
     .flatMap((m) => m[1].split(", ")),
   ...attributablePreRedPaths(out),
   ...unmeasuredPreRedPaths(out),
+  ...unmeasuredFatalPaths(out),
 ];
 /** Parse the inconclusive set: a selected fixture whose proof produced no evidence either way. */
 const inconclusivePaths = (out: string): string[] => {
@@ -388,6 +399,67 @@ try {
     );
   }
 
+  // 1b. Wrong-red control: a registered survivor already SURVIVED at base. A comment-only edit of
+  //     its guarded source selects the fixture without moving any mutation verdict. Before base-vs-head
+  //     attribution this is a red against the PR. After, it is inherited and nonfatal.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "s.mjs"), "export const s = () => 1;\n");
+        writeFileSync(join(r, "suites", "s.suite.mjs"), "import { s } from '../s.mjs';\nif (s() !== 1) { console.error('✗ FAIL: s is one'); process.exit(1); }\nconsole.log('✓ s is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "s.mutations.json"), JSON.stringify({
+          suite: ["suites/s.suite.mjs"],
+          command: "node suites/s.suite.mjs",
+          mutations: [
+            { name: "equivalent survivor", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 1 + 0;", expectRed: "s is one" },
+            { name: "positive control kill", file: "s.mjs", find: "export const s = () => 1;", replace: "export const s = () => 2;", expectRed: "s is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "s.mjs"), "// select without moving the survivor\nexport const s = () => 1;\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "an inherited SURVIVED selected only by a comment-only guarded-source change remains nonfatal",
+      status === 0
+        && eq(selectedPaths(out), ["smoke/mutations/s.mutations.json"])
+        && eq(inheritedFatalPaths(out), ["smoke/mutations/s.mutations.json"])
+        && offenderPaths(out).length === 0
+        && /SURVIVED /.test(out.replace(/\x1b\[[0-9;]*m/g, ""))
+        && out.includes("mutation: equivalent survivor; transition: base SURVIVED -> head SURVIVED"),
+      `status=${status} inherited=${JSON.stringify(inheritedFatalPaths(out))} offenders=${JSON.stringify(offenderPaths(out))}\n${out}`,
+    );
+  }
+
+  // 1c. Opposite control: the same two-mutation shape, but the PR actually moves a KILLED mutant
+  //     to SURVIVED by dropping the suite assertion. Attribution must still fail the gate.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "m.mjs"), "export const m = () => 1;\n");
+        writeFileSync(join(r, "suites", "m.suite.mjs"), "import { m } from '../m.mjs';\nif (m() !== 1) { console.error('✗ FAIL: m is one'); process.exit(1); }\nconsole.log('✓ m is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "m.mutations.json"), JSON.stringify({
+          suite: ["suites/m.suite.mjs"],
+          command: "node suites/m.suite.mjs",
+          mutations: [
+            { name: "equivalent survivor", file: "m.mjs", find: "export const m = () => 1;", replace: "export const m = () => 1 + 0;", expectRed: "m is one" },
+            { name: "positive control kill", file: "m.mjs", find: "export const m = () => 1;", replace: "export const m = () => 2;", expectRed: "m is one" },
+          ],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "suites", "m.suite.mjs"), "console.log('✓ m is one');\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a PR that moves a mutation from KILLED to SURVIVED still fails naming that fixture",
+      status === 1
+        && eq(offenderPaths(out), ["smoke/mutations/m.mutations.json"])
+        && /^MUTATION REPROOF FAILED /m.test(out)
+        && !inheritedFatalPaths(out).includes("smoke/mutations/m.mutations.json"),
+      `status=${status} offenders=${JSON.stringify(offenderPaths(out))} inherited=${JSON.stringify(inheritedFatalPaths(out))}\n${out}`,
+    );
+  }
+
   // Every member of a multi-source declaration participates in selection. The first source is the
   // suite command and remains unchanged; only the second metadata member moves.
   {
@@ -516,7 +588,7 @@ try {
     );
     const { status, out } = scan(root, base, head);
     check("canonical array to different array remains a selecting config change",
-      status !== 0 && eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+      eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
         && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
       `status=${status}\n${out}`);
   }
@@ -1260,8 +1332,8 @@ try {
         writeFileSync(join(r, "suites", "red.suite.mjs"), "import { red } from '../red.mjs';\nif (red() !== 1) process.exit(1);\nconsole.log('✓ red is one');\n");
         writeFileSync(join(r, "smoke", "mutations", "fatal.mutations.json"), JSON.stringify({
           suite: ["suites/fatal.suite.mjs"], command: "node suites/fatal.suite.mjs", mutations: [{
-            name: "equivalent fatal mutant", file: "fatal.mjs", find: "export const fatal = () => 1;",
-            replace: "export const fatal = () => 1 + 0;", expectRed: "fatal is one",
+            name: "fatal returns two", file: "fatal.mjs", find: "export const fatal = () => 1;",
+            replace: "export const fatal = () => 2;", expectRed: "fatal is one",
           }],
         }, null, 2));
         writeFileSync(join(r, "smoke", "mutations", "red.mutations.json"), JSON.stringify({
@@ -1273,6 +1345,7 @@ try {
       },
       (r) => {
         writeFileSync(join(r, "fatal.mjs"), "// select fatal fixture\nexport const fatal = () => 1;\n");
+        writeFileSync(join(r, "suites", "fatal.suite.mjs"), "console.log('✓ fatal is one');\n");
         writeFileSync(join(r, "suites", "red.suite.mjs"), "console.error('red suite now fails');\nprocess.exit(1);\n");
       },
     );

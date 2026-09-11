@@ -192,6 +192,14 @@
       "cell": "different line-initial semantic [WARN] failures remain different when stable sibling assertion lines match"
     },
     {
+      "name": "fatal attribution ignores the same mutation's base-to-head transition",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    const transition = compareFatalVerdicts(headRecordsClean, baseRecords);",
+      "replace": "    const transition = { inherited: [], attributable: headRecordsClean.filter((rec) => FATAL_VERDICTS.has(rec.verdict)) };",
+      "expectRed": "an inherited SURVIVED selected only by a comment-only guarded-source change remains nonfatal",
+      "cell": "an inherited SURVIVED selected only by a comment-only guarded-source change remains nonfatal"
+    },
+    {
       "name": "a depth-zero temp-root filename is erased as though it were a randomized directory",
       "file": "scripts/mutation-failure-signature.mjs",
       "find": "      return { kind: \"origin\", value: separator === -1 ? `<TMP>/${remainder}` : `<TMP>/${remainder.slice(separator + 1)}` };",
