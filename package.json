@@ -159,6 +159,7 @@
     "smoke:control-auth": "tsx packages/core/smoke/control-auth.smoke.ts",
     "smoke:manager-split": "tsx packages/core/smoke/manager-split-auth.smoke.ts",
     "smoke:cred-lifetime": "tsx packages/core/smoke/cred-lifetime-auth.smoke.ts",
+    "smoke:reconnect-fence-close": "tsx packages/core/smoke/reconnect-fence-close.smoke.ts",
     "smoke:standing-renewal": "tsx packages/core/smoke/standing-renewal-auth.smoke.ts",
     "smoke:seat-creds-renewal": "tsx extensions/connector-core/smoke/seat-creds-renewal.smoke.ts",
     "smoke:doctor-auth": "tsx implementations/cli/smoke/doctor-auth.smoke.ts",

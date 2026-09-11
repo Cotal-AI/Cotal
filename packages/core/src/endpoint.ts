@@ -859,6 +859,22 @@ export class CotalEndpoint extends EventEmitter {
     if (protocol?.options) protocol.options.reconnect = false;
   }
 
+  /** Close a connection whose library reconnect has already been disabled. `drain()` flushes with a
+   *  PING and waits for the matching PONG; nats-core only rejects that waiter inside reconnect
+   *  `prepare()`, so a half-open socket with reconnect=false leaves drain pending until the 2-minute
+   *  ping interval times out. `close()` tears the transport down without that round-trip, which is
+   *  the same public path {@link closeFailedBind} already uses when there is no graceful delivery
+   *  contract left. */
+  private async closeWithoutLibraryReconnect(nc: NatsConnection | undefined): Promise<void> {
+    if (!nc) return;
+    this.disableLibraryReconnect(nc);
+    try {
+      await nc.close();
+    } catch {
+      /* already closing */
+    }
+  }
+
   /** Disable nats-core reconnect shortly before the JWT authenticated on this wire expires. The small
    *  lead makes the policy change precede the broker's expiry close even when both timers wake in the
    *  same event-loop turn. A credential adoption does not move this fence until the resident reconnect
@@ -1396,11 +1412,7 @@ export class CotalEndpoint extends EventEmitter {
     const nc = this.nc;
     if (nc) this.disableLibraryReconnect(nc);
     this.clearConnectionScoped();
-    try {
-      await nc?.drain();
-    } catch {
-      /* already closing */
-    }
+    await this.closeWithoutLibraryReconnect(nc);
     this.nc = undefined;
     return true;
   }
@@ -1443,7 +1455,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** The transition: stop the connection-scoped timers FIRST (so nothing live touches
-   *  this.nc during the null window), drop the connection refs, drain the old nc, then
+   *  this.nc during the null window), drop the connection refs, close the old nc, then
    *  rebind + re-arm the supervisor on the fresh connection. clearConnectionScoped is
    *  idempotent, so connectAndBind's own call here is a noop. */
   private async doRebuild(): Promise<void> {
@@ -1452,7 +1464,7 @@ export class CotalEndpoint extends EventEmitter {
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
-      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before drain.
+      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
       // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
       if (oldNc && !oldNc.isClosed())
         await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
@@ -1476,11 +1488,7 @@ export class CotalEndpoint extends EventEmitter {
       // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
       this.emit("transport", { connected: false } satisfies TransportState);
       this.emit("connection", { connected: false });
-      try {
-        await oldNc?.drain();
-      } catch {
-        /* already closing */
-      }
+      await this.closeWithoutLibraryReconnect(oldNc);
       await this.connectAndBind();
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
@@ -1625,7 +1633,7 @@ export class CotalEndpoint extends EventEmitter {
       /* best-effort graceful leave */
     }
     try {
-      await this.nc?.drain();
+      await this.closeWithoutLibraryReconnect(this.nc);
     } catch {
       /* ignore */
     }

@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "packages/core/smoke/reconnect-fence-close.smoke.ts"
+  ],
+  "guard": "after Cotal disables nats-core reconnect, teardown closes the connection instead of draining it, so a half-open socket cannot leave stop() waiting for a PONG",
+  "command": "pnpm smoke:reconnect-fence-close",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/reconnect-fence-close.json",
+  "why": [
+    "nats-core 3.4.0 drain() flushes with a PING and waits for the matching PONG.",
+    "That waiter is only rejected inside reconnect prepare(). With reconnect=false, a half-open socket leaves drain pending until the 2-minute ping interval.",
+    "The child grades stop() returning inside an 8s budget. Restoring drain() in the helper means the child never prints STOPPED and the parent reds the named cell."
+  ],
+  "mutations": [
+    {
+      "name": "a reconnect-disabled teardown drains instead of closing",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.close();\n",
+      "replace": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.drain();\n",
+      "expectRed": "stop() after a reconnect-disable on a half-open socket returns without waiting for a drain PONG",
+      "cell": "stop() after a reconnect-disable on a half-open socket returns without waiting for a drain PONG",
+      "note": "With drain restored, nats-core waits for a PONG that the cut relay never delivers. The child is killed at the 8s budget without printing STOPPED, and the parent reds this named cell."
+    }
+  ]
+}
