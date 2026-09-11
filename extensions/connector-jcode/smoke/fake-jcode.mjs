@@ -331,9 +331,20 @@ const server = createServer((socket) => {
           }
           break;
         }
-        case "get_runtime_info":
-          reply({ ev: "runtime_info", session_id: frame.session_id, model: process.env.FAKE_JCODE_RUNTIME_MODEL ?? "fake-model", routes: [] });
+        case "get_runtime_info": {
+          const model = process.env.FAKE_JCODE_RUNTIME_MODEL ?? "fake-model";
+          const provider = process.env.FAKE_JCODE_RUNTIME_PROVIDER ?? "fake-provider";
+          reply({
+            ev: "runtime_info",
+            session_id: frame.session_id,
+            provider,
+            model,
+            routes: process.env.FAKE_JCODE_RUNTIME_ROUTES
+              ? JSON.parse(process.env.FAKE_JCODE_RUNTIME_ROUTES)
+              : [{ model, provider, api_method: "fake", available: true, detail: "fake route" }],
+          });
           break;
+        }
         case "send_message": {
           if (process.env.FAKE_JCODE_READINESS_REFUSAL === "1" && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {
             event({

@@ -28,6 +28,12 @@ export interface RuntimeIdentity {
   routes?: RouteInfo[];
 }
 
+/** The route serving `model`. RuntimeInfo's active provider disambiguates duplicate model ids. */
+export function activeModelRoute(runtime: RuntimeIdentity | undefined, model: string): RouteInfo | undefined {
+  const matches = runtime?.routes?.filter((route) => route?.model === model) ?? [];
+  return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);
+}
+
 /**
  * One line naming the effective route for `model`.
  *
@@ -37,7 +43,7 @@ export interface RuntimeIdentity {
  * silence is what made this expensive to diagnose.
  */
 export function describeRoute(runtime: RuntimeIdentity | undefined, model: string): string {
-  const matched = runtime?.routes?.find((r) => r?.model === model);
+  const matched = activeModelRoute(runtime, model);
   const provider = matched?.provider ?? runtime?.provider;
   if (!provider) return `model ${model} is served by an unreported provider (the Harness API named none)`;
   const via = matched?.api_method ? ` via ${matched.api_method}` : "";

@@ -65,6 +65,20 @@
       "find": "  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
       "replace": "  if (slash <= 0) return { ok: true };",
       "expectRed": "a trailing slash is not a prefix"
+    },
+    {
+      "name": "M7 choose the first duplicate model route instead of the active provider",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);",
+      "replace": "  return matches[0];",
+      "expectRed": "the active provider wins when duplicate routes share a model id"
+    },
+    {
+      "name": "M8 guess among ambiguous duplicate model routes without an active provider",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);",
+      "replace": "  return matches.find((route) => route.provider === runtime?.provider) ?? matches[0];",
+      "expectRed": "ambiguous duplicate routes stay unverified when active provider is absent"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "command": "pnpm --filter @cotal-ai/connector-jcode build && pnpm smoke:jcode-host",
   "progressPattern": "✓",
-  "minTicks": 12,
+  "minTicks": 16,
   "mutations": [
     {
       "name": "Jcode host applies the requested reasoning effort to its session",
@@ -12,11 +12,43 @@
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {
+      "name": "Jcode host delays the requested effort until after a session turn",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        await client.setReasoningEffort(sessionId, config.variant);",
+      "replace": "        setTimeout(() => void client.setReasoningEffort(sessionId, config.variant!), 50);",
+      "expectRed": "reasoning effort is set before the session's first turn",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    },
+    {
+      "name": "Jcode host verifies RuntimeInfo before applying effort",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const runtime = config.model || config.variant ? await client.getRuntimeInfo(sessionId) : undefined;",
+      "replace": "    const runtime = config.model ? await client.getRuntimeInfo(sessionId) : undefined;",
+      "expectRed": "the selected model and provider route are verified before applying reasoning effort",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    },
+    {
+      "name": "Jcode host selects the active provider route instead of the first duplicate",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;",
+      "replace": "    const route = runtime?.routes?.find((candidate) => candidate.model === effectiveModel);",
+      "expectRed": "accepted effort is attributed to the active provider route, not the first/default route",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    },
+    {
       "name": "Jcode host refuses the launch when the provider rejects the tier",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        throw jcodeEffortRefusal(error, config.variant, model);",
-      "replace": "        void error;",
+      "find": "        throw jcodeEffortRefusal(error, config.variant, {",
+      "replace": "        void error;\n        return;\n        throw jcodeEffortRefusal(error, config.variant, {",
       "expectRed": "a tier the provider refuses ends the launch",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    },
+    {
+      "name": "Jcode host renders unsupported capability as a bad tier",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "    return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);",
+      "replace": "    return new JcodeEffortRefusal(requestedTier, identity.model, identity.provider, identity.apiMethod, []);",
+      "expectRed": "capability refusal is not relabelled as a tier-ladder refusal",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     },
     {

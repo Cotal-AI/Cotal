@@ -314,6 +314,11 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
       FAKE_JCODE_JOURNAL: journal,
+      FAKE_JCODE_RUNTIME_PROVIDER: "selected-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "default-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "fake-model", provider: "selected-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "jcodepeer",
@@ -442,6 +447,14 @@ try {
   check("reasoning effort is applied to the host's own session", effortFrame?.session_id === "fake-session", effortFrame);
   const firstTurnAt = requests.findIndex((entry) => (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply);
   check("reasoning effort is set before the session's first turn", effortAt >= 0 && firstTurnAt > effortAt, { effortAt, firstTurnAt });
+  const runtimeAt = requests.findIndex((entry) => (entry.frame as { req?: string }).req === "get_runtime_info");
+  check("the selected model and provider route are verified before applying reasoning effort", runtimeAt >= 0 && effortAt > runtimeAt, { runtimeAt, effortAt });
+  check(
+    "accepted effort is attributed to the active provider route, not the first/default route",
+    peerLog.includes("model fake-model is served by provider selected-provider via responses") &&
+      !peerLog.includes("model fake-model is served by provider default-provider"),
+    peerLog,
+  );
 
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
@@ -731,6 +744,64 @@ try {
     "a seat whose effort was refused never takes a turn",
     !refusedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
     refusedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
+  );
+
+  // The Harness operation has two distinct invalid_request outcomes. A model/profile can reject the
+  // reasoning-effort CAPABILITY itself, with no accepted-tier ladder. That is not a bad tier and must
+  // not send the operator searching for a neighbouring value that the active route will also refuse.
+  const unsupportedLog = join(root, "unsupported-effort.jsonl");
+  const unsupported = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: unsupportedLog,
+      FAKE_JCODE_REFUSE_EFFORT: "high",
+      FAKE_JCODE_EFFORT_ERROR: "Reasoning effort is not supported by the current model/profile. It works for OpenRouter, DeepSeek-family and GPT-family reasoning models, and profiles with supports_reasoning_effort = true.",
+      FAKE_JCODE_RUNTIME_MODEL: "capability-model",
+      FAKE_JCODE_RUNTIME_PROVIDER: "profile-without-effort",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "capability-model", provider: "wrong-default", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "capability-model", provider: "profile-without-effort", api_method: "openai-compatible:plain", available: true, detail: "active route" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "unsupportedpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "capability-model",
+      COTAL_VARIANT: "high",
+      COTAL_CONTROL_SOCKET: controlSock("unsupported-control.sock"),
+      COTAL_CONTROL_TOKEN: "unsupported-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let unsupportedErr = "";
+  unsupported.stderr?.on("data", (chunk: Buffer) => (unsupportedErr += chunk.toString()));
+  await Promise.race([once(unsupported, "exit"), sleep(20_000)]);
+  const unsupportedCode = unsupported.exitCode;
+  await stopHostTree(unsupported, "SIGKILL");
+  check("a verified route without reasoning-effort capability ends the launch", unsupportedCode === 1, { unsupportedCode, unsupportedErr });
+  check(
+    "capability refusal is not relabelled as a tier-ladder refusal",
+    unsupportedErr.includes("does not support reasoning effort") &&
+      unsupportedErr.includes('model "capability-model"') &&
+      unsupportedErr.includes('provider "profile-without-effort"') &&
+      unsupportedErr.includes('via "openai-compatible:plain"') &&
+      !unsupportedErr.includes("accepted tiers:") &&
+      !unsupportedErr.includes("Jcode reasoning effort refused"),
+    unsupportedErr,
+  );
+  check("a route without effort capability never reaches the roster", !announced.has("unsupportedpeer"), [...announced]);
+  const unsupportedEntries = readJsonLines<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>(unsupportedLog);
+  check(
+    "a route without effort capability never takes a turn",
+    !unsupportedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
+    unsupportedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
   );
 
   const modelCanary = "MODEL-REFUSAL-CANARY-985-DO-NOT-PRINT";

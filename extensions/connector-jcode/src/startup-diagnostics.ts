@@ -70,9 +70,23 @@ export class JcodeEffortRefusal extends Error {
   constructor(
     readonly requestedTier: string,
     readonly effectiveModel: string,
+    readonly provider: string,
+    readonly apiMethod: string | undefined,
     readonly acceptedLadder: readonly string[],
   ) {
     super("Jcode reasoning effort was refused");
+  }
+}
+
+/** A verified model route whose provider/profile has no reasoning-effort surface. */
+export class JcodeEffortUnsupported extends Error {
+  constructor(
+    readonly requestedTier: string,
+    readonly effectiveModel: string,
+    readonly provider: string,
+    readonly apiMethod: string | undefined,
+  ) {
+    super("Jcode route does not support reasoning effort");
   }
 }
 
@@ -130,19 +144,32 @@ function acceptedEffortLadder(error: unknown): string[] {
 
 /** Compose a bounded effort-refusal diagnostic. `invalid_request` is intentionally fixed: Jcode
  * rejected this API operation, while provider-supplied codes and text are untrusted. */
-export function jcodeEffortRefusal(error: unknown, requestedTier: string, effectiveModel: string): JcodeEffortRefusal {
-  return new JcodeEffortRefusal(requestedTier, effectiveModel, acceptedEffortLadder(error));
+export interface JcodeEffortIdentity {
+  model: string;
+  provider: string;
+  apiMethod?: string;
 }
 
-/**
- * The model an effort-refusal diagnostic may name.
- *
- * Prefer the operator pin. RuntimeInfo can still report the session default after `setModel`
- * (measured: a CLI spawn that died on a variant-tier refusal recorded deepseek-v4-pro despite
- * `--model grok-4.6`). Fall back to RuntimeInfo only when no pin was requested.
- */
-export function effortRefusalModel(requested: string | undefined, runtime: string | undefined): string {
-  return requested ?? runtime ?? "(the provider default)";
+/** Classify the two stable invalid-request outcomes without rendering downstream text. */
+export function jcodeEffortRefusal(
+  error: unknown,
+  requestedTier: string,
+  identity: JcodeEffortIdentity,
+): JcodeEffortRefusal | JcodeEffortUnsupported {
+  if (
+    error instanceof HarnessError &&
+    error.code === "invalid_request" &&
+    /^invalid_request: Reasoning effort is not supported by the current model\/profile\./.test(error.message)
+  ) {
+    return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);
+  }
+  return new JcodeEffortRefusal(
+    requestedTier,
+    identity.model,
+    identity.provider,
+    identity.apiMethod,
+    acceptedEffortLadder(error),
+  );
 }
 
 /**
