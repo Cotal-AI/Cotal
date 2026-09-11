@@ -1,0 +1,2 @@
+# #1387: --max-sessions round-trips through the mesh registry across repair/resume.
+smoke:max-sessions-persistence

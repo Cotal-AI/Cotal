@@ -34,7 +34,7 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  the argv site), and omitting it leaves a standing-credential daemon connecting
  *  plaintext-capable to a TLS broker while looking entirely healthy.
  *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number };
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number };
 
 /** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp

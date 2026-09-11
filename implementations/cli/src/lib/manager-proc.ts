@@ -10,8 +10,36 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
 } from "@cotal-ai/workspace";
+/** The `--max-sessions` value a live `cotal supervise` argv is actually serving.
+ *
+ *  The manager reads that flag only at start. A refresh that records a different number while this
+ *  process stays up is a durable lie: MeshEntry claims a ceiling the live plane is not enforcing.
+ *  Absent from argv means the plane default of 64, not a recorded decision. */
+export function maxSessionsFromSuperviseArgv(command: string): number | undefined {
+  const tokens = command.trim().split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    let raw: string | undefined;
+    if (token === "--max-sessions") raw = tokens[i + 1];
+    else if (token.startsWith("--max-sessions=")) raw = token.slice("--max-sessions=".length);
+    if (raw === undefined) continue;
+    try {
+      return parsePositiveIntegerFlag("--max-sessions", raw);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** True only when the live supervisor argv is proven to already be serving `requested`.
+ *  An unreadable command line cannot prove that, so it is a refusal — persist would guess. */
+export function liveManagerWouldApplyMaxSessions(command: string | undefined, requested: number): boolean {
+  if (command === undefined) return false;
+  return maxSessionsFromSuperviseArgv(command) === requested;
+}
 
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
  *  ones a caller reaches with an explicit `--space` take it as their last argument: the records are
@@ -147,8 +175,22 @@ export function managerHasDeliveryMarker(space: string = folderSpace()): boolean
  *  composed `cotal` binary registers it; `process.execArgv` carries the tsx loader in dev and is
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
+export type ManagerStartOpts = {
+  space?: string;
+  server?: string;
+  spawn?: string[];
+  launch?: string;
+  runtime?: string;
+  attachHost?: string;
+  resumeAttempt?: string;
+  resumeCommitToken?: string;
+  wsPort?: number;
+  /** Live-session ceiling forwarded as `supervise --max-sessions`. */
+  maxSessions?: number;
+};
+
 export function startManagerDetached(
-  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  o: ManagerStartOpts = {},
 ): number {
   const space = o.space ?? folderSpace();
   // Clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded root
@@ -187,6 +229,7 @@ export function startManagerDetached(
     ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
+    ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -252,7 +295,7 @@ export function assertManagerRecordReplaceable(
 }
 
 export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
 ): { running: boolean } {

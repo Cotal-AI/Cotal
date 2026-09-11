@@ -71,3 +71,16 @@ export function mergeLaunchOptions(
   const merged = { ...base, ...override };
   return Object.keys(merged).length ? merged : undefined;
 }
+
+/**
+ * Parse a positive integer CLI flag. Absent stays undefined (the callee's default); anything else
+ * that is not a safe integer ≥ 1 fails loud naming the flag, never silently becoming NaN or the
+ * default. Used by `--max-sessions` so a typo cannot drop the live-session ceiling to 64.
+ */
+export function parsePositiveIntegerFlag(flag: string, raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1)
+    throw new Error(`${flag} must be a positive integer (got ${JSON.stringify(raw)})`);
+  return n;
+}

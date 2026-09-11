@@ -173,6 +173,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
+| `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
@@ -778,7 +779,10 @@ which is what a script wants.
 
 Each reconnect also hands the abandoned session back to the manager, over the first link that can
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
-time. If that message never gets a link, the attach says so when it ends.
+time. If that message never gets a link, the attach says so when it ends. The live-session ceiling
+defaults to 64 concurrent sessions (`--max-sessions`); the browser console opens one session per
+pane, so a dashboard over a large mesh should size for agents × panes. Hitting the ceiling refuses
+before a credential is minted and names `--max-sessions`.
 
 Which mesh `attach` resolves also decides **whose trust it redeems with**. Redeeming a session grant
 means minting a short-lived, session-scoped credential from the space's seed, and that seed comes
@@ -914,6 +918,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
+| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
 | `--roster <file>` | none | Declarative roster to boot at startup |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |

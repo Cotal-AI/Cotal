@@ -342,7 +342,9 @@ export interface ManagerOptions {
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
    *  own connection, and establishment is caller-triggered, so this is the process-level resource
    *  bound; exceeding it refuses `resource-exhausted` before either happens. Operator-set because
-   *  the right number is deployment-shaped — the browser console holds one session per open pane.
+   *  the right number is deployment-shaped — the browser console holds one session per open pane,
+   *  so size for agents × panes, not agent count. Set it with `cotal supervise --max-sessions` or
+   *  `cotal up --max-sessions` (recorded on the mesh so a repair does not silently drop to 64).
    *  {@link ManagerSessionPlaneDeps.maxSessions} carries the per-caller-scoping residual. */
   maxSessions?: number;
   /** Remote manager-service prepare material. The participant owns every private seed; the host

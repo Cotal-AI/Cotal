@@ -65,6 +65,7 @@ import {
   membershipRwCredsKey,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  parsePositiveIntegerFlag,
   recordMesh,
   meshesForRoot,
   removeMesh,
@@ -112,7 +113,7 @@ import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLogDisplayPath, managerUp, stopManager } from "../lib/manager-proc.js";
+import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -178,6 +179,7 @@ export const upFlags: FlagSpec[] = [
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
+  { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling for the mesh manager (default 64; one session per console pane, so size for agents × panes). Recorded and reused by later manager launches" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
 ];
@@ -219,6 +221,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
+    "max-sessions"?: string;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };
@@ -494,6 +497,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
   const publicExchange = publicExchangeArgs(values, wantUser);
+  const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
   // rotate; the request is a misunderstanding to name, never a silent no-op that reports success.
   if (values["rotate-sys"] && values.open) {
@@ -582,6 +586,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         userAuth: wantUser,
         idp: values.idp,
         rotateSys: values["rotate-sys"],
+        maxSessions,
       });
       return;
     }
@@ -599,6 +604,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         userAuth: wantUser,
         idp: values.idp,
         rotateSys: values["rotate-sys"],
+        maxSessions,
       });
     } finally {
       releaseMaintenanceLock(lock);
@@ -743,6 +749,22 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      // `--max-sessions` is fixed when the manager starts. A refresh reuses a live manager as-is
+      // (`ensureManager` returns immediately), then used to persist the requested ceiling anyway.
+      // That printed `✓ already running` over an unchanged plane and left MeshEntry lying about it.
+      // Refuse rather than warn: the flag either applies or the command fails. Matching the live
+      // argv is a no-op and may proceed. An unreadable command line cannot prove a match.
+      if (maxSessions !== undefined) {
+        const live = managerRecordState(undefined, undefined, held.space);
+        if (live.state === "alive" && !liveManagerWouldApplyMaxSessions(live.command, maxSessions)) {
+          console.error(
+            c.red(
+              `✗ mesh "${held.space}" is already running at ${server} - a running manager can't change --max-sessions (it is fixed at start); \`cotal down\` it first, then \`cotal up --max-sessions ${maxSessions}\``,
+            ),
+          );
+          process.exit(1);
+        }
+      }
       // Live INFO must agree with the recorded/requested transport. A bare refresh that greets
       // "already running" over a plaintext listener while policy claims TLS is S5's second half —
       // the refuse left a durable lie and this path used to reprint TLS success over cleartext.
@@ -860,17 +882,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const controlPlane = await startDeliveryWithBroker(held.space, server, wantTls, {
           runtime: values.runtime,
           attachHost: attachHostFor(held.space, values.host),
+          maxSessions: maxSessionsFor(held.space, maxSessions),
         });
         if (!controlPlane) process.exitCode = 1;
       }
       const heldAttachHost = attachHostFor(held.space, values.host);
+      const heldMaxSessions = maxSessionsFor(held.space, maxSessions);
       // A broker was already answering here — this branch starts nothing, so it must not claim the
       // record as ours (see `Provenance`).
       // `tlsRequired` is CARRIED FORWARD, not re-derived. This branch starts no listener, so it has
       // no transport decision to record — and `recordOurMesh` writes the entry whole, so omitting
       // the field here would erase the requirement on every bare refresh, exactly the way dropping
       // `attachHost` would silently demote the mesh to loopback.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ts: new Date().toISOString() }, "refresh");
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ...(heldMaxSessions !== undefined ? { maxSessions: heldMaxSessions } : {}), ts: new Date().toISOString() }, "refresh");
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -919,6 +943,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // from "nobody asked", or every mesh would persist an exposure decision it never made.
       host: values.host,
       runtime: values.runtime,
+      maxSessions,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
       ...(restored ? {
@@ -1097,6 +1122,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // registry — and the record below is written whole, so reading it afterwards would find the
     // field this very call had just erased.
     const effectiveAttachHost = attachHostFor(space, values.host);
+    const effectiveMaxSessions = maxSessionsFor(space, maxSessions);
     recordOurMesh({
       space, server, root: cotalRoot(),
       mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
@@ -1110,6 +1136,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // previous launch. The bare case stays absent rather than recording the loopback default as
       // though the operator had chosen it.
       ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
+      ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
       ts: new Date().toISOString(),
     }, "started");
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
@@ -1122,6 +1149,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // from another machine; without it the attach face stays loopback-only, so exposing terminals
       // is never a side effect of anything but the operator binding the mesh somewhere reachable.
       attachHost: effectiveAttachHost,
+      maxSessions: effectiveMaxSessions,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
       wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
@@ -1455,6 +1483,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, held
   // record built without this field would erase the operator's decision, and the adopted manager
   // below would then be launched loopback-only from an entry that no longer remembers otherwise.
   const adoptAttachHost = attachHostFor(pending.space);
+  const adoptMaxSessions = maxSessionsFor(pending.space);
   recordOurMesh({
     space: pending.space,
     server: pending.server,
@@ -1464,11 +1493,13 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, held
     tlsRequired: adoptedTlsRequired(pending.root),
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
+    ...(adoptMaxSessions !== undefined ? { maxSessions: adoptMaxSessions } : {}),
     ts: new Date().toISOString(),
   }, "started");
   const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
     runtime: pending.runtime,
     attachHost: adoptAttachHost,
+    maxSessions: adoptMaxSessions,
     resumeAttempt: pending.attemptId,
     resumeCommitToken: pending.managerCommit?.durableCommitToken,
   });
@@ -1504,6 +1535,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?:
   // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
   // `recordOurMesh` rewrites the entry, or a restore silently demotes the mesh to loopback attach.
   const restoreAttachHost = attachHostFor(prepared.space);
+  const restoreMaxSessions = maxSessionsFor(prepared.space);
   recordOurMesh({
     space: prepared.space,
     server: prepared.server,
@@ -1514,11 +1546,13 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?:
     tlsRequired: adoptedTlsRequired(prepared.root),
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
+    ...(restoreMaxSessions !== undefined ? { maxSessions: restoreMaxSessions } : {}),
     ts: new Date().toISOString(),
   }, "started");
   const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, adoptedTlsRequired(prepared.root), {
     runtime: prepared.runtime,
     attachHost: restoreAttachHost,
+    maxSessions: restoreMaxSessions,
     resumeAttempt: prepared.attemptId,
     resumeCommitToken: prepared.managerCommit?.durableCommitToken,
   });
@@ -1893,7 +1927,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   try {
     // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
     // manifest actually declared is an exposure decision worth persisting.
-    ({ pid, controlPlane, authService } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath }));
+    ({ pid, controlPlane, authService } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -1939,6 +1973,8 @@ interface UpManifestFlags {
   /** `--rotate-sys` on the manifest path: the same class-3 renewal, carried to the ONE boot that
    *  renders the broker config (`startMeshDetached`), never to the owner-derivation pre-resolve. */
   rotateSys?: boolean;
+  /** Operator-set live-session ceiling, recorded and handed to the manager started with the mesh. */
+  maxSessions?: number;
 }
 
 /** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
@@ -1996,6 +2032,7 @@ async function startDeliveryWithBroker(
     resumeCommitToken?: string;
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
+    maxSessions?: number;
   },
 ): Promise<boolean> {
   try {
@@ -2048,6 +2085,7 @@ export interface DetachOpts {
   launch?: string;
   resumeAttempt?: string;
   resumeCommitToken?: string;
+  maxSessions?: number;
   /** Maintenance-bound listener (restore target or ordinary-resume source): named spawn, durable
    *  ownership bind immediately after, wire verification after readiness. */
   boundListener?: {
@@ -2168,6 +2206,7 @@ export async function startMeshDetached(
   // RESUMES an already-recorded mesh, whose exposure decision exists only in the registry entry the
   // call below rewrites.
   const effectiveAttachHost = attachHostFor(space, opts.host);
+  const effectiveMaxSessions = maxSessionsFor(space, opts.maxSessions);
   recordOurMesh({
     space, server, root: cotalRoot(),
     mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
@@ -2177,6 +2216,7 @@ export async function startMeshDetached(
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     // Persist only a real decision — declared now, or carried forward — never the loopback default.
     ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
+    ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
     ts: new Date().toISOString(),
   }, "started");
   // Commit policy BEFORE delivery launch (S9). Listener is proved; refuse paths never reach here.
@@ -2188,6 +2228,7 @@ export async function startMeshDetached(
     launch: opts.launch,
     // See the foreground path: the broker's bind address is what makes attach reachable off-box.
     attachHost: effectiveAttachHost,
+    maxSessions: effectiveMaxSessions,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
@@ -2296,6 +2337,21 @@ export async function claimSpace(space: string, server: string, root: string): P
  */
 export function attachHostFor(space: string, explicit?: string): string | undefined {
   return explicit ?? findMesh(space)?.attachHost;
+}
+
+/**
+ * The manager live-session ceiling for a launch into `space`.
+ *
+ * Like {@link attachHostFor}, this is an operator DECISION (`--max-sessions`), not something later
+ * commands can reconstruct. Every later manager launch — same-root repair, resume, `spawn -f` —
+ * has no flag of its own unless the operator typed one, so it reads the decision back. Without
+ * this a replacement manager silently falls to 64 and the next console pane past that is refused.
+ *
+ * An explicit value on THIS invocation always wins. Absent both, undefined — the plane's own
+ * default of 64, unchanged, and nothing is recorded as though chosen.
+ */
+export function maxSessionsFor(space: string, explicit?: number): number | undefined {
+  return explicit ?? findMesh(space)?.maxSessions;
 }
 
 /** Record this mesh in the registry, and set it as the `current` default when there's no usable one
