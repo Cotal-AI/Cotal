@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
   ],
-  "guard": "all three connector-owned Jcode model startup refusals retain distinct allow-listed public codes and their scrubbed fatal line is persisted in the managed seat's connector log",
+  "guard": "connector-owned prefix and model refusals retain distinct allow-listed public codes and persisted scrubbed fatal lines, while stale RuntimeInfo.model cannot override a requested model whose active provider route is verified",
   "command": "pnpm smoke:jcode-host",
   "progressPattern": "\u2713",
   "minTicks": 30,
@@ -10,9 +10,11 @@
   "why": [
     "Issue #985 reproduced a prefixed model reaching the managed session and dying before set_model,",
     "while the host rendered only `startup failed (unknown)` and left no connector log.",
-    "The host smoke drives that boundary plus the SDK set_model rejection and the post-readiness",
-    "runtime mismatch through real child processes. Each mutation removes one distinct refusal code",
-    "or a persistence write and names the assertion that must go red.",
+    "The host smoke drives that boundary plus the SDK set_model rejection through real child",
+    "processes. It also reproduces measured RuntimeInfo.model lag after successful setModel: the",
+    "session journal and active provider route carry the requested pin while the advisory model field",
+    "still reports the old default. Mutations reintroduce the obsolete equality gate independently for",
+    "model+variant and model-only launches, so both compatibility contracts have a named red.",
     "Persistence is covered twice on purpose. Removing the ONE shared write in startup-diagnostics.ts",
     "stops every diagnostic being persisted, so the suite's first connector-log cell is its honest",
     "first red; naming the later fatal cell there would be a red the mutation never reaches.",
@@ -35,11 +37,18 @@
       "expectRed": "model_refused names the connector-owned refusal"
     },
     {
-      "name": "runtime model mismatches collapse back to the unknown startup code",
+      "name": "model and variant startup trusts stale RuntimeInfo.model over the requested active route",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        \"model_mismatch\",\n        `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime?.model)} \u2014 refusing a mislabelled mesh seat`,",
-      "replace": "        \"unknown\" as never,\n        `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime?.model)} \u2014 refusing a mislabelled mesh seat`,",
-      "expectRed": "model_mismatch names the connector-owned refusal"
+      "find": "    const effectiveModel = config.model ?? runtime?.model;\n    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;",
+      "replace": "    const effectiveModel = config.model ?? runtime?.model;\n    if (config.model && config.variant && runtime?.model !== config.model)\n      throw new JcodeConnectorError(\"model_mismatch\", \"mutant trusts stale RuntimeInfo.model\");\n    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;",
+      "expectRed": "model and variant launch succeeds when RuntimeInfo.model lags but the requested active route is verified"
+    },
+    {
+      "name": "model-only startup trusts stale RuntimeInfo.model over the requested active route",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const effectiveModel = config.model ?? runtime?.model;\n    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;",
+      "replace": "    const effectiveModel = config.model ?? runtime?.model;\n    if (config.model && !config.variant && runtime?.model !== config.model)\n      throw new JcodeConnectorError(\"model_mismatch\", \"mutant trusts stale RuntimeInfo.model\");\n    const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;",
+      "expectRed": "model-only launch succeeds when RuntimeInfo.model lags but the requested active route is verified"
     },
     {
       "name": "all connector diagnostics stop being persisted per seat",

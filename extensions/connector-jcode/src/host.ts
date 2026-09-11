@@ -819,16 +819,13 @@ export async function runJcodeHost(): Promise<void> {
         throw new JcodeConnectorError("model_refused", "Jcode refused the requested model", { cause: error });
       }
     }
-    // RuntimeInfo is the Harness authority for the route that setModel actually selected. Verify it
-    // before applying a variant, not after a provider-backed readiness turn. A duplicated model id can
-    // appear on several routes, so the active provider disambiguates the one that will receive effort.
+    // RuntimeInfo's active provider and routes are the Harness authority for the route setModel
+    // selected. RuntimeInfo.model can lag behind the persisted session pin, so a requested model is
+    // identified by that pin plus its active route. Variant-only launches still use RuntimeInfo.model.
+    // Verify the route before applying a variant, not after a provider-backed readiness turn. A
+    // duplicated model id can appear on several routes, so the active provider disambiguates it.
     const runtime = config.model || config.variant ? await client.getRuntimeInfo(sessionId) : undefined;
     const effectiveModel = config.model ?? runtime?.model;
-    if (config.model && runtime?.model !== config.model)
-      throw new JcodeConnectorError(
-        "model_mismatch",
-        `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime?.model)} — refusing a mislabelled mesh seat`,
-      );
     const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;
     if (config.variant && (!effectiveModel || !route || !route.provider))
       throw new JcodeConnectorError(

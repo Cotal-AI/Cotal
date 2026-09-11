@@ -117,7 +117,8 @@ const busyModel = process.env.FAKE_JCODE_BUSY_MODEL === "1";
 let turnBusy = false;
 let busyOwner;
 const queuedTurns = [];
-let sessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4-pro";
+const initialSessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4-pro";
+let sessionModel = initialSessionModel;
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
 const journalPath = process.env.FAKE_JCODE_JOURNAL;
 const writeJournal = (sessionId) => {
@@ -332,16 +333,22 @@ const server = createServer((socket) => {
           break;
         }
         case "get_runtime_info": {
-          const model = process.env.FAKE_JCODE_RUNTIME_MODEL ?? "fake-model";
+          // Measured Jcode can persist setModel to the session journal while RuntimeInfo.model still
+          // reports the old session default. The active provider and route list do identify the
+          // requested route, so lag mode keeps those authorities current while only model stays stale.
+          const model = process.env.FAKE_JCODE_RUNTIME_MODEL ??
+            (process.env.FAKE_JCODE_RUNTIME_MODEL_LAG === "1" ? initialSessionModel : sessionModel);
           const provider = process.env.FAKE_JCODE_RUNTIME_PROVIDER ?? "fake-provider";
+          const routes = process.env.FAKE_JCODE_RUNTIME_ROUTES
+            ? JSON.parse(process.env.FAKE_JCODE_RUNTIME_ROUTES)
+            : [{ model, provider, api_method: "fake", available: true, detail: "fake route" }];
+          log({ ev: "runtime_info", model, provider, routes, session_model: sessionModel });
           reply({
             ev: "runtime_info",
             session_id: frame.session_id,
             provider,
             model,
-            routes: process.env.FAKE_JCODE_RUNTIME_ROUTES
-              ? JSON.parse(process.env.FAKE_JCODE_RUNTIME_ROUTES)
-              : [{ model, provider, api_method: "fake", available: true, detail: "fake route" }],
+            routes,
           });
           break;
         }
