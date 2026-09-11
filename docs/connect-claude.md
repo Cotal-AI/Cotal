@@ -117,8 +117,10 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 - **Identity-gated.** Connector code requires `COTAL_NAME` *or* `COTAL_LINK`. A plain
   `claude` with no `COTAL_*` env stays inert and never joins, so your own sessions in a
   repo do not appear as stray peers.
-- **Hands-free.** The dev-channels flag prints a one-time confirm prompt; the PTY runtime
-  auto-clears it, so a supervised launch needs no keypress.
+- **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The PTY runtime waits for
+  the dialog title in normalized terminal output and presses Enter once when it appears, so startup
+  speed does not affect a supervised launch. If the declared prompt never appears, the seat exits
+  with a bounded error naming the unmatched prompt instead of hanging silently.
 
 Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
