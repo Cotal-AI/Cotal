@@ -16,6 +16,10 @@ export const DECLARATIONS = [
     module: fileURLToPath(new URL("../../scripts/live-job-conclusion.mjs", import.meta.url)),
     declaration: fileURLToPath(new URL("../../scripts/live-job-conclusion.d.mts", import.meta.url)),
   },
+  {
+    module: fileURLToPath(new URL("./live-suite.mjs", import.meta.url)),
+    declaration: fileURLToPath(new URL("./live-suite.d.mts", import.meta.url)),
+  },
 ] as const;
 
 function options(): ts.CompilerOptions {
