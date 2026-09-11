@@ -10,11 +10,16 @@ export function workspacePackagesFromPnpm(root?: string, exec?: typeof execFileS
 export function validateReleaseSet(fixedPackages: any, workspacePackages: any): any[];
 export function trustUrl(registryBase: any, name: any): string;
 /**
- * Map a GET /-/package/<name>/trust body onto the direct-publish Allowed action.
- * Empty allowed-action lists are stage-only: npm's post-2026-09-03 default.
- * HTTP 201 from the OIDC exchange is not an input here.
+ * Map a GET /-/package/<name>/trust body onto the direct-publish Allowed action
+ * for this release job's GitHub publisher (repository + workflow file). Other
+ * publishers on the same package are ignored. Empty allowed-action lists on this
+ * publisher are stage-only: npm's post-2026-09-03 default. HTTP 201 from the
+ * OIDC exchange is not an input here.
  */
-export function classifyDirectPublishPermission(body: any): "refused:malformed-trust" | "refused:no-trusted-publisher" | "refused:no-github-publisher" | "createPackage" | "stage-only";
+export function classifyDirectPublishPermission(body: any, identity?: {
+    repository: string;
+    workflowFilename: string;
+}): "refused:malformed-trust" | "refused:no-trusted-publisher" | "refused:no-github-publisher" | "createPackage" | "stage-only";
 export function printPublishCensus(rows: any, log?: {
     (...data: any[]): void;
     (message?: any, ...optionalParams: any[]): void;

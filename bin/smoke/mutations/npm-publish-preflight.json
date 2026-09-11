@@ -41,7 +41,7 @@
     {
       "name": "clean release skips per-package OIDC exchanges",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      try {\n        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n        row.oidc = exchanged.oidc;\n        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl);\n        } else {\n          row.direct = \"not-run\";\n        }\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n        row.direct = \"not-run\";\n      }\n    }\n",
+      "find": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      try {\n        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n        row.oidc = exchanged.oidc;\n        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n        row.direct = \"not-run\";\n      }\n    }\n",
       "replace": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      row.oidc = \"exchanged\";\n      row.direct = \"createPackage\";\n    }\n",
       "expectRed": "clean preflight exchanges OIDC for every package before publishing",
       "cell": "clean preflight exchanges OIDC for every package before publishing"
@@ -65,7 +65,7 @@
     {
       "name": "an opaque HTTP 201 exchange is treated as direct-publish proof",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl);\n        } else {\n          row.direct = \"not-run\";\n        }\n",
+      "find": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n",
       "replace": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = \"createPackage\";\n        } else {\n          row.direct = \"not-run\";\n        }\n",
       "expectRed": "an opaque HTTP 201 exchange is not treated as direct-publish proof",
       "cell": "an opaque HTTP 201 exchange is not treated as direct-publish proof"
@@ -93,6 +93,14 @@
       "replace": "  if (withDirect.length > 0) return \"createPackage\";\n  return \"createPackage\";\n",
       "expectRed": "classifier treats an empty Allowed-actions list as stage-only",
       "cell": "classifier treats an empty Allowed-actions list as stage-only"
+    },
+    {
+      "name": "any GitHub publisher with createPackage proves this job can publish",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const mine = entries.filter((entry) => isThisReleasePublisher(entry, identity));\n  if (mine.length === 0) return \"refused:no-github-publisher\";\n  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));\n",
+      "replace": "  const mine = entries.filter(isGithubPublisher);\n  if (mine.length === 0) return \"refused:no-github-publisher\";\n  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));\n",
+      "expectRed": "classifier ignores an unrelated GitHub publisher that lists createPackage",
+      "cell": "classifier ignores an unrelated GitHub publisher that lists createPackage"
     },
     {
       "name": "an exported signature changes without regenerating its declaration",

@@ -80,7 +80,7 @@ Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
 - a check that the public recursive workspace set is the complete Changesets fixed group;
 - one GitHub OIDC exchange per package when the release job exposes the OIDC requester;
 - a GET of each package's trusted-publisher document with that exchanged token, which must list
-  a direct `npm publish` Allowed action;
+  a direct `npm publish` Allowed action on THIS repository's `changesets.yml` publisher;
 - only after those checks, the workspace build, native assembly, and recursive publish.
 
 The census prints every package, version, OIDC result, and direct-publish result before it refuses.
@@ -106,7 +106,9 @@ node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemb
 
 - `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
   GitHub Actions it exchanges a package-specific OIDC token, then GETs `/-/package/<name>/trust`
-  and refuses unless every GitHub publisher lists a direct-publish Allowed action. A manual run
+  and refuses unless THIS repository's `changesets.yml` publisher lists a direct-publish Allowed
+  action. Other GitHub publishers on the same package are not proof that this job can publish.
+  A manual run
   with `NPM_TOKEN` still gets the registry and closure census; npm verifies that token on publish.
 - `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
   when a partial retry publishes only the packages still missing.

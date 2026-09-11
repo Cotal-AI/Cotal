@@ -2,9 +2,10 @@
  * The release preflight must fail before the first registry write. This suite drives the shipped
  * preflight against a local fake registry and records every request. Clean all-absent full-group
  * state passes only after an OIDC exchange AND a GET-trust direct-publish census for every package.
- * A prior partial publish, an incomplete recursive publish set, a refused exchange, and a
- * stage-only Allowed-actions sibling all refuse without any write-shaped request. An opaque HTTP
- * 201 exchange is not treated as publish-ready.
+ * A prior partial publish, an incomplete recursive publish set, a refused exchange, a
+ * stage-only Allowed-actions sibling, and a stage-only this-workflow publisher next to an
+ * unrelated GitHub publisher that lists createPackage all refuse without any write-shaped
+ * request. An opaque HTTP 201 exchange is not treated as publish-ready.
  *
  * Run: pnpm smoke:npm-publish-preflight
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/npm-publish-preflight.json
@@ -50,14 +51,17 @@ const env = {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
 };
 
-function githubPublisher(actions: string[]) {
+function githubPublisher(actions: string[], extra: Record<string, unknown> = {}) {
   return {
     type: "github",
     repository: "Cotal-AI/Cotal",
     workflow_filename: "changesets.yml",
     allowed_actions: actions,
+    ...extra,
   };
 }
+
+const thisRelease = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml" };
 
 function isWriteShaped(call: Seen): boolean {
   return call.method === "PUT"
@@ -173,19 +177,37 @@ async function repositoryEntrypoint() {
 
 check(
   "classifier treats an empty Allowed-actions list as stage-only",
-  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher([])] }) === "stage-only",
+  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher([])] }, thisRelease) === "stage-only",
 );
 check(
   "classifier treats a stage-only GitHub publisher as stage-only",
-  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher(["stage"])] }) === "stage-only",
+  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher(["stage"])] }, thisRelease) === "stage-only",
 );
 check(
   "classifier accepts npm publish as the direct Allowed action",
-  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher(["stage", "publish"])] }) === "createPackage",
+  classifyDirectPublishPermission({ trustedPublishers: [githubPublisher(["stage", "publish"])] }, thisRelease) === "createPackage",
 );
 check(
   "classifier does not treat an opaque exchange body as publish-ready",
-  classifyDirectPublishPermission({ token: "opaque-exchange-token", token_type: "oidc" }) === "refused:malformed-trust",
+  classifyDirectPublishPermission({ token: "opaque-exchange-token", token_type: "oidc" }, thisRelease) === "refused:malformed-trust",
+);
+check(
+  "classifier ignores an unrelated GitHub publisher that lists createPackage",
+  classifyDirectPublishPermission({
+    trustedPublishers: [
+      githubPublisher(["stage"]),
+      githubPublisher(["createPackage"], { repository: "other/repository", workflow_filename: "release.yml" }),
+    ],
+  }, thisRelease) === "stage-only",
+);
+check(
+  "classifier still accepts this workflow when an unrelated publisher is also present",
+  classifyDirectPublishPermission({
+    trustedPublishers: [
+      githubPublisher(["stage", "publish"]),
+      githubPublisher(["createPackage"], { repository: "other/repository", workflow_filename: "release.yml" }),
+    ],
+  }, thisRelease) === "createPackage",
 );
 
 const cli = await repositoryEntrypoint();
@@ -310,6 +332,34 @@ check(
   "stage-only refusal prints the complete census including the stage-only row",
   stageOnly.logs.some((line) => line.includes("@cotal-ai/seat\t9.9.9\tabsent\texchanged\tstage-only")),
   stageOnly.logs,
+);
+
+const mixedPublisher = await scenario({
+  trust: {
+    "@cotal-ai/core": {
+      trustedPublishers: [
+        githubPublisher(["stage"]),
+        githubPublisher(["createPackage"], { repository: "other/repository", workflow_filename: "release.yml" }),
+      ],
+    },
+    "@cotal-ai/seat": { trustedPublishers: [githubPublisher(["stage", "publish"])] },
+    "cotal-ai": { trustedPublishers: [githubPublisher(["stage", "publish"])] },
+  },
+});
+check(
+  "a stage-only this-workflow publisher next to an unrelated createPackage publisher refuses",
+  mixedPublisher.error instanceof Error && mixedPublisher.error.message.includes("allow only staged publish"),
+  mixedPublisher.error,
+);
+check(
+  "mixed-publisher refusal never issues a write-shaped registry call",
+  mixedPublisher.seen.every((call) => !isWriteShaped(call)),
+  mixedPublisher.seen,
+);
+check(
+  "mixed-publisher refusal prints stage-only for this workflow, not createPackage",
+  mixedPublisher.logs.some((line) => line.includes("@cotal-ai/core\t9.9.9\tabsent\texchanged\tstage-only")),
+  mixedPublisher.logs,
 );
 
 const opaque201 = await scenario({

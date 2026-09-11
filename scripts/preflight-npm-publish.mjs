@@ -14,9 +14,10 @@
  * package. That HTTP 201 is identity only: npm's trusted-publisher Allowed actions always permit
  * `npm stage publish`, and configurations created after 2026-09-03 default to stage. Direct
  * `npm publish` is a separate permission. The exchanged token is then used to GET
- * `/-/package/<name>/trust`. The whole run refuses unless every package's GitHub publisher lists
- * a direct-publish action. A stage-only sibling cannot pass this census and later fail during
- * sequential `pnpm publish -r` after earlier writes.
+ * `/-/package/<name>/trust`. The whole run refuses unless THIS repository's `changesets.yml`
+ * publisher lists a direct-publish action. Other publishers on the same package are not proof
+ * that this job can `npm publish`. A stage-only sibling cannot pass this census and later fail
+ * during sequential `pnpm publish -r` after earlier writes.
  *
  * There is no non-writing PUT that proves createPackage: a complete packument would publish, and
  * an incomplete one can 400 before the policy check. This script therefore never PUT/POSTs a
@@ -113,14 +114,43 @@ function isDirectPublishAction(action) {
   return n === "publish" || n === "npmpublish" || n === "createpackage" || n === "direct" || n === "directpublish";
 }
 
-function isGithubPublisher(entry) {
-  if (!entry || typeof entry !== "object") return false;
+function publisherView(entry) {
+  if (!entry || typeof entry !== "object") return { type: "", repository: "", workflow: "" };
   const nested = entry.publisher && typeof entry.publisher === "object" ? entry.publisher : {};
-  const type = String(entry.type ?? nested.type ?? "").toLowerCase();
-  if (type.includes("github")) return true;
-  const workflow = entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow;
-  const repo = entry.repository ?? nested.repository ?? nested.repository_name;
-  return typeof workflow === "string" || typeof repo === "string";
+  return {
+    type: String(entry.type ?? nested.type ?? ""),
+    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? ""),
+    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? ""),
+  };
+}
+
+function normalizeRepo(value) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?github\.com\//, "")
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "");
+}
+
+function workflowBasename(value) {
+  return String(value).trim().split(/[/\\]/).filter(Boolean).pop()?.toLowerCase() ?? "";
+}
+
+function isGithubPublisher(entry) {
+  const view = publisherView(entry);
+  if (view.type.toLowerCase().includes("github")) return true;
+  return view.workflow.length > 0 || view.repository.length > 0;
+}
+
+function isThisReleasePublisher(entry, identity) {
+  if (!isGithubPublisher(entry)) return false;
+  const view = publisherView(entry);
+  const expectedRepo = normalizeRepo(identity?.repository ?? "");
+  const expectedWorkflow = workflowBasename(identity?.workflowFilename ?? "changesets.yml");
+  if (!expectedRepo || !expectedWorkflow) return false;
+  return normalizeRepo(view.repository) === expectedRepo
+    && workflowBasename(view.workflow) === expectedWorkflow;
 }
 
 function publisherEntries(body) {
@@ -141,17 +171,19 @@ function actionList(entry) {
 }
 
 /**
- * Map a GET /-/package/<name>/trust body onto the direct-publish Allowed action.
- * Empty allowed-action lists are stage-only: npm's post-2026-09-03 default.
- * HTTP 201 from the OIDC exchange is not an input here.
+ * Map a GET /-/package/<name>/trust body onto the direct-publish Allowed action
+ * for this release job's GitHub publisher (repository + workflow file). Other
+ * publishers on the same package are ignored. Empty allowed-action lists on this
+ * publisher are stage-only: npm's post-2026-09-03 default. HTTP 201 from the
+ * OIDC exchange is not an input here.
  */
-export function classifyDirectPublishPermission(body) {
+export function classifyDirectPublishPermission(body, identity = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml" }) {
   const entries = publisherEntries(body);
   if (!entries) return "refused:malformed-trust";
   if (entries.length === 0) return "refused:no-trusted-publisher";
-  const github = entries.filter(isGithubPublisher);
-  if (github.length === 0) return "refused:no-github-publisher";
-  const withDirect = github.filter((entry) => actionList(entry).some(isDirectPublishAction));
+  const mine = entries.filter((entry) => isThisReleasePublisher(entry, identity));
+  if (mine.length === 0) return "refused:no-github-publisher";
+  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));
   if (withDirect.length > 0) return "createPackage";
   return "stage-only";
 }
@@ -204,7 +236,7 @@ async function exchangePackageIdentity(pkg, registryBase, env, fetchImpl) {
   return { oidc: "exchanged", token: body.token };
 }
 
-async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImpl) {
+async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImpl, env) {
   try {
     const response = await fetchImpl(trustUrl(registryBase, pkg.name), {
       method: "GET",
@@ -213,7 +245,10 @@ async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImp
     });
     if (response.status !== 200) return `refused:${response.status}`;
     const body = await response.json();
-    return classifyDirectPublishPermission(body);
+    return classifyDirectPublishPermission(body, {
+      repository: env.GITHUB_REPOSITORY ?? "",
+      workflowFilename: "changesets.yml",
+    });
   } catch (error) {
     return `refused:${error instanceof Error ? error.message : String(error)}`;
   }
@@ -286,7 +321,7 @@ export async function preflightNpmPublish({
         const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
         row.oidc = exchanged.oidc;
         if (exchanged.oidc === "exchanged" && exchanged.token) {
-          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl);
+          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);
         } else {
           row.direct = "not-run";
         }
