@@ -432,8 +432,19 @@ try {
   }
 
   await operator.unicast(peerId!, "mesh-wake");
-  const turn = await waitFor("Harness API turn", () => entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("mesh-wake")));
-  check("mesh DM becomes a Harness API turn", JSON.stringify(turn).includes("mesh-wake"), turn);
+  const turn = await waitFor(
+    "Harness API turn",
+    () =>
+      entries().find(
+        (entry) =>
+          entry.ev === "request" &&
+          (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+          !(entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes("mesh-wake"),
+      ),
+    8_000,
+  ).catch(() => undefined);
+  check("mesh DM becomes a Harness API turn", Boolean(turn) && JSON.stringify(turn).includes("mesh-wake"), turn);
   const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
   const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
@@ -1407,12 +1418,80 @@ try {
   check(
     "a timed-out readiness turn names its outcome as timeout, not a hang or a missing prompt",
     /pre-join readiness outcome: timeout/.test(afterLog) &&
+      /no cotal_orientation call observed/.test(afterLog) &&
       /discarding that in-flight turn/.test(afterLog) &&
+      !/cotal_orientation was observed/.test(afterLog) &&
       !/pre-join readiness outcome: provider refusal/.test(afterLog) &&
       !/joining with no spawn --prompt/.test(afterLog) &&
       !/submitting the spawn --prompt/.test(afterLog),
     afterLog,
   );
+
+  // #1440: orientation tool_done can arrive while the proof turn stays open. The host must join
+  // on that call rather than kill the seat because turn_done never came.
+  const earlyLog = join(root, "readiness-early-call.jsonl");
+  const earlyDeadlineMs = 800;
+  const early = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: earlyLog,
+      FAKE_JCODE_TURN_DELAY_MS: "50",
+      FAKE_JCODE_WITHHOLD_TURN_DONE: "1",
+      COTAL_JCODE_READINESS_TIMEOUT_MS: String(earlyDeadlineMs),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "earlypeer",
+      COTAL_ID: "earlypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: controlSock("early-control.sock"),
+      COTAL_CONTROL_TOKEN: "early-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let earlyErr = "";
+  early.stderr?.on("data", (chunk: Buffer) => (earlyErr += chunk.toString()));
+  const earlyEntries = (): Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }> =>
+    readJsonLines(earlyLog);
+  await waitFor("earlypeer orientation tool_done", () =>
+    earlyEntries().find((entry) => entry.ev === "orientation_done") ? true : undefined,
+  );
+  await waitFor("earlypeer withheld turn_done", () =>
+    earlyEntries().find((entry) => entry.ev === "turn_done_withheld") ? true : undefined,
+  );
+  await waitFor(
+    "earlypeer mesh presence after withheld turn_done",
+    () => {
+      if (early.exitCode !== null && early.exitCode !== 0) return null;
+      return announced.has("earlypeer") ? true : undefined;
+    },
+    15_000,
+  );
+  const earlyHomeLog = connectorLog(managedHome("jcodehost", "earlypeer"));
+  const earlyTurnDone = earlyEntries().find((entry) => entry.ev === "turn_done_emitted");
+  const earlyRoster = operator.getRoster().filter((p) => p.card.name === "earlypeer" && p.status !== "offline");
+  check(
+    "an early orientation tool_done joins even when turn_done is withheld",
+    announced.has("earlypeer") && early.exitCode === null && earlyRoster.length > 0,
+    { announced: [...announced], exitCode: early.exitCode, stderr: earlyErr, log: earlyHomeLog, earlyRoster },
+  );
+  check(
+    "an early orientation tool_done does not take the destructive timeout path",
+    /orientation proved/.test(earlyHomeLog) &&
+      !/joining without waiting for that turn to end/.test(earlyHomeLog) &&
+      !/killing the private Jcode tree/.test(earlyHomeLog) &&
+      !/readiness_timeout/.test(earlyErr) &&
+      !/never joined/.test(earlyHomeLog) &&
+      !earlyTurnDone,
+    { log: earlyHomeLog, stderr: earlyErr, earlyTurnDone },
+  );
+  await stopHostTree(early, "SIGTERM");
 } finally {
   for (const proc of hosts) await stopHostTree(proc, "SIGKILL");
   check("teardown: every Jcode host process group is gone", hosts.every((proc) => !groupAlive(proc)), {

@@ -4,6 +4,13 @@
 
 ### Patch Changes
 
+- Prove pre-join readiness on the orientation `tool_done` event as it arrives, without waiting for
+  `turn_done`. A seat that already called `cotal_orientation` and then kept working used to be
+  killed at the bound because the Harness `run()` promise only resolves when the turn ends. The
+  timeout line now names whether that call was observed. Teardown still destroys a seat that never
+  called the tool; it no longer destroys a functional session solely because the proof turn is
+  still open.
+
 - 102da9b: Keep a Jcode seat alive when the model is busy at post-join, and retain its startup prompt until the Harness request is invoked.
 
   The post-join mesh notice is sent with `noReply: true`, which routes through `requestOk` and

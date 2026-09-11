@@ -859,9 +859,12 @@ export async function runJcodeHost(): Promise<void> {
     // Jcode registers MCP tools asynchronously. Its first turn can lock the pre-MCP tool snapshot
     // just before cotal connects, then rebuild that snapshot. Repeat the exact proof once for this
     // measured race; a second absence is terminal, never a polling loop or a guessed success.
+    // The proof is the orientation tool_done event as it arrives. Waiting for turn_done kills a
+    // seat that already called the tool and then kept working (#1440).
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
+    const isOrientationName = (name: string) => /(?:^|__)cotal_orientation$/.test(name);
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) =>
-      run.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name));
+      run.toolCalls.some((call) => isOrientationName(call.name));
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
     );
@@ -870,32 +873,96 @@ export async function runJcodeHost(): Promise<void> {
     if (!readinessClient || !readinessSessionId)
       throw new Error("jcode connector: readiness proof reached without a live Harness session");
     let readiness: Awaited<ReturnType<JcodeClient["run"]>> | undefined;
+    let observedOrientation = false;
+    let readinessTurnOpen = false;
+    let resolveOrientation = (): void => {};
+    const orientationObserved = new Promise<void>((resolve) => {
+      resolveOrientation = resolve;
+    });
+    const onReadinessEvent = (event: ApiEvent): void => {
+      if (event.ev === "turn_done") readinessTurnOpen = false;
+      if (event.ev !== "tool_done" || !isOrientationName(event.name)) return;
+      observedOrientation = true;
+      if (!readiness) {
+        readiness = {
+          text: "",
+          reasoning: "",
+          toolCalls: [
+            {
+              callId: event.call_id,
+              name: event.name,
+              output: event.output,
+              error: event.error,
+            },
+          ],
+          usage: undefined,
+        };
+      } else if (!readiness.toolCalls.some((existing) => isOrientationName(existing.name))) {
+        readiness.toolCalls.push({
+          callId: event.call_id,
+          name: event.name,
+          output: event.output,
+          error: event.error,
+        });
+      }
+      resolveOrientation();
+    };
+    const runReadinessTurn = () => {
+      readinessTurnOpen = true;
+      const turn = readinessClient.run(readinessSessionId, readinessPrompt, {
+        autoApprove: true,
+        onEvent: onReadinessEvent,
+      });
+      void turn.then(
+        (run) => {
+          readinessTurnOpen = false;
+          readiness = run;
+        },
+        () => {
+          readinessTurnOpen = false;
+        },
+      );
+      return turn;
+    };
     const proveReadiness = async (): Promise<void> => {
-      readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });
-      if (!hasOrientation(readiness)) {
+      const firstTurn = runReadinessTurn();
+      // Prove on the orientation call itself; do not wait for this turn to end (#1440).
+      await Promise.race([orientationObserved, firstTurn]);
+      if (!observedOrientation && !(readiness && hasOrientation(readiness))) {
         writeJcodeDiagnostic(
           `[cotal-jcode] pre-join readiness: first cotal_orientation turn missed the tool; retrying once inside the same bound\n`,
         );
-        readiness = await readinessClient.run(readinessSessionId, readinessPrompt, { autoApprove: true });
+        const secondTurn = runReadinessTurn();
+        await Promise.race([orientationObserved, secondTurn]);
       }
     };
     try {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
+        const proof = proveReadiness();
         const timedOut = await Promise.race([
-          proveReadiness().then(() => "ready" as const),
+          proof.then(() => "ready" as const),
           new Promise<"timeout">((resolve) => {
             timeout = setTimeout(() => resolve("timeout"), readinessBudgetMs);
           }),
         ]);
         if (timedOut === "timeout") {
-          writeJcodeDiagnostic(
-            `[cotal-jcode] pre-join readiness outcome: timeout after ${readinessBudgetMs}ms; killing the private Jcode tree and discarding that in-flight turn; never joined\n`,
-          );
-          throw new JcodeConnectorError(
-            "readiness_timeout",
-            `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,
-          );
+          // The bound is a call-observation deadline, not a turn-completion deadline. A seat that
+          // already emitted orientation tool_done is functional; destroying it because the proof's
+          // own turn is still open is the #1440 kill.
+          if (observedOrientation || (readiness && hasOrientation(readiness))) {
+            writeJcodeDiagnostic(
+              `[cotal-jcode] pre-join readiness outcome: timeout after ${readinessBudgetMs}ms; cotal_orientation was observed; joining without waiting for that turn to end\n`,
+            );
+          } else {
+            writeJcodeDiagnostic(
+              `[cotal-jcode] pre-join readiness outcome: timeout after ${readinessBudgetMs}ms; no cotal_orientation call observed; killing the private Jcode tree and discarding that in-flight turn; never joined\n`,
+            );
+            throw new JcodeConnectorError(
+              "readiness_timeout",
+              `jcode connector: the mandatory cotal_orientation readiness turn exceeded its ${readinessBudgetMs}ms bound — refusing to stay invisible past that window`,
+            );
+          }
         }
       } finally {
         if (timeout !== undefined) clearTimeout(timeout);
@@ -926,7 +993,11 @@ export async function runJcodeHost(): Promise<void> {
         ? `[cotal-jcode] pre-join readiness outcome: orientation proved; joining, then submitting the spawn --prompt\n`
         : `[cotal-jcode] pre-join readiness outcome: orientation proved; joining with no spawn --prompt\n`,
     );
+    // The proof may have returned on tool_done while run() is still awaiting turn_done. Keep that
+    // Harness turn marked busy so a later drive() cannot steal the same event stream. A completed
+    // proof turn must look idle, or the first mesh DM never drives.
     watchClient(client);
+    turnActive = readinessTurnOpen;
     initialized = true;
     await agent.start();
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
