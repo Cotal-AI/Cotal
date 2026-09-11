@@ -32,7 +32,7 @@ import {
   type Delivery,
 } from "@cotal-ai/core";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -123,6 +123,7 @@ try {
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
+    setCurrent(space);
   } finally {
     if (priorCotalHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorCotalHome;
@@ -166,7 +167,7 @@ try {
   await bob.start();
   await wait(800);
 
-  const target = ["--space", space];
+  const target: string[] = [];
 
   const dmText = `outside-u-${randomUUID().slice(0, 6)}`;
   const msgText = `outside-m-${randomUUID().slice(0, 6)}`;

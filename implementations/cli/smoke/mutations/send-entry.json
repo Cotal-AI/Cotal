@@ -21,10 +21,10 @@
       "cell": "the subprocess entry is the repository's real bin/cotal.ts"
     },
     {
-      "name": "the CLI subprocesses no longer select the registered owned mesh",
+      "name": "the sandbox registry no longer selects the owned mesh as current",
       "file": "implementations/cli/smoke/send.smoke.ts",
-      "find": "  const target = [\"--space\", space];",
-      "replace": "  const target: string[] = [];",
+      "find": "    setCurrent(space);",
+      "replace": "    setCurrent(\"missing-mesh\");",
       "expectRed": "`cotal send dm` outside a seat exits 0",
       "cell": "`cotal send dm` outside a seat exits 0"
     },
