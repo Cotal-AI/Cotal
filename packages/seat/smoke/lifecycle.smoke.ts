@@ -2,7 +2,7 @@
  * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -257,6 +257,20 @@ try {
     await h.waitForExit();
     check("natural exit: waitForExit resolves and status is exited", h.status() === "exited");
     h.close();
+    const recordGone = join(root, rec.id, "record.json");
+    check(
+      "natural exit: custodian process, socket, and record converge without fixture kill",
+      await until(() => {
+        const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
+        return custodianGone && !existsSync(rec.socket) && !existsSync(recordGone);
+      }, 5_000),
+      {
+        custodian: state(rec.custodianPid),
+        socket: existsSync(rec.socket),
+        record: existsSync(recordGone),
+      },
+    );
+    handles.push(h);
   }
 
   {
@@ -358,6 +372,9 @@ await h.waitForExit();
     } catch {
       /* gone */
     }
+    const childGone = state(h.record.childPid) === "gone" || state(h.record.childPid) === "Z";
+    const custodianGone = state(h.record.custodianPid) === "gone" || state(h.record.custodianPid) === "Z";
+    if (childGone && custodianGone) continue;
     try {
       process.kill(h.record.custodianPid, "SIGKILL");
     } catch {

@@ -67,6 +67,16 @@
       "expectRed": "waitForExit drops the controller socket so the worker can exit",
       "cell": "waitForExit drops the controller socket so the worker can exit",
       "note": "A live Unix socket after waitForExit keeps the manager event loop alive through spawn-detach teardown."
+    },
+    {
+      "name": "M7 skip terminal custodian cleanup after child exit",
+      "file": "packages/seat/src/custodian.ts",
+      "find": "  const settleTerminal = (): void => {\n    if (alive || settling || !ready) return;",
+      "replace": "  const settleTerminal = (): void => {\n    return;\n    if (alive || settling || !ready) return;",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "natural exit: custodian process, socket, and record converge without fixture kill",
+      "cell": "natural exit: custodian process, socket, and record converge without fixture kill",
+      "note": "Deleting the owned terminal-settle transition leaves the Unix server, socket, record, and custodian process alive after waitForExit. The named cell must fail without fixture SIGKILL."
     }
   ]
 }
