@@ -88,7 +88,7 @@ try {
     check(`healthy ${label} store reconcile succeeds`, changed?.toMs === ttlMs, changed);
     check(`healthy ${label} store enforces max_age and expires its canary`, (await jsm.streams.info(stream)).state.messages === 0);
     const repeat = await reconcileBucketTtl(jsm, js, stream, bucket, ttlMs);
-    check(`healthy ${label} store matching-INFO pass re-proves enforcement without an update`, repeat === undefined, repeat);
+    check(`healthy ${label} store matching-INFO pass sees no pending canary and stays read-only`, repeat === undefined, repeat);
   }
 
   await nc.close();

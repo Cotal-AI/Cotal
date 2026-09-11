@@ -17,7 +17,7 @@
     {
       "name": "INFO-only acceptance is restored after STREAM.UPDATE, so the forced file-store rollback false-greens again",
       "file": "packages/core/src/streams.ts",
-      "find": "  await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);\n  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
+      "find": "  await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);\n  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
       "replace": "  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };",
       "expectRed": "forced file-store metadata failure is a named TtlPersistenceError",
       "cell": "forced file-store metadata failure is a named TtlPersistenceError",
@@ -25,9 +25,9 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
-      "name": "matching STREAM.INFO skips the enforcement proof, so a previous rollback is accepted on the second reconcile",
+      "name": "matching STREAM.INFO ignores a pending canary, so a previous rollback is accepted on the second reconcile",
       "file": "packages/core/src/streams.ts",
-      "find": "  if (info.config.max_age === wantNs) {\n    await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);\n    return undefined;\n  }",
+      "find": "  if (info.config.max_age === wantNs) {\n    if (await ttlCanaryCount(jsm, streamName, canarySubject) === 0) return undefined;\n    // A prior attempt left its durable canary behind. Reissue the desired config in case the store\n    // has recovered, then prove it. Never accept the matching in-memory config on its own.\n    const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs);\n    await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });\n    await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);\n    return undefined;\n  }",
       "replace": "  if (info.config.max_age === wantNs) return undefined;",
       "expectRed": "a second matching-INFO reconcile still fails instead of skipping",
       "cell": "a second matching-INFO reconcile still fails instead of skipping",

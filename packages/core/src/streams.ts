@@ -374,19 +374,24 @@ export class TtlPersistenceError extends Error {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function proveTtlEnforcement(
+async function ttlCanaryCount(
   jsm: JetStreamManager,
-  js: Pick<JetStreamClient, "publish">,
   streamName: string,
-  bucket: string,
+  canarySubject: string,
+): Promise<number> {
+  const info = await jsm.streams.info(streamName, { subjects_filter: canarySubject });
+  return info.state.subjects?.[canarySubject] ?? 0;
+}
+
+async function awaitTtlCanaryExpiry(
+  jsm: JetStreamManager,
+  streamName: string,
+  canarySubject: string,
   ttlMs: number,
 ): Promise<void> {
-  const canarySubject = `$KV.${bucket}.${TTL_RECONCILE_CANARY_KEY}`;
-  await js.publish(canarySubject, new TextEncoder().encode("cotal ttl enforcement canary"));
   const deadline = Date.now() + ttlMs + TTL_RECONCILE_GRACE_MS;
   while (Date.now() <= deadline) {
-    const info = await jsm.streams.info(streamName, { subjects_filter: canarySubject });
-    if ((info.state.subjects?.[canarySubject] ?? 0) === 0) return;
+    if (await ttlCanaryCount(jsm, streamName, canarySubject) === 0) return;
     await sleep(Math.min(TTL_RECONCILE_POLL_MS, Math.max(1, deadline - Date.now())));
   }
   throw new TtlPersistenceError(streamName, ttlMs, canarySubject);
@@ -399,12 +404,13 @@ async function proveTtlEnforcement(
  * in-memory copy. A file-store metadata fault can therefore report UPDATE success and the requested
  * `max_age` while the store rolls back and never starts age enforcement.
  *
- * After checking the reported config, this writes one message on a reserved KV subject and waits for
- * the subject-filtered stream state to report it gone within `max_age` plus fixed grace. That transition
- * is proof of enforcement rather than config: the false-green store leaves the canary present and causes
- * a named {@link TtlPersistenceError}, which `cotal up` surfaces. Successful canaries self-delete through
- * the policy they verify. A matching INFO value is verified too: after the broker has false-greened once,
- * later INFO reads keep matching even though enforcement is absent, so config equality cannot be a skip. */
+ * Before an update, this writes one message on a reserved KV subject, then waits for the subject-filtered
+ * stream state to report it gone within `max_age` plus fixed grace. Publishing first is intentional: the
+ * canary is durable evidence of an interrupted or false-green update, so a later matching INFO pass cannot
+ * skip it. A clean matching bucket has no canary and stays a fast read-only no-op. The transition is proof
+ * of enforcement rather than config: the false-green store leaves the canary present and causes a named
+ * {@link TtlPersistenceError}, which `cotal up` surfaces. Successful canaries self-delete through the
+ * policy they verify. */
 export async function reconcileBucketTtl(
   jsm: JetStreamManager,
   js: Pick<JetStreamClient, "publish">,
@@ -413,13 +419,20 @@ export async function reconcileBucketTtl(
   ttlMs: number,
 ): Promise<TtlReconciled | undefined> {
   const wantNs = nanos(ttlMs);
+  const canarySubject = `$KV.${bucket}.${TTL_RECONCILE_CANARY_KEY}`;
   const info = await jsm.streams.info(streamName);
   if (info.config.max_age === wantNs) {
-    await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);
+    if (await ttlCanaryCount(jsm, streamName, canarySubject) === 0) return undefined;
+    // A prior attempt left its durable canary behind. Reissue the desired config in case the store
+    // has recovered, then prove it. Never accept the matching in-memory config on its own.
+    const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs);
+    await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
+    await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);
     return undefined;
   }
   const fromNs = info.config.max_age;
   const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs); // NATS constraint: duplicate_window <= max_age
+  await js.publish(canarySubject, new TextEncoder().encode("cotal ttl enforcement canary"));
   await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
   const after = await jsm.streams.info(streamName);
   if (after.config.max_age !== wantNs)
@@ -433,7 +446,7 @@ export async function reconcileBucketTtl(
   // written to remove. (Semantics confirmed at the NATS source rather than reasoned from our seam.)
   if ((after.config.duplicate_window ?? 0) > wantNs)
     throw new Error(`TTL reconcile left ${streamName} inconsistent: duplicate_window is ${after.config.duplicate_window}ns, which exceeds max_age ${wantNs}ns (a conforming server rejects this combination, so the update was applied partially)`);
-  await proveTtlEnforcement(jsm, js, streamName, bucket, ttlMs);
+  await awaitTtlCanaryExpiry(jsm, streamName, canarySubject, ttlMs);
   return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };
 }
 

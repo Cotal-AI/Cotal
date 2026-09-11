@@ -97,8 +97,8 @@ try {
   check("delivery-lease max_age reconciled to 30s", (await maxAge(deliveryBucket(space))) === nanos(DELIVERY_MS), (await maxAge(deliveryBucket(space))) / 1e6);
   check("manager-lease max_age reconciled to 10s", (await maxAge(managerBucket(space))) === nanos(MANAGER_MS), (await maxAge(managerBucket(space))) / 1e6);
 
-  // A repeat pass keeps the config idempotent but re-proves enforcement. INFO equality cannot skip the
-  // proof: after the store rollback in #404, every later INFO falsely reports the matching max_age.
+  // A repeat pass keeps the config idempotent. Successful proof left no canary, so matching INFO plus
+  // an absent canary is the read-only fast path; a failed proof would leave the canary for retry.
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   check("second reconcile keeps max_age at 6s after re-proving enforcement", (await maxAge(presenceBucket(space))) === nanos(PRESENCE_MS));
   const canarySubject = `$KV.${presenceBucket(space)}.${TTL_RECONCILE_CANARY_KEY}`;
@@ -109,8 +109,8 @@ try {
   // The assert above cannot tell "skipped" from "re-updated": re-running the UPDATE with the same
   // max_age leaves the same value behind, so a reconcile that had LOST its skip would still pass it.
   // Drive the seam with a jsm whose `update` FAILS THE TEST IF CALLED: the bucket already carries the
-  // intended TTL, so a correct reconcile never issues STREAM.UPDATE, but it MUST publish the canary.
-  // This proves config idempotence without restoring the unsafe INFO-only acceptance from #404.
+  // intended TTL and carries no pending canary, so a correct reconcile issues neither UPDATE nor publish.
+  // This proves the steady-state fast path without restoring the unsafe INFO-only acceptance from #404.
   let updateCalls = 0;
   let canaryPublishes = 0;
   const alreadyCorrect = {
@@ -122,7 +122,7 @@ try {
   const canaryPublisher = { publish: async () => { canaryPublishes++; return {} as never; } };
   let skipped = true;
   try { await reconcileBucketTtl(alreadyCorrect, canaryPublisher, "KV_already_correct", "already_correct", PRESENCE_MS); } catch { skipped = false; }
-  check("already-correct bucket skips UPDATE but still proves enforcement with one canary", skipped && updateCalls === 0 && canaryPublishes === 1, { updateCalls, canaryPublishes });
+  check("already-correct bucket with no pending canary stays read-only", skipped && updateCalls === 0 && canaryPublishes === 0, { updateCalls, canaryPublishes });
 
   // ---- the read-back FAILS CLOSED (ratified review condition (a)) --------------------------------
   // The guarantee is not "we sent an UPDATE" — but it is NOT "the TTL is now in force" either, which
