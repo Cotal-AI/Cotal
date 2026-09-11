@@ -47,6 +47,9 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 const cotalJs = join(repoRoot, "bin", "dist", "cotal.js");
 let pass = 0, fail = 0;
+const diagnosticEpoch = Date.now();
+const diagnosticMs = (): number => Date.now() - diagnosticEpoch;
+const diagnosticError = (error: unknown): string => error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 const until = async (cond: () => boolean, timeoutMs: number, stepMs = 200): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs;
@@ -59,8 +62,18 @@ const until = async (cond: () => boolean, timeoutMs: number, stepMs = 200): Prom
 async function adminReq2(ep: CotalEndpoint, op: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: string; data?: unknown }> {
   let last: Error | undefined;
   for (let i = 0; i < 12; i++) {
-    try { return await ep.requestDeliveryAdmin(op, args, 15_000); }
-    catch (e) { last = e as Error; await wait(500); }
+    const attempt = i + 1;
+    const startedAt = diagnosticMs();
+    console.log(`  · DIAGNOSTIC adminReq2 op=${op} attempt=${attempt} startMs=${startedAt}`);
+    try {
+      const result = await ep.requestDeliveryAdmin(op, args, 15_000);
+      console.log(`  · DIAGNOSTIC adminReq2 op=${op} attempt=${attempt} resultMs=${diagnosticMs()} elapsedMs=${diagnosticMs() - startedAt} reply=${JSON.stringify(result)}`);
+      return result;
+    } catch (e) {
+      last = e as Error;
+      console.log(`  · DIAGNOSTIC adminReq2 op=${op} attempt=${attempt} throwMs=${diagnosticMs()} elapsedMs=${diagnosticMs() - startedAt} error=${JSON.stringify(diagnosticError(e))}`);
+      await wait(500);
+    }
   }
   throw last ?? new Error("adminReq: no attempts ran");
 }
@@ -176,9 +189,19 @@ try {
     reconnect: false,
   });
   let victimClosed = false;
-  void victimNc.closed().then(() => { victimClosed = true; });
+  let victimClosedAt: number | undefined;
+  let victimCloseReason = "pending";
+  console.log(`  · DIAGNOSTIC eviction victim connectedMs=${diagnosticMs()} principal=${principalKey(DEV_OWNER, victim.id).key}`);
+  void victimNc.closed().then((reason) => {
+    victimClosed = true;
+    victimClosedAt = diagnosticMs();
+    victimCloseReason = reason === undefined ? "clean close" : diagnosticError(reason);
+    console.log(`  · DIAGNOSTIC eviction victim closedMs=${victimClosedAt} reason=${JSON.stringify(victimCloseReason)}`);
+  });
   const victimPrincipal = principalKey(DEV_OWNER, victim.id).key;
+  const evictionStartedAt = diagnosticMs();
   const evicted = await adminReq2(sup, "evictPrincipal", { principal: victimPrincipal });
+  console.log(`  · DIAGNOSTIC eviction completedMs=${diagnosticMs()} elapsedMs=${diagnosticMs() - evictionStartedAt} victimClosed=${victimClosed} victimClosedAt=${String(victimClosedAt)} closeReason=${JSON.stringify(victimCloseReason)} reply=${JSON.stringify(evicted)}`);
   const ev = (evicted.ok ? evicted.data : {}) as { kicked?: number; verifiedGone?: boolean; scanComplete?: boolean };
   check("evictPrincipal force-drops the victim (kicked + verifiedGone + complete scan)", evicted.ok === true && (ev.kicked ?? 0) >= 1 && ev.verifiedGone === true && ev.scanComplete === true, JSON.stringify(evicted));
   check("victim's connection actually closed", await until(() => victimClosed, 5000));

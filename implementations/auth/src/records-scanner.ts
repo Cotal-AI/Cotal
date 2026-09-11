@@ -48,7 +48,7 @@
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, recordsBucket, recordsKvStreamName, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, RECORD_KINDS, assertDerivedOwnerToken, assertInboxConnId, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
 
@@ -56,6 +56,7 @@ import type { ScanGuard } from "./plane-claim.js";
  *  pins exactly this token; separate from the auth-ledger scanner's — fact-5, one name per stream).
  *  Scans over it serialize on the MODULE-LEVEL per-space chain below, never a per-instance lock. */
 const RECORDS_SCANNER_CONSUMER_NAME = "cotal-records-scan";
+const MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME = "cotal-manager-goalidx-scan";
 
 /** fact-5 ENFORCED (panel HIGH): the serialization critical section for a space's literal consumer
  *  name lives at MODULE level, keyed by space, so two branded same-space instances share one chain
@@ -126,6 +127,9 @@ export interface RecordsScanner {
    *  last of every obligation row under the filter (markers included, so the caller sees a DEL/PURGE
    *  a bucket's own `keys()`/`watch()` would hide). */
   scanObligations(filter: string): Promise<RawRecordsEntry[]>;
+  /** Fixed `goalidx.manager.>` host scan. No caller filter or raw row leaves this operation, and
+   * only entries owned by the authenticated remote manager owner are returned. */
+  scanManagerGoalIndex(owner: string): Promise<GoalIndexEntry[]>;
   /** Tear down the owned credential+connection. */
   close(): Promise<void>;
 }
@@ -173,6 +177,8 @@ export async function openRecordsScannerCandidate(opts: {
   space: string;
   dataAccount: { pub: string; signingSeed: string };
   log: (line: string) => void;
+  /** SMOKE-ONLY scanner observation hooks. Production leaves this absent. */
+  probe?: RecordsScannerProbe;
 }): Promise<RecordsScannerCandidate> {
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space: opts.space, dataAccount: opts.dataAccount, label: `cotal:records-scan:${opts.space}`,
@@ -189,7 +195,7 @@ export async function openRecordsScannerCandidate(opts: {
       if (closed) throw new EpEnvelopeError("failed-precondition", "this records scanner candidate is closed (a losing plane open never activates)");
       if (activated) throw new EpEnvelopeError("failed-precondition", "this records scanner candidate is already activated (one branded scanner per candidate)");
       activated = true;
-      return buildScanner(client.nc, opts.space, () => client.close(), undefined, guard);
+      return buildScanner(client.nc, opts.space, () => client.close(), opts.probe, guard);
     },
     close: async () => {
       closed = true;
@@ -215,6 +221,8 @@ export function makeRecordsScannerOverConnection(nc: NatsConnection, space: stri
 export interface RecordsScannerProbe {
   afterCreate?: () => Promise<void>;
   afterFirstFetch?: () => Promise<void>;
+  afterManagerGoalIndexCreate?: () => Promise<void>;
+  afterManagerGoalIndexFirstFetch?: () => Promise<void>;
 }
 
 function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: RecordsScannerProbe, guard?: ScanGuard): RecordsScanner {
@@ -331,6 +339,104 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     }
   };
 
+  const scanManagerGoalIndexOnce = async (owner: string): Promise<GoalIndexEntry[]> => {
+    const expectedOwner = assertDerivedOwnerToken(owner);
+    const jsm = await jsmOf();
+    const js = jsOf();
+    const rawFilter = `goalidx.manager.${expectedOwner}.>`;
+    const filter = `$KV.${bucket}.${rawFilter}`;
+    let provedAbsent = false;
+    try {
+      provedAbsent = (await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME)) === true;
+    } catch (e) {
+      if (isConsumerNotFound(e)) provedAbsent = true;
+      else throw new EpEnvelopeError("unavailable", `the manager goal-index scanner could not prove its literal consumer absent before create: ${(e as Error)?.message ?? String(e)}`);
+    }
+    if (!provedAbsent)
+      throw new EpEnvelopeError("unavailable", "the manager goal-index scanner did not confirm its literal consumer deleted or absent");
+    try {
+      await jsm.consumers.add(stream, {
+        name: MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME,
+        filter_subject: filter,
+        ack_policy: AckPolicy.None,
+        deliver_policy: DeliverPolicy.LastPerSubject,
+        mem_storage: true,
+        inactive_threshold: INACTIVE_THRESHOLD_NS,
+      });
+      const info = await jsm.consumers.info(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME);
+      const cfg = info.config as {
+        name?: string; filter_subject?: string; filter_subjects?: string[];
+        deliver_subject?: string; durable_name?: string; ack_policy?: string; deliver_policy?: string;
+        mem_storage?: boolean; inactive_threshold?: number;
+      };
+      const drift =
+        cfg.name !== MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME ? `name=${cfg.name}` :
+        cfg.filter_subject !== filter ? `filter=${cfg.filter_subject}` :
+        (Array.isArray(cfg.filter_subjects) && cfg.filter_subjects.length > 0) ? `filter_subjects=${JSON.stringify(cfg.filter_subjects)}` :
+        cfg.deliver_subject !== undefined ? `deliver_subject=${cfg.deliver_subject}` :
+        cfg.durable_name !== undefined ? `durable=${cfg.durable_name}` :
+        cfg.ack_policy !== AckPolicy.None ? `ack=${cfg.ack_policy}` :
+        cfg.deliver_policy !== DeliverPolicy.LastPerSubject ? `deliver=${cfg.deliver_policy}` :
+        cfg.mem_storage !== true ? `mem_storage=${cfg.mem_storage}` :
+        cfg.inactive_threshold !== INACTIVE_THRESHOLD_NS ? `inactive_threshold=${cfg.inactive_threshold}` :
+        undefined;
+      if (drift !== undefined)
+        throw new EpEnvelopeError("failed-precondition", `the manager goal-index scanner's consumer does not carry the forced pull/LastPerSubject shape (${drift})`);
+      if (probe?.afterManagerGoalIndexCreate) await probe.afterManagerGoalIndexCreate();
+
+      const latest = new Map<string, { data: Uint8Array; seq: number; op: string | undefined }>();
+      const consumer = await js.consumers.get(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME);
+      let noProgress = 0;
+      for (let round = 0; ; round++) {
+        const pending = (await consumer.info()).num_pending;
+        if (pending === 0) break;
+        if (round >= MAX_DRAIN_ROUNDS)
+          throw new EpEnvelopeError("unavailable", `the manager goal-index scanner never settled to zero pending after ${round} rounds`);
+        const iter = await consumer.fetch({ max_messages: Math.min(pending, 256), expires: 5_000 });
+        let got = 0;
+        for await (const m of iter) {
+          got++;
+          if (!matchesFilter(m.subject, filter))
+            throw new EpEnvelopeError("internal", `the manager goal-index scanner received subject ${m.subject} outside ${filter}`);
+          if (!Number.isSafeInteger(m.seq) || m.seq <= 0)
+            throw new EpEnvelopeError("internal", `the manager goal-index scanner received invalid sequence ${m.seq}`);
+          const prev = latest.get(m.subject);
+          if (prev === undefined || m.seq > prev.seq)
+            latest.set(m.subject, { data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
+        }
+        if (round === 0 && probe?.afterManagerGoalIndexFirstFetch) await probe.afterManagerGoalIndexFirstFetch();
+        if (got === 0) {
+          if (++noProgress >= MAX_NO_PROGRESS_ROUNDS)
+            throw new EpEnvelopeError("unavailable", "the manager goal-index scanner reported pending but delivered nothing");
+        } else noProgress = 0;
+      }
+      const out: GoalIndexEntry[] = [];
+      for (const [subject, row] of latest) {
+        const key = subject.slice(keyPrefixLen);
+        if (row.op !== undefined)
+          throw new EpEnvelopeError("failed-precondition", `manager goal-index entry ${key} carries a ${row.op} marker; a deletion is never a live index row`);
+        let raw: unknown;
+        try { raw = JSON.parse(new TextDecoder().decode(row.data)); }
+        catch (e) { throw new EpEnvelopeError("internal", `manager goal-index entry ${key} does not decode as JSON: ${(e as Error).message}`); }
+        const parsed = parseGoalIndexEntry(raw, key);
+        const parsedKey = parseRecordKey(key);
+        if (parsedKey?.def !== RECORD_KINDS.goalidx || parsedKey.part !== "atomic")
+          throw new EpEnvelopeError("internal", `manager goal-index scanner received ${key}, which is not an atomic goalidx key`);
+        const bodyQualifiers = [parsed.endpoint, parsed.owner, parsed.actor, parsed.uid, parsed.goalId];
+        if (JSON.stringify(parsedKey.qualifiers) !== JSON.stringify(bodyQualifiers))
+          throw new EpEnvelopeError("internal", `manager goal-index entry body qualifiers ${JSON.stringify(bodyQualifiers)} do not match key ${key}`);
+        if (parsed.endpoint !== "manager")
+          throw new EpEnvelopeError("internal", `manager goal-index scanner returned endpoint ${parsed.endpoint}`);
+        if (parsed.owner !== expectedOwner)
+          throw new EpEnvelopeError("internal", `manager goal-index scanner delivered foreign owner ${parsed.owner} outside ${expectedOwner}`);
+        out.push(parsed);
+      }
+      return out;
+    } finally {
+      try { await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME); } catch { /* bounded inactivity is the orphan backstop */ }
+    }
+  };
+
   // FROZEN before branding (capability integrity): the brand keys this exact reference, and the
   // freeze guarantees its ops are still the module's when an install seam asserts the brand — a
   // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
@@ -344,6 +450,13 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
       await guard.assertHeld("after");
       return out;
     }),
+    scanManagerGoalIndex: (owner: string) => serializedForSpace(space, async () => {
+      if (guard === undefined) return scanManagerGoalIndexOnce(owner);
+      await guard.assertHeld("before");
+      const out = await scanManagerGoalIndexOnce(owner);
+      await guard.assertHeld("after");
+      return out;
+    }),
     close: onClose,
   });
   RECORDS_SCANNER_BRAND.set(scanner, space);
@@ -351,14 +464,15 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
 }
 
 /**
- * The SEALED records scanner's credential grant on the RECORDS stream (SPEC 13.9): exactly the ONE
- * literal enumeration consumer's lifecycle (CREATE/INFO/NEXT/DELETE pinned to
- * {@link RECORDS_SCANNER_CONSUMER_NAME}, the CREATE filter confined to the `oblig.` subtree) + the
- * stream shape read + the scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE` on
- * `KV_cotal_records_<space>` for obligation enumeration; {@link openRecordsScannerCandidate} opens it for the
- * trusted process and it is NEVER registered as an external/mintable profile. The bucket is DERIVED
- * from the validated space and the name is the module constant, so no caller-supplied token forms a
- * privileged subject.
+ * The SEALED records scanner's credential grant on the RECORDS stream (SPEC 13.9): exactly two
+ * literal consumers' lifecycles. CREATE/INFO/NEXT/DELETE are pinned to
+ * {@link RECORDS_SCANNER_CONSUMER_NAME} for the `oblig.` subtree and to
+ * {@link MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME} for the manager `goalidx` subtree, plus the stream
+ * shape read and scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE` on
+ * `KV_cotal_records_<space>` for either enumeration. {@link openRecordsScannerCandidate} opens it for
+ * the trusted process and it is NEVER registered as an external/mintable profile. The bucket is
+ * DERIVED from the validated space and both names are module constants, so no caller-supplied token
+ * forms a privileged subject.
  */
 export function recordsScannerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const bucket = recordsBucket(space);
@@ -372,6 +486,10 @@ export function recordsScannerGrants(space: string, connId: string): { publish: 
       `$JS.API.CONSUMER.INFO.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}`,
       `$JS.API.CONSUMER.MSG.NEXT.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}`,
       `$JS.API.CONSUMER.DELETE.${stream}.${RECORDS_SCANNER_CONSUMER_NAME}`,
+      `$JS.API.CONSUMER.CREATE.${stream}.${MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME}.$KV.${bucket}.goalidx.manager.>`,
+      `$JS.API.CONSUMER.INFO.${stream}.${MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME}`,
+      `$JS.API.CONSUMER.MSG.NEXT.${stream}.${MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME}`,
+      `$JS.API.CONSUMER.DELETE.${stream}.${MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME}`,
     ],
     subscribe: [`_INBOX_${inbox}.>`],
   };

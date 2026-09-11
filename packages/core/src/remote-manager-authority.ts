@@ -1,3 +1,6 @@
+import { rawDigest } from "./canonical.js";
+import { assertLifecycleToken } from "./subjects.js";
+
 /**
  * Closed request for one remote manager-service authority lifecycle.
  *
@@ -9,7 +12,7 @@
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session";
+  operation: "prepare" | "activate" | "renew" | "session" | "retire";
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
@@ -21,6 +24,14 @@ export interface RemoteManagerAuthorityRequest {
   registrationProof?: string;
   /** Session only: one fresh caller-generated serving nkey and the exact session coordinates. */
   session?: { id: string; endpoint: string; sessionId: string; epoch: number; exp: number };
+  /** Retire only: one fresh requester nkey plus the exact terminal operation. The opId is stable
+   * across retries but is never bearer authority; the target is what the returned grant confines. */
+  retirement?: {
+    id: string;
+    target: { owner: string; actor: string; lifecycleUid: string };
+    opId: string;
+    serveEpoch: number;
+  };
   /** Activate only: the manager's canonical contract artifacts, already content-addressed by the
    * client. The host publishes exactly these after re-hashing and derives the registered surface;
    * arbitrary extra contracts are refused by closed artifact count/digest checks. */
@@ -62,6 +73,7 @@ export interface RemoteManagerAuthorityMaterial {
   lifecycleUid: string;
   requestId: string;
   registrationProof?: string;
+  retirement?: RemoteManagerAuthorityRequest["retirement"];
   issuedAt: number;
   expiresAt: number;
   actors: RemoteManagerActors;
@@ -77,7 +89,112 @@ export interface RemoteManagerAuthorityMaterial {
     goalWriter: RemoteManagerCredential;
     sessionLedger: RemoteManagerCredential;
     sessionServing: RemoteManagerCredential;
+    retirementRequester: RemoteManagerCredential;
   }>;
+}
+
+/**
+ * Closed request for a remote manager to revalidate one retained managed agent on its host.
+ *
+ * The actor token and sentinel credential are existing per-agent material, not new authority. They
+ * cross only the authenticated manager-authority HTTPS exchange and are consumed by the host's
+ * current provider state. The host returns no credential or secret, only the current non-secret
+ * ledger authority shape.
+ */
+export interface RemoteRetainedAgentValidationRequest {
+  v: 1;
+  kind: "manager-retained-agent-validation";
+  space: string;
+  /** The interactive actor whose fresh `supervise` grant authorizes this manager lifecycle. */
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  target: { owner: string; actor: string; lifecycleUid: string };
+  actorToken: string;
+  sentinelCreds: string;
+}
+
+/** Exact non-secret answer to one retained-agent validation request. */
+export interface RemoteRetainedAgentValidationResult {
+  v: 1;
+  kind: "manager-retained-agent-validation";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  target: RemoteRetainedAgentValidationRequest["target"];
+  authority: import("./auth-provider.js").RetainedAgentAuthority;
+}
+
+/** Closed host-owned boot scan. The participant supplies no filter and receives parsed manager
+ * goal-index rows for its authenticated owner only, never a records credential or raw KV body. */
+export interface RemoteManagerGoalIndexScanRequest {
+  v: 1;
+  kind: "manager-goal-index-scan";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+}
+
+export interface RemoteManagerGoalIndexScanResult {
+  v: 1;
+  kind: "manager-goal-index-scan";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  entries: import("./endpoint-action.js").GoalIndexEntry[];
+}
+
+/** Closed, non-transferable serve-time admin decision for one exact endpoint caller. */
+export interface RemoteManagerAdminAuthorizationRequest {
+  v: 1;
+  kind: "manager-admin-authorization";
+  space: string;
+  /** Interactive actor whose current `supervise` grant authorizes this manager lifecycle. */
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** Registered manager relay of the broker-authenticated endpoint caller tuple. */
+  caller: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/** Exact echo plus one host-derived boolean. No scope or ledger row crosses the seam. */
+export interface RemoteManagerAdminAuthorizationResult {
+  v: 1;
+  kind: "manager-admin-authorization";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  caller: RemoteManagerAdminAuthorizationRequest["caller"];
+  authorized: boolean;
 }
 
 export function remoteManagerActors(instanceId: string): RemoteManagerActors {
@@ -88,4 +205,25 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
     goalWriter: `manager_goal_${instanceId}`,
     sessionLedger: `manager_session_${instanceId}`,
   };
+}
+
+/** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts. */
+export function remoteManagerRegistrationProof(owner: string, request: RemoteManagerAuthorityRequest): string {
+  const artifactDigests = request.operation === "session" ? [] : (request.contractArtifacts ?? []).map((value) => rawDigest(JSON.stringify(value)));
+  return rawDigest(JSON.stringify({
+    v: 1,
+    space: request.space,
+    owner,
+    instanceId: request.instanceId,
+    lifecycleUid: request.managerLifecycleUid,
+    actors: remoteManagerActors(request.instanceId),
+    identities: request.identities,
+    artifactDigests,
+  }));
+}
+
+/** The one terminal operation identity for a managed lifecycle. It is derived, never selected:
+ * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op. */
+export function managedRetirementOpId(lifecycleUid: string): string {
+  return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }

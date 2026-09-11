@@ -600,6 +600,9 @@ importers:
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../../extensions/connector-opencode
+      '@cotal-ai/delivery':
+        specifier: workspace:*
+        version: link:../delivery
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit

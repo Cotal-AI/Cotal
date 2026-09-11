@@ -102,7 +102,8 @@ by `spawn` or `admin`.
 The participant's loopback/operator exchange obtains one closed `manager-service` view for its
 ordinary derived owner, a fixed server-selected manager actor, and one opaque manager instance.
 The host, not the participant, issues the public-nkey JWT material via the replay-safe,
-lifecycle-bound prepare → activate → renew exchange. It never exports the space signer, a static
+lifecycle-bound prepare → activate → renew exchange, plus a one-shot target-pinned retirement
+request for a host-managed terminal. It never exports the space signer, a static
 provisioner credential, or generic storage authority. The manager may provision only descendants
 of that same owner, with host validation at each provision.
 
@@ -114,7 +115,10 @@ connection the record did not describe. `cotal meshes add` records both.
 When the authority service, login, or renewal is unavailable, the remote manager degrades
 fail-closed: it refuses new agents, restarts, and credential replacement rather than pretending
 local authority exists. Existing agents remain live only while their independent credentials are
-valid. Restore service and renew successfully before asking it to recover an agent. See
+valid. A hosted composition must revoke the managed grant and finish its resumable release before it
+requests terminal retirement. Deleting DM or delivery consumers is not retirement and must not reset
+a resumable lifecycle's frontier or pending state. The alias remains held until the terminal barrier
+confirms. Restore service and renew successfully before asking it to recover an agent. See
 [Identity & auth](identity-and-auth.md#remote-manager-authority) and the [CLI
 reference](cli.md#supervise).
 

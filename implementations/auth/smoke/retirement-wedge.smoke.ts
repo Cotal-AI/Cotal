@@ -47,7 +47,7 @@ import {
   AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epAuthBucket, epgateKey,
   epCallerReplyFilter, epRequestSubject, parseEpSubject,
   createEndpointStreams, createRecordEntry, createSpaceAuth, ensureAuthorityStores,
-  epfStreamName, epwStreamName, isReachable, mintCreds, mintLifecycleUid, newIdentity,
+  epfStreamName, epwStreamName, isReachable, managedRetirementOpId, mintCreds, mintLifecycleUid, newIdentity,
   principalKey, recordAtomicKey, RETIREMENT_FRONTIER, serverConfig, DEV_OWNER,
   type EvictionResult, type PlaneConnTuple, type PlaneLivenessQuery, type PlaneLivenessResult,
 } from "@cotal-ai/core";
@@ -222,7 +222,7 @@ try {
   const stageWedge = async (actor: string): Promise<{ uid: string; op: string }> => {
     const uid = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor, lifecycleUid: uid, managerInstance: "smoke" });
-    const op = mintLifecycleUid();
+    const op = managedRetirementOpId(uid);
     const deps: RetirementDeps = {
       evictPrincipal: failEvictor,
       drainTargetObligations: unreached("drain"),
