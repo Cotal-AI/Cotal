@@ -160,8 +160,10 @@ export class LegacyPtyRuntime implements Runtime {
       // `interrupt` and the session's own `write` are: node-pty throws on a dead handle, and the
       // manager has already refused a non-running agent before it gets here, so this guard covers
       // only the narrow race where the child exits between that check and this call.
-      write: (data) => {
-        if (alive) proc.write(data);
+      write: async (data) => {
+        if (!alive) throw new Error(`seat ${name} is not running; the PTY rejected the write`);
+        proc.write(data);
+        return Buffer.byteLength(data, "utf8");
       },
       attach: (): AttachSession => ({
         get cols() {
