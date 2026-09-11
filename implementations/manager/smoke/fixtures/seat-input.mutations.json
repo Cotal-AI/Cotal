@@ -79,13 +79,13 @@
       "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count acknowledged for what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply."
     },
     {
-      "name": "the manager restores an intended-buffer receipt and stops awaiting the runtime acknowledgement",
+      "name": "the manager restores an intended-buffer receipt and ignores the runtime's accepted-byte count",
       "file": "implementations/manager/src/manager.ts",
       "find": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    let bytes: number;\n    try {\n      bytes = await write(data);\n    } catch (error) {\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n    }\n    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);\n    return { name: a.name, bytes };",
-      "replace": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    void write(data);\n    return { name: a.name, bytes: intendedBytes };",
+      "replace": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    try {\n      await write(data);\n    } catch (error) {\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n    }\n    return { name: a.name, bytes: intendedBytes };",
       "expectRed": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
       "cell": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
-      "note": "This is the pre-fix mechanism in compact form: a fire-and-forget runtime call followed by a receipt calculated from the intended buffer. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change."
+      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and reports the intended buffer length. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change."
     }
   ]
 }
