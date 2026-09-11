@@ -303,7 +303,7 @@ try {
   console.log(`\nsibling-mint-fence smoke: ${pass} passed, ${fail} failed`);
 } finally {
   for (const c of conns) await c.drain().catch(() => c.close());
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { k.kill("SIGKILL"); }
   await wait(200);
 }

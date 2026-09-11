@@ -149,7 +149,7 @@ try {
     readerWarm.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
 
   // ── restart: incarnation 2 (same root) ──
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   mgr = await bootManager();
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
@@ -269,7 +269,7 @@ try {
 } finally {
   await reader?.stop().catch(() => {});
   await client?.stop().catch(() => {});
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }
 

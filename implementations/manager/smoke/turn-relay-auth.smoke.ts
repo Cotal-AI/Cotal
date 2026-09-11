@@ -190,7 +190,7 @@ try {
 } finally {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await writer?.stop().catch(() => {});
   await writerNc?.drain().catch(() => writerNc?.close());
   await delivery?.stop().catch(() => {});

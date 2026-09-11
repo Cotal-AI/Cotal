@@ -69,8 +69,8 @@ try {
     M1.serviceServe?.grant.instanceId === M1.managerInstanceId
     && M2.serviceServe?.grant.instanceId === M2.managerInstanceId);
 } finally {
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }
 

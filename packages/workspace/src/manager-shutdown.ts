@@ -119,8 +119,11 @@ export function publishManagerSpareCapability(
 export function assertManagerCanSpare(
   context: LocalProcessContext,
   tokenAt: ProcessStartTokenReader = defaultStartToken,
+  target?: ProcessIdentityRecord,
 ): void {
   const expected = recordedManagerProcess(context, tokenAt);
+  if (target && (target.pid !== expected.pid || target.token !== expected.token))
+    throw new Error("refusing bare manager stop: stop attempt target does not match the recorded manager process");
   const path = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, context);
   let value: unknown;
   try {
@@ -143,16 +146,26 @@ export function assertManagerCanSpare(
  */
 export function armManagerShutdownIntent(
   context: LocalProcessContext,
+  attempt: { target: { pid: number; token?: string }; stopper: { pid: number; marker: string } },
   tokenAt: ProcessStartTokenReader = defaultStartToken,
 ): void {
-  let managerProcess: ProcessIdentityRecord;
-  try { managerProcess = recordedManagerProcess(context, tokenAt); }
+  if (attempt.target.token === undefined)
+    throw new Error("cannot arm --with-agents: manager process identity is not pinned; destructive policy was not published");
+  const managerProcess = { pid: attempt.target.pid, token: attempt.target.token };
+  let recorded: ProcessIdentityRecord;
+  try { recorded = recordedManagerProcess(context, tokenAt); }
   catch (e) { throw new Error(`cannot arm --with-agents: ${(e as Error).message}; destructive policy was not published`); }
+  if (recorded.pid !== managerProcess.pid || recorded.token !== managerProcess.token)
+    throw new Error("cannot arm --with-agents: stop attempt target does not match the recorded manager process; destructive policy was not published");
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, context);
+  if (attempt.stopper.marker !== `${pidPath}.stopping`)
+    throw new Error("cannot arm --with-agents: stop reservation marker is not this manager's; destructive policy was not published");
   let stopperPid: number | undefined;
-  try { stopperPid = parsePid(readFileSync(`${pidPath}.stopping`, "utf8")); } catch { stopperPid = undefined; }
+  try { stopperPid = parsePid(readFileSync(attempt.stopper.marker, "utf8")); } catch { stopperPid = undefined; }
   if (stopperPid === undefined)
     throw new Error("cannot arm --with-agents: manager stop reservation is absent or unattributable; destructive policy was not published");
+  if (stopperPid !== attempt.stopper.pid)
+    throw new Error("cannot arm --with-agents: stop reservation owner is not this process; destructive policy was not published");
   const stopperToken = tokenAt(stopperPid);
   if (stopperToken === undefined)
     throw new Error("cannot arm --with-agents: manager stop reservation owner has no verifiable process identity; destructive policy was not published");

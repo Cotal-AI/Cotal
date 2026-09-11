@@ -112,7 +112,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "down",
     group: "Mesh",
-    summary: "stop the whole local stack, or name only the components to stop",
+    summary: "stop the whole local stack (managed agents stay running unless --with-agents), or name only the components to stop",
     positionals: "[<component> …]",
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },

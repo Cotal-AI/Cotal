@@ -270,19 +270,19 @@ try {
     (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000;
   }
 
-  // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
-  console.log("4. manager stop() → still-managed footprint torn down:");
+  // 4 — EXPLICIT SHUTDOWN teardown: withAgents deprovisions the still-managed agents (w2 + the kept idle1).
+  console.log("4. manager stop({ withAgents: true }) → still-managed footprint torn down:");
   const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot });
   check("second agent started", r4.ok === true, r4);
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
   const uid2 = uidOf("w2"); // capture before stop() clears the managed set
   check("w2 footprint exists before stop", (await footprint(id2, uid2, "w2")).dm, await footprint(id2, uid2, "w2"));
-  await mgr.stop(); // awaits teardownManagedAgents → deprovision
+  await mgr.stop({ withAgents: true }); // awaits teardownManagedAgents → deprovision
   const fp2 = await footprint(id2, uid2, "w2");
-  check("w2 dm_ durable gone after stop()", !fp2.dm, fp2);
-  check("w2 dlv_ durable gone after stop()", !fp2.dlv, fp2);
-  check("w2 read-ACL row gone after stop()", !fp2.acl, fp2);
-  check("w2 creds file gone after stop()", !fp2.creds, fp2);
+  check("w2 dm_ durable gone after explicit stop", !fp2.dm, fp2);
+  check("w2 dlv_ durable gone after explicit stop", !fp2.dlv, fp2);
+  check("w2 read-ACL row gone after explicit stop", !fp2.acl, fp2);
+  check("w2 creds file gone after explicit stop", !fp2.creds, fp2);
 
   console.log(`\nLIFECYCLE E2E ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
@@ -290,7 +290,7 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  try { await mgr.stop(); } catch { /* already stopped */ }
+  try { await mgr.stop({ withAgents: true }); } catch { /* already stopped */ }
   await delivery?.stop().catch(() => {});
   srv.kill("SIGKILL");
   await wait(300);

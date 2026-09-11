@@ -367,7 +367,7 @@ try {
   console.log(`\nspawn-action open-mesh functional smoke: ${pass} passed, ${fail} failed`);
 } finally {
   for (const c of conns) await c.drain().catch(() => c.close());
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   await wait(200);
 }

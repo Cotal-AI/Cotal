@@ -1511,13 +1511,13 @@ try {
   }
 
   // ---------- F. revocation ----------
-  console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
+  console.log("F) explicit manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
   const alphaFamily = incFiles("alpha"); // resolve the incarnation paths BEFORE teardown shreds them
-  await manager.stop(); // teardown deprovisions alpha: user-mode revoke (row delete) + token/sentinel/health shred
+  await manager.stop({ withAgents: true }); // explicit teardown deprovisions alpha: row delete + token/sentinel/health shred
   managerStopped = true;
   const rowGone = !existsSync(managedRowPath);
   const filesGone = [alphaFamily.actorToken, alphaFamily.sentinelCreds, alphaFamily.health].every((f) => !existsSync(f)) && noIncFiles("alpha");
-  check("manager teardown deleted the managed row and shredded the token/sentinel/health files", rowGone && filesGone, { rowGone, filesGone });
+  check("explicit manager teardown deleted the managed row and shredded the token/sentinel/health files", rowGone && filesGone, { rowGone, filesGone });
   const revokedEx = await agentExchange("alpha", alphaToken, OWNER); // the OLD captured secret
   check("the old captured actor token is uniformly denied (401) after revocation", revokedEx.status === 401, { status: revokedEx.status, error: revokedEx.body.error });
 
@@ -1537,7 +1537,7 @@ try {
   try { await observer?.stop(); } catch { /* */ }
   try { await shortEp?.stop(); } catch { /* */ }
   for (const e of ctlEps) { try { await e.stop(); } catch { /* */ } }
-  if (manager && !managerStopped) await manager.stop().catch(() => {});
+  if (manager && !managerStopped) await manager.stop({ withAgents: true }).catch(() => {});
   await killPid(authChild?.pid);
   broker?.kill("SIGKILL");
   idpSrv.close();

@@ -164,7 +164,7 @@ try {
   check("invoking a command not in the resolved surface is not-found", notFound === "not-found", notFound);
 
   await nc.drain().catch(() => nc.close());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });

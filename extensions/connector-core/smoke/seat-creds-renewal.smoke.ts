@@ -219,7 +219,7 @@ try {
 } finally {
   await staticAgent?.stop();
   await agent?.stop();
-  await manager?.stop();
+  await manager?.stop({ withAgents: true });
   server.kill("SIGKILL");
   await awaitExit(server);
   rmSync(dir, { recursive: true, force: true });

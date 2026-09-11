@@ -181,7 +181,7 @@ try {
   console.log(`\nAUTH PER-CHANNEL ATTENTION E2E PASSED ✅  (${pass} checks)`);
   await agent.stop();
   await pub.stop();
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");
   await awaitExit(srv);

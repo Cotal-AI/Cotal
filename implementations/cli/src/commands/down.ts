@@ -173,7 +173,6 @@ export async function down(args: ParsedArgs): Promise<void> {
   const managerContext = managerComponent ? contextFor(managerComponent) : undefined;
   let spared: DownSeatRow[] | undefined;
   if (!values["with-agents"] && managerComponent && managerContext && processRecorded(managerComponent, managerContext)) {
-    assertManagerCanSpare(managerContext);
     spared = await listManagerSeatsForSpare(managerContext);
   }
   let any = false;
@@ -186,10 +185,15 @@ export async function down(args: ParsedArgs): Promise<void> {
     }
     try {
       const context = contextFor(component);
-      if (component.name === "manager" && values["with-agents"] && processRecorded(component, context)) {
+      if (component.name === "manager" && processRecorded(component, context)) {
         try {
           await stopLocalProcess(component, context, {
-            beforeSignal: () => armManagerShutdownIntent(context),
+            beforeSignal: (attempt) => {
+              if (attempt.target.token === undefined)
+                throw new Error("refusing manager stop: the exact manager process identity is not pinned");
+              if (values["with-agents"]) armManagerShutdownIntent(context, attempt);
+              else assertManagerCanSpare(context, undefined, attempt.target);
+            },
           });
         } catch (e) {
           disarmManagerShutdownIntent(context);
@@ -314,7 +318,10 @@ export function mayBeRunning(component: LocalProcess, context: LocalProcessConte
 export interface StopLocalProcessOptions {
   /** Runs while this caller holds the `.stopping` reservation, after exact target verification and
    * immediately before SIGTERM. Throwing aborts without signalling and preserves the pid record. */
-  beforeSignal?: () => void;
+  beforeSignal?: (attempt: {
+    target: { pid: number; token: string } | { pid: number; token?: undefined };
+    stopper: { pid: number; marker: string };
+  }) => void;
 }
 
 /** Stop one recorded process and await its actual exit before the next dependency is stopped. */
@@ -405,7 +412,10 @@ export async function stopLocalProcess(
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
     if (identity.kind === "legacy") console.error(identityLegacyWarning(component.label, pidPath));
     else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
-    options.beforeSignal?.();
+    options.beforeSignal?.({
+      target: identity.kind === "match" ? identity.record : { pid },
+      stopper: { pid: process.pid, marker },
+    });
     try {
       process.kill(pid, "SIGTERM");
     } catch (e) {

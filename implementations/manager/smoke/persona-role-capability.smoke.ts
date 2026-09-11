@@ -314,7 +314,7 @@ try {
     (async () => {
       await definer?.stop().catch(() => {});
       await provisioner?.stop().catch(() => {});
-      await mgr.stop().catch(() => {});
+      await mgr.stop({ withAgents: true }).catch(() => {});
     })(),
     sleep(10_000),
   ]);

@@ -3,11 +3,8 @@
  *
  * The incident: one stop signal to the stack took six live seats with it, several holding
  * uncommitted work, and the logs read as a deliberate teardown. The mechanism is
- * `Manager.stop()`: its normal active path unconditionally calls `teardownManagedAgents()`
- * (implementations/manager/src/manager.ts, the `maintenanceState === "active"` arm), which
- * hard-stops every managed seat and deprovisions its footprint. Bare `cotal down` stops the
- * manager and therefore drives exactly this path. There is no flag, mode, or argument that
- * stops the stack and leaves the seats running.
+ * `Manager.stop()`: its normal active path now releases detachable local custody and
+ * leaves agents running. Explicit `stop({ withAgents: true })` is the previous reap.
  *
  * This suite drives the SHIPPED owner of that behavior - a real `Manager` over a real authed
  * broker with a real co-located delivery daemon (a direct `deliver` run, never `up`; on an auth
@@ -25,15 +22,14 @@
  *     choice, the fix PR must RELABEL these cells as the destructive mode's explicit spelling
  *     (`stop({withAgents: true})` or equivalent) and add the sparing path as new green cells.
  *   Either way this file changes in the fix PR; a fix that leaves it untouched is incomplete.
+ * This file now asserts the accepted three-mode contract: a plain `stop()` spares, and
+ * `stop({ withAgents: true })` reaps.
  *
  * What runs here:
- *   DEFECT phase: manager up, one live managed seat (its child process writes a pidfile, so
- *   liveness is measured, not inferred), then a plain `mgr.stop()`. The seat's process is dead
- *   and its minted creds file is gone, with no refusal and no warning.
- *   CONTROL phase: a fresh manager over the same root, a second seat, and a DELIBERATE per-seat
- *   stop through the real CLI (`cotal stop --name`). The terminal observables are the SAME
- *   (process dead, creds gone) - which is the issue's "indistinguishable from deliberate
- *   teardown" claim made concrete: on disk, a mass reap looks exactly like an operator despawn.
+ *   SPARE phase: manager up, one live managed seat, then a plain `mgr.stop()`. The seat
+ *   process and minted creds remain.
+ *   REAP phase: a second manager on a separate root, `stop({ withAgents: true })`. That
+ *   seat is dead and its creds are gone, while the independently spared seat remains.
  *
  * NAMED GAPS (deliberate, not oversights):
  *   - The CLI `down` surface itself is not driven here: this host must never run `cotal down`
