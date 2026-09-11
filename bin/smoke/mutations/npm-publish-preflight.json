@@ -1,6 +1,8 @@
 {
   "suite": [
     "scripts/preflight-npm-publish.mjs",
+    "scripts/preflight-npm-publish.d.mts",
+    "bin/smoke/gen-npm-publish-preflight-dts.mts",
     "bin/smoke/npm-publish-preflight.smoke.ts"
   ],
   "guard": "The fixed-group npm census refuses partial, incomplete, or stage-only releases before any registry write",
@@ -91,6 +93,14 @@
       "replace": "  if (withDirect.length > 0) return \"createPackage\";\n  return \"createPackage\";\n",
       "expectRed": "classifier treats an empty Allowed-actions list as stage-only",
       "cell": "classifier treats an empty Allowed-actions list as stage-only"
+    },
+    {
+      "name": "an exported signature changes without regenerating its declaration",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export function trustUrl(registryBase, name) {\n",
+      "replace": "export function trustUrl(registryBase, name, extra = \"\") {\n  void extra;\n",
+      "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
+      "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)"
     }
   ]
 }

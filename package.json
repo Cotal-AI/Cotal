@@ -19,6 +19,7 @@
     "gen:reaper-dts": "tsx bin/smoke/gen-reaper-dts.mts",
     "gen:ci-suites-dts": "tsx bin/smoke/gen-ci-suites-dts.mts",
     "gen:publish-closure-dts": "tsx bin/smoke/gen-publish-closure-dts.mts",
+    "gen:npm-publish-preflight-dts": "tsx bin/smoke/gen-npm-publish-preflight-dts.mts",
     "mutation-proof": "node scripts/mutation-proof.mjs",
     "mutation-coverage": "node scripts/mutation-coverage.mjs",
     "doc-binding": "node scripts/doc-binding.mjs",

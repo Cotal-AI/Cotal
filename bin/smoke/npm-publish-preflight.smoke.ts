@@ -14,6 +14,8 @@ import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
 import { classifyDirectPublishPermission, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
+import { emitDeclaration } from "./gen-npm-publish-preflight-dts.mjs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -331,6 +333,12 @@ check(
   "a 401 trust census never issues a write-shaped registry call",
   trustDenied.seen.every((call) => !isWriteShaped(call)),
   trustDenied.seen,
+);
+
+const committedDts = readFileSync(join(ROOT, "scripts/preflight-npm-publish.d.mts"), "utf8");
+check(
+  "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
+  committedDts === emitDeclaration(),
 );
 
 console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);
