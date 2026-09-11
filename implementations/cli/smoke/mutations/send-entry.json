@@ -9,22 +9,22 @@
   "why": [
     "The prior URL walked only to implementations/ and attempted implementations/bin/cotal.ts. Every delivery assertion was unreachable, and the suite stayed ungated.",
     "",
-    "The named precondition proves the subprocess entry exists before any command runs. The owned OS-assigned broker and explicit --server arguments make the real CLI path safe to run in CI and concurrently without borrowing an ambient mesh."
+    "The named precondition proves the subprocess entry exists before any command runs. The owned OS-assigned broker, isolated two-entry registry, explicit current selection, and neutral subprocess cwd make the no-flag CLI path safe to run in CI and concurrently without borrowing an ambient mesh."
   ],
   "mutations": [
     {
       "name": "resolve the CLI from implementations/bin again",
       "file": "implementations/cli/smoke/send.smoke.ts",
-      "find": "const root = fileURLToPath(new URL(\"../../../\", import.meta.url));\nconst cli = fileURLToPath(new URL(\"../../../bin/cotal.ts\", import.meta.url));",
-      "replace": "const root = fileURLToPath(new URL(\"../../\", import.meta.url));\nconst cli = fileURLToPath(new URL(\"../../bin/cotal.ts\", import.meta.url));",
+      "find": "const cli = fileURLToPath(new URL(\"../../../bin/cotal.ts\", import.meta.url));",
+      "replace": "const cli = fileURLToPath(new URL(\"../../bin/cotal.ts\", import.meta.url));",
       "expectRed": "the subprocess entry is the repository's real bin/cotal.ts",
       "cell": "the subprocess entry is the repository's real bin/cotal.ts"
     },
     {
-      "name": "the sandbox registry no longer selects the owned mesh as current",
+      "name": "the sandbox registry selects the decoy mesh as current",
       "file": "implementations/cli/smoke/send.smoke.ts",
       "find": "    setCurrent(space);",
-      "replace": "    setCurrent(\"missing-mesh\");",
+      "replace": "    setCurrent(\"decoy\");",
       "expectRed": "`cotal send dm` outside a seat exits 0",
       "cell": "`cotal send dm` outside a seat exits 0"
     },

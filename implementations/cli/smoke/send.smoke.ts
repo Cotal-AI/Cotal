@@ -1,7 +1,8 @@
 /**
  * One-shot send commands (`cotal send dm|msg|ask`) — live end-to-end through the real CLI parser,
- * transient endpoint, and broker. The suite owns an OS-assigned open JetStream broker and passes
- * its address explicitly to every participant, so it cannot borrow or collide with an ambient mesh.
+ * transient endpoint, and broker. The suite owns an OS-assigned authenticated JetStream broker.
+ * CLI children resolve it through an isolated two-entry registry whose current pointer is the only
+ * no-flag disambiguator, so they cannot borrow or collide with an ambient mesh.
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
  * inherited COTAL_* is stripped. COTAL_SKIP_CONNECTOR_SEED is a reconcile skip, not a store fence;
@@ -61,8 +62,8 @@ writeFileSync(
 const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 const cli = fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url));
+const tsx = fileURLToPath(import.meta.resolve("tsx"));
 
 const home = mkdtempSync(join(tmpdir(), "cotal-send-home-"));
 const releaseHome = teardownPathOnSignal(home);
@@ -73,6 +74,10 @@ const tmp = mkdtempSync(join(tmpdir(), "cotal-send-tmp-"));
 const releaseTmp = teardownPathOnSignal(tmp);
 const meshRoot = join(tmp, "mesh-root");
 mkdirSync(join(meshRoot, ".cotal"), { recursive: true });
+const decoyRoot = join(tmp, "decoy-root");
+mkdirSync(join(decoyRoot, ".cotal"), { recursive: true });
+const operatorShell = join(tmp, "operator-shell");
+mkdirSync(operatorShell);
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
@@ -94,8 +99,8 @@ const run = (
   new Promise((resolve) => {
     execFile(
       process.execPath,
-      ["--import", "tsx", cli, ...args],
-      { cwd: root, env: { ...isolatedEnv, ...extra } },
+      ["--import", tsx, cli, ...args],
+      { cwd: operatorShell, env: { ...isolatedEnv, ...extra } },
       (err, stdout, stderr) =>
         resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr }),
     );
@@ -123,6 +128,7 @@ try {
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "decoy", server: servers, root: decoyRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorCotalHome === undefined) delete process.env.COTAL_HOME;
@@ -167,14 +173,12 @@ try {
   await bob.start();
   await wait(800);
 
-  const target: string[] = [];
-
   const dmText = `outside-u-${randomUUID().slice(0, 6)}`;
   const msgText = `outside-m-${randomUUID().slice(0, 6)}`;
   const askText = `outside-a-${randomUUID().slice(0, 6)}`;
-  const dm = await run(["send", "dm", "bob", dmText, ...target]);
-  const msg = await run(["send", "msg", "general", msgText, ...target]);
-  const ask = await run(["send", "ask", "reviewer", askText, ...target]);
+  const dm = await run(["send", "dm", "bob", dmText]);
+  const msg = await run(["send", "msg", "general", msgText]);
+  const ask = await run(["send", "ask", "reviewer", askText]);
   await wait(700);
 
   check("`cotal send dm` outside a seat exits 0", dm.code === 0, dm.stderr);
@@ -197,7 +201,7 @@ try {
   );
 
   const spoofText = `spoof-${randomUUID().slice(0, 6)}`;
-  const spoof = await run(["send", "dm", "bob", spoofText, ...target], {
+  const spoof = await run(["send", "dm", "bob", spoofText], {
     COTAL_NAME: "forged-seat",
     COTAL_ID: "forged_actor",
     COTAL_OWNER: "forged-owner",
@@ -228,7 +232,7 @@ try {
     got,
   );
 
-  const missing = await run(["send", "dm", "nobody-here", "x", ...target]);
+  const missing = await run(["send", "dm", "nobody-here", "x"]);
   check("`cotal send dm` to an absent agent exits non-zero", missing.code !== 0, missing.code);
   check("`cotal send dm` to an absent agent says 'no agent'", /no agent/i.test(missing.stderr), missing.stderr);
 
