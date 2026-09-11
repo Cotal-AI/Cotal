@@ -1,0 +1,2 @@
+# The Jcode effort classifier distinguishes a verified unsupported capability from a tier refusal.
+smoke:jcode-effort-model

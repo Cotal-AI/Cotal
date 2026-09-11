@@ -2,10 +2,10 @@
   "suite": [
     "extensions/connector-jcode/smoke/startup-diagnostics.smoke.ts"
   ],
-  "guard": "the per-seat Jcode connector log is owner-only and symlink-safe, and only the exact Harness invalid_request capability refusal receives the unsupported-capability classification",
+  "guard": "the per-seat Jcode connector log is owner-only and refuses a pre-planted logs symlink rather than writing outside the managed home",
   "command": "pnpm smoke:jcode-startup-diagnostics",
   "progressPattern": "✓",
-  "minTicks": 7,
+  "minTicks": 3,
   "mutations": [
     {
       "name": "Jcode connector logs follow a pre-planted directory symlink",
@@ -14,30 +14,6 @@
       "replace": "    if (false) throw new Error(\"mutant\");",
       "expectRed": "connector diagnostic log refuses a pre-planted logs symlink",
       "cell": "connector diagnostic log refuses a pre-planted logs symlink"
-    },
-    {
-      "name": "Jcode capability classification accepts copied untrusted Error text",
-      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "    error instanceof HarnessError &&",
-      "replace": "    error instanceof Error &&",
-      "expectRed": "a plain Error with copied capability text stays a generic refusal",
-      "cell": "a plain Error with copied capability text stays a generic refusal"
-    },
-    {
-      "name": "Jcode capability classification ignores the stable invalid_request code",
-      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "    error.code === \"invalid_request\" &&",
-      "replace": "    error.code !== \"disconnected\" &&",
-      "expectRed": "a different Harness code with copied capability text stays a generic refusal",
-      "cell": "a different Harness code with copied capability text stays a generic refusal"
-    },
-    {
-      "name": "Jcode capability classification accepts any unsupported-reasoning invalid_request",
-      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
-      "find": "    /^invalid_request: Reasoning effort is not supported by the current model\\/profile\\./.test(error.message)",
-      "replace": "    /^invalid_request: Reasoning effort is not supported/.test(error.message)",
-      "expectRed": "a near-miss invalid_request message stays a generic refusal",
-      "cell": "a near-miss invalid_request message stays a generic refusal"
     }
   ]
 }

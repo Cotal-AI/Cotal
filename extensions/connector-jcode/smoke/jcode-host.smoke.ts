@@ -459,6 +459,54 @@ try {
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
 
+  // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
+  // verify the provider route that will receive the effort instead of treating the provider default
+  // as an unidentified fallback or applying the setting without route identity.
+  const variantOnlyLog = join(root, "variant-only.jsonl");
+  const variantOnly = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: variantOnlyLog,
+      FAKE_JCODE_RUNTIME_MODEL: "runtime-default-model",
+      FAKE_JCODE_RUNTIME_PROVIDER: "runtime-default-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "runtime-default-model", provider: "runtime-default-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "variantonlypeer",
+      COTAL_ID: "variantonlypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_VARIANT: "high",
+      COTAL_CONTROL_SOCKET: controlSock("variant-only-control.sock"),
+      COTAL_CONTROL_TOKEN: "variant-only-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let variantOnlyErr = "";
+  variantOnly.stderr?.on("data", (chunk: Buffer) => (variantOnlyErr += chunk.toString()));
+  await waitFor("variant-only mesh presence", () => announced.has("variantonlypeer") ? true : undefined);
+  const variantOnlyRequests = readJsonLines<{ ev: string; frame?: { req?: string; effort?: string; no_reply?: boolean } }>(variantOnlyLog)
+    .filter((entry) => entry.ev === "request");
+  const variantOnlyRuntimeAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "get_runtime_info");
+  const variantOnlyEffortAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "set_reasoning_effort");
+  const variantOnlyTurnAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "send_message" && !entry.frame?.no_reply);
+  check(
+    "variant without an explicit model verifies its runtime route before applying effort",
+    variantOnlyRuntimeAt >= 0 && variantOnlyEffortAt > variantOnlyRuntimeAt &&
+      variantOnlyRequests[variantOnlyEffortAt]?.frame?.effort === "high" && variantOnlyTurnAt > variantOnlyEffortAt,
+    { variantOnlyRuntimeAt, variantOnlyEffortAt, variantOnlyTurnAt, variantOnlyErr },
+  );
+  await stopHostTree(variantOnly, "SIGTERM");
+  check("the variant-only launch exits cleanly", variantOnly.exitCode === 0, { code: variantOnly.exitCode, stderr: variantOnlyErr });
+
   // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
   // old host makes one proof turn and rejects this otherwise healthy launch before it can join.
   const raceLog = join(root, "readiness-race.jsonl");
@@ -701,6 +749,11 @@ try {
       FAKE_JCODE_LOG: refusedLog,
       FAKE_JCODE_REFUSE_EFFORT: "xhigh",
       FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: ${acceptedLadder}, ${effortCanary}`,
+      FAKE_JCODE_RUNTIME_PROVIDER: "selected-refusal-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "wrong-default-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "fake-model", provider: "selected-refusal-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "refusedpeer",
@@ -727,6 +780,8 @@ try {
     "effort refusal keeps only its requested tier, effective model, fixed provider code, and accepted ladder",
     /requested tier "xhigh"/.test(refusedErr) &&
       /effective model "fake-model"/.test(refusedErr) &&
+      /provider "selected-refusal-provider" via "responses"/.test(refusedErr) &&
+      !refusedErr.includes("wrong-default-provider") &&
       /provider code invalid_request/.test(refusedErr) &&
       refusedErr.includes(`accepted tiers: ${acceptedLadder}`),
     refusedErr,
