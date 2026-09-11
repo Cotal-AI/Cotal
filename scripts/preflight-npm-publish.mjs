@@ -14,10 +14,12 @@
  * package. That HTTP 201 is identity only: npm's trusted-publisher Allowed actions always permit
  * `npm stage publish`, and configurations created after 2026-09-03 default to stage. Direct
  * `npm publish` is a separate permission. The exchanged token is then used to GET
- * `/-/package/<name>/trust`. The whole run refuses unless THIS repository's `changesets.yml`
- * publisher lists a direct-publish action. Other publishers on the same package are not proof
- * that this job can `npm publish`. A stage-only sibling cannot pass this census and later fail
- * during sequential `pnpm publish -r` after earlier writes.
+ * `/-/package/<name>/trust`. npm's documented GitHub configuration stores identity under
+ * `claims.repository` and `claims.workflow_ref.file` (or a string `workflow_ref`) with
+ * `permissions`. The whole run refuses unless THAT identity matches THIS repository's
+ * `changesets.yml` publisher and lists a direct-publish action. Other publishers on the same
+ * package are not proof that this job can `npm publish`. A stage-only sibling cannot pass this
+ * census and later fail during sequential `pnpm publish -r` after earlier writes.
  *
  * There is no non-writing PUT that proves createPackage: a complete packument would publish, and
  * an incomplete one can 400 before the policy check. This script therefore never PUT/POSTs a
@@ -117,10 +119,17 @@ function isDirectPublishAction(action) {
 function publisherView(entry) {
   if (!entry || typeof entry !== "object") return { type: "", repository: "", workflow: "" };
   const nested = entry.publisher && typeof entry.publisher === "object" ? entry.publisher : {};
+  const claims = entry.claims && typeof entry.claims === "object" ? entry.claims : {};
+  const workflowRef = claims.workflow_ref;
+  const claimsWorkflow = typeof workflowRef === "string"
+    ? workflowRef
+    : workflowRef && typeof workflowRef === "object"
+      ? String(workflowRef.file ?? workflowRef.filename ?? "")
+      : "";
   return {
     type: String(entry.type ?? nested.type ?? ""),
-    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? ""),
-    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? ""),
+    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? claims.repository ?? ""),
+    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? claimsWorkflow ?? claims.workflow ?? ""),
   };
 }
 
@@ -139,8 +148,9 @@ function workflowBasename(value) {
 
 function isGithubPublisher(entry) {
   const view = publisherView(entry);
-  if (view.type.toLowerCase().includes("github")) return true;
-  return view.workflow.length > 0 || view.repository.length > 0;
+  const type = view.type.toLowerCase();
+  if (type && !type.includes("github")) return false;
+  return type.includes("github") || view.workflow.length > 0 || view.repository.length > 0;
 }
 
 function isThisReleasePublisher(entry, identity) {
@@ -172,8 +182,9 @@ function actionList(entry) {
 
 /**
  * Map a GET /-/package/<name>/trust body onto the direct-publish Allowed action
- * for this release job's GitHub publisher (repository + workflow file). Other
- * publishers on the same package are ignored. Empty allowed-action lists on this
+ * for this release job's GitHub publisher (repository + workflow file, including npm's
+ * documented `claims` object). Other publishers on the same package are ignored. Empty
+ * allowed-action lists on this
  * publisher are stage-only: npm's post-2026-09-03 default. HTTP 201 from the
  * OIDC exchange is not an input here.
  */

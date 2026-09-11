@@ -103,6 +103,14 @@
       "cell": "classifier ignores an unrelated GitHub publisher that lists createPackage"
     },
     {
+      "name": "GET trust claims identity is ignored",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const claims = entry.claims && typeof entry.claims === \"object\" ? entry.claims : {};\n  const workflowRef = claims.workflow_ref;\n  const claimsWorkflow = typeof workflowRef === \"string\"\n    ? workflowRef\n    : workflowRef && typeof workflowRef === \"object\"\n      ? String(workflowRef.file ?? workflowRef.filename ?? \"\")\n      : \"\";\n  return {\n    type: String(entry.type ?? nested.type ?? \"\"),\n    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? claims.repository ?? \"\"),\n    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? claimsWorkflow ?? claims.workflow ?? \"\"),\n  };\n",
+      "replace": "  return {\n    type: String(entry.type ?? nested.type ?? \"\"),\n    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? \"\"),\n    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? \"\"),\n  };\n",
+      "expectRed": "classifier accepts official GitHub GET trust claims with createPackage",
+      "cell": "classifier accepts official GitHub GET trust claims with createPackage"
+    },
+    {
       "name": "an exported signature changes without regenerating its declaration",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "export function trustUrl(registryBase, name) {\n",

@@ -61,6 +61,18 @@ function githubPublisher(actions: string[], extra: Record<string, unknown> = {})
   };
 }
 
+function githubClaimsPublisher(permissions: string[], claims: Record<string, unknown> = {}) {
+  return {
+    type: "github",
+    claims: {
+      repository: "Cotal-AI/Cotal",
+      workflow_ref: { file: "changesets.yml" },
+      ...claims,
+    },
+    permissions,
+  };
+}
+
 const thisRelease = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml" };
 
 function isWriteShaped(call: Seen): boolean {
@@ -88,7 +100,7 @@ async function scenario({
 }: ScenarioOpts = {}) {
   const seen: Seen[] = [];
   const logs: string[] = [];
-  const defaultTrust = { trustedPublishers: [githubPublisher(["stage", "publish"])] };
+  const defaultTrust = [githubClaimsPublisher(["createPackage", "createStagedPackage"])];
   const server = createServer((req, res) => {
     seen.push({ method: req.method ?? "", url: req.url ?? "" });
     if (req.url?.startsWith("/oidc?")) {
@@ -147,7 +159,7 @@ async function repositoryEntrypoint() {
       res.end(JSON.stringify({ token: "opaque-exchange-token" }));
     } else if (req.url?.includes("/trust")) {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ trustedPublishers: [githubPublisher(["stage", "publish"])] }));
+      res.end(JSON.stringify([githubClaimsPublisher(["createPackage", "createStagedPackage"])]));
     } else {
       res.writeHead(404, { "content-type": "application/json" });
       res.end("{}");
@@ -208,6 +220,49 @@ check(
       githubPublisher(["createPackage"], { repository: "other/repository", workflow_filename: "release.yml" }),
     ],
   }, thisRelease) === "createPackage",
+);
+check(
+  "classifier accepts official GitHub GET trust claims with createPackage",
+  classifyDirectPublishPermission([
+    githubClaimsPublisher(["createPackage", "createStagedPackage"]),
+  ], thisRelease) === "createPackage",
+);
+check(
+  "classifier treats official claims with only createStagedPackage as stage-only",
+  classifyDirectPublishPermission([
+    githubClaimsPublisher(["createStagedPackage"]),
+  ], thisRelease) === "stage-only",
+);
+check(
+  "classifier ignores an unrelated claims publisher that lists createPackage",
+  classifyDirectPublishPermission([
+    githubClaimsPublisher(["createStagedPackage"]),
+    githubClaimsPublisher(["createPackage"], { repository: "other/repository", workflow_ref: { file: "release.yml" } }),
+  ], thisRelease) === "stage-only",
+);
+check(
+  "classifier still accepts this workflow claims when an unrelated claims publisher is present",
+  classifyDirectPublishPermission([
+    githubClaimsPublisher(["createPackage", "createStagedPackage"]),
+    githubClaimsPublisher(["createPackage"], { repository: "other/repository", workflow_ref: { file: "release.yml" } }),
+  ], thisRelease) === "createPackage",
+);
+check(
+  "classifier refuses official same-repo wrong-workflow claims",
+  classifyDirectPublishPermission([
+    githubClaimsPublisher(["createPackage"], { workflow_ref: { file: "release.yml" } }),
+  ], thisRelease) === "refused:no-github-publisher",
+);
+check(
+  "classifier treats an explicit gitlab type as not this GitHub publisher",
+  classifyDirectPublishPermission({
+    trustedPublishers: [{
+      type: "gitlab",
+      repository: "Cotal-AI/Cotal",
+      workflow_filename: "changesets.yml",
+      allowed_actions: ["createPackage"],
+    }],
+  }, thisRelease) === "refused:no-github-publisher",
 );
 
 const cli = await repositoryEntrypoint();
@@ -360,6 +415,27 @@ check(
   "mixed-publisher refusal prints stage-only for this workflow, not createPackage",
   mixedPublisher.logs.some((line) => line.includes("@cotal-ai/core\t9.9.9\tabsent\texchanged\tstage-only")),
   mixedPublisher.logs,
+);
+
+const officialMixedPublisher = await scenario({
+  trust: {
+    "@cotal-ai/core": [
+      githubClaimsPublisher(["createStagedPackage"]),
+      githubClaimsPublisher(["createPackage"], { repository: "other/repository", workflow_ref: { file: "release.yml" } }),
+    ],
+    "@cotal-ai/seat": [githubClaimsPublisher(["createPackage", "createStagedPackage"])],
+    "cotal-ai": [githubClaimsPublisher(["createPackage", "createStagedPackage"])],
+  },
+});
+check(
+  "official claims stage-only this-workflow next to unrelated createPackage refuses",
+  officialMixedPublisher.error instanceof Error && officialMixedPublisher.error.message.includes("allow only staged publish"),
+  officialMixedPublisher.error,
+);
+check(
+  "official mixed-publisher refusal never issues a write-shaped registry call",
+  officialMixedPublisher.seen.every((call) => !isWriteShaped(call)),
+  officialMixedPublisher.seen,
 );
 
 const opaque201 = await scenario({

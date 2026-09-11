@@ -107,7 +107,9 @@ node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemb
 - `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
   GitHub Actions it exchanges a package-specific OIDC token, then GETs `/-/package/<name>/trust`
   and refuses unless THIS repository's `changesets.yml` publisher lists a direct-publish Allowed
-  action. Other GitHub publishers on the same package are not proof that this job can publish.
+  action. npm documents that identity on GET `/-/package/<name>/trust` as `claims.repository` and
+  `claims.workflow_ref.file` with a `permissions` array. Other GitHub publishers on the same package
+  are not proof that this job can publish.
   A manual run
   with `NPM_TOKEN` still gets the registry and closure census; npm verifies that token on publish.
 - `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
