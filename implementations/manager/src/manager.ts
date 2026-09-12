@@ -317,6 +317,8 @@ export interface ManagerOptions {
   attachHost?: string;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
+  /** Internal/test override for the endpoint registration executor lifetime. */
+  endpointServeExecutorExpiresInSeconds?: number;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
   resumeAttemptId?: string;
   /** Fsynced coordinator evidence recovered after commit but before finalize. */
@@ -914,6 +916,7 @@ export class Manager {
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
+  private readonly endpointServeExecutorExpiresInSeconds?: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
@@ -1158,6 +1161,7 @@ export class Manager {
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
+    this.endpointServeExecutorExpiresInSeconds = opts.endpointServeExecutorExpiresInSeconds;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
       throw new Error("resumeAttemptId must be a safe token (letters, digits, _, -; max 128)");
     if (opts.resumeDurableCommitToken && !/^[a-f0-9]{64}$/.test(opts.resumeDurableCommitToken))
@@ -1378,9 +1382,10 @@ export class Manager {
     this.leaseTimer.unref?.();
     // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
-    // comes up below, then the sweep overlaps the remaining registration work. `reconcilingAliases`
-    // keeps the old no-race property at the actual conflict boundary: a caller cannot spawn or
-    // attach THAT alias until its terminal attempt returns.
+    // comes up below, then the sweep overlaps the remaining registration work. Two-window
+    // heal-then-register is slower than one executor, but the overlap is still the no-outage
+    // property: `reconcilingAliases` refuses spawn or attach of THAT alias until its terminal
+    // attempt returns.
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
       void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
@@ -5413,6 +5418,9 @@ export class Manager {
     const creds = this.remoteAuthority?.executorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
+          ...(this.endpointServeExecutorExpiresInSeconds !== undefined
+            ? { expiresInSeconds: this.endpointServeExecutorExpiresInSeconds }
+            : {}),
         })
       : undefined);
     if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
@@ -5626,7 +5634,23 @@ export class Manager {
     // the takeover barrier revokes a deposed manager's ledger cred alongside its goal-writer. The
     // per-session serving creds join the same family, each with its own fresh identity.
     this.sessionLedgerIdentity = newIdentity();
-    const run = async ({ recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => {
+    // One registration operation for this boot. Fresh executors may replace a dead connection, but
+    // they must resume THIS freeze rather than minting a new op that discards Phase-2 progress.
+    const registrationOpId = mintLifecycleUid();
+    const executorExpired = (e: unknown): boolean => /closed connection/i.test((e as Error)?.message ?? String(e));
+    const retryExpiredExecutor = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+      for (;;) {
+        try {
+          return await fn();
+        } catch (e) {
+          if (!executorExpired(e)) throw e;
+          console.error(`manager ${label} executor expired; retrying${label === "registration" ? ` operation ${registrationOpId}` : ""} with fresh scoped authority`);
+        }
+      }
+    };
+    const publishAndProvision = async (
+      { authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection },
+    ) => {
       // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
       // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
       // advertises their digests — so a caller can always fetch-verify-compile a registered
@@ -5645,14 +5669,11 @@ export class Manager {
       // so the gate's principal binding is unchanged either way.
       if ((await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
         await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
-      // #783/#871: a predecessor that died mid-barrier leaves this gate frozen under a
-      // registration op. registerServiceInstance will then refuse SPEC 13.8 forever, even
-      // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
-      // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
-      // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      if (auth) {
-        await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
-      }
+    };
+    const completeRegistration = async (
+      { recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection },
+    ) => {
+      await publishAndProvision({ recordsKv, authKv, nc: execNc });
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
@@ -5661,7 +5682,7 @@ export class Manager {
       // evictor THROWS naming the cure, so PHASE 2 fails closed with the delivery-daemon fix in the
       // error text — a crash-restart never silently skips eviction (no-fallbacks).
       const barrier = endpointRegistrationBarrier(authKv, this.space, {
-        endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: mintLifecycleUid(),
+        endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
         ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line) }) } : {}),
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
@@ -5723,7 +5744,30 @@ export class Manager {
       const sessionLedgerCreds = auth ? await this.mintAndStageSessionLedger(authKv) : undefined;
       return { grant, creds, goalWriterCreds, sessionLedgerCreds };
     };
-    const { grant, creds, goalWriterCreds, sessionLedgerCreds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
+    let registration;
+    if (auth) {
+      // Boot heal may consume an arbitrarily large prior family. End that executor window here and
+      // mint fresh scoped authority for the new registration, rather than forcing heal + takeover
+      // through one fixed-lifetime connection. A closed connection during heal retries the SAME
+      // frozen predecessor op via reconcile's durable cursor; a closed connection during
+      // registration retries THIS boot's operationId without heal, so Phase-2 progress stays bound.
+      // #783/#871: a predecessor that died mid-barrier leaves this gate frozen under a
+      // registration op. registerServiceInstance will then refuse SPEC 13.8 forever, even
+      // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
+      // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
+      // CONNZ oracle rides delivery-admin, which an open mesh does not have.
+      await retryExpiredExecutor("boot-heal", () => this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {
+        await publishAndProvision({ recordsKv, authKv, nc: execNc });
+        if (auth) {
+          await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
+        }
+      }));
+      registration = await retryExpiredExecutor("registration", () => this.withEndpointServeExecutor(completeRegistration));
+    } else {
+      registration = await this.withOpenServeConnection(completeRegistration);
+    }
+    if (!registration) throw new Error("manager registration produced no serve authority");
+    const { grant, creds, goalWriterCreds, sessionLedgerCreds } = registration;
     this.goalWriterCreds = goalWriterCreds;
     this.sessionLedgerCreds = sessionLedgerCreds;
     // The serve connection presents the CURRENT credential on every (re)connect (the state object

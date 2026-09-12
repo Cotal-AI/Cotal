@@ -321,7 +321,10 @@ const SEAMS: Seam[] = [
   // inside the final public retirement cell. Both are fixture-side calls under smoke/ and state tls: false.
   // 144/104 -> 145/105: hosted-retirement-stock-supervise.acceptance.ts adds one fixture-side
   // provisioner connection for its authenticated broker readiness probe and states tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 145, untypecheckedSites: 105 },
+  // 145/105 -> 146/106: registration-executor-resume.smoke.ts dials the auth broker under a
+  // scoped manager credential (one smoke-side call, tls: false) to prove heal and registration
+  // use separate executor windows.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 146, untypecheckedSites: 106 },
 ];
 
 /**

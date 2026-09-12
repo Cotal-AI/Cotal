@@ -20,8 +20,8 @@
     {
       "name": "RECOVERY SEVERED at the call site: the predicate is never consulted for a foreign slot",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "      if (gov.provisional.instanceId !== args.instanceId)\n        await assertForeignSlotIsOrphaned(gov.provisional, spec.endpoint, args.observeHolderGeneration);",
-      "replace": "      if (gov.provisional.instanceId !== args.instanceId)\n        throw new EpEnvelopeError(\"conflict\", `a concurrent registration for endpoint \"${spec.endpoint}\" (instance \"${gov.provisional.instanceId}\") holds the governance slot through its spec publication; re-read and re-decide (SPEC 13.7/13.8)`);",
+      "find": "      } else if (gov.provisional.instanceId !== args.instanceId)\n        await assertForeignSlotIsOrphaned(gov.provisional, spec.endpoint, args.observeHolderGeneration);",
+      "replace": "      } else if (gov.provisional.instanceId !== args.instanceId)\n        throw new EpEnvelopeError(\"conflict\", `a concurrent registration for endpoint \"${spec.endpoint}\" (instance \"${gov.provisional.instanceId}\") holds the governance slot through its spec publication; re-read and re-decide (SPEC 13.7/13.8)`);",
       "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",

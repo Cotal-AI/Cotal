@@ -408,6 +408,10 @@ acts only when the freeze-holder is affirmatively gone under a complete CONNZ sw
 `sweepComplete=true`). If the dead op's spec write committed, it finishes that same freeze
 (promote and reopen at the committed registration revision). If the spec did not advance, it
 abort-reopens the gate (generation+1, processEpoch unchanged) and continues the normal takeover.
+Boot heal and the following re-registration use separate one-shot executor windows, so a large
+predecessor family cannot spend the takeover's credential lifetime. If that later registration
+still crosses a connection lifetime, it retries the same frozen operation with fresh authority
+and resumes verified-holder progress instead of freezing a new generation.
 A live holder, an incomplete sweep, or an unreachable delivery daemon still
 refuses. Silence is never evidence of death, and there is no TTL. If holder verification is
 interrupted, the frozen operation resumes from its durable, operation-and-gate-revision-bound
@@ -416,6 +420,34 @@ binds the exact op, gate revision, and holder set. Use `cotal reconcile-gate` wh
 (daemon down, a non-manager endpoint, or you want to lift the freeze without starting a manager). A spawn that hits the same frozen gate names that verb in the refusal
 (`blockedOp=registration`, the holding `opId`, `remedy=cotal reconcile-gate`) instead of a
 wait-timeout: the facts were always in the manager log; they now reach the spawn caller too.
+
+Give reconciliation a **quiet manager**. Suspend systemd restart policies, watchdogs, health-check
+restart loops, and any other automation that can start or kill `cotal supervise` while boot healing or
+`cotal reconcile-gate` is running. Leave one recovery attempt in control until it finishes.
+Restarting the manager during the walk interrupts the current authority window. Durable progress makes
+that interruption resumable, but a quiet manager is still the fastest and safest incident procedure.
+
+### Last-resort JetStream store replacement
+
+Store replacement is not normal gate recovery, is never automatic, and is destructive to mesh history.
+Use it only after the retained store cannot be reconciled and after deciding that losing its durable
+contents is acceptable.
+
+1. Stop every actor touching the space: supervisor, watchdog, manager, delivery daemon, and broker.
+   Confirm that no Cotal or NATS process still has the store open.
+2. Preserve the stopped store before changing anything. Move `.cotal/nats` aside to a dated backup and
+   archive both `nats` and `auth`. Do not delete the only copy.
+3. Understand the loss: replacing the store removes JetStream message and control history and durable
+   consumer state. Agent session files stored outside JetStream remain, but the mesh history they
+   referenced does not.
+4. Start the broker against a new empty store, then start one manager. Wait until it reports
+   serving successfully.
+5. Repopulate the mesh only after that manager is healthy. Re-enable supervisors, watchdogs, and other
+   restart automation last.
+
+Keep the preserved store until the incident is reviewed and any required forensic or manual recovery is
+complete. Restoring it later restores the old durable state, including the fault that led to this last
+resort, so do not swap it back into a live mesh casually.
 
 ## When something looks absent
 
