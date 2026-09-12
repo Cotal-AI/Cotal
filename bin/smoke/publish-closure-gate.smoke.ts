@@ -104,9 +104,44 @@ function rcBranchBody(run: string, code: number): string | null {
   return body.join("\n");
 }
 
-/** Whether a branch body leaves the step with a failing status. */
+/** Where a command can begin on a line: at the start, or after a separator or an opening group.
+ *  Word characters are deliberately absent, so `echo "Unexpected exit code $rc"` is prose to this
+ *  matcher rather than a command. */
+const COMMAND_START = String.raw`(?:^|[;&|(){}])\s*`;
+/** Where it can end and still be a command of its own: end of line, a separator, a closing group,
+ *  or an inline comment. */
+const COMMAND_END = String.raw`\s*(?:$|[;&|)}#])`;
+/** An `exit` whose status is anything but the literal 0. A variable (`exit $rc`) counts: it is the
+ *  natural way to forward a captured failure, and nothing static can rule out that it carries one. */
+const NONZERO_EXIT = String.raw`exit\s+(?!0${COMMAND_END})\S+`;
+const FAILING_COMMANDS = [
+  NONZERO_EXIT,
+  String.raw`(?:/bin/)?false`,
+  String.raw`return\s+(?!0${COMMAND_END})\d+`,
+  String.raw`!\s*:`,               // negated true
+  String.raw`kill\s+-\w+\s+\$\$`, // signal the shell itself
+].join("|");
+/** `eval` is the one place a QUOTED failure command runs. Matched on the `eval` word rather than on
+ *  the quote, so `echo "exit 1"` stays prose. */
+const EVAL_FAILURE = String.raw`\beval\s+["']?\s*(?:${NONZERO_EXIT}|(?:/bin/)?false)`;
+const FAILS = new RegExp(`(?:${COMMAND_START}(?:${FAILING_COMMANDS})${COMMAND_END})|(?:${EVAL_FAILURE})`, "m");
+
+/** Whether a branch body leaves the step with a failing status.
+ *
+ *  Two cells below assert the NEGATIVE of this, so under-detection is worse than a normal coverage
+ *  gap: a body this cannot read is certified as safe, and that green is indistinguishable from a
+ *  correct one. The line anchors this used to carry made every failure sharing its line invisible,
+ *  including two forms that are house style here (`|| { echo "..."; exit 1; }` in `ci.yml`,
+ *  `mutation-reproof.yml` and `installer.yml`, and `exit $rc`).
+ *
+ *  The accept direction stays as strict as it was: a correct `exit 0` is never a failure, in any
+ *  position, which is the property that keeps this from redding a valid workflow.
+ *
+ *  Not detected, and deliberately: a failure command that is present but UNREACHABLE
+ *  (`if false; then exit 1; fi`). Seeing that needs a shell evaluator, which does not fit a check
+ *  that also runs on the Windows shards. */
 function failsTheJob(body: string): boolean {
-  return /^\s*exit\s+(?!0\b)\d+\s*$/m.test(body) || /^\s*(false|exit\s+1)\s*$/m.test(body);
+  return FAILS.test(body);
 }
 
 // Vacuity guard FIRST: the two "does not fail" assertions below are only worth anything if this

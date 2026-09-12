@@ -65,34 +65,52 @@
     {
       "name": "the UNSETTLED quiet skip starts failing the job",
       "file": ".github/workflows/changesets.yml",
-      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n",
-      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 1\n",
+      "find": "            echo \"UNSETTLED \u2014 the registry has not converged. Skipping the Release.\"\n",
+      "replace": "            echo \"UNSETTLED \u2014 the registry has not converged. Skipping the Release.\"\n            exit 1\n",
       "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
       "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing"
     },
     {
       "name": "the NONE quiet skip starts failing the job",
       "file": ".github/workflows/changesets.yml",
-      "find": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n",
-      "replace": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 1\n",
+      "find": "            echo \"NONE \u2014 this push published nothing. Skipping the Release.\"\n",
+      "replace": "            echo \"NONE \u2014 this push published nothing. Skipping the Release.\"\n            exit 1\n",
       "expectRed": "the closure-gate step handles exit code 3 (NONE) without failing",
       "cell": "the closure-gate step handles exit code 3 (NONE) without failing"
     },
     {
       "name": "the PARTIAL branch stops failing the job",
       "file": ".github/workflows/changesets.yml",
-      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
-      "replace": "            echo \"PARTIAL PUBLISH — failing the job.\"\n",
+      "find": "            echo \"PARTIAL PUBLISH \u2014 failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"PARTIAL PUBLISH \u2014 failing the job.\"\n",
       "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
       "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job"
     },
     {
       "name": "an unexpected exit code stops failing the job",
       "file": ".github/workflows/changesets.yml",
-      "find": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs — failing the job.\"\n            exit 1\n",
-      "replace": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs — failing the job.\"\n",
+      "find": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs \u2014 failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs \u2014 failing the job.\"\n",
       "expectRed": "the closure-gate step fails the job on an unexpected exit code",
       "cell": "the closure-gate step fails the job on an unexpected exit code"
+    },
+    {
+      "name": "a separator-based failing exit is added to the UNSETTLED branch",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED \u2014 the registry has not converged. Skipping the Release.\"",
+      "replace": "            echo \"UNSETTLED \u2014 the registry has not converged. Skipping the Release.\"; exit 1",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "note": "The direction that matters for this cell: it asserts the NEGATIVE, so a matcher that cannot read the failure certifies a job-failing branch as safe and the green is indistinguishable from a correct one. The line-anchored matcher this PR replaces stayed green here."
+    },
+    {
+      "name": "the PARTIAL branch exits 0 instead of failing",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH \u2014 failing the job.\"\n            exit 1",
+      "replace": "            echo \"PARTIAL PUBLISH \u2014 failing the job.\"\n            exit 0",
+      "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "note": "The accept direction, held as strict as before: a correct `exit 0` is never read as a failure, in any position. A widening that lost the non-zero lookahead would keep this cell green and would red a valid workflow elsewhere."
     }
   ]
 }
