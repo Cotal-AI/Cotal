@@ -29,8 +29,9 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect as connectSocket, type AddressInfo, type Socket } from "node:net";
-import { isReachable, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, idFromCreds, leaseKey, mintCreds, mintMembershipObserverCreds, openDeliveryRegistry, serverConfig, newIdentity, setupSpaceStreams, standaloneConnectOpts, type DeliveryLeaseInfo } from "@cotal-ai/core";
+import { isReachable, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, chatStream, inboxStream, FANOUT_DURABLE, INBOX_READER_DURABLE, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, idFromCreds, leaseKey, mintCreds, mintMembershipObserverCreds, openDeliveryRegistry, serverConfig, newIdentity, setupSpaceStreams, standaloneConnectOpts, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { spaceMaterialDir } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -110,6 +111,25 @@ const credsPathC = join(dir, "delivery-c.creds");
 const credsPathD = join(dir, "delivery-d.creds");
 const credsPathE = join(dir, "delivery-e.creds");
 const credsPathF = join(dir, "delivery-f.creds");
+
+// Cells G and H REUSE earlier cells' spaces rather than adding a seventh and an eighth, and the
+// reason is a hard resource ceiling rather than tidiness: `setupSpaceStreams` gives every space a
+// 4 GiB-capped artifact Object Store, JetStream RESERVES that against the server's store, and eight
+// of them exceed what one test broker can promise — the suite fails to provision with "insufficient
+// storage resources available" before a single cell runs. Measured, not predicted.
+//
+// Reuse is sound here for the one reason that made separate spaces necessary in the first place.
+// The isolation those comments describe is specifically about the 30s lease-bucket TTL refusing the
+// slot to a second daemon; that is answered exactly by DELETING the row, which both cells do
+// explicitly below, rather than by sleeping out the TTL or by paying for another space. The earlier
+// cells' daemons are SIGKILLed before these run, so nothing else in the space is live: G's CONNZ
+// count of ctl.delivery subscribers is counting its own two daemons and no one else's.
+const spaceG = space;       // cell A's, whose starved daemon is killed at the end of A
+const credsPathG = credsPath;
+const accountG = accountA;
+const spaceH = spaceC;      // cell C's, whose blackholed daemon is killed at the end of C
+const credsPathH = credsPathC;
+const accountH = accountC;
 // The scratch workspace root the daemon runs in, and the $SYS observer cred its startup admission
 // requires (`cotal up` provisions this on a live mesh; minted here the way `up` does).
 const wsRoot = join(dir, "ws");
@@ -284,6 +304,87 @@ async function deleteLease(inSpace: string, credsFile: string): Promise<void> {
 /** Read a shard-0 delivery lease straight from the broker, on a connection of this suite's own.
  *  Asking the BROKER rather than the daemon is the point: a daemon reporting on its own liveness is
  *  the thing under test, so the evidence has to come from the other side of the wire. */
+/** How many PULL REQUESTS the shard's two Plane-3 durables currently have parked on the broker.
+ *
+ *  THIS IS THE OBSERVABLE THAT MAKES "STOPPED SERVING" A FACT RATHER THAN A CLAIM. A daemon
+ *  consuming a durable keeps pull requests outstanding against it continuously; that count lives on
+ *  the BROKER, in `consumers.info().num_waiting`, so it is not the daemon's own self-report and a
+ *  daemon that logged "quiesced" while still consuming cannot satisfy it. When the consume loop is
+ *  stopped the parked pulls drain to zero and stay there.
+ *
+ *  Read with the DELIVERY cred (the same one the daemons use) because consumer info is account
+ *  state, not $SYS state — no observer cred is needed to ask. */
+async function pendingPulls(inSpace: string, credsFile: string): Promise<{ fanout: number; reader: number } | undefined> {
+  const creds = readFileSync(credsFile, "utf8");
+  const nc = await connect({
+    servers: SERVERS,
+    ...standaloneConnectOpts({ creds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const jsm = await jetstreamManager(nc);
+    const fanout = await jsm.consumers.info(chatStream(inSpace), FANOUT_DURABLE);
+    const reader = await jsm.consumers.info(inboxStream(inSpace), INBOX_READER_DURABLE);
+    return { fanout: fanout.num_waiting, reader: reader.num_waiting };
+  } catch { return undefined; }
+  finally { try { await nc.drain(); } catch { /* already gone */ } }
+}
+
+/** A REUSABLE $SYS observer: one connection, many CONNZ rounds.
+ *
+ *  Opening a fresh connection per reading costs 20-40ms, and cell G has to resolve a window that is
+ *  only a few hundred milliseconds wide — the interval between the loser unbinding and the loser
+ *  exiting. Measured, the per-call version managed five readings across an entire arbitration and
+ *  could not see the transition at all. Holding the connection open makes a round a few
+ *  milliseconds, which is what makes the observation possible rather than merely intended. */
+async function openObserver(inSpace: string): Promise<{
+  /** How many LIVE CONNECTIONS in the account hold a `ctl.delivery` SERVICE subscription, or
+   *  `undefined` if the question itself failed. */
+  controlSubs: (accountId: string) => Promise<number | undefined>;
+  close: () => Promise<void>;
+}> {
+  const creds = readFileSync(join(spaceMaterialDir(wsRoot, inSpace), "membership-observer.creds"), "utf8");
+  const nc = await connect({
+    servers: SERVERS,
+    ...standaloneConnectOpts({ creds, tls: false }),
+    inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
+    maxReconnectAttempts: 0,
+  });
+  return {
+    controlSubs: async (accountId: string) => {
+      try {
+        const inbox = `${MEMBERSHIP_INBOX_PREFIX}.starve.${randomUUID().slice(0, 8)}`;
+        const sub = nc.subscribe(inbox, { max: 1 });
+        // `subscriptions: true` is what returns `subscriptions_list`, and `accountId` must be the
+        // ACCOUNT public key. Both were measured against a live nats-server rather than assumed:
+        // `subs: true` returns a page with no lists at all, and a wrong account id is published to
+        // `$SYS.REQ.ACCOUNT.undefined.CONNZ` and refused outright. Each silently reads as "zero
+        // daemons bound", which would make an upper-bound cell pass vacuously.
+        nc.publish(connzRequestSubject(accountId), new TextEncoder().encode(JSON.stringify({ subscriptions: true, auth: true, limit: 512 })), { reply: inbox });
+        let bound = 0;
+        let sawAnyList = false;
+        const got = await Promise.race([
+          (async () => { for await (const m of sub) return m.json<{ data?: { connections?: Array<{ subscriptions_list?: string[] }> } }>(); return undefined; })(),
+          wait(3000).then(() => undefined),
+        ]);
+        try { sub.unsubscribe(); } catch { /* done */ }
+        if (!got) return undefined;
+        for (const c of got.data?.connections ?? []) {
+          if (c.subscriptions_list !== undefined) sawAnyList = true;
+          // The SERVICE subscription, not a reply subject: the daemon subscribes the wildcard caller
+          // slots `…ctl.delivery.*.*`, while a reply sub carries `.reply.` further down the subject.
+          if ((c.subscriptions_list ?? []).some((x) => /\.ctl\.delivery\.\*\.\*$/.test(x))) bound += 1;
+        }
+        // A reply with NO subscription lists anywhere is a FAILED question, never "nothing is bound"
+        // — the same unknown-is-not-a-negative rule the daemon itself is graded on.
+        return sawAnyList ? bound : undefined;
+      } catch { return undefined; }
+    },
+    close: async () => { try { await nc.drain(); } catch { /* already gone */ } },
+  };
+}
+
 async function readLease(inSpace: string, credsFile: string): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
   const creds = readFileSync(credsFile, "utf8");
   const nc = await connect({
@@ -615,6 +716,210 @@ try {
   signalGroup(winner, "SIGKILL");
   await untilExit(winner, 5000);
 
+  // ── G. THE ARBITRATION WINDOW: the loser must stop SERVING before it stops RUNNING ──────────────
+  //
+  // A REVIEWER'S FINDING, AND A REGRESSION THIS BRANCH INTRODUCED. Cell F proves the lease ROW
+  // survives a handover. It says nothing about what the losing daemon was still DOING while the
+  // handover was in progress, and this branch widened exactly that. Pre-fix, a failed renew went
+  // straight to shutdown: wrong, because starvation produced failed renews, but it did mean the
+  // daemon stopped serving immediately. Post-fix the daemon treats a failed renew as a question and
+  // re-reads the key — and across that read, and across the atomic create that may follow it, it
+  // was still consuming the fan-out durable, still running the inbox reader, and still answering
+  // ctl.delivery. A replacement that won the shard in that window shared the durables with it.
+  //
+  // A CAS KEEPS ONE ROW; IT DOES NOT KEEP ONE SERVER. So the availability bug was traded for a
+  // correctness one, which is not a trade worth making, and that is what this cell refuses.
+  //
+  // WHAT IS OBSERVED, and why it is not the daemon's self-report. `num_waiting` on each durable is
+  // the broker's own count of parked pull requests. A consuming daemon keeps them outstanding; a
+  // stopped consume loop drains them to zero. And `ctl.delivery` is probed by actually sending a
+  // request and seeing whether anything replies. A daemon that logged "quiesced" while still bound
+  // fails both.
+  console.log("\nG. the losing daemon stops serving the shard before the winner starts");
+  // Clear the previous cell's expired-but-not-yet-TTL'd row so the incumbent can claim the slot now.
+  await deleteLease(spaceG, credsPathG);
+  const incumbent = spawnDaemon(spaceG, credsPathG);
+  const incumbentUp = await untilUp(incumbent);
+  check("G1 the incumbent daemon comes up and holds the shard", incumbentUp, tail(incumbent));
+  if (!incumbentUp) throw new Error("the arbitration cell needs a daemon that was running; it never came up");
+  // ALIVE AND SERVING IMMEDIATELY BEFORE THE STIMULUS — the positive control. Without this, "the
+  // loser held no bindings" is satisfied by a daemon that never bound any.
+  const servingBefore = await pendingPulls(spaceG, credsPathG);
+  check("G2 it is SERVING before anything happens: both durables have parked pulls on the broker",
+    servingBefore !== undefined && servingBefore.fanout > 0 && servingBefore.reader > 0, servingBefore);
+  const obsG = await openObserver(spaceG);
+  const boundBefore = await obsG.controlSubs(accountG.account.pub);
+  check("G3 and EXACTLY ONE connection holds the ctl.delivery service subscription",
+    boundBefore === 1, boundBefore);
+
+  // HAND THE SHARD OVER DETERMINISTICALLY. Cell F takes the row away and races a fresh daemon
+  // against the incumbent's next renew, which works there because F only needs the handover to
+  // happen at all. It is not good enough here: this cell grades the incumbent's behaviour DURING
+  // the arbitration, so the incumbent must actually lose, and on its first run it did not — it
+  // noticed the empty key and re-acquired before the replacement finished booting, which is the
+  // correct behaviour (it is cell H) but the wrong scenario. That is a real race, not a flake, and
+  // leaving it in would make this cell grade whichever daemon happened to be scheduled first.
+  //
+  // SIGSTOP pins the order without faking anything: the incumbent is off the runqueue while the row
+  // is removed and the replacement wins the create, then SIGCONT wakes it into precisely the state
+  // under test — a live process that still believes it owns a shard somebody else now holds. It is
+  // also the incident's own condition, which is the point of the whole issue.
+  signalGroup(incumbent, "SIGSTOP");
+  await deleteLease(spaceG, credsPathG);
+  const replacement = spawnDaemon(spaceG, credsPathG);
+  const replacementUp = await untilUp(replacement);
+  // Wake it only once the replacement is READY. Sol's boundary is stated exactly this way: the
+  // replacement is already serving before the loser's create is refused.
+  signalGroup(incumbent, "SIGCONT");
+  check("G4 the replacement acquires the shard and becomes ready", replacementUp, tail(replacement));
+  const replacementLease = await readLease(spaceG, credsPathG);
+  check("G5 the replacement's lease is live and ready — the winner is SERVING",
+    replacementLease?.info.ready === true, replacementLease);
+
+  // THE CELL, and the claim needs stating precisely, because the obvious one is not true.
+  //
+  // AN OVERLAP EXISTS AND CANNOT BE ABOLISHED. The instant the replacement binds, the frozen
+  // incumbent is still bound — it is off the runqueue and cannot act, which is the whole condition
+  // #1318 is about. A cell demanding "never two responders" would be demanding that a descheduled
+  // process do something, and the only way to pass it would be to weaken the stimulus.
+  //
+  // WHAT IS ACTUALLY UNDER TEST IS HOW THE OVERLAP ENDS. Pre-fix, a failed renew went straight to
+  // shutdown, so the overlap ended when the process DIED. Post-fix the daemon quiesces first, so it
+  // must end while the loser is still ALIVE and then stay ended across the ownership read and the
+  // refused create. That difference is the fix, it is observable, and it is what these cells grade:
+  // the overlap must resolve to exactly one responder BEFORE the loser exits, and must not come
+  // back afterwards. A daemon that only stopped serving by exiting fails G7d and G7e; a daemon that
+  // re-armed mid-arbitration fails G7f.
+  let sawLoserAlive = false;
+  let sawOverlap = false;
+  let overlapEndedAlive = false;
+  let overlapEndedUndecided = false;
+  let overlapReturned = false;
+  let peakBound = 0;
+  let answeredSubs = 0;
+  const arbDeadline = Date.now() + 25_000;
+  while (Date.now() < arbDeadline && !incumbent.exited) {
+    sawLoserAlive = true;
+    const subs = await obsG.controlSubs(accountG.account.pub);
+    if (subs !== undefined) {
+      answeredSubs += 1;
+      peakBound = Math.max(peakBound, subs);
+      if (subs > 1) {
+        sawOverlap = true;
+        // Coming BACK after it had resolved would mean the daemon re-armed without proving
+        // ownership — the exact thing `mayServeOn` refuses. Distinct from never resolving.
+        if (overlapEndedAlive) overlapReturned = true;
+      } else if (subs === 1 && !incumbent.exited) {
+        // ALIVE IS NOT ENOUGH, and this is the distinction the first version of the cell missed.
+        // `shutdown()` unbinds through `ep.stop()` and only then exits, so there is a window in
+        // which a SHUTTING-DOWN daemon is unbound and still running — which means "the overlap
+        // ended while the loser was alive" is satisfied by the pre-fix behaviour too, and a mutation
+        // that disabled quiescing entirely still passed. Measured, not reasoned about.
+        //
+        // So the loser must additionally not have DECIDED anything yet: no "taken shard" line. That
+        // is the real difference. Quiescing happens BEFORE the ownership question is answered;
+        // unbinding via shutdown can only happen after.
+        if (!/taken shard|is held by/.test(incumbent.stderr)) overlapEndedUndecided = true;
+        overlapEndedAlive = true;
+      }
+    }
+  }
+  // Sampled once at the end rather than in the hot loop: each `pendingPulls` opens its own
+  // connection, and paying that per iteration made the sampler slower than the window it was trying
+  // to resolve (measured: 5 readings across the whole arbitration).
+  const peakPulls = await pendingPulls(spaceG, credsPathG);
+  check("G6 the loser was still RUNNING during the arbitration — the window this cell grades exists",
+    sawLoserAlive, { exited: incumbent.exited });
+  check("G7 the responder count was actually readable throughout — the observable is not vacuous",
+    answeredSubs > 0, { answeredSubs });
+  check("G7b the overlap this cell is about genuinely occurred: two daemons were briefly bound",
+    sawOverlap, { peakBound, answeredSubs });
+  check("G7c and it was at most two — no third party is involved in this measurement",
+    peakBound <= 2, { peakBound });
+  // THE DISCRIMINATING ASSERTION. Pre-fix this is only reachable by dying.
+  check("G7d the overlap ENDED while the loser was still alive, not by the loser exiting",
+    overlapEndedAlive, { peakBound, answeredSubs, loserExited: incumbent.exited });
+  // THE DISCRIMINATING ASSERTION. Unbinding inside `shutdown()` also happens while the process is
+  // alive, so G7d alone is satisfied by the pre-fix behaviour — verified by disabling the quiesce
+  // call and watching every G cell stay green. What only the repair can do is stop serving BEFORE
+  // the ownership question has been answered at all.
+  check("G7e and it stopped serving BEFORE it had concluded anything about ownership — quiesced, not shutting down",
+    overlapEndedUndecided, { overlapEndedAlive, overlapEndedUndecided, tail: tail(incumbent) });
+  check("G7f and serving never resumed during the arbitration — no re-arm without proof",
+    !overlapReturned, { overlapReturned });
+  check("G7g the fan-out durable was never carrying more than two daemons' pulls either",
+    peakPulls === undefined || servingBefore === undefined || peakPulls.fanout <= servingBefore.fanout * 2,
+    { peakPulls, baseline: servingBefore });
+  // Said in the loser's own words too: it must announce going quiet, and it must do so BEFORE it
+  // announces losing the shard. An implementation that quiesced only inside shutdown would exit
+  // just as cleanly and still have served through the whole arbitration.
+  const quiesceAt = incumbent.stderr.indexOf("stopped serving shard");
+  const lostAt = incumbent.stderr.search(/taken shard|is held by/);
+  check("G8 the loser announced that it stopped serving", quiesceAt >= 0, tail(incumbent));
+  check("G9 and it stopped serving BEFORE it concluded it had lost the shard, not as part of exiting",
+    quiesceAt >= 0 && lostAt >= 0 && quiesceAt < lostAt, { quiesceAt, lostAt });
+  const loserGone = await untilExit(incumbent, 45_000);
+  check("G10 the loser then exits so the holder is single", loserGone, tail(incumbent));
+  // And the winner is unharmed by any of it: still holding, still serving, still answering.
+  await wait(4000);
+  const afterArb = await readLease(spaceG, credsPathG);
+  check("G11 the winner still holds a live, ready lease afterwards",
+    afterArb?.info.ready === true && afterArb?.info.holder === replacementLease?.info.holder, { afterArb, replacementLease });
+  const boundAfter = await obsG.controlSubs(accountG.account.pub);
+  check("G12 and exactly one connection serves ctl.delivery afterwards — the winner's, alone",
+    boundAfter === 1, boundAfter);
+  await obsG.close();
+  signalGroup(replacement, "SIGKILL");
+  await untilExit(replacement, 5000);
+
+  // ── H. QUIESCING MUST BE RECOVERABLE, or it is just a slower outage ─────────────────────────────
+  //
+  // THE ANTI-BAND-AID CELL, and the refusing case for cell G's accepting branch. Going quiet on a
+  // failed renew is only a repair if the daemon comes BACK when the question is answered in its
+  // favour. A daemon that quiesced and stayed quiet would pass every cell in G — it holds no
+  // bindings, it splits no durable — while delivering nothing, which is #1318's outage with better
+  // manners. So: make the renew fail with NOBODY else in the race, and require the daemon to go
+  // quiet, re-acquire, and SERVE AGAIN, under its own power and with no second process involved.
+  console.log("\nH. a daemon that went quiet on a failed renew comes back when it re-proves ownership");
+  await deleteLease(spaceH, credsPathH);
+  const solo = spawnDaemon(spaceH, credsPathH);
+  const soloUp = await untilUp(solo);
+  check("H1 the solo daemon comes up and holds the shard", soloUp, tail(solo));
+  if (!soloUp) throw new Error("the recovery cell needs a daemon that was running; it never came up");
+  const soloBefore = await pendingPulls(spaceH, credsPathH);
+  check("H2 it is serving: both durables have parked pulls", 
+    soloBefore !== undefined && soloBefore.fanout > 0 && soloBefore.reader > 0, soloBefore);
+
+  // Delete the row out from under it and leave the slot EMPTY. This is the measured incident's own
+  // shape — `wrong last sequence: 0`, a key that expired with nobody else holding it — reproduced
+  // without starving anything. The next renew fails, the daemon quiesces, re-reads, finds the key
+  // gone, and its atomic create is uncontested.
+  await deleteLease(spaceH, credsPathH);
+  const resumedBy = Date.now() + 45_000;
+  let resumed = false;
+  while (Date.now() < resumedBy && !solo.exited) {
+    if (/serving shard \d+ again/.test(solo.stderr)) { resumed = true; break; }
+    await wait(500);
+  }
+  check("H3 the daemon did NOT exit when its lease vanished with no rival — the #1318 case", !solo.exited, tail(solo));
+  check("H4 it announced going quiet while it checked", solo.stderr.includes("stopped serving shard"), tail(solo));
+  check("H5 and it announced serving again, under its own power", resumed, tail(solo));
+  check("H6 the re-arm is attributed to the evidence that permitted it, not merely to time passing",
+    /serving shard \d+ again .*(won the atomic create|still its own|renewed its lease)/.test(solo.stderr), tail(solo));
+  // PROVEN ON THE BROKER, not from the daemon's log: it holds the lease again and is consuming again.
+  const soloLease = await readLease(spaceH, credsPathH);
+  check("H7 it holds a live, ready lease again", soloLease?.info.ready === true, soloLease);
+  const soloAfter = await pendingPulls(spaceH, credsPathH);
+  check("H8 and both durables have parked pulls again — it is genuinely serving, not merely alive",
+    soloAfter !== undefined && soloAfter.fanout > 0 && soloAfter.reader > 0, { soloAfter, soloBefore });
+  const obsH = await openObserver(spaceH);
+  const boundAgain = await obsH.controlSubs(accountH.account.pub);
+  await obsH.close();
+  check("H9 and its ctl.delivery service subscription is bound again",
+    boundAgain === 1, boundAgain);
+  signalGroup(solo, "SIGKILL");
+  await untilExit(solo, 5000);
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -632,7 +937,7 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 43;
+  const EXPECTED_CELLS = 70;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

@@ -25,7 +25,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
+import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
@@ -528,15 +528,19 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
    *  looking and finding nothing (#1318). The holder comparison is against OUR OWN endpoint id, which
    *  is what distinguishes this process from a replacement daemon that took the slot. */
   const readOwnLease = async (): Promise<LeaseReading> => {
-    let current: Awaited<ReturnType<typeof ep.readDeliveryLease>>;
-    try { current = await ep.readDeliveryLease(shard); }
+    let current: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
+    try { current = await ep.readDeliveryLeaseEntry(shard); }
     catch (e) { return { kind: "unknown", why: (e as Error).message }; }
     if (current === undefined) return { kind: "gone" };
-    if (current.holder !== ownId) return { kind: "taken", by: current.holder };
-    // Held by us. The revision is not carried on the record, so the caller re-reads it via the CAS
-    // it is about to attempt; `revision` stays as-is and the next renew re-synchronises against the
-    // broker's own sequence. Reported as `held` because the identity question is what was asked.
-    return { kind: "held", revision: revision ?? 0 };
+    if (current.info.holder !== ownId) return { kind: "taken", by: current.info.holder };
+    // Held by us, AND at the broker's own revision rather than the one this process last cached.
+    // That distinction is load-bearing: the renew that just failed may have been applied before its
+    // reply was lost, in which case the cached revision is permanently one behind and every later
+    // CAS is refused over a sequence this daemon moved itself. Adopting the read revision is what
+    // lets a survivable renew failure actually be survived. (An earlier comment here claimed the
+    // record carries no revision; it does — the KV entry's own `revision` — and that claim was
+    // wrong, which is why the stale token went unnoticed.)
+    return { kind: "held", revision: current.revision };
   };
 
   /** Print a lease state only when it CHANGES. The renew ticks every few seconds, so a broker
@@ -547,6 +551,37 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     if (state === leaseState) return;
     leaseState = state;
     console.error(`${state === "held" ? "✓" : "!"} delivery: ${what} (space ${space}, shard ${shard})`);
+  };
+
+  /** Announce going quiet, once per quiesced episode. Same rule as {@link noteLease}: the renew ticks
+   *  forever, and an operator needs the edge, not a log line per tick. */
+  let quiesced = false;
+  const noteQuiesce = (): void => {
+    if (quiesced) return;
+    quiesced = true;
+    console.error(`! delivery: stopped serving shard ${shard} (fan-out, reader and control unbound) while it re-checks who owns the lease (space ${space})`);
+  };
+
+  /** Resume serving, and CLOSE the quiesced episode so a later one announces itself again. Every
+   *  caller has just proven ownership; `why` is what proved it, since "it started serving again" is
+   *  only auditable next to the evidence that permitted it. */
+  const resumeServing = async (why: string): Promise<void> => {
+    try { await ep.rearmPlane3(); }
+    catch (e) { console.error(`! delivery: ${why} but could not resume Plane-3 (${(e as Error).message})`); return; }
+    // `ready` MEANS "THE RESPONDER IS UP", and it is what `ensureDelivery` waits on and what the
+    // `cotal_channels` health surface reports. Startup flips it only after binding, for exactly that
+    // reason — and a re-acquire creates the row afresh, which `acquireDeliveryLease` deliberately
+    // makes NOT-ready. Without this flip a daemon that recovered would serve correctly while every
+    // readiness waiter in the space timed out against a permanently not-ready lease: the outage
+    // #1318 is about, surviving the repair by hiding in the readiness flag instead of the exit path.
+    // Ordered AFTER the re-arm so the flag never claims more than has actually been bound.
+    if (revision !== undefined) {
+      try { revision = await ep.markDeliveryLeaseReady(shard, revision); }
+      catch (e) { console.error(`! delivery: resumed serving but could not mark the lease ready (${(e as Error).message}); the next renew re-synchronises`); }
+    }
+    if (!quiesced) return;
+    quiesced = false;
+    console.error(`\u2713 delivery: serving shard ${shard} again \u2014 ${why} (space ${space})`);
   };
 
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
@@ -571,13 +606,56 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
         // worse, be graded as a lease question when ownership is already settled.
         if (revision === undefined) return;
         revision = await ep.renewDeliveryLease(shard, revision);
+        // A SUCCESSFUL CAS RENEW IS PROOF OF OWNERSHIP, so it is also a re-arm point. Without this a
+        // daemon that quiesced on `unknown` (the broker could not answer who owns the shard) would
+        // stay silent forever once the broker came back: the `held` re-arm below only runs on the
+        // failure path, and the failure path stops running as soon as renews succeed again. Quiesce
+        // must be recoverable by the same evidence that makes it unnecessary.
+        await resumeServing("it renewed its lease");
         noteLease("held", "renews its delivery lease again");
         return;
       } catch (renewError) {
         const why = (renewError as Error).message;
+        // GO QUIET BEFORE ASKING. From here this process does not know whether the shard is still
+        // its own, and a CAS on the lease row keeps one ROW, not one SERVER: across the re-read and
+        // the re-acquire below, an un-quiesced daemon would still be consuming the fan-out durable,
+        // still running the reader, and still answering ctl.delivery, so a replacement that won the
+        // shard in that window would SPLIT the durable with it. A review finding, and the pre-fix
+        // code did not have this window because it simply exited on the first renew failure.
+        try {
+          await ep.quiescePlane3();
+          // WITHDRAW THE READINESS CLAIM TOO. `ready` asserts the responder is up; it is now down, so
+          // leaving it set would tell every `ensureDelivery` waiter in the space to keep waiting on a
+          // daemon that is deliberately not answering. Best-effort: the renew that just failed means
+          // the CAS may fail too, and staying quiet matters more than the flag being tidy. The row
+          // itself is kept — the shard is still claimed, only the answering claim is withdrawn.
+          if (revision !== undefined) {
+            try { revision = await ep.markDeliveryLeaseNotReady(shard, revision); }
+            catch { /* the row may have moved on; the ownership read below is what decides */ }
+          }
+          // ANNOUNCED, because an operator watching a stall needs to know the daemon stopped serving
+          // on purpose rather than silently wedged — and because the live cell anchors on this line
+          // to know when to start demanding that this process holds no Plane-3 bindings.
+          noteQuiesce();
+        }
+        catch (e) { console.error(`! delivery: could not quiesce Plane-3 while checking the lease (${(e as Error).message})`); }
         const reading = await readOwnLease();
         switch (leaseAction(reading)) {
           case "keep-serving":
+            // Still ours, or unanswerable. Only a PROVEN `held` re-arms: `unknown` stays quiet,
+            // because not being able to ask is not permission to keep acting on the shard.
+            if (mayServeOn(reading)) {
+              // ADOPT THE BROKER'S REVISION before serving again. The failed renew may have landed
+              // with its reply lost, so the cached token can be stale; re-arming on it would leave
+              // every later CAS refused over this daemon's own write and manufacture the takeover
+              // it is trying to rule out. The read just told us the sequence — use it.
+              // Narrowed by the guard above: `mayServeOn` admits only `held`, which is the one
+              // reading that carries a revision. Stated as an assert rather than a cast so a future
+              // widening of `mayServeOn` fails here loudly instead of serving without a CAS token.
+              if (reading.kind !== "held") throw new Error(`delivery: mayServeOn admitted a "${reading.kind}" reading, which carries no revision to serve on`);
+              revision = reading.revision;
+              await resumeServing("re-reading the key showed the lease is still its own");
+            }
             noteLease(
               reading.kind === "held" ? "held-unrenewed" : "unknown",
               reading.kind === "held"
@@ -588,6 +666,8 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
           case "reacquire":
             try {
               revision = await ep.acquireDeliveryLease(shard);
+              // Won the atomic create, so the shard is provably ours again: resume serving.
+              await resumeServing(`it won the atomic create at revision ${revision}`);
               noteLease("held", `found its lease key gone (renew: ${why}) and re-acquired it at revision ${revision}`);
             } catch (e) {
               // Refused: a live lease exists that is not ours, so a replacement daemon holds this

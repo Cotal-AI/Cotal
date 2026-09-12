@@ -329,6 +329,30 @@ export function leaseAction(reading: LeaseReading): LeaseAction {
 }
 
 /**
+ * May this process hold Plane-3 bindings on the strength of this reading alone?
+ *
+ * SEPARATE FROM {@link leaseAction} BECAUSE THEY ANSWER DIFFERENT QUESTIONS, and conflating them was
+ * a review finding. `leaseAction` decides whether the PROCESS lives; this decides whether it may
+ * SERVE. They agree on `taken` and disagree everywhere else that matters:
+ *
+ *   • `gone` is `reacquire` — the process lives — but it must NOT serve on it. The create has not
+ *     been attempted yet, and a replacement may already hold the shard; serving through the
+ *     arbitration is how two daemons end up on one durable.
+ *   • `unknown` is `keep-serving` for the PROCESS, and a refusal here. Surviving an unanswerable
+ *     broker is the entire point of #1318, but not being able to ask who owns the shard is not
+ *     permission to keep acting on it. The daemon stays alive and stays quiet.
+ *
+ * So this is deliberately the STRICTER of the two: it says yes to exactly one reading, the one that
+ * carries positive proof of ownership from the broker. Winning the atomic create is the other way
+ * to earn it, and that is not a reading, which is why the daemon re-arms there separately.
+ */
+export function mayServeOn(reading: LeaseReading): boolean {
+  // The only reading that is itself proof: the broker was asked, it answered, and the holder it
+  // named is this process.
+  return reading.kind === "held";
+}
+
+/**
  * Measures how late this process's own timers are running.
  *
  * A `setInterval(f, 2000)` that fires 30 seconds after its predecessor did not observe a slow

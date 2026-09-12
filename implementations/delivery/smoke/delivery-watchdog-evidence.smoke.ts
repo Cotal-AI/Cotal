@@ -21,6 +21,7 @@ import {
   brokerGoneVerdict,
   classifyProbe,
   leaseAction,
+  mayServeOn,
   LoopLagMeter,
   PROBE_BUDGET_MS,
   PROBE_INTERVAL_MS,
@@ -421,7 +422,51 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-const EXPECTED_CELLS = 80;
+// ── N. MAY THIS PROCESS SERVE? — the quiesce gate, which is NOT the stay-alive gate ─────────────
+//
+// A REVIEWER'S FINDING, AND A REGRESSION THIS BRANCH INTRODUCED. Turning a failed renew from a
+// verdict into a question is right, but the daemon asked the question while still bound: fan-out,
+// the inbox reader and both delivery control responders stayed up across the read-then-create
+// arbitration. Pre-fix there was no such window, because a failed renew went straight to shutdown.
+// So the repair traded an availability bug for a correctness one — two daemons briefly serving one
+// durable — and that trade is not acceptable.
+//
+// `mayServeOn` is the second gate. Every cell below is stated against `leaseAction` on the SAME
+// reading, because the whole content of this seam is that the two disagree: the process may live on
+// a reading that does not entitle it to serve.
+console.log("\nN. may this process serve on this reading, which is a stricter question than may it live");
+check("N1 `held` is the one reading that is proof of ownership: serve",
+  mayServeOn({ kind: "held", revision: 7 }) === true);
+check("N2 `unknown` REFUSES to serve — not being able to ask is not permission to act",
+  mayServeOn({ kind: "unknown", why: "no responders" }) === false);
+check("N3 and `unknown` nonetheless keeps the PROCESS alive — the two gates differ here on purpose",
+  leaseAction({ kind: "unknown", why: "no responders" }) === "keep-serving");
+check("N4 `gone` REFUSES to serve — the arbitrating create has not happened yet",
+  mayServeOn({ kind: "gone" }) === false);
+check("N5 and `gone` still repairs rather than exits — again the gates differ",
+  leaseAction({ kind: "gone" }) === "reacquire");
+check("N6 `taken` REFUSES to serve, and here the two gates agree",
+  mayServeOn({ kind: "taken", by: "other" }) === false && leaseAction({ kind: "taken", by: "other" }) === "exit");
+// THE SHAPE OF THE GATE, not four remembered answers: exactly one of the four readings admits
+// serving. A widening that let a second one through passes N1-N6 individually and fails here.
+const allReadings: LeaseReading[] = [
+  { kind: "held", revision: 1 },
+  { kind: "gone" },
+  { kind: "taken", by: "other" },
+  { kind: "unknown", why: "timeout" },
+];
+check("N7 exactly ONE of the four readings admits serving",
+  allReadings.filter(mayServeOn).length === 1, allReadings.filter(mayServeOn));
+// The incident's own reading. `wrong last sequence: 0` re-read as a key that is simply GONE: the
+// daemon survives it (that is #1318) and must go quiet until its create is accepted.
+check("N8 the incident's reading keeps the daemon alive AND stops it serving until the create wins",
+  leaseAction({ kind: "gone" }) !== "exit" && mayServeOn({ kind: "gone" }) === false);
+// And the strictness has a direction: every reading that admits serving must also admit living.
+// A gate that let a process serve on a reading it should die on would be the split-brain inverted.
+check("N9 nothing may serve that must exit",
+  allReadings.every((r) => !mayServeOn(r) || leaseAction(r) !== "exit"));
+
+const EXPECTED_CELLS = 89;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
