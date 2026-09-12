@@ -173,6 +173,25 @@ function isMetadataOnlySuiteCanonicalization(root, base, fixture) {
   return isDeepStrictEqual(baseRest, headRest);
 }
 
+/**
+ * Declaring `executes` tells mutation-coverage which repository entrypoint a subprocess suite
+ * launches. That is a coverage witness, not a proof definition: the mutations, command, and
+ * suite are unchanged. Selecting those fixtures for re-proof would re-run live attach kill sets
+ * that already carry a documented SURVIVED (and can exhaust the 145-minute shard). Any other
+ * top-level field change stays a selecting config change.
+ */
+function isExecutesOnlyConfigChange(root, base, fixture) {
+  let baseConfig;
+  try {
+    baseConfig = JSON.parse(git(root, ["show", `${base}:${fixture.path}`]));
+  } catch {
+    return false;
+  }
+  const { executes: _baseExecutes, ...baseRest } = baseConfig ?? {};
+  const { executes: _headExecutes, ...headRest } = fixture.config;
+  return isDeepStrictEqual(baseRest, headRest);
+}
+
 const a = args(process.argv.slice(2));
 const root = resolve(a.root ?? process.cwd());
 const head = a.head ?? "HEAD";
@@ -224,7 +243,8 @@ const { changed, diffSize } = a.all ? { changed: new Set(), diffSize: 0 } : chan
 
 const metadataOnlyExclusions = new Set(a.all ? [] : fixtures
   .filter((fixture) => changed.has(fixture.path)
-    && isMetadataOnlySuiteCanonicalization(root, a.base, fixture))
+    && (isMetadataOnlySuiteCanonicalization(root, a.base, fixture)
+      || isExecutesOnlyConfigChange(root, a.base, fixture)))
   .map((fixture) => fixture.path));
 
 let selected = fixtures.map((fixture) => ({

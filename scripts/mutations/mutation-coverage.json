@@ -1,58 +1,189 @@
 {
-  "suite": [
-    "scripts/mutation-coverage.selftest.mjs"
-  ],
   "grades": "tool",
-  "guard": "mutation coverage accepts only direct execution witnesses that reach the mutated file without a package resolver",
+  "suite": ["scripts/mutation-coverage.selftest.mjs"],
+  "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
   "command": "node scripts/mutation-coverage.selftest.mjs",
-  "progressPattern": "^  ✓ ",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
   "why": [
-    "The seat packaging suite executes the root native assembler directly, while the launcher smoke executes its own mutated source. Both are stronger witnesses than a by-name package import, and neither should be rejected as a dist trap.",
-    "A quoted path in prose is not execution. The self-test keeps that negative control beside both accepted direct paths."
+    "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
+    "The continuation mutation restores the first-error abort. The subprocess mutation restores the false refusal for declared entrypoints. The fraction parser mutation restores a completed-but-ungraded N/N. The banner mutation restores presence-as-completion, which must stay unparsed. The final mutation makes incomplete grading look green again."
   ],
   "mutations": [
     {
+      "name": "a refused config aborts the process before later configs are examined",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    refusals.push([path, reason]);\n    console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
+      "replace": "    throw new Error(`REFUSED ${path}: ${reason}`);",
+      "expectRed": "an invalid progress regex is refused without hiding the next config",
+      "cell": "an invalid progress regex is refused without hiding the next config"
+    },
+    {
+      "name": "declared subprocess entrypoints are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;",
+      "replace": "    void executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? []);",
+      "expectRed": "a spawned repo entrypoint plus target-package build is gradable",
+      "cell": "a spawned repo entrypoint plus target-package build is gradable"
+    },
+    {
       "name": "a suite mutating its own directly executed source is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
-      "replace": "  if (invokesFile(suiteSource, m.file)) return true;",
-      "expectRed": "a suite is gradable when it directly executes the file being mutated"
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;",
+      "replace": "    if (invokesFile(source, mutation.file)) return;",
+      "expectRed": "a suite is gradable when it directly executes the file being mutated",
+      "cell": "a suite is gradable when it directly executes the file being mutated"
     },
     {
       "name": "a suite launching the exact mutated repo script is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
-      "replace": "  if (m.file === suite) return true;",
-      "expectRed": "a suite is gradable when it launches the exact mutated script path"
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;",
+      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "expectRed": "a suite is gradable when it launches the exact mutated script path",
+      "cell": "a suite is gradable when it launches the exact mutated script path"
     },
     {
       "name": "any quoted mutation path is treated as a direct execution witness",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;",
-      "replace": "  if (m.file === suite || referencesRoot(suiteSource, m.file)) return true;",
-      "expectRed": "a quoted script path without an invocation is refused"
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;",
+      "replace": "    if (resolve(mutation.file) === resolve(suite) || referencesRoot(source, mutation.file)) return;",
+      "expectRed": "a quoted script path without an invocation is refused",
+      "cell": "a quoted script path without an invocation is refused"
     },
     {
       "name": "launcher aliases are ignored",
       "file": "scripts/mutation-coverage.mjs",
       "find": "      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);",
       "replace": "      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[1]);",
-      "expectRed": "a launcher imported under an alias still witnesses the script it runs"
+      "expectRed": "a launcher imported under an alias still witnesses the script it runs",
+      "cell": "a launcher imported under an alias still witnesses the script it runs"
     },
     {
       "name": "bound entry names are ignored",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  const names = boundNames(suiteSource, basename);",
+      "find": "  const names = boundNames(source, basename);",
       "replace": "  const names = [];",
-      "expectRed": "a target bound to a const before the launcher call still witnesses it"
+      "expectRed": "a target bound to a const before the launcher call still witnesses it",
+      "cell": "a target bound to a const before the launcher call still witnesses it"
     },
     {
       "name": "a bound entry anywhere after a launcher is treated as its argument",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  for (const m of suiteSource.matchAll(new RegExp(`${call}((?:[^()]|\\\\([^()]*\\\\))*)\\\\)`, \"g\"))) {",
-      "replace": "  for (const m of suiteSource.matchAll(new RegExp(`${call}([\\\\s\\\\S]{0,500})`, \"g\"))) {",
-      "expectRed": "a name bound to the target but never passed to a launcher is still refused"
+      "find": "  for (const m of source.matchAll(new RegExp(`${call}((?:[^()]|\\\\([^()]*\\\\))*)\\\\)`, \"g\"))) {",
+      "replace": "  for (const m of source.matchAll(new RegExp(`${call}([\\\\s\\\\S]{0,500})`, \"g\"))) {",
+      "expectRed": "a name bound to the target but never passed to a launcher is still refused",
+      "cell": "a name bound to the target but never passed to a launcher is still refused"
+    },
+    {
+      "name": "completed all-passed fractions are not parsed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }",
+      "replace": "    void completeFraction;",
+      "expectRed": "a completed all-passed fraction supplies the executed total",
+      "cell": "a completed all-passed fraction supplies the executed total"
+    },
+    {
+      "name": "banner presence is restored as an executed-cell total",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const completeFraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }\n  }\n  return undefined;\n};",
+      "replace": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const completeFraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }\n  }\n  if (typeof cfg.progressPattern === \"string\" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {\n    const terminal = output.trimEnd().split(/\\r?\\n/).at(-1) ?? \"\";\n    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);\n    const executed = (output.match(new RegExp(cfg.progressPattern, \"gm\")) ?? []).length;\n    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };\n  }\n  return undefined;\n};",
+      "expectRed": "a declared terminal banner is not an executed-cell total",
+      "cell": "a declared terminal banner is not an executed-cell total"
+    },
+    {
+      "name": "incomplete aggregate grading exits successfully",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;",
+      "replace": "void refusals; void unparsed; void failed; void examined; void graded; void refused; void fencedDiscovered;",
+      "expectRed": "a by-name same-package import without ../src is refused",
+      "cell": "a by-name same-package import without ../src is refused"
+    },
+    {
+      "name": "the audit summary omits the checkout tree",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  checkoutHead = execFileSync(\"git\", [\"rev-parse\", \"HEAD\"], { encoding: \"utf8\" }).trim();",
+      "replace": "  checkoutHead = \"unknown\";",
+      "expectRed": "the audit summary names the exact checkout tree",
+      "cell": "the audit summary names the exact checkout tree"
+    },
+    {
+      "name": "progress configs are unparsed without naming that ticks are not a total",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      why += \"; progress ticks are not an executed-cell total; the instrument grades only a number the suite printed\";",
+      "replace": "      void why;",
+      "expectRed": "a terminal banner without a printed number is unparsed",
+      "cell": "a terminal banner without a printed number is unparsed"
+    },
+    {
+      "name": "an invalid progress regex escapes per-config validation",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    try { new RegExp(cfg.progressPattern, \"gm\"); } catch (error) { throw new Error(`\"progressPattern\" is invalid: ${error.message}`); }",
+      "replace": "    void cfg.progressPattern;",
+      "expectRed": "an invalid progress regex is refused without hiding the next config",
+      "cell": "an invalid progress regex is refused without hiding the next config"
+    },
+    {
+      "name": "commented imports count as entrypoint dependencies",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    for (const specifier of relativeImports(actual, source)) {",
+      "replace": "    for (const specifier of [...relativeImports(actual, source), ...(source.match(/@cotal-ai\\/[a-z-]+/g) ?? [])]) {",
+      "expectRed": "comment-import cannot fabricate executes evidence",
+      "cell": "comment-import cannot fabricate executes evidence"
+    },
+    {
+      "name": "non-Node executables count as source entrypoint launches",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;",
+      "replace": "        && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;",
+           "expectRed": "wrong-executable cannot fabricate executes evidence",
+      "cell": "wrong-executable cannot fabricate executes evidence"
+    },
+    {
+      "name": "printed build text counts as a package build",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  for (const segment of command.split(/&&|;/)) {",
+      "replace": "  if (command.includes(\"pnpm build\")) return true;\n  for (const segment of command.split(/&&|;/)) {",
+      "expectRed": "printed-build cannot fabricate executes evidence",
+      "cell": "printed-build cannot fabricate executes evidence"
+    },
+    {
+      "name": "a genuine variable argument array is refused",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isIdentifier(node)) node = variables.get(node.text);",
+      "replace": "    if (ts.isIdentifier(node)) return false;",
+      "expectRed": "a genuine subprocess argument array is accepted",
+      "cell": "a genuine subprocess argument array is accepted"
+    },
+    {
+      "name": "the pnpm --filter=value form is refused",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    const value = tokens[filter].startsWith(\"--filter=\") ? tokens[filter].slice(9) : tokens[filter + 1];",
+      "replace": "    const value = tokens[filter + 1];",
+      "expectRed": "the pnpm --filter=value build form is accepted",
+      "cell": "the pnpm --filter=value build form is accepted"
+    },
+    {
+      "name": "coverage executes a live-shaped command instead of refusing it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (liveReason) {\n    refused.push([path, cfg.command, liveReason]);\n    continue;\n  }\n",
+      "replace": "",
+      "expectRed": "a glob-shaped argv still fences a live-suite command",
+      "cell": "a glob-shaped argv still fences a live-suite command"
+    },
+    {
+      "name": "always-live suite names are ignored by the detector",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });",
+      "replace": "  const liveReason = /:live\\b|-live\\b/.test(cfg.command) ? \"live-named\" : null;",
+      "expectRed": "an always-live suite name is fenced without a :live suffix",
+      "cell": "an always-live suite name is fenced without a :live suffix"
+    },
+    {
+      "name": "a discovered run executes configs without --execute-discovered",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (discovered && !executeDiscovered) {\n    fencedDiscovered++;\n    console.error(`FENCED ${path}: discovered configs are not executed; pass --execute-discovered to run them`);\n    continue;\n  }",
+      "replace": "  void discovered; void executeDiscovered;",
+      "expectRed": "a discovered run does not execute any config",
+      "cell": "a discovered run does not execute any config"
     }
   ]
 }

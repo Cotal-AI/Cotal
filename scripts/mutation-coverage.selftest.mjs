@@ -1,24 +1,7 @@
 #!/usr/bin/env node
-/**
- * Self-test for `mutation-coverage.mjs`'s gradability check.
- *
- * The check exists because a mutation whose suite resolves the target package to `dist` reports
- * SURVIVED — honestly, and indistinguishably from a missing test. The second witness (`assembles`)
- * exists because a suite that COPIES the target's source tree into a fixture runs the mutated
- * bytes through the copy, where the resolver is never asked. Each half has a way to lie:
- *
- *   - the witness admitted without the suite referencing the tree   → the dist trap reopens wearing
- *                                                                     a declaration
- *   - the witness refused for a suite that assembles                → a gradable mutation is called
- *                                                                     ungradable and pushed to "unkillable"
- *
- * This drives the script against throwaway fixture configs where the right answer is known, both
- * ways. Fast on purpose: the "suite" is a shell exit code, so there is no reason to skip it.
- *
- * Run: node scripts/mutation-coverage.selftest.mjs
- */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+/** Self-test for mutation-coverage's reachability, parser, and whole-corpus accounting. */
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,247 +9,454 @@ import { fileURLToPath } from "node:url";
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
 const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
 let pass = 0;
-const check = (name, cond, extra) => {
-  if (!cond) {
-    console.error(`\n  ✗ ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+const check = (name, condition, extra) => {
+  if (!condition) {
+    console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
     rmSync(root, { recursive: true, force: true });
     process.exit(1);
   }
   pass++;
   console.log(`  ✓ ${name}`);
 };
-
-// A fixture tree: a package whose source a suite may import or copy, a repo script a suite may run
-// directly, and suites for each accepted or refused resolution shape.
-mkdirSync(join(root, "packages/seat/src"), { recursive: true });
-mkdirSync(join(root, "packages/seat/smoke"), { recursive: true });
-mkdirSync(join(root, "packages/other"), { recursive: true });
-mkdirSync(join(root, "bin/smoke"), { recursive: true });
-mkdirSync(join(root, "scripts"), { recursive: true });
-writeFileSync(join(root, "packages/seat/package.json"), JSON.stringify({ name: "@cotal-ai/seat" }));
-writeFileSync(join(root, "packages/seat/src/impl.ts"), "export const x = 1;\n");
-writeFileSync(join(root, "packages/other/impl.ts"), "export const y = 1;\n");
-writeFileSync(join(root, "scripts/direct.mjs"), "console.log('direct');\n");
-writeFileSync(
-  join(root, "bin/smoke/assembling.smoke.ts"),
-  'import { cpSync } from "node:fs";\n' +
-  'cpSync(join(ROOT, "packages", "seat"), clone, { recursive: true });\n',
-);
-writeFileSync(
-  join(root, "bin/smoke/by-name.smoke.ts"),
-  'import { x } from "@cotal-ai/seat";\n',
-);
-writeFileSync(
-  join(root, "packages/seat/smoke/local-by-name.smoke.ts"),
-  'import { x } from "@cotal-ai/seat";\n',
-);
-writeFileSync(join(root, "bin/smoke/direct.smoke.ts"), "console.log('direct');\n");
-writeFileSync(
-  join(root, "bin/smoke/direct-script.smoke.ts"),
-  'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n',
-);
-writeFileSync(
-  join(root, "bin/smoke/aliased-launcher.smoke.ts"),
-  'import { spawnSync as run } from "node:child_process";\n' +
-  'run(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n',
-);
-writeFileSync(
-  join(root, "bin/smoke/bound-entry.smoke.ts"),
-  'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
-  "execFileSync(process.execPath, [ENTRY]);\n",
-);
-writeFileSync(
-  join(root, "bin/smoke/node-by-name.smoke.ts"),
-  'spawnSync("node", [join(ROOT, "scripts", "direct.mjs")]);\n',
-);
-writeFileSync(
-  join(root, "bin/smoke/mentions-script.smoke.ts"),
-  'const note = "scripts/direct.mjs";\n',
-);
-writeFileSync(
-  join(root, "bin/smoke/bound-entry-unused.smoke.ts"),
-  'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
-  'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
-  "console.log(ENTRY);\n",
-);
-writeFileSync(
-  join(root, "bin/smoke/unused-root.smoke.ts"),
-  'import { x } from "@cotal-ai/seat";\n' +
-  'const unused = join(ROOT, "packages", "seat");\n',
-);
-writeFileSync(
-  join(root, "bin/smoke/unrelated-spawn.smoke.ts"),
-  'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
-  'const unused = join(ROOT, "scripts", "direct.mjs");\n',
-);
-
-// A "suite" the script can tally: its terminal line is the only thing the coverage report parses.
-const TALLY = `${process.execPath} -e "console.log('FIXTURE: 3 passed, 0 failed')"`;
+const write = (path, value) => {
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, value);
+};
+const summaryCommand = (line) =>
+  `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`console.log(${JSON.stringify(line)})`)}`;
 const mutation = (file) => ({
   name: `mutates ${file}`, file, find: "x", replace: "y",
   expectRed: "the fixture cell", cell: "the fixture cell",
 });
-const writeConfig = (name, cfg) => writeFileSync(join(root, name), JSON.stringify(cfg));
-const runTool = (config) =>
-  spawnSync(process.execPath, [TOOL, config], { cwd: root, encoding: "utf8", timeout: 60_000 });
-
-// 1. THE TRAP THE CHECK EXISTS FOR: same package, imported by name, no ../src, no declaration.
-// Refused before this change and refused after it — the safety the `assembles` witness must not
-// weaken, pinned first so the cells below cannot pass by widening the rule.
-writeConfig("trap.json", {
-  suite: ["packages/seat/smoke/local-by-name.smoke.ts"], command: TALLY,
-  mutations: [mutation("packages/seat/src/impl.ts")],
+const config = (name, value) => write(`${name}.json`, JSON.stringify(value));
+const runArgs = (...argv) => spawnSync(process.execPath, [TOOL, ...argv], {
+  cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, PATH: `${root}:${process.env.PATH}` },
 });
-let r = runTool("trap.json");
-check(
-  "a by-name import in the same package is still refused",
-  r.status !== 0 && /assembles/.test(r.stderr) && /dist/.test(r.stderr),
-  r.stderr.slice(-300),
-);
+const run = (...names) => runArgs(...names.map((name) => `${name}.json`));
+const report = (result) => `${result.stdout}\n${result.stderr}`;
 
-// 2. THE WITNESS: the assembling suite is gradable when the config declares the tree it copies.
-writeConfig("assembled.json", {
-  suite: ["bin/smoke/assembling.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
-  mutations: [mutation("packages/seat/package.json")],
-});
-r = runTool("assembled.json");
-check(
-  "an assembling suite is gradable when the config declares the source tree it copies",
-  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
-  (r.stderr || r.stdout).slice(-300),
-);
+try {
+  write("packages/seat/package.json", JSON.stringify({ name: "@cotal-ai/seat" }));
+  write("packages/seat/src/index.ts", "export const x = 1;\n");
+  write("packages/seat/smoke/local.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  write("packages/other/package.json", JSON.stringify({ name: "@cotal-ai/other" }));
+  write("packages/other/src/index.ts", "export const x = 1;\n");
+  write("bin/entry.ts", 'import "@cotal-ai/seat";\n');
+  write("bin/other-entry.ts", 'import "@cotal-ai/other";\n');
+  write("bin/direct.mjs", "export const x = 1;\n");
+  write("bin/smoke/assembling.smoke.ts", 'cpSync(join(ROOT, "packages", "seat"), clone);\n');
+  write("bin/smoke/by-name.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  write("bin/smoke/spawn-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/pty-entry.smoke.ts",
+    'const here = dirname(fileURLToPath(import.meta.url));\n' +
+    'const repoRoot = resolve(here, "../..");\n' +
+    'const ENTRY = join(repoRoot, "bin", "entry.ts");\n' +
+    'pty.spawn(process.execPath, [ENTRY], { cwd: process.cwd() });\n');
+  write("bin/smoke/spawn-other.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "other-entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/reference-only.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\nvoid ENTRY;\n');
+  write("bin/smoke/wrong-executable.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync("echo", [ENTRY]);\n');
+  write("bin/smoke/commented-spawn.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '// spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/despawn.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'despawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/args-variable.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  write("bin/comment-entry.ts", '// import "@cotal-ai/seat";\n');
+  write("bin/smoke/comment-import.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "comment-entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/direct.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
+    'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/direct-suite.smoke.ts", "console.log('direct');\n");
+  write("scripts/direct.mjs", "console.log('direct');\n");
+  write("bin/smoke/direct-script.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/aliased-launcher.smoke.ts",
+    'import { spawnSync as run } from "node:child_process";\n' +
+    'run(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/bound-entry.smoke.ts",
+    'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+    'execFileSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/node-by-name.smoke.ts",
+    'spawnSync("node", [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/bound-entry-unused.smoke.ts",
+    'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+    'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+    'console.log(ENTRY);\n');
+  write("bin/smoke/mentions-script.smoke.ts",
+    'const note = "scripts/direct.mjs";\n');
+  write("bin/smoke/unused-root.smoke.ts",
+    'import { x } from "@cotal-ai/seat";\n' +
+    'const unused = join(ROOT, "packages", "seat");\n');
+  write("bin/smoke/unrelated-spawn.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\n');
+  write("pnpm", "#!/bin/sh\nexit 0\n");
+  chmodSync(join(root, "pnpm"), 0o755);
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
+  const fixtureHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 
-// 3. DIRECT SUITE: the command executes the mutation target itself.
-writeConfig("direct.json", {
-  suite: ["bin/smoke/direct.smoke.ts"], command: TALLY,
-  mutations: [mutation("bin/smoke/direct.smoke.ts")],
-});
-r = runTool("direct.json");
-check(
-  "a suite is gradable when it directly executes the file being mutated",
-  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
-  (r.stderr || r.stdout).slice(-300),
-);
+  const tally = summaryCommand("FIXTURE: 3 passed, 0 failed");
+  const seatBuild = `pnpm --filter @cotal-ai/seat build && ${tally}`;
+  const equalsSeatBuild = `pnpm --filter=@cotal-ai/seat build && ${tally}`;
+  const otherBuild = `pnpm --filter @cotal-ai/other build && ${tally}`;
+  const fakePrintedBuild = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('pnpm build')")} && ${tally}`;
 
-// 4. DIRECT SCRIPT: the suite launches the exact repo-relative mutation target.
-writeConfig("direct-script.json", {
-  suite: ["bin/smoke/direct-script.smoke.ts"], command: TALLY,
-  mutations: [mutation("scripts/direct.mjs")],
-});
-r = runTool("direct-script.json");
-check(
-  "a suite is gradable when it launches the exact mutated script path",
-  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
-  (r.stderr || r.stdout).slice(-300),
-);
+  config("trap", { suite: ["packages/seat/smoke/local.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  let result = run("trap");
+  check("a by-name same-package import without ../src is refused", result.status !== 0 && /REFUSED trap\.json/.test(result.stderr) && /dist/.test(result.stderr), report(result));
 
-// 4b-4d. THE SAME INVOCATION, SPELLED THE WAYS THE REPO SPELLS IT: an aliased launcher import,
-// a target bound to a name before the call, and "node" by name instead of process.execPath.
-for (const [name, label] of [
-  ["aliased-launcher", "a launcher imported under an alias still witnesses the script it runs"],
-  ["bound-entry", "a target bound to a const before the launcher call still witnesses it"],
-  ["node-by-name", "spawning \"node\" by name is the same witness as process.execPath"],
-]) {
-  writeConfig(`${name}.json`, {
-    suite: [`bin/smoke/${name}.smoke.ts`], command: TALLY,
-    mutations: [mutation("scripts/direct.mjs")],
+  config("assembled", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("assembled");
+  check("the preserved assembles witness remains gradable", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("hollow-assembled", { suite: ["bin/smoke/by-name.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("hollow-assembled");
+  check("an assembles declaration without a suite reference is refused", result.status !== 0 && /REFUSED hollow-assembled/.test(result.stderr), report(result));
+
+  config("foreign-assembled", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/other/src/index.ts")] });
+  result = run("foreign-assembled");
+  check("an assembled root cannot admit a foreign mutation", result.status !== 0 && /REFUSED foreign-assembled/.test(result.stderr), report(result));
+
+  config("direct-suite", { suite: ["bin/smoke/direct-suite.smoke.ts"], command: tally, mutations: [mutation("bin/smoke/direct-suite.smoke.ts")] });
+  result = run("direct-suite");
+  check("a suite is gradable when it directly executes the file being mutated", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("direct-script", { suite: ["bin/smoke/direct-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("direct-script");
+  check("a suite is gradable when it launches the exact mutated script path", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("aliased-launcher", { suite: ["bin/smoke/aliased-launcher.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("aliased-launcher");
+  check("a launcher imported under an alias still witnesses the script it runs", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("bound-entry", { suite: ["bin/smoke/bound-entry.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("bound-entry");
+  check("a target bound to a const before the launcher call still witnesses it", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("node-by-name", { suite: ["bin/smoke/node-by-name.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("node-by-name");
+  check("spawning \"node\" by name is the same witness as process.execPath", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("mentions-script", { suite: ["bin/smoke/mentions-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("mentions-script");
+  check("a quoted script path without an invocation is refused", result.status !== 0 && /REFUSED mentions-script/.test(result.stderr), report(result));
+
+  config("bound-entry-unused", { suite: ["bin/smoke/bound-entry-unused.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("bound-entry-unused");
+  check("a name bound to the target but never passed to a launcher is still refused", result.status !== 0 && /REFUSED bound-entry-unused/.test(result.stderr), report(result));
+
+  config("malformed-assembles", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: "packages/seat", mutations: [mutation("packages/seat/package.json")] });
+  result = run("malformed-assembles");
+  check('a non-array "assembles" is refused', result.status !== 0 && /"assembles" must be an array/.test(result.stderr), report(result));
+
+  config("unused-root", { suite: ["bin/smoke/unused-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("unused-root");
+  check("an unused root spelling beside a by-name import is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("unrelated-spawn", { suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("unrelated-spawn");
+  check("an unrelated spawn near a quoted path is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("executed");
+  check("a spawned repo entrypoint plus target-package build is gradable", result.status === 0 && /graded=1 refused-with-reason=0 unparsed=0/.test(result.stdout), report(result));
+
+  const skippedBuild = `false && pnpm --filter @cotal-ai/seat build || ${tally}`;
+  config("skipped-build", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: skippedBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("skipped-build");
+  check("a package build that never runs is accepted today because buildsPackage is the fourth witness of the class tracked in #1434, alongside ../src/, referencesRoot, and invokesFile (see #1434, #1465)", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("pty-executed", { suite: ["bin/smoke/pty-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("pty-executed");
+  check("a pty-spawned repo entrypoint is also gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("direct", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("direct");
+  check("a directly spawned mutated source entrypoint needs no build", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("declaration-only", { suite: ["bin/smoke/by-name.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("declaration-only");
+  check("an executes declaration alone is refused", result.status !== 0 && /REFUSED declaration-only/.test(result.stderr), report(result));
+
+  config("reference-only", { suite: ["bin/smoke/reference-only.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("reference-only");
+  check("an entrypoint reference not passed to a subprocess is refused", result.status !== 0 && /REFUSED reference-only/.test(result.stderr), report(result));
+
+  config("wrong-entry", { suite: ["bin/smoke/spawn-other.smoke.ts"], command: seatBuild, executes: ["bin/other-entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("wrong-entry");
+  check("an unrelated spawned entrypoint is refused", result.status !== 0 && /REFUSED wrong-entry/.test(result.stderr), report(result));
+
+  config("wrong-build", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: otherBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("wrong-build");
+  check("building an unrelated package does not admit the target", result.status !== 0 && /REFUSED wrong-build/.test(result.stderr), report(result));
+
+  for (const [name, suite, entry, command] of [
+    ["wrong-executable", "bin/smoke/wrong-executable.smoke.ts", "bin/entry.ts", seatBuild],
+    ["commented-spawn", "bin/smoke/commented-spawn.smoke.ts", "bin/entry.ts", seatBuild],
+    ["despawn", "bin/smoke/despawn.smoke.ts", "bin/entry.ts", seatBuild],
+    ["comment-import", "bin/smoke/comment-import.smoke.ts", "bin/comment-entry.ts", seatBuild],
+    ["printed-build", "bin/smoke/spawn-entry.smoke.ts", "bin/entry.ts", fakePrintedBuild],
+  ]) {
+    config(name, { suite: [suite], command, executes: [entry], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`${name} cannot fabricate executes evidence`, result.status !== 0 && new RegExp(`REFUSED ${name}`).test(result.stderr), report(result));
+  }
+
+  config("args-variable", { suite: ["bin/smoke/args-variable.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("args-variable");
+  check("a genuine subprocess argument array is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("equals-filter", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: equalsSeatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("equals-filter");
+  check("the pnpm --filter=value build form is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("malformed-executes", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: "bin/entry.ts", mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("malformed-executes");
+  check("a non-array executes declaration is refused", result.status !== 0 && /"executes" must be an array/.test(result.stderr), report(result));
+
+  config("fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: summaryCommand("ENDPOINT RESULTS: 4/4"), completionMarker: "ENDPOINT RESULTS:", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("fraction");
+  check("a completed all-passed fraction supplies the executed total", result.status === 0 && result.stdout.includes("1 /   4 cells observed failing"), report(result));
+
+  config("partial-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: summaryCommand("ENDPOINT RESULTS: 3/4"), completionMarker: "ENDPOINT RESULTS:", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("partial-fraction");
+  check("a partial fraction is unparsed rather than graded", result.status !== 0 && /UNPARSED partial-fraction/.test(result.stderr) && /unparsed=1/.test(result.stdout), report(result));
+
+  config("zero-failed", { suite: ["bin/smoke/direct.smoke.ts"], command: summaryCommand("FIXTURE SMOKE OK (0 failed)"), executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("zero-failed");
+  check("zero failures without a total stays unparsed", result.status !== 0 && /UNPARSED zero-failed/.test(result.stderr), report(result));
+
+  const ticks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED')")}`;
+  config("progress-banner", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-banner");
+  check(
+    "a declared terminal banner is not an executed-cell total",
+    result.status !== 0 && /UNPARSED progress-banner/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress");
+  check(
+    "a terminal banner without a printed number is unparsed",
+    result.status !== 0 && /UNPARSED progress/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr)
+      && /the instrument grades only a number the suite printed/.test(result.stderr),
+    report(result),
+  );
+
+  const noCompletion = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three')")}`;
+  config("unfinished-progress", { suite: ["bin/smoke/direct.smoke.ts"], command: noCompletion, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("unfinished-progress");
+  check("progress without a printed number is unparsed", result.status !== 0 && /UNPARSED unfinished-progress/.test(result.stderr), report(result));
+
+  config("progress-no-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-no-marker");
+  check(
+    "progress without a declared completionMarker names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-no-marker/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr)
+      && /the instrument grades only a number the suite printed/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress-no-minticks", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-no-minticks");
+  check(
+    "progress without minTicks names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-no-minticks/.test(result.stderr)
+      && /progressPattern is present and minTicks is absent/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress-minticks-no-pattern", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-minticks-no-pattern");
+  check(
+    "minTicks without progressPattern names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-minticks-no-pattern/.test(result.stderr)
+      && /minTicks is present and progressPattern is absent/.test(result.stderr)
+      && /the progress path cannot run at all/.test(result.stderr),
+    report(result),
+  );
+
+  const markerOffTerminal = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nhost pins the seat binary against background self-update\\nJCODE HOST SMOKE PASSED (85 checks)')")}`;
+  config("progress-marker-not-terminal", {
+    suite: ["bin/smoke/direct.smoke.ts"],
+    command: markerOffTerminal,
+    progressPattern: "^  ✓ ",
+    minTicks: 3,
+    completionMarker: "host pins the seat binary against background self-update",
+    executes: ["bin/direct.mjs"],
+    mutations: [mutation("bin/direct.mjs")],
   });
-  r = runTool(`${name}.json`);
-  check(label, r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"), (r.stderr || r.stdout).slice(-300));
+  result = run("progress-marker-not-terminal");
+  check(
+    "progress with a non-terminal completionMarker names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-marker-not-terminal/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr),
+    report(result),
+  );
+
+  for (const [name, text] of [
+    ["early-ok", "SETUP OK\\n  ✓ one\\n  ✓ two\\nWORK REMAINS"],
+    ["tick-passed", "  ✓ setup PASSED\\n  ✓ second\\nWORK REMAINS"],
+  ]) {
+    config(name, { suite: ["bin/smoke/direct.smoke.ts"], command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`console.log(${JSON.stringify(text)})`)}`, progressPattern: "^  ✓ ", minTicks: 2, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+    result = run(name);
+    check(`${name} is not a terminal completion witness`, result.status !== 0 && new RegExp(`UNPARSED ${name}`).test(result.stderr), report(result));
+  }
+
+  const ticksNot = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nNOT FIXTURE PASSED')")}`;
+  config("progress-not-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksNot, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-not-marker");
+  check("a terminal line that contains and negates the marker is unparsed without a printed number", result.status !== 0 && /UNPARSED progress-not-marker/.test(result.stderr), report(result));
+
+  const ticksPrefixed = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED')")}`;
+  config("progress-prefixed-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixed, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-prefixed-marker");
+  check("a prefixed completion marker without a printed number is unparsed (the #1464 must-accept pin was pinning banner-as-completion)", result.status !== 0 && /UNPARSED progress-prefixed-marker/.test(result.stderr), report(result));
+
+  const ticksPrefixedFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED 3/3')")}`;
+  config("progress-prefixed-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixedFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-prefixed-fraction");
+  check("a prefixed completion marker still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksChecks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n  42 checks passed')")}`;
+  config("midline-checks", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksChecks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "checks passed", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("midline-checks");
+  check("a mid-line checks-passed marker still grades", result.status === 0 && /graded=1/.test(result.stdout), report(result));
+
+  const ticksAnsi = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED\\u001b[0m')")}`;
+  config("progress-ansi-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsi, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-ansi-marker");
+  check("an ANSI-coloured banner without a printed number is unparsed (the #1464 must-accept pin was pinning banner-as-completion)", result.status !== 0 && /UNPARSED progress-ansi-marker/.test(result.stderr), report(result));
+
+  const ticksAnsiFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED 3/3\\u001b[0m')")}`;
+  config("progress-ansi-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsiFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-ansi-fraction");
+  check("an ANSI-coloured completion banner still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksTrail = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED but cleanup failed')")}`;
+  config("progress-trailing-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrail, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-trailing-marker");
+  check("trailing text after the marker is unparsed without a printed number", result.status !== 0 && /UNPARSED progress-trailing-marker/.test(result.stderr), report(result));
+
+  const ticksTrailFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED 3/3 but cleanup failed')")}`;
+  config("progress-trailing-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrailFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-trailing-fraction");
+  check("trailing text after a complete fraction on the marker line is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("invalid-regex", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, progressPattern: "[", minTicks: 1, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("invalid-regex", "fraction");
+  check("an invalid progress regex is refused without hiding the next config", result.status !== 0 && /enumerated=2 examined=2 graded=1 refused-with-reason=1/.test(result.stdout), report(result));
+
+  config("no-suite", { command: tally, mutations: [mutation("bin/direct.mjs")] });
+  result = run("no-suite");
+  check("missing suite metadata is still refused", result.status !== 0 && /REFUSED no-suite/.test(result.stderr) && /MISSING SUITE METADATA|required top-level "suite"/.test(report(result)), report(result));
+
+  config("legacy-suite", { suite: "bin/smoke/direct.smoke.ts", command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("legacy-suite");
+  check("a legacy string suite is still refused", result.status !== 0 && /REFUSED legacy-suite/.test(result.stderr) && /MALFORMED SUITE METADATA|legacy string/.test(report(result)), report(result));
+
+  config("multi-source", { suite: ["bin/smoke/direct.smoke.ts", "bin/smoke/assembling.smoke.ts"], command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("multi-source");
+  check("a valid multi-source fixture is still graded", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  result = run("declaration-only", "zero-failed", "fraction");
+  check(
+    "one bad config does not hide later configs",
+    result.status !== 0 && /enumerated=3 examined=3 graded=1 refused-with-reason=1 unparsed=1/.test(result.stdout),
+    report(result),
+  );
+  check("the audit summary names the exact checkout tree", result.stdout.includes(`head=${fixtureHead}`), report(result));
+
+  const sentinelPath = (name) => join(root, `mark-${name}`);
+  const sentinelCmd = (name, tag = "") => {
+    const inner = `require("fs").writeFileSync(${JSON.stringify(sentinelPath(name))}, "ran"); console.log("FIXTURE: 3 passed, 0 failed");`;
+    const node = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(inner)}`;
+    return tag ? `${node} # ${tag}` : node;
+  };
+  const fenceBody = (command) => ({
+    suite: ["bin/smoke/direct.smoke.ts"],
+    command,
+    executes: ["bin/direct.mjs"],
+    mutations: [mutation("bin/direct.mjs")],
+  });
+  const clearSentinels = (...names) => {
+    for (const name of names) try { unlinkSync(sentinelPath(name)); } catch { /* absent */ }
+  };
+  const fenceNames = ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e", "suffix", "ops"];
+  for (const name of ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"]) {
+    write(`bin/smoke/mutations/${name}.json`, JSON.stringify(fenceBody(sentinelCmd(name))));
+  }
+  write("bin/smoke/mutations/suffix.json", JSON.stringify(fenceBody(sentinelCmd("suffix", "pnpm smoke:user-spawn:live"))));
+  write("bin/smoke/mutations/ops.json", JSON.stringify(fenceBody(sentinelCmd("ops", "pnpm smoke:manager-service-ops"))));
+  execFileSync("git", ["add", "bin/smoke/mutations"], { cwd: root });
+
+  clearSentinels(...fenceNames);
+  result = runArgs(
+    "bin/smoke/mutations/safe-a.json",
+    "bin/smoke/mutations/safe-b.json",
+    "bin/smoke/mutations/safe-c.json",
+    "bin/smoke/mutations/safe-d.json",
+    "bin/smoke/mutations/safe-e.json",
+    "bin/smoke/mutations/suffix.json",
+  );
+  check(
+    "a glob-shaped argv still fences a live-suite command",
+    result.status === 0
+      && !existsSync(sentinelPath("suffix"))
+      && ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"].every((name) => existsSync(sentinelPath(name)))
+      && /bin\/smoke\/mutations\/suffix\.json\s+REFUSED `.*smoke:user-spawn:live`/.test(report(result))
+      && /1 live-shaped config\(s\) refused/.test(result.stdout)
+      && /fenced-live=1/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs("bin/smoke/mutations/ops.json");
+  check(
+    "an always-live suite name is fenced without a :live suffix",
+    result.status === 0
+      && !existsSync(sentinelPath("ops"))
+      && /bin\/smoke\/mutations\/ops\.json\s+REFUSED `/.test(report(result))
+      && /1 live-shaped config\(s\) refused/.test(result.stdout)
+      && /fenced-live=1/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs();
+  check(
+    "a discovered run does not execute any config",
+    fenceNames.every((name) => !existsSync(sentinelPath(name)))
+      && /fenced-discovered=[1-9]\d*/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs("bin/smoke/mutations/safe-a.json");
+  check(
+    "a named non-live config still executes without a flag",
+    existsSync(sentinelPath("safe-a")) && /graded=1/.test(result.stdout) && /fenced-live=0/.test(result.stdout),
+    report(result),
+  );
+} finally {
+  rmSync(root, { recursive: true, force: true });
 }
-
-// 5. A QUOTED PATH IS NOT AN INVOCATION: prose or a fixture string cannot license a mutation.
-// This cell is a contiguous quoted path with no launcher and no bound identifier, so a mutation
-// that treats any quoted mention as a witness reddens HERE rather than a later bound-name cell
-// that also happens to quote the basename.
-writeConfig("mentions-script.json", {
-  suite: ["bin/smoke/mentions-script.smoke.ts"], command: TALLY,
-  mutations: [mutation("scripts/direct.mjs")],
-});
-r = runTool("mentions-script.json");
-check(
-  "a quoted script path without an invocation is refused",
-  r.status !== 0 && /imports by source path or reaches through/.test(r.stderr),
-  r.stderr.slice(-300),
-);
-
-// 5b. A BOUND NAME OUTSIDE THE ARGUMENT LIST IS NOT AN INVOCATION: the launcher runs something
-// else and the name is only printed afterwards. Distinct from cell 5: the basename is quoted
-// inside a binding, so collapsing invokesFile to referencesRoot would also grade this one —
-// that is why cell 5 runs first, and a separate mutation drops the argument-list check.
-writeConfig("bound-entry-unused.json", {
-  suite: ["bin/smoke/bound-entry-unused.smoke.ts"], command: TALLY,
-  mutations: [mutation("scripts/direct.mjs")],
-});
-r = runTool("bound-entry-unused.json");
-check(
-  "a name bound to the target but never passed to a launcher is still refused",
-  r.status !== 0 && /assembles/.test(r.stderr),
-  r.stderr.slice(-300),
-);
-
-// 6. THE DECLARATION IS NOT THE WITNESS: same declaration, suite that never references the tree.
-writeConfig("hollow.json", {
-  suite: ["bin/smoke/by-name.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
-  mutations: [mutation("packages/seat/package.json")],
-});
-r = runTool("hollow.json");
-check(
-  "a declaration the suite source cannot back is refused",
-  r.status !== 0 && /imports by source path or reaches through/.test(r.stderr),
-  r.stderr.slice(-300),
-);
-
-// 7. CONTAINMENT: a declared root cannot smuggle a file it does not contain.
-writeConfig("foreign.json", {
-  suite: ["bin/smoke/assembling.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
-  mutations: [mutation("packages/other/impl.ts")],
-});
-r = runTool("foreign.json");
-check(
-  "a declared root cannot smuggle a file outside it",
-  r.status !== 0 && /assembles/.test(r.stderr),
-  r.stderr.slice(-300),
-);
-
-// 8. SHAPE: `assembles` is an array of paths, and anything else is refused rather than guessed at.
-writeConfig("malformed.json", {
-  suite: ["bin/smoke/assembling.smoke.ts"], command: TALLY, assembles: "packages/seat",
-  mutations: [mutation("packages/seat/package.json")],
-});
-r = runTool("malformed.json");
-check(
-  'a non-array "assembles" is refused',
-  r.status !== 0 && /"assembles" must be an array/.test(r.stderr),
-  r.stderr.slice(-300),
-);
-
-// 9 and 10. PRESENCE-BUT-UNUSED. Cells 5 and 6 above pin the ABSENCE of a witness token, so
-// neither can see a suite that CONTAINS the right characters without running or copying anything.
-// Both witnesses accept that today, and so does the `../src/` substring they sit beside, on main and
-// independently of this file. These two cells pin what the tool actually does, so #1434 has a cell
-// to flip when it tightens all three witnesses together rather than a cell to invent.
-writeConfig("unused-root.json", {
-  suite: ["bin/smoke/unused-root.smoke.ts"], command: TALLY, assembles: ["packages/seat"],
-  mutations: [mutation("packages/seat/src/impl.ts")],
-});
-r = runTool("unused-root.json");
-check(
-  "an unused root spelling beside a by-name import is accepted today (see #1434)",
-  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
-  (r.stderr || r.stdout).slice(-300),
-);
-
-writeConfig("unrelated-spawn.json", {
-  suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: TALLY,
-  mutations: [mutation("scripts/direct.mjs")],
-});
-r = runTool("unrelated-spawn.json");
-check(
-  "an unrelated spawn near a quoted path is accepted today (see #1434)",
-  r.status === 0 && r.stdout.includes("1 /   3 cells observed failing"),
-  (r.stderr || r.stdout).slice(-300),
-);
-
-rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, 0 failed`);

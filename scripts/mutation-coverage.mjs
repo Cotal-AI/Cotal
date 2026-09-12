@@ -1,121 +1,63 @@
 #!/usr/bin/env node
 /**
- * How much of a smoke suite has been OBSERVED failing?
+ * Report how many executed smoke-suite cells have been observed failing under a mutation.
  *
- * A green cell is not evidence that it can still go red. A mutation killed on a named cell is —
- * it is a direct observation of that cell failing. This script reports, per mutation config, how
- * many of the suite's executed cells have such an observation behind them.
+ * With no paths, configs are discovered from this checkout's index. Every config is examined even
+ * when an earlier one is refused or cannot be parsed. Live-shaped commands (live-named smoke
+ * tokens or suite sources that declare real infrastructure) use the same fail-closed predicate as
+ * mutation-reproof and are refused before any child is spawned. A discovered (no-path) run
+ * enumerates and validates but does not execute unless --execute-discovered is passed. The final
+ * summary names the checkout HEAD when git can resolve it, and exits non-zero if any config was
+ * not graded. Live-shaped refusals and discovered fences are named skips, not grading failures.
  *
- * It counts EXECUTED cells, never cells read out of the source: a suite that generates cells in a
- * loop runs more than it spells out, and a static count silently inflates the ratio. So each
- * config's `command` is run and its terminal `<suite>: N passed, M failed` line is parsed.
- *
- * The numerator is DISTINCT cells named by mutations, not the mutation count — two mutations
- * naming one cell is one observation, and the script refuses to double-count it. It is still a
- * LOWER bound: a mutation may redden cells beyond the one it names, and those are not claimed.
- *
- *   node scripts/mutation-coverage.mjs                     # every config in the tree
- *   node scripts/mutation-coverage.mjs <config.json> …     # just these
- *
- * A live-shaped command is refused before it runs, whether the config was discovered or named.
- * Refused configs are counted and printed; they are never a silent hole in the denominator.
+ *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still refused)
+ *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still refused
  */
-import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { dirname, extname, resolve } from "node:path";
+import ts from "typescript";
 import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
-
-/**
- * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
- * that moves would otherwise drop out of both numerator and denominator at once, leaving a ratio
- * that is still plausible and no longer about the same suites. The pattern is any `mutations/`
- * directory rather than `smoke/mutations/`, because a config that grades a TOOL sits beside the
- * tool and a pattern keyed on where configs usually live cannot see the one that lives elsewhere.
- */
-const args = process.argv.slice(2);
-const configs = args.length
-  ? args
-  : execSync("git ls-files '*/mutations/*.json' '*.mutations.json'", { encoding: "utf8" }).split("\n").filter(Boolean);
+const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
+const rawArgs = process.argv.slice(2);
+const executeDiscovered = rawArgs.includes(FLAG_EXECUTE_DISCOVERED);
+const args = rawArgs.filter((arg) => arg !== FLAG_EXECUTE_DISCOVERED);
+const discovered = args.length === 0;
+const configs = discovered
+  ? execSync("git ls-files '*/mutations/*.json' '*.mutations.json'", { encoding: "utf8" }).split("\n").filter(Boolean)
+  : args;
 
 if (configs.length === 0) {
   console.error("no mutation configs found under any mutations/ directory");
   process.exit(1);
 }
 
+let checkoutHead = "unknown";
+try {
+  checkoutHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+} catch {
+  checkoutHead = "unknown";
+}
 let cells = 0, named = 0, mutations = 0, unkillable = 0;
+let examined = 0, graded = 0, unparsed = 0, failed = 0;
+let fencedDiscovered = 0;
 const rows = [];
-/**
- * A config marked `"kind": "unasserted-probe"` runs the OPPOSITE experiment: it mutates guards no
- * cell was written for and predicts SURVIVED, because a survivor names a guard nothing is watching.
- * Its `cell` fields describe the behaviour that SHOULD have a cell and usually names one that does
- * not exist — so counting them in the numerator would raise the coverage figure by exactly the
- * cells that were found to be missing. Summing the two kinds silently would make the better
- * practice look like progress and the confirm-only method look better than it is; they are reported
- * apart on purpose.
- */
 const probes = [];
-/**
- * A config marked `"grades": "tool"` measures one of this repo's own instruments through its
- * self-test, not a package's smoke suite. It is reported apart and never folded into the ratio
- * above: a self-test's cells and a smoke suite's cells are not the same unit, and averaging them
- * would move a coverage figure about shipped behaviour by changing a tool's test count.
- *
- * Tool configs remain separate from package coverage, but carry the same source metadata as every
- * other repository fixture so corpus validation does not have a blind spot.
- */
 const tools = [];
+const refusals = [];
 const refused = [];
-
-/**
- * Only the fields THIS script's report depends on are checked here. The set of keys the harness
- * accepts is defined once, in `mutation-proof.mjs`, which refuses an unknown one before grading
- * anything — a second copy of that list here drifted the first time the harness gained a key, which
- * is the defect these two scripts exist to measure, committed by the measuring script.
- */
 const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
-/** `replace` must EXIST but may be empty: deleting the target is a mutation like any other. */
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
-
-/** `packages/core/src/x.ts` -> `packages/core`; `implementations/runtime/smoke/y.ts` -> `implementations/runtime`. */
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
-
-/**
- * A mutation is only gradable if the suite runs the file it mutates. A suite that imports its
- * target's package BY NAME gets `dist`, so mutating the source cannot reach the running code and
- * the harness reports SURVIVED — honestly, and indistinguishably from a missing test. The check is
- * an approximation of the resolver on purpose: same package, and the suite actually reaches into
- * `../src`. It is here rather than in a note because a rule that depends on the next author
- * remembering it is the rule that just failed.
- *
- * A second witness exists for suites that never IMPORT the target at all: a config may declare
- * `"assembles": ["packages/seat", …]` — source trees the suite copies into a fixture where it runs
- * a real lifecycle on the copy. The installed-distribution smoke packs an assembled seat clone, so
- * a mutation in `packages/seat/package.json` reaches the run through the copied bytes and the
- * resolver is never asked. Declaring alone proves nothing: the mutated file must live under a
- * declared root, and the suite's own source must reference that root. That reference check is the
- * same order of approximation as the `../src/` substring above — a textual witness for a data-flow
- * fact — and it is what keeps the declaration honest: a suite that only imports the package by
- * name references no source tree, so the dist trap stays refused.
- */
 const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
-/**
- * Does the suite reference a repo source root? `packages/seat` matches `join(ROOT, "packages",
- * "seat")` — how this repo spells repo-relative paths, as quoted segments — and `cpSync("packages/
- * seat", …)` — one quoted path — alike. Matching only the contiguous form would refuse every suite
- * that assembles from one.
- */
-const referencesRoot = (suiteSource, root) =>
-  new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(suiteSource);
+const referencesRoot = (source, root) =>
+  new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(source);
 const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
-/**
- * The names a suite calls the child_process launchers by: the canonical four plus whatever a
- * `{ spawnSync as run }` import binds them to. A member call (`cp.spawnSync(`) already matches
- * the bare name.
- */
-const launcherNames = (suiteSource) => {
+const launcherNames = (source) => {
   const names = new Set(LAUNCHERS);
-  for (const m of suiteSource.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g)) {
+  for (const m of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g)) {
     for (const part of m[1].split(",")) {
       const alias = part.match(/^\s*(\w+)\s+as\s+(\w+)\s*$/);
       if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);
@@ -123,139 +65,362 @@ const launcherNames = (suiteSource) => {
   }
   return [...names];
 };
-/** Identifiers the suite binds to a quoted mention of the file (`const ENTRY = join(ROOT, "scripts",
- *  "x.mjs")`), so a later `spawnSync(process.execPath, [ENTRY])` still names the target. */
-const boundNames = (suiteSource, basename) =>
-  [...suiteSource.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=[^;\\n]{0,300}${quoted(basename)}`, "g"))].map((m) => m[1]);
-const invokesFile = (suiteSource, file) => {
-  const parts = file.split("/");
-  const basename = parts.at(-1);
-  if (basename === undefined || !referencesRoot(suiteSource, file)) return false;
-  const call = `(?:${launcherNames(suiteSource).join("|")})\\s*\\(`;
-  if (new RegExp(`${call}[\\s\\S]{0,500}${quoted(basename)}`).test(suiteSource)) return true;
-  // A bound name has to sit inside the launcher's argument list (one level of nesting allowed);
-  // merely appearing after the call is not an invocation.
-  const names = boundNames(suiteSource, basename);
+const boundNames = (source, basename) =>
+  [...source.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=[^;\\n]{0,300}${quoted(basename)}`, "g"))].map((m) => m[1]);
+const invokesFile = (source, file) => {
+  const basename = file.split("/").at(-1);
+  if (basename === undefined || !referencesRoot(source, file)) return false;
+  const call = `(?:${launcherNames(source).join("|")})\\s*\\(`;
+  if (new RegExp(`${call}[\\s\\S]{0,500}${quoted(basename)}`).test(source)) return true;
+  const names = boundNames(source, basename);
   if (names.length === 0) return false;
-  for (const m of suiteSource.matchAll(new RegExp(`${call}((?:[^()]|\\([^()]*\\))*)\\)`, "g"))) {
+  for (const m of source.matchAll(new RegExp(`${call}((?:[^()]|\\([^()]*\\))*)\\)`, "g"))) {
     if (names.some((name) => new RegExp(`\\b${name}\\b`).test(m[1]))) return true;
   }
   return false;
 };
 
-/** Does THIS one suite run the bytes the mutation edits? The witnesses are tried in the order they
- * are cheapest to be sure of: the suite is the target, the suite launches it as a script, the suite
- * imports its package by source path, the suite assembles it from a declared source tree. */
-const gradableFrom = (suite, m, assembles) => {
-  const suiteSource = readFileSync(suite, "utf8");
-  // A smoke that mutates its own source executes those bytes directly. A smoke may also launch a
-  // repo script by its exact relative path, as the seat packaging suite does for the native
-  // assembler. Neither path crosses a package resolver or an assembled-copy boundary.
-  if (m.file === suite || invokesFile(suiteSource, m.file)) return true;
-  if (packageRoot(m.file) === packageRoot(suite) && suiteSource.includes("../src/")) return true;
-  const root = assembles.find((r) => m.file === r || m.file.startsWith(r + "/"));
-  return root !== undefined && referencesRoot(suiteSource, root);
+const validStringArray = (value) =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry !== "");
+
+const candidateFiles = (path) => {
+  const out = [path];
+  if ([".js", ".mjs", ".cjs"].includes(extname(path))) {
+    out.push(path.slice(0, -extname(path).length) + ".ts");
+    out.push(path.slice(0, -extname(path).length) + ".mts");
+    out.push(path.slice(0, -extname(path).length) + ".cts");
+  }
+  out.push(resolve(path, "index.ts"), resolve(path, "index.mts"), resolve(path, "index.js"));
+  return [...new Set(out)].find(existsSync);
 };
 
-const assertGradable = (configPath, suites, m, assembles) => {
-  if (suites.some((suite) => gradableFrom(suite, m, assembles))) return;
+const ast = (path, source) => ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+const stringValue = (node) => ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+const relativeImports = (path, source) => {
+  const found = [];
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      const value = stringValue(node.moduleSpecifier);
+      if (value !== undefined) found.push(value);
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const value = stringValue(node.arguments[0]);
+      if (value !== undefined) found.push(value);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast(path, source));
+  return found;
+};
+
+const manifestByName = new Map();
+let packageManifests = [];
+try {
+  packageManifests = execFileSync("git", ["ls-files", "*package.json"], { encoding: "utf8" }).split("\n").filter(Boolean);
+} catch {
+  packageManifests = [];
+}
+for (const path of packageManifests) {
+  try {
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof manifest.name === "string") manifestByName.set(manifest.name, { path, manifest });
+  } catch { /* malformed manifests are diagnosed when their config is examined */ }
+}
+const entryPackageCache = new Map();
+
+/** Package imports reachable from a declared repo entrypoint, plus first-party package dependencies. */
+const entryPackages = (entry) => {
+  if (entryPackageCache.has(entry)) return entryPackageCache.get(entry);
+  const packages = new Set();
+  const seenFiles = new Set();
+  const seenPackages = new Set();
+  const visitPackage = (name) => {
+    if (seenPackages.has(name)) return;
+    seenPackages.add(name);
+    const found = manifestByName.get(name);
+    if (!found) return;
+    packages.add(name);
+    for (const dependency of Object.keys({ ...found.manifest.dependencies, ...found.manifest.optionalDependencies })) {
+      if (dependency === "cotal-ai" || dependency.startsWith("@cotal-ai/")) visitPackage(dependency);
+    }
+  };
+  const visitFile = (path) => {
+    const actual = candidateFiles(path);
+    if (!actual || seenFiles.has(actual)) return;
+    seenFiles.add(actual);
+    const source = readFileSync(actual, "utf8");
+    for (const specifier of relativeImports(actual, source)) {
+      if (specifier.startsWith(".")) visitFile(resolve(dirname(actual), specifier));
+      else if (specifier === "cotal-ai" || specifier.startsWith("@cotal-ai/")) visitPackage(specifier.split("/").slice(0, 2).join("/"));
+    }
+  };
+  visitFile(resolve(entry));
+  entryPackageCache.set(entry, packages);
+  return packages;
+};
+
+const normalizedPath = (value) => resolve(value).replaceAll("\\", "/");
+const spawnsEntrypoint = (suite, entry, source) => {
+  const variables = new Map();
+  const target = normalizedPath(entry);
+  const evalPath = (node) => {
+    if (!node) return undefined;
+    const literal = stringValue(node);
+    if (literal !== undefined) return literal;
+    if (ts.isIdentifier(node)) return variables.get(node.text);
+    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
+      if (node.name.text === "dirname") return dirname(resolve(suite));
+      if (node.name.text === "url") return resolve(suite);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const parts = node.arguments.map(evalPath);
+      if (parts.some((part) => part === undefined)) return undefined;
+      if (node.expression.text === "dirname" && parts.length === 1) return dirname(parts[0]);
+      if (node.expression.text === "join" || node.expression.text === "resolve") return resolve(...parts);
+      if (node.expression.text === "fileURLToPath" && parts.length === 1) return parts[0];
+    }
+    return undefined;
+  };
+  const entryArray = (node) => {
+    if (ts.isIdentifier(node)) node = variables.get(node.text);
+    if (!ts.isArrayLiteralExpression(node)) return false;
+    return node.elements.some((element) => {
+      const value = evalPath(element);
+      return value !== undefined && normalizedPath(value) === target;
+    });
+  };
+  const executableIsNode = (node) => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === "process" && node.name.text === "execPath") return true;
+    const value = evalPath(node);
+    return value !== undefined && /(?:^|\/)tsx(?:\.cmd)?$/.test(value.replaceAll("\\", "/"));
+  };
+  let witnessed = false;
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      variables.set(node.name.text, ts.isArrayLiteralExpression(node.initializer) ? node.initializer : evalPath(node.initializer));
+    }
+    if (ts.isCallExpression(node)) {
+      const callee = ts.isIdentifier(node.expression) ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression) ? `${node.expression.expression.getText()}.${node.expression.name.text}` : "";
+      if (["spawn", "spawnSync", "spawnProc", "pty.spawn"].includes(callee)
+        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast(suite, source));
+  return witnessed;
+};
+
+const packageName = (file) => {
+  const manifest = resolve(packageRoot(file), "package.json");
+  if (!existsSync(manifest)) return undefined;
+  return JSON.parse(readFileSync(manifest, "utf8")).name;
+};
+
+const buildsPackage = (command, name) => {
+  if (!name) return false;
+  for (const segment of command.split(/&&|;/)) {
+    const tokens = segment.trim().split(/\s+/);
+    if (tokens[0] !== "pnpm") continue;
+    if (tokens[1] === "build") return true;
+    const filter = tokens.findIndex((token) => token === "--filter" || token.startsWith("--filter="));
+    if (filter < 0) continue;
+    const value = tokens[filter].startsWith("--filter=") ? tokens[filter].slice(9) : tokens[filter + 1];
+    if (value?.replace(/\.\.\.$/, "") !== name) continue;
+    if (tokens.slice(filter + (tokens[filter].startsWith("--filter=") ? 1 : 2)).includes("build")) return true;
+  }
+  return false;
+};
+
+const executedWitness = (suite, source, command, mutation, executes) => {
+  for (const entry of executes) {
+    if (!spawnsEntrypoint(suite, entry, source)) continue;
+    if (resolve(entry) === resolve(mutation.file)) return true;
+    const name = packageName(mutation.file);
+    if (name && buildsPackage(command, name) && entryPackages(entry).has(name)) return true;
+  }
+  return false;
+};
+
+const assertGradable = (configPath, cfg, suites, mutation) => {
+  for (const suite of suites) {
+    const source = readFileSync(suite, "utf8");
+    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;
+    if (packageRoot(mutation.file) === packageRoot(suite) && source.includes("../src/")) return;
+    const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
+    if (assembled !== undefined && referencesRoot(source, assembled)) return;
+    if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;
+  }
   throw new Error(
-    `${configPath}: mutation "${m.name}" targets ${m.file}, which none of [${suites.join(", ")}] imports by ` +
-    `source path or reaches through a source tree in this config's "assembles" array — a by-name import ` +
-    `resolves that package to dist and the mutation could not reach the running code. Grade it from a suite ` +
-    `in ${packageRoot(m.file)} that reaches into ../src, declare the source tree the suite copies and runs, ` +
-    `or record it in this config's "unkillable" array with the reason.`,
+    `mutation "${mutation.name}" targets ${mutation.file}, which none of [${suites.join(", ")}] imports by source path, ` +
+    `reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name ` +
+    `import resolves that package to dist. Use a suite in ${packageRoot(mutation.file)} that reaches into ../src, ` +
+    `declare the copied source tree in "assembles", declare the spawned repo entrypoint in "executes" with the ` +
+    `target package built by the command, or record the mutation as unkillable with its reason.`,
   );
 };
 
-for (const path of configs) {
-  const cfg = JSON.parse(readFileSync(path, "utf8"));
+const lastMatch = (output, re) => [...output.matchAll(re)].at(-1);
+
+const parseSummary = (cfg, output) => {
+  const tallied = lastMatch(output, /(\d+) passed, (\d+) failed/g);
+  if (tallied) return { executed: Number(tallied[1]), failures: Number(tallied[2]) };
+  const checks = lastMatch(output, /(?:(\d+)\s*\/\s*)?(\d+) checks passed/g);
+  if (checks) {
+    const executed = Number(checks[2]);
+    if (checks[1] !== undefined && Number(checks[1]) !== executed) return undefined;
+    return { executed, failures: 0 };
+  }
+  // completionMarker locates the line that may carry a complete N/N
+  // fraction. Presence of the marker string is never itself a total.
+  if (typeof cfg.completionMarker === "string") {
+    const line = output.split(/\r?\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);
+    const completeFraction = line?.match(/\b(\d+)\s*\/\s*(\d+)\b/);
+    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {
+      return { executed: Number(completeFraction[2]), failures: 0 };
+    }
+  }
+  return undefined;
+};
+
+const validate = (path, cfg) => {
   const gradesTool = cfg.grades === "tool";
   const suites = parseSuiteSources(process.cwd(), path, cfg.suite);
-  // A tool config predicts a named red and has no cell to attribute it to, because there is no
-  // suite whose coverage it could be part of.
-  const required = gradesTool ? REQUIRED.filter((k) => k !== "cell") : REQUIRED;
-  if (cfg.assembles !== undefined
-    && (!Array.isArray(cfg.assembles) || cfg.assembles.some((r) => typeof r !== "string" || r === ""))) {
-    throw new Error(`${path}: "assembles" must be an array of source-tree paths the suite copies`);
+  if (typeof cfg.command !== "string" || cfg.command === "") throw new Error('is missing "command"');
+  if (!Array.isArray(cfg.mutations)) throw new Error('is missing a "mutations" array');
+  if (cfg.completionMarker !== undefined && (typeof cfg.completionMarker !== "string" || cfg.completionMarker === "")) {
+    throw new Error('"completionMarker" must be a non-empty string');
   }
-  for (const m of cfg.mutations) {
-    for (const k of required) {
-      if (typeof m[k] !== "string" || m[k] === "") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
+  if (cfg.progressPattern !== undefined) {
+    if (typeof cfg.progressPattern !== "string" || cfg.progressPattern === "") throw new Error('"progressPattern" must be a non-empty regular expression string');
+    try { new RegExp(cfg.progressPattern, "gm"); } catch (error) { throw new Error(`"progressPattern" is invalid: ${error.message}`); }
+  }
+  if (cfg.minTicks !== undefined && (!Number.isInteger(cfg.minTicks) || cfg.minTicks < 1)) {
+    throw new Error('"minTicks" must be a positive integer');
+  }
+  for (const key of ["assembles", "executes"]) {
+    if (cfg[key] !== undefined && !validStringArray(cfg[key])) throw new Error(`"${key}" must be an array of non-empty repo paths`);
+  }
+  const required = gradesTool ? REQUIRED.filter((key) => key !== "cell") : REQUIRED;
+  for (const mutation of cfg.mutations) {
+    for (const key of required) {
+      if (typeof mutation[key] !== "string" || mutation[key] === "") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
-    for (const k of REQUIRED_MAY_BE_EMPTY) {
-      if (typeof m[k] !== "string") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
+    for (const key of REQUIRED_MAY_BE_EMPTY) {
+      if (typeof mutation[key] !== "string") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
-    if (!gradesTool) assertGradable(path, suites, m, cfg.assembles ?? []);
+    if (!gradesTool) assertGradable(path, cfg, suites, mutation);
+  }
+  return { gradesTool, suites };
+};
+
+for (const path of configs) {
+  examined++;
+  let cfg;
+  let gradesTool;
+  let suites;
+  try {
+    cfg = JSON.parse(readFileSync(path, "utf8"));
+    ({ gradesTool, suites } = validate(path, cfg));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    refusals.push([path, reason]);
+    console.error(`REFUSED ${path}: ${reason}`);
+    continue;
+  }
+
+  if (discovered && !executeDiscovered) {
+    fencedDiscovered++;
+    console.error(`FENCED ${path}: discovered configs are not executed; pass --execute-discovered to run them`);
+    continue;
   }
   const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });
   if (liveReason) {
     refused.push([path, cfg.command, liveReason]);
     continue;
   }
-  const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
-  // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
-  // failures and keeps going; "N checks passed" from a fail-fast one, where reaching the line at
-  // all means nothing failed. Both are the SUITE's own count of what it executed, which is the
-  // only number that cannot be inflated by reading the source.
-  const tallied = out.match(/(\d+) passed, (\d+) failed/);
-  const failFast = out.match(/(\d+) checks passed/);
-  if (!tallied && !failFast) throw new Error(`${path}: \`${cfg.command}\` printed neither "N passed, M failed" nor "N checks passed"`);
-  if (tallied && Number(tallied[2]) !== 0) throw new Error(`${path}: the suite is already red — coverage over a red suite means nothing`);
 
-  const executed = Number((tallied ?? failFast)[1]);
+  let output;
+  try {
+    output = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    failed++;
+    console.error(`FAILED ${path}: command exited ${error.status ?? "without a status"}: ${cfg.command}`);
+    const transcript = `${error.stdout ?? ""}${error.stderr ?? ""}`.trim();
+    if (transcript) console.error(transcript);
+    continue;
+  }
+
+  const summary = parseSummary(cfg, output);
+  if (!summary) {
+    unparsed++;
+    const hasPattern = typeof cfg.progressPattern === "string";
+    const hasTicks = Number.isInteger(cfg.minTicks) && cfg.minTicks > 0;
+    let why = "command completed but printed no trustworthy executed-cell total";
+    if (hasPattern && !hasTicks) {
+      why += "; progressPattern is present and minTicks is absent, so the progress path could not produce a total";
+    } else if (hasTicks && !hasPattern) {
+      why += "; minTicks is present and progressPattern is absent, so the progress path cannot run at all because minTicks is only ever consumed by that path";
+    } else if (hasPattern && hasTicks) {
+      why += "; progress ticks are not an executed-cell total; the instrument grades only a number the suite printed";
+    }
+    console.error(`UNPARSED ${path}: ${why}`);
+    continue;
+  }
+  if (summary.failures !== 0) {
+    failed++;
+    console.error(`FAILED ${path}: suite is already red (${summary.failures} failed); coverage over red is not graded`);
+    continue;
+  }
+
+  const executed = summary.executed;
+  const suiteLabel = suites.join(", ");
   if (gradesTool) {
     tools.push([path, cfg.mutations.length, executed]);
+    graded++;
     continue;
   }
   if (cfg.kind === "unasserted-probe") {
-    probes.push([suites.join(", "), cfg.mutations.length, executed]);
+    probes.push([suiteLabel, cfg.mutations.length, executed]);
+    graded++;
     continue;
   }
-  const distinct = new Set(cfg.mutations.map((x) => x.cell));
-  if (distinct.size !== cfg.mutations.length) {
-    console.log(`  note: ${path} has ${cfg.mutations.length} mutations naming ${distinct.size} distinct cells`);
+  const distinct = new Set(cfg.mutations.map((mutation) => mutation.cell));
+  if (distinct.size > executed) {
+    failed++;
+    console.error(`FAILED ${path}: names ${distinct.size} distinct cells but the suite ran ${executed}`);
+    continue;
   }
-  if (distinct.size > executed) throw new Error(`${path}: names ${distinct.size} cells but the suite ran ${executed}`);
-
+  if (distinct.size !== cfg.mutations.length) console.log(`  note: ${path} has ${cfg.mutations.length} mutations naming ${distinct.size} distinct cells`);
   cells += executed;
   named += distinct.size;
   mutations += cfg.mutations.length;
   unkillable += (cfg.unkillable ?? []).length;
-  rows.push([suites.join(", "), executed, distinct.size]);
+  rows.push([suiteLabel, executed, distinct.size]);
+  graded++;
 }
 
-if (rows.length) {
-  const w = Math.max(...rows.map((r) => r[0].length));
-  for (const [suite, executed, distinct] of rows) {
-    console.log(`${suite.padEnd(w)}  ${String(distinct).padStart(3)} / ${String(executed).padStart(3)} cells observed failing`);
-  }
-  console.log(`${"TOTAL".padEnd(w)}  ${named} / ${cells} = ${Math.round((named / cells) * 100)}%`);
-} else if (!tools.length && !probes.length) {
-  console.log("TOTAL  0 / 0 = n/a (no safe configs executed)");
+const width = Math.max(5, ...rows.map((row) => row[0].length));
+for (const [suite, executed, distinct] of rows) {
+  console.log(`${suite.padEnd(width)}  ${String(distinct).padStart(3)} / ${String(executed).padStart(3)} cells observed failing`);
 }
+if (rows.length) console.log(`${"TOTAL".padEnd(width)}  ${named} / ${cells} = ${Math.round((named / cells) * 100)}%`);
 console.log(`${mutations} mutations run, ${unkillable} recorded unkillable by construction and not run.`);
-console.log("A lower bound: a mutation may redden more cells than the one it names, and those are not claimed here.");
-console.log(
-  "And an OVER-statement in one direction: every mutation above was authored against a cell written for it,\n" +
-  "so this ratio measures the guards that were aimed at, not the guards that exist.",
-);
+if (rows.length) {
+  console.log("A lower bound: a mutation may redden more cells than the one it names, and those are not claimed here.");
+  console.log("The ratio measures guards authors aimed at, not every guard that exists.");
+}
 if (probes.length) {
-  console.log("\nUnasserted-guard probes — mutations of guards NO cell was written for, predicting SURVIVED.");
-  console.log("NOT added to the ratio above: their cells are the ones found MISSING, and counting them would");
-  console.log("raise the coverage figure by exactly the gaps they were run to find.");
-  for (const [suite, n, executed] of probes) {
-    console.log(`  ${suite}  ${n} probes against a suite of ${executed} cells`);
-  }
-  console.log("  Verdicts come from mutation-proof.mjs; a SURVIVED here is a finding, not a failure.");
+  console.log("\nUnasserted-guard probes:");
+  for (const [suite, count, executed] of probes) console.log(`  ${suite}  ${count} probes against a suite of ${executed} cells`);
 }
 if (tools.length) {
-  console.log("\nInstrument configs — this repo's own tools, graded through their self-tests.");
-  console.log("NOT added to the ratio above: a self-test's cells and a smoke suite's cells are different");
-  console.log("units, and averaging them would move a figure about shipped behaviour by a tool's test count.");
-  for (const [path, n, executed] of tools) {
-    console.log(`  ${path}  ${n} mutations against a self-test of ${executed} cells`);
-  }
+  console.log("\nInstrument configs:");
+  for (const [path, count, executed] of tools) console.log(`  ${path}  ${count} mutations against a self-test of ${executed} cells`);
+}
+if (refusals.length) {
+  console.error("\nRefused configs:");
+  for (const [path, reason] of refusals) console.error(`  ${path}: ${reason}`);
 }
 if (refused.length) {
   console.log("\nLive-shaped configs — refused before execution, counted and named so the denominator stays honest.");
@@ -264,3 +429,9 @@ if (refused.length) {
   }
   console.log(`${refused.length} live-shaped config(s) refused.`);
 }
+console.log(
+  `MUTATION COVERAGE SUMMARY head=${checkoutHead} enumerated=${configs.length} examined=${examined} graded=${graded} ` +
+  `refused-with-reason=${refusals.length} unparsed=${unparsed} command-failed=${failed} ` +
+  `fenced-live=${refused.length} fenced-discovered=${fencedDiscovered}`,
+);
+if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;
