@@ -13,8 +13,9 @@
     "out of this repo. The connector used to catch listSessions, reuse the dead client for createSession,",
     "and report startup failed (unknown). Operators then renamed the seat. Each mutation restores one",
     "of those defects: listing an empty directory, reusing the dead client, collapsing the named failure",
-    "back to unknown, or widening the panic site so an unrelated crate's translate.rs is reported as",
-    "this defect."
+    "back to unknown, widening the panic site so an unrelated crate's translate.rs is reported as this",
+    "defect, letting the local inspection throw and kill a seat that would otherwise start, or naming a",
+    "specific wrong cause for a failure the connector does not recognise."
   ],
   "mutations": [
     {
@@ -79,6 +80,24 @@
       "command": "pnpm smoke:jcode-stored-sessions",
       "expectRed": "a site differing by one character is refused",
       "cell": "a site differing by one character is refused"
+    },
+    {
+      "name": "M8 rethrow an unreadable sessions directory instead of naming it",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "    return { kind: \"unreadable\", path, code: code ?? \"unknown\" };",
+      "replace": "    throw error;",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "an unreadable sessions directory still starts the seat",
+      "cell": "an unreadable sessions directory still starts the seat"
+    },
+    {
+      "name": "M9 report an unrecognised harness failure as a closed connection",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "export const UNRECOGNISED_STORED_SESSION_CAUSE = \"unrecognised harness failure\";",
+      "replace": "export const UNRECOGNISED_STORED_SESSION_CAUSE = \"harness connection closed\";",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "an out-of-memory spawn failure is not reported as a closed connection",
+      "cell": "an out-of-memory spawn failure is not reported as a closed connection"
     }
   ]
 }

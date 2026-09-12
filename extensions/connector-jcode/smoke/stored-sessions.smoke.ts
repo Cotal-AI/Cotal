@@ -4,7 +4,7 @@
  * by context.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JcodeSessionsEnumerationFailure } from "../src/startup-diagnostics.js";
@@ -13,6 +13,7 @@ import {
   classifyStoredSessionPanic,
   inspectStoredSessions,
   isEmptyStoredSessionsDirectory,
+  UNRECOGNISED_STORED_SESSION_CAUSE,
 } from "../src/stored-sessions.js";
 
 let pass = 0;
@@ -54,6 +55,54 @@ try {
     const asFile = inspectStoredSessions(fileHome);
     check("a regular file at sessions is not-a-directory", asFile.kind === "not-a-directory", asFile);
     check("a file at sessions is not skipped as empty", !isEmptyStoredSessionsDirectory(asFile));
+  }
+  if (process.platform === "win32") {
+    check("unreadable refusal is unreachable on unsupported Windows", true);
+    check("an unreadable sessions directory is not skipped as empty", true);
+    check("inspecting an unreadable sessions directory does not throw", true);
+  } else {
+    // A seat home the connector cannot read is a question for the harness, not a reason to kill a
+    // seat that would otherwise start. Before this cell, EACCES escaped inspection, skipped the
+    // listing catch entirely, and killed the seat as `startup failed (unknown)` — the very string
+    // this change exists to delete, on a home that started fine before it.
+    const lockedHome = join(root, "locked");
+    const locked = join(lockedHome, "sessions");
+    mkdirSync(locked, { recursive: true, mode: 0o700 });
+    chmodSync(locked, 0o000);
+    let threw: string | undefined;
+    let inspection: ReturnType<typeof inspectStoredSessions> | undefined;
+    try {
+      inspection = inspectStoredSessions(lockedHome);
+    } catch (error) {
+      threw = (error as Error).message;
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+    check("inspecting an unreadable sessions directory does not throw", threw === undefined, threw);
+    check("an unreadable sessions directory is unreadable, not empty", inspection?.kind === "unreadable", inspection);
+    check("an unreadable sessions directory is not skipped as empty", inspection !== undefined && !isEmptyStoredSessionsDirectory(inspection));
+
+    // The second reachable throw site. `readdir` is not the only read that can fail: when the HOME
+    // is unreadable, `lstat` on sessions/ throws EACCES before readdir is ever called. Guarding
+    // one and not the other would leave the same seat-killing escape on a different input.
+    const lockedParent = join(root, "locked-home");
+    mkdirSync(join(lockedParent, "sessions"), { recursive: true, mode: 0o700 });
+    chmodSync(lockedParent, 0o000);
+    let parentThrew: string | undefined;
+    let parentInspection: ReturnType<typeof inspectStoredSessions> | undefined;
+    try {
+      parentInspection = inspectStoredSessions(lockedParent);
+    } catch (error) {
+      parentThrew = (error as Error).message;
+    } finally {
+      chmodSync(lockedParent, 0o700);
+    }
+    check("inspecting a home whose own permissions deny the read does not throw", parentThrew === undefined, parentThrew);
+    check("an unreadable home is unreadable, not empty", parentInspection?.kind === "unreadable", parentInspection);
+    check(
+      "an unreadable home is not skipped as empty",
+      parentInspection !== undefined && !isEmptyStoredSessionsDirectory(parentInspection),
+    );
   }
   if (process.platform === "win32") {
     check("symlink refusal is unreachable on unsupported Windows", true);
@@ -123,7 +172,19 @@ try {
   check("chunk-size panic text is reduced to the assertion", boundStoredSessionCause("x chunk size must be non-zero y") === "chunk size must be non-zero");
   check("connection-closed is kept", boundStoredSessionCause("harness connection closed") === "harness connection closed");
   check("write EPIPE is kept", boundStoredSessionCause("write EPIPE") === "write EPIPE");
-  check("unrelated child text is not forwarded", boundStoredSessionCause("sk-live-secret-material") === "harness connection closed");
+  check("unrelated child text is not forwarded", boundStoredSessionCause("sk-live-secret-material") === UNRECOGNISED_STORED_SESSION_CAUSE);
+  // A bounded output must not be a bounded lie: an unrecognised failure is reported as unrecognised
+  // rather than as one of the three named causes, which would send the operator to the wrong place.
+  check(
+    "an out-of-memory spawn failure is not reported as a closed connection",
+    boundStoredSessionCause("spawn ENOMEM") === UNRECOGNISED_STORED_SESSION_CAUSE,
+    boundStoredSessionCause("spawn ENOMEM"),
+  );
+  check(
+    "a refused socket is not reported as a closed connection",
+    boundStoredSessionCause("connect ECONNREFUSED /run/jcode.sock") === UNRECOGNISED_STORED_SESSION_CAUSE,
+    boundStoredSessionCause("connect ECONNREFUSED /run/jcode.sock"),
+  );
 
   console.log("\n4. named fatal carries the cause and path, never unknown");
   {

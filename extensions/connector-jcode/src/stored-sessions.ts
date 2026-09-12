@@ -18,8 +18,17 @@ export type StoredSessionsInspection =
   | { kind: "absent"; path: string }
   | { kind: "empty-directory"; path: string }
   | { kind: "populated"; path: string; entries: number }
-  | { kind: "not-a-directory"; path: string };
+  | { kind: "not-a-directory"; path: string }
+  | { kind: "unreadable"; path: string; code: string };
 
+/**
+ * A local read of the seat's own `sessions/` directory. This runs on the startup path of every
+ * managed seat, so it must never throw: a home the connector cannot read is a question for the
+ * harness, not a reason to kill a seat that would otherwise start. Both reads here can fail on a
+ * home whose permissions were perturbed from outside (operator chmod, restored backup, container
+ * UID remap): `lstat` when the home itself is unreadable, `readdir` when only `sessions/` is.
+ * Anything but a real empty directory falls through to the ordinary listing attempt.
+ */
 export function inspectStoredSessions(jcodeHome: string): StoredSessionsInspection {
   const path = storedSessionsPath(jcodeHome);
   try {
@@ -29,8 +38,9 @@ export function inspectStoredSessions(jcodeHome: string): StoredSessionsInspecti
     if (entries === 0) return { kind: "empty-directory", path };
     return { kind: "populated", path, entries };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent", path };
-    throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { kind: "absent", path };
+    return { kind: "unreadable", path, code: code ?? "unknown" };
   }
 }
 
@@ -55,10 +65,18 @@ export function classifyStoredSessionPanic(stderr: string): string | undefined {
   return match ? `${match[2]} at ${match[1]}` : undefined;
 }
 
-/** Operator-facing cause: allow-listed phrases only, never arbitrary child bytes. */
+/**
+ * Operator-facing cause: allow-listed phrases only, never arbitrary child bytes.
+ *
+ * The fallback is deliberately non-committal. Naming a specific cause for text we do not
+ * recognise sends the operator to the wrong place: an out-of-memory spawn failure rendered as
+ * "harness connection closed" points at sockets. An unrecognised cause is reported as such.
+ */
+export const UNRECOGNISED_STORED_SESSION_CAUSE = "unrecognised harness failure";
+
 export function boundStoredSessionCause(text: string): string {
   if (/chunk size must be non-zero/.test(text)) return "chunk size must be non-zero";
   if (/harness connection closed/i.test(text)) return "harness connection closed";
   if (/write EPIPE/i.test(text)) return "write EPIPE";
-  return "harness connection closed";
+  return UNRECOGNISED_STORED_SESSION_CAUSE;
 }

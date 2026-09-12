@@ -164,6 +164,38 @@ try {
   panicked.child.kill("SIGTERM");
   await Promise.race([once(panicked.child, "exit"), sleep(15_000)]);
 
+  const lockedName = "lockedpeer";
+  const lockedHome = managedHome("jcodeempty", lockedName);
+  const lockedSessions = join(lockedHome, "sessions");
+  mkdirSync(lockedSessions, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") {
+    check("an unreadable sessions directory still starts the seat (unreachable on Windows)", true);
+    check("the unreadable-directory seat does not die as startup failed (unknown) (unreachable on Windows)", true);
+  } else {
+    // The local inspection runs on every managed seat's startup path. A directory it cannot read
+    // must not be fatal: this home starts fine on the pre-change connector, so killing it here
+    // would be a regression that reintroduces the exact `unknown` death this change removes.
+    chmodSync(lockedSessions, 0o000);
+    const locked = startHost(lockedName, {});
+    child = locked.child;
+    try {
+      await waitFor("unreadable-sessions create_session", () =>
+        entriesOf(locked.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
+      );
+      const lockedErr = locked.stderr();
+      check("an unreadable sessions directory still starts the seat", /started a fresh session/.test(lockedErr), lockedErr);
+      check(
+        "the unreadable-directory seat does not die as startup failed (unknown)",
+        !/startup failed \(unknown\)/.test(lockedErr),
+        lockedErr,
+      );
+    } finally {
+      chmodSync(lockedSessions, 0o700);
+      locked.child.kill("SIGTERM");
+      await Promise.race([once(locked.child, "exit"), sleep(15_000)]);
+    }
+  }
+
   console.log(`COTAL_SMOKE_SENTINEL cells=${pass} passed=${pass} failed=0`);
   console.log(`\nempty sessions: ${pass} passed, 0 failed`);
 } finally {
