@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -247,6 +247,28 @@ const server = createServer((socket) => {
         // A prior session is offered only when the harness is told to have one, so the same fake
         // covers both a first launch (nothing to resume) and a restart (exactly one candidate).
         case "list_sessions": {
+          const home = process.env.JCODE_HOME;
+          const sessionsDir = home ? join(home, "sessions") : "";
+          const emptySessions =
+            Boolean(sessionsDir) &&
+            existsSync(sessionsDir) &&
+            (() => {
+              try {
+                const stats = lstatSync(sessionsDir);
+                return stats.isDirectory() && readdirSync(sessionsDir).length === 0;
+              } catch {
+                return false;
+              }
+            })();
+          if (emptySessions || process.env.FAKE_JCODE_PANIC_LIST === "1") {
+            const panicPath = sessionsDir || "(unset-JCODE_HOME)/sessions";
+            process.stderr.write(
+              `thread 'tokio-runtime-worker' panicked at crates/jcode-harness-api-server/src/translate.rs:1707:38:\nchunk size must be non-zero\n`,
+            );
+            log({ ev: "empty_sessions_panic", path: panicPath });
+            socket.destroy();
+            process.exit(1);
+          }
           const preset = process.env.FAKE_JCODE_SESSIONS;
           const remembered = storedSession();
           reply({ ev: "sessions", sessions: preset ? JSON.parse(preset) : remembered ? [remembered] : [] });
