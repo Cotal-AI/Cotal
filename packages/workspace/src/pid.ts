@@ -358,7 +358,7 @@ export function identityUncertaintyRefusal(label: string, pidfilePath: string, v
   if (verdict.kind === "torn-pairing")
     return new Error(
       `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} names pid ${verdict.pinPid}, not the pidfile's pid. The record is preserved.\n` +
-      `NEXT: inspect the recorded process with \`ps\`. If it should be stopped, stop it, then rerun this command; once the pid is dead the stale record clears automatically.`,
+      `NEXT: inspect both the pidfile pid and the pin pid with \`ps\`. Automatic cleanup follows proven death of the pidfile target. If that process should be stopped, stop it, then rerun this command; do not delete the identity pin.`,
     );
   if (verdict.kind === "unpinned")
     return new Error(

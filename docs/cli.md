@@ -154,7 +154,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--server <url>` | auto (free local port) | Listen URL override |
-| `--host <host>` | none | Bind host override. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working |
+| `--host <host>` | none | Bind host override for a **fresh** broker boot. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | none | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
@@ -180,8 +180,15 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
 `--server`, it auto-selects a free port if the default address is taken; an explicit `--server`
 stays fail-loud on collision. `--detach` also brings up the control plane (delivery daemon in auth
-mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see
-[Run a mesh](run-a-mesh.md).
+mode, then the manager). There is no broker-only mode: a local manager still starts, even on a host
+you intend to leave as broker + delivery. For a split topology, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then `cotal down manager` on that
+host and run [`supervise`](#supervise) against the remote broker; see
+[Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
+`manager` listed (pidfile liveness, not a teardown boundary). The `-f` form is a [manifest deploy](#manifest-deploys).
+
+The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
+operator-owned config. `--host` changes that file only when nats is actually started. A unit
+restart that leaves an answering listener in place is a refresh, not a rebind.
 
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
@@ -288,8 +295,14 @@ creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and
 reported by the OS. Every stop path, including `down` for the broker, web and extension components,
 and the manager, delivery and auth-service stops, applies the same rule. A pin that names a different
 start means the pid was reused, so teardown refuses and preserves it. A torn or unreadable pin also
-refuses. Once the recorded process is stopped, rerunning teardown clears the stale record
-automatically.
+refuses.
+
+The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
+the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
+A torn pairing where the pin names another pid, while the pidfile pid is still live or not proven
+dead, still refuses. Inspect both pids with `ps`. Do not delete `<pidfile>.identity` to force a
+stop; that weakens target-identity protection. Once the pidfile process is dead, rerunning
+teardown clears the stale record automatically.
 
 The first teardown after upgrading a running pre-pin stack has a narrower guarantee. A live record
 with no identity pin is signalled after a loud warning that it predates identity pinning. Restarting
@@ -1494,8 +1507,12 @@ recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
-`--dev-mint` mints a scoped cred from the local signer for standalone dev. See the
-[delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
+`--dev-mint` mints a scoped cred from the local signer for standalone dev. `--creds` can start a
+daemon that already looks healthy, but production renewal is not that file alone: the manager and
+the daemon must address one credential store. On a stock split host with two project roots, a
+direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
+host, or inject the same store into both processes ([embedding](embedding.md#supervisor-signing-authority)).
+See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
 

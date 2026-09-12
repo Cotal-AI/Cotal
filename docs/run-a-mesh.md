@@ -34,6 +34,55 @@ bind independently of the auth mode, so "network-reachable" never silently means
 the default address is already held by another project; an explicit `--server` fails loud on
 collision.
 
+`--host` is a boot flag, not a live rebind. A fresh `cotal up` writes the generated
+`.cotal/auth/server.conf` (project-local, not `~/.cotal`) with that bind and starts nats against
+it. If anything is already answering at the mesh URL, `up` refreshes the recorded mesh and
+leaves the running nats listener alone, so passing `--host 0.0.0.0` on a live or orphaned
+broker does not change who can connect. To change the bind: `cotal down`, then `cotal up --host
+<addr>` against a stopped broker so the generated file is rewritten. Do not edit `server.conf`
+by hand; the next real boot overwrites it.
+
+There is no broker-only `up`. Auth-mode `up` still starts nats, the delivery daemon, and a
+local manager. A space may run more than one manager, addressed by instance id
+([control surface](control-surface.md#instance-routing)); putting no manager on the broker host
+is a topology choice, not a singleton invariant. The supported split is:
+
+```bash
+# broker host (project root that owns the generated conf, pidfiles, and logs)
+cotal up --detach --host 0.0.0.0 --space main
+# wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`
+cotal down manager   # so this host keeps broker + delivery
+
+# manager host (registered remote mesh, same space)
+cotal meshes add --server nats://broker.example:4222 --root ~/meshes/main
+cotal supervise --space main --server nats://broker.example:4222
+```
+
+Wait for `✓ manager up` in `.cotal/manager.<spaceKey>.log` before `cotal down manager` on the
+broker host. `cotal up --detach` prints `✓ running in the background:` with `manager` listed
+once the manager pidfile is live. That detach stdout is not a safe teardown boundary: it is
+pidfile liveness, not `✓ manager up`. `✓ manager up` is supervise's post-start line after
+`await mgr.start()`. `cotal down manager` after only the detach line can still default-terminate
+the child during registration after it has taken the governance slot. Stopping before that
+post-start log line can leave the endpoint governance slot held until the holder's gate
+reopens past the stamp (the successor's boot heal, or
+[`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot cannot run). See
+[Gate recovery](#gate-recovery). Broker-only `up` remains a product request.
+
+Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
+the manager and the daemon to address one credential store. Separate host filesystems still
+leave manager root A writing and the daemon reloading root B; that composition is refused
+while the daemon stays up. Keep delivery on the broker host under `up`, and share one store
+only when you are composing a hosted pair ([embedding](embedding.md#supervisor-signing-authority)).
+
+### Split host bind
+
+A remote manager cannot reach a loopback broker. After changing `--host`, confirm the
+generated `host:` in `.cotal/auth/server.conf` and that nats is listening on that address
+before registering the mesh on the manager host. Detached child logs stay under the **project**
+`.cotal/` that `up` ran in (see [When something looks absent](#when-something-looks-absent));
+they are not `~/.cotal` unless that directory is the mesh root.
+
 A user-auth mesh can expose only its credential exchange through an operator-owned HTTPS reverse
 proxy while leaving the existing local exchange untouched:
 
@@ -86,7 +135,8 @@ projection remains tracked by #1274.
 
 There is no supported `cotal service install` command yet. Running the manager as a launchd agent or
 systemd user service remains operator-managed; service installation is separate from this boot-time
-detection behavior.
+detection behavior. The units below are **examples of process models**, not a shipped installer:
+copy them only after you decide which processes the unit should own.
 
 ### Supervising the detached stack
 
@@ -113,6 +163,20 @@ An active unit then proves the foreground launcher and broker are still running,
 not prove that every child component serves. Pair it with the component check below. Also remember
 that `cotal up` starts a local manager as well as the broker and delivery daemon; do not run this
 whole-stack unit on a host intended to be broker-only.
+
+That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
+`Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote
+managers drop for the time it takes the broker to come back. Wrapping `cotal up --detach` in
+`Type=oneshot` with `RemainAfterExit=yes` does not move nats out of that cgroup. Detached
+spawn starts a new process group, not a new systemd cgroup, and the default
+`KillMode=control-group` still signals every process left in the service cgroup on stop or
+restart, including the nats PID. Escaping that cgroup needs an explicit unit setting such as
+`KillMode=process`, or a separate nats unit; this CLI does not ship that escape. The
+`Type=oneshot` unit below is a `cotal status --components` liveness check, not a
+`--detach` launcher. Neither trade is universal from
+`Type=simple` alone; it follows from which processes the unit actually owns. There is still no
+supported installer, so pick the example that matches the ownership you want, and treat
+`systemctl is-active` as unit health, not mesh health.
 
 If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state
 instead of the launcher's exit:
@@ -456,5 +520,9 @@ also shows up as a logged denial, instead of returning an empty or incomplete re
 successful. Check
 `.cotal/manager.<key>.log`, `.cotal/delivery.<key>.log` (one pair per space, keyed as
 [Config](config.md#project-files) describes), and `.cotal/nats.log`; `cotal status` shows
-what is actually running. The access rules are collected in
+what is actually running. Those files live under the **project** `.cotal/`, not `~/.cotal`,
+unless the mesh root is the home directory. `cotal up --detach` redirects delivery and manager
+stdio onto those files, so an operator-created systemd unit around that launcher does not put
+the child logs in that unit's journal. `journalctl -u <unit>` can be empty while the crash
+reason is already in the project log. The access rules are collected in
 [Channels & permissions](channels-and-permissions.md).

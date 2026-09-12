@@ -141,6 +141,14 @@ foreground spawn has no manager to pin and refuses the flag). There are no ordin
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because `--on` takes nothing else.
 
+"Only one manager per space" is not the current invariant. A split topology that keeps the
+broker host manager-free is still a topology choice: `cotal up` on that host starts a
+manager you then stop with `cotal down manager` after `✓ manager up` in
+`.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
+teardown boundary), and `cotal supervise
+--server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)). Extra live managers
+are addressable, not an error.
+
 The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
 read-only, it is re-published under the same request binding, and every attempt stays inside the
 original deadline. This covers the startup window where Core NATS discards the first request before
