@@ -49,17 +49,17 @@ export function parseSentinel(text) {
       last = { cells, passed, failed, kind: "canonical" };
       continue;
     }
-    // Suites already name counts as `(N passed, M failed)` or `N passed, M failed; extra`.
-    // Require the close-paren / semicolon / end so a no-op cannot mint a tally from prose.
-    const pair = line.match(/\((\d+) passed, (\d+) failed(?:\)|;)/);
+    // A legacy banner must own the whole line. Trailing `;…` or a double-space
+    // annotation is extra, not a new clause. A single space then words is prose
+    // and must not mint a tally. Optional `label:` is the suite name, not English
+    // wrapping the number.
+    const pair = line.match(/^.*\((\d+) passed, (\d+) failed(?:;[^)]*)?\)(?:(?:;|\s{2}).*)?$/);
     if (pair) {
       const passed = Number(pair[1]);
       const failed = Number(pair[2]);
       last = { cells: passed + failed, passed, failed, kind: "legacy" };
       continue;
     }
-    // Trailing `;…` or a double-space annotation (`  [session: …]`) is extra, not a new clause.
-    // A single space then words is refused so prose cannot mint a tally.
     const suiteComplete = line.match(/^(?:SUITE COMPLETE:\s*)?(?:.*?:\s*)?(\d+) passed, (\d+) failed(?:(?:;|\s{2}).*)?$/);
     if (suiteComplete) {
       const passed = Number(suiteComplete[1]);
@@ -73,19 +73,19 @@ export function parseSentinel(text) {
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const cellsOk = line.match(/:\s*(\d+) cells OK$/);
+    const cellsOk = line.match(/^(?:.*?:\s*)?(\d+) cells OK(?:, \d+ failed)?(?:(?:;|\s{2}).*)?$/);
     if (cellsOk) {
       const cells = Number(cellsOk[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const testsExecuted = line.match(/:\s*(\d+) tests executed$/);
+    const testsExecuted = line.match(/^(?:.*?:\s*)?(\d+) tests executed(?:(?:;|\s{2}).*)?$/);
     if (testsExecuted) {
       const cells = Number(testsExecuted[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const parenTests = line.match(/\((\d+) tests\)/);
+    const parenTests = line.match(/^.*\((\d+) tests\)(?:(?:;|\s{2}).*)?$/);
     if (parenTests) {
       const cells = Number(parenTests[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
@@ -98,7 +98,7 @@ export function parseSentinel(text) {
       last = { cells, passed, failed: cells - passed, kind: "legacy" };
       continue;
     }
-    const checksOnly = line.match(/\((\d+) checks(?: passed)?\)/);
+    const checksOnly = line.match(/^.*\((\d+) checks(?: passed)?\)(?:(?:;|\s{2}).*)?$/);
     if (checksOnly) {
       const cells = Number(checksOnly[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
@@ -110,49 +110,49 @@ export function parseSentinel(text) {
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const scanned = line.match(/(\d+) (?:documents checked|source files scanned|files scanned)/);
+    const scanned = line.match(/^(?:.*?:\s*)?(\d+) (?:documents checked|source files scanned|files scanned)(?:, .*)?$/);
     if (scanned) {
       const cells = Number(scanned[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const names = line.match(/(\d+) names across (\d+) imports/);
+    const names = line.match(/^(?:.*?:\s*)?(\d+) names across (\d+) imports(?:(?:;|\s{2}).*)?$/);
     if (names) {
       const cells = Number(names[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const named = line.match(/: (\d+) named registrations/);
+    const named = line.match(/^(?:.*?:\s*)?(\d+) named registrations(?: across \d+.*)?$/);
     if (named) {
       const cells = Number(named[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const filesDecls = line.match(/(\d+) files, (\d+) declarations/);
+    const filesDecls = line.match(/^(?:.*?:\s*)?(\d+) files, (\d+) declarations(?:, .*)?$/);
     if (filesDecls) {
       const cells = Number(filesDecls[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const checksPassed = line.match(/(\d+) checks passed/);
+    const checksPassed = line.match(/^(?:.*?:\s*)?(\d+) checks passed(?:(?:;|\s{2}).*)?$/);
     if (checksPassed) {
       const cells = Number(checksPassed[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const cellsPassed = line.match(/(\d+) cells passed/);
+    const cellsPassed = line.match(/^(?:.*?:\s*)?(\d+) cells passed(?:(?:;|\s{2}).*)?$/);
     if (cellsPassed) {
       const cells = Number(cellsPassed[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const cellsDash = line.match(/(\d+) cells - /);
+    const cellsDash = line.match(/^(?:.*?:\s*)?(\d+) cells - \S.*$/);
     if (cellsDash) {
       const cells = Number(cellsDash[1]);
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
-    const okFailed = line.match(/(\d+) ok, (\d+) failed/);
+    const okFailed = line.match(/^(?:.*?:\s*)?(\d+) ok, (\d+) failed(?:(?:;|\s{2}).*)?$/);
     if (okFailed) {
       const passed = Number(okFailed[1]);
       const failed = Number(okFailed[2]);

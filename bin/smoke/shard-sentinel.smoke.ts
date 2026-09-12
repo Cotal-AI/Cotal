@@ -102,14 +102,42 @@ check(
 );
 const cellsPassed = parseSentinel("transform.smoke: 40 cells passed\n");
 check("an N cells passed banner is a tally", cellsPassed?.kind === "legacy" && cellsPassed.cells === 40 && cellsPassed.passed === 40);
+check(
+  "prose that mentions N cells passed is not a tally",
+  parseSentinel("the suite has 52 cells passed historically, but we skipped it\n") === null,
+);
+check(
+  "prose wrapping a parenthetical passed/failed pair is not a tally",
+  parseSentinel("note: an earlier run had (12 passed, 3 failed) before we skipped it\n") === null,
+);
+check(
+  "prose wrapping (N tests) is not a tally",
+  parseSentinel("we skipped the suite (40 tests) entirely this round\n") === null,
+);
+check(
+  "prose that mentions source files scanned is not a tally",
+  parseSentinel("a previous sweep had 40 source files scanned, none today\n") === null,
+);
+check(
+  "prose that mentions names across imports is not a tally",
+  parseSentinel("the inventory lists 40 names across 12 imports, unverified\n") === null,
+);
 const tapOk = parseSentinel("  ok the transform emits\n  ok and reaches no seam member\n");
 check("indented TAP ok lines are per-cell tallies", tapOk?.kind === "legacy" && tapOk.cells === 2 && tapOk.passed === 2);
 const cellsDash = parseSentinel("spawn-env-config smoke: 6 cells - layering, replace-not-union\n");
 check("an N cells - banner is a tally", cellsDash?.kind === "legacy" && cellsDash.cells === 6 && cellsDash.passed === 6);
+check(
+  "prose that mentions N cells - is not a tally",
+  parseSentinel("we still have 6 cells - historically unused\n") === null,
+);
 const okFailed = parseSentinel("run-command: 12 ok, 0 failed\n");
 check("an N ok, M failed banner is a tally", okFailed?.kind === "legacy" && okFailed.cells === 12 && okFailed.passed === 12 && okFailed.failed === 0);
+check(
+  "prose that mentions N ok, M failed is not a tally",
+  parseSentinel("docs said 12 ok, 0 failed yesterday\n") === null,
+);
 
-const EXPECTED = 19;
+const EXPECTED = 26;
 check(
   `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
   passed() + failed() === EXPECTED,
