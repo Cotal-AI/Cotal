@@ -455,9 +455,19 @@ const PURGE_OUTPUT_SCHEMA = {
   properties: { chat: { type: "integer", minimum: 0 }, dm: { type: "integer", minimum: 0 } },
 } as const;
 
+const CHANNEL_LIST = { type: "array", items: { type: "string" } } as const;
 const PERSONA_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "persona"],
-  properties: { name: { type: "string", minLength: 1 }, persona: { type: "string", minLength: 1 }, model: { type: "string" } },
+  properties: {
+    name: { type: "string", minLength: 1 },
+    persona: { type: "string", minLength: 1 },
+    model: { type: "string" },
+    role: { type: "string" },
+    agent: { type: "string" },
+    subscribe: CHANNEL_LIST,
+    allowSubscribe: CHANNEL_LIST,
+    allowPublish: CHANNEL_LIST,
+  },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "path"],
@@ -465,7 +475,7 @@ const PERSONA_OUTPUT_SCHEMA = {
 } as const;
 
 /** Catalog row for the mesh-side persona read (#402). Content only: name / role / model /
- *  description / owner. Policy (capabilities, ACLs) has no slot — the write path stays closed. */
+ *  description / owner. Capabilities have no slot — the write path still cannot self-grant spawn. */
 const PERSONA_CATALOG_ROW_SCHEMA = {
   type: "object",
   additionalProperties: false,

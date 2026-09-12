@@ -23,6 +23,7 @@ import {
   spawnNameError,
   idFromCreds,
   inspectCredHealth,
+  composeWirePersona,
   loadAgentFile,
   listPersonaCatalog,
   personaCatalogDescription,
@@ -7562,12 +7563,14 @@ export class Manager {
   /** Persist a peer-defined persona as config. After this, `start name` auto-discovers
    *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
    *
-   *  CONTENT vs POLICY (P6): the write path accepts ONLY content from args — {name, model,
-   *  persona}. role/publish/capabilities/owner are POLICY and have no slot here, so a peer can
-   *  never grant itself a capability or claim ownership by redefining. A fresh name is created with
-   *  owner = caller (the creator). Redefining an EXISTING file overwrites ONLY model + persona and
-   *  preserves everything else — and is allowed on the privileged tier only if `file.owner == caller`,
-   *  else admin is required. Fail-closed: an ownerless file (legacy / operator-written) is admin-only. */
+   *  CONTENT vs POLICY (P6): `capabilities` and `owner` still have no slot, so a peer cannot
+   *  self-grant spawn or claim ownership. Channel grants, role, and agent are content: they may
+   *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
+   *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
+   *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
+   *  created with owner = caller. Redefining an EXISTING file is allowed on the privileged tier
+   *  only if `file.owner == caller`, else admin is required. Fail-closed: an ownerless file
+   *  (legacy / operator-written) is admin-only. */
   private opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
@@ -7575,52 +7578,42 @@ export class Manager {
     if (nameErr) return { ok: false, error: nameErr };
     const persona = String(args.persona ?? "").trim();
     if (!persona) return { ok: false, error: "persona required" };
-    const model = args.model ? String(args.model) : undefined;
+    const model = args.model !== undefined && args.model !== null && String(args.model) !== "" ? String(args.model) : undefined;
     const path = agentFilePath(this.workspaceRoot, name);
-    let def: AgentDef;
+    let existing: AgentDef | undefined;
     if (existsSync(path)) {
-      // Redefine: load, authorize by ownership, then overwrite ONLY content; preserve all policy.
       try {
-        def = loadAgentFile(path);
+        existing = loadAgentFile(path);
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      if (!admin && def.owner !== caller) {
-        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file - no agent owner)";
+      if (!admin && existing.owner !== caller) {
+        const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
         return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
       }
-      // PATCH content: overwrite model only when provided, so a persona-only redefine can't wipe an existing model.
-      if (model !== undefined) def.model = model;
-      def.persona = persona;
-      // A redefine cannot change scope, so a file that still has no channels keeps its marker. But
-      // if an operator has since given it a real read set, the marker is a stale claim about a state
-      // that no longer holds, and a marker that outlives its condition is worse than none: it tells
-      // a census the scope was never chosen when someone chose it.
-      //
-      // The condition is the READ SET specifically, not any channel field. `allowSubscribe` alone is
-      // a ceiling on what the agent may read, not the set it reads, so a persona given only that
-      // still reads nothing and the marker still describes it correctly.
-      if (def.meta?.scope_source === "wire-default" && def.subscribe?.length) {
-        const { scope_source: _dropped, ...rest } = def.meta;
-        def.meta = Object.keys(rest).length ? rest : undefined;
-      }
-    } else {
-      // Fresh name: create with content + owner = caller. The privileged tier suffices (creating a
-      // brand-new persona isn't admin-only); the creator becomes its owner.
-      //
-      // The read set is EMPTY, and that is a policy decision made here rather than a field left
-      // blank. A peer cannot name its own channels through this path by design (see CONTENT vs
-      // POLICY above): letting it would make defining a persona a way to grant reads. So the only
-      // safe scope for a peer-created persona is none, and an operator widens it afterwards. It is
-      // written explicitly so the file states it, instead of being an omission a later default
-      // could reinterpret.
-      //
-      // `scope_source` records WHY it is empty. Everywhere else an empty read set means the author
-      // chose none; here the author was never offered the choice, and the two are indistinguishable
-      // in the file without this. A reader counting deliberate empties would otherwise credit this
-      // path with an intent nobody expressed. An operator setting a real read set should drop the
-      // marker, and `cotal personas edit` re-validates on save.
-      def = { name, model, persona, owner: caller, subscribe: [], meta: { scope_source: "wire-default" } };
+    }
+    const strList = (v: unknown): string[] | undefined => {
+      if (v === undefined || v === null) return undefined;
+      return (Array.isArray(v) ? v : [v]).map((x) => String(x));
+    };
+    let def: AgentDef;
+    try {
+      def = composeWirePersona(
+        {
+          name,
+          owner: caller,
+          prompt: persona,
+          model,
+          role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
+          agent: args.agent !== undefined && args.agent !== null && String(args.agent) !== "" ? String(args.agent) : undefined,
+          subscribe: strList(args.subscribe),
+          allowSubscribe: strList(args.allowSubscribe),
+          allowPublish: strList(args.allowPublish),
+        },
+        existing,
+      );
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
     }
     try {
       saveAgentFile(path, def);

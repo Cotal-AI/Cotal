@@ -93,16 +93,20 @@ should point at the source (the repo's docs, a URL), not assert them.
 
 ## Defining one at runtime
 
-`cotal_persona(name, prompt, model?, announce?)` sends a persona to the manager, which
+`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends a persona to the manager, which
 writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?)` brings
 it online, so a peer can mint a teammate with no hand-written file
-([tool catalog](mcp-tools.md)). The write path takes **content only** (`model` /
-`persona`); `role`, `allowPublish`, `capabilities`, and `owner` are policy and have no
-slot, so a peer cannot grant itself a capability by redefining a file. A persona with no
-`capabilities:` line (every wire-defined one) therefore spawns **without** `spawn`, and a
-spawn whose effective role is `manager` is **refused at spawn time** rather than joining as
-a labelled manager that silently cannot seat workers: either put `capabilities: [spawn]` on
-the file (an operator edit) or spawn it under another role.
+([tool catalog](mcp-tools.md)). The write path takes **content** (`model` /
+`persona`, plus optional role, agent, and channel grants). A prompt that is already a
+complete agent file (its own `---` frontmatter) is **merged** into one block: grants,
+role, and agent from that block survive, and explicit tool arguments such as `model` win.
+A malformed leading frontmatter block is refused (`prompt-frontmatter`) rather than
+wrapped. `capabilities` and `owner` remain policy and have no slot, so a peer cannot
+grant itself spawn or claim ownership. A persona with no `capabilities:` line therefore
+spawns **without** `spawn`, and a spawn whose effective role is `manager` is **refused at
+spawn time** rather than joining as a labelled manager that silently cannot seat workers:
+either put `capabilities: [spawn]` on the file (an operator edit) or spawn it under
+another role.
 
 **Defining is silent.** Nothing goes out on the mesh unless you pass `announce: <channel>`,
 and then it goes to that channel only. A peer that did not ask for the persona has no way

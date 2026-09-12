@@ -155,6 +155,7 @@
     "smoke:self-serve-join-coverage:auth": "tsx packages/core/smoke/self-serve-join-coverage-auth.smoke.ts",
     "smoke:e2e:acl": "tsx packages/core/smoke/e2e-acl.smoke.ts",
     "smoke:agent-file": "tsx packages/core/smoke/agent-file.smoke.ts",
+    "smoke:persona-frontmatter": "tsx packages/core/smoke/persona-frontmatter.smoke.ts",
     "smoke:persona-templates": "tsx implementations/cli/smoke/persona-templates.smoke.ts",
     "smoke:setup-destination": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/setup-destination.smoke.ts",
     "smoke:persona-root": "tsx implementations/cli/smoke/persona-root.smoke.ts",

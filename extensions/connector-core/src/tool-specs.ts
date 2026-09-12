@@ -1351,14 +1351,19 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:
-        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).",
+        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped.",
       schema: {
         name: z
           .string()
           .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
           .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -."),
-        prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is."),
-        model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet)."),
+        prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped."),
+        model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter."),
+        role: z.string().max(120).optional().describe("Optional role written into the persona file (e.g. reviewer). Wins over a role: in the prompt's frontmatter."),
+        agent: z.string().max(120).optional().describe("Optional harness pin written into the persona file (e.g. jcode). Wins over an agent: in the prompt's frontmatter."),
+        subscribe: z.array(z.string()).optional().describe("Optional active read set written into the persona file. Wins over subscribe: in the prompt's frontmatter."),
+        allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
+        allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
         announce: z
           .string()
           .optional()
@@ -1369,10 +1374,20 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       async run(
         agent,
         _config,
-        { name, prompt, model, announce }: { name: string; prompt: string; model?: string; announce?: string },
+        { name, prompt, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce }: {
+          name: string;
+          prompt: string;
+          model?: string;
+          role?: string;
+          agent?: string;
+          subscribe?: string[];
+          allowSubscribe?: string[];
+          allowPublish?: string[];
+          announce?: string;
+        },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, model, announce });
+          const reply = await agent.definePersona({ name, prompt, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
           const spawnHint = `spawn it with cotal_spawn(name="${name}") to bring it online`;
           // The persona is SAVED whenever we get here, so a failed announcement is a partial success,

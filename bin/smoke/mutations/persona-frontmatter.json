@@ -1,0 +1,62 @@
+{
+  "suite": [
+    "packages/core/smoke/persona-frontmatter.smoke.ts"
+  ],
+  "guard": "a cotal_persona prompt that is already a complete agent file merges into one frontmatter block; authored grants, role, agent, and model survive loadAgentFile; a malformed leading fence is refused by name",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:persona-frontmatter",
+  "completionMarker": "persona-frontmatter smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/persona-frontmatter.json",
+  "why": [
+    "THE DEFECT IS THE WRAP. definePersona stuffed a complete agent file into persona and",
+    "saveAgentFile wrapped it in subscribe: []. loadAgentFile kept the outer empty grants.",
+    "Every mutation here restores a wrap, a silent malformed write, or a precedence inversion",
+    "and must redden a named cell rather than crash the suite."
+  ],
+  "mutations": [
+    {
+      "cell": "a frontmattered prompt writes exactly one frontmatter block",
+      "name": "composeWirePersona wraps the prompt as body instead of parsing leading frontmatter",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!prompt.startsWith(\"---\")) return { body: prompt };",
+      "replace": "  if (true || !prompt.startsWith(\"---\")) return { body: prompt };",
+      "expectRed": "✗ FAIL: a frontmattered prompt writes exactly one frontmatter block",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "loaded subscribe is the authored grant, not []",
+      "name": "fresh compose ignores prompt subscribe and always writes []",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  const subscribe = args.subscribe ?? fromPrompt?.subscribe ?? [];",
+      "replace": "  const subscribe = args.subscribe ?? [];",
+      "expectRed": "✗ FAIL: loaded subscribe is the authored grant, not []",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "an explicit tool model wins over the prompt's model:",
+      "name": "prompt model beats an explicit tool argument",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    model: args.model ?? fromPrompt?.model,",
+      "replace": "    model: fromPrompt?.model ?? args.model,",
+      "expectRed": "✗ FAIL: an explicit tool model wins over the prompt's model:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "prompt capabilities never land",
+      "name": "compose copies capabilities from the prompt frontmatter",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    launchOptions: fromPrompt?.launchOptions,",
+      "replace": "    launchOptions: fromPrompt?.launchOptions,\n    capabilities: fromPrompt?.capabilities,",
+      "expectRed": "✗ FAIL: prompt capabilities never land",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "an open fence is refused as prompt-frontmatter and writes nothing",
+      "name": "an open leading fence is treated as prose and wrapped",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!m) throw new Error(`${PROMPT_FRONTMATTER}: prompt starts with --- but is not a closed YAML frontmatter block`);",
+      "replace": "  if (!m) return { body: prompt };",
+      "expectRed": "✗ FAIL: an open fence is refused as prompt-frontmatter and writes nothing",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}
