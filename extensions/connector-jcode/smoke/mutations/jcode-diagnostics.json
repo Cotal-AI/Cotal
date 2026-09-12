@@ -24,8 +24,9 @@
     {
       "name": "Jcode readiness refusal is collapsed back to unknown",
       "file": "extensions/connector-jcode/src/host-main.ts",
-      "find": "  if (error instanceof JcodeReadinessProviderRefusal) {\n    writeJcodeDiagnostic(\n      `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\\n`,\n    );\n  } else {\n    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);\n  }",
-      "replace": "  writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
+      "find": "  if (error instanceof JcodeReadinessProviderRefusal) {\n    writeJcodeDiagnostic(\n      `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\\n`,\n    );\n  } else if (error instanceof JcodeSessionsEnumerationFailure) {\n    writeJcodeDiagnostic(\n      `[cotal-jcode] fatal: Jcode host startup failed (sessions_enumeration_failed): ${error.causeText} while reading ${error.sessionsPath}\\n`,\n    );\n  } else {\n    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);\n  }",
+      "replace": "  if (error instanceof JcodeSessionsEnumerationFailure) {\n    writeJcodeDiagnostic(\n      `[cotal-jcode] fatal: Jcode host startup failed (sessions_enumeration_failed): ${error.causeText} while reading ${error.sessionsPath}\\n`,\n    );\n  } else {\n    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);\n  }",
+      "command": "pnpm smoke:jcode-host",
       "expectRed": "provider readiness refusal names its code and rejected model parameter"
     },
     {
