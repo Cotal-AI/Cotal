@@ -1,0 +1,2 @@
+# A real daemon must survive real starvation and still exit on a real broker loss.
+smoke:delivery-starvation

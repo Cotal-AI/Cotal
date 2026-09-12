@@ -1,0 +1,2 @@
+# The daemon must tell a starved process from a gone broker; every branch of that decision.
+smoke:delivery-watchdog-evidence

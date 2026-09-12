@@ -1,0 +1,128 @@
+{
+  "suite": [
+    "implementations/delivery/smoke/delivery-watchdog-evidence.smoke.ts",
+    "implementations/delivery/smoke/delivery-starvation.smoke.ts"
+  ],
+  "guard": "the delivery daemon distinguishes 'the broker is gone' from 'this process did not get scheduled' — it stays up and serves under local starvation, and still exits when the broker is genuinely gone or its lease is genuinely held by another daemon (#1318)",
+  "command": "pnpm smoke:delivery-watchdog-evidence",
+  "completionMarker": "DELIVERY-WATCHDOG-EVIDENCE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/delivery-starvation.json",
+  "why": [
+    "THE DEFAULT COMMAND IS THE PURE SUITE, AND THAT IS A DELIBERATE CHOICE ABOUT WHAT CAN BE",
+    "GRADED. Every mutation here edits a predicate in `watchdog.ts`, which the pure suite imports",
+    "RELATIVELY (`../src/watchdog.js`), so tsx loads the mutated source with no `dist` in the path and",
+    "no build step between the edit and the run. The live suite spawns a real daemon through",
+    "`bin/cotal.ts`, which resolves `@cotal-ai/delivery` to its BUILD, so a mutation graded there must",
+    "build first and rebuild in `afterRestore` — M1 and M2 do exactly that, because they are the two",
+    "whose end-to-end consequence is the incident itself and must be shown to reach a real process.",
+    "",
+    "M1 IS THE DEFECT IN ITS SHORTEST FORM: elapsed wall-clock time alone decides that the broker is",
+    "gone. It is the shipped predicate restored — `Date.now() - lastReachable > BROKER_GONE_MS` with",
+    "no evidence requirement — expressed here as dropping every other conjunct from the verdict. The",
+    "starvation cells redden and the broker-killed cells stay green, which is the asymmetry the issue",
+    "is about: the old code was not wrong about dead brokers, it was wrong about busy hosts.",
+    "",
+    "M2 REMOVES THE PER-PROBE LATENESS SIGNAL, and it is the one that proves the live cell is not",
+    "decorative. With `classifyProbe` treating every completed false as a negative, a probe whose",
+    "answer arrived long past its own deadline counts against the broker again — which is precisely",
+    "what a starved client produces against a server that is up. The pure suite's J-section reddens",
+    "and so does the live blackhole cell; nothing about the dead-broker path moves.",
+    "",
+    "M3 REMOVES THE LOOP-LAG CREDIT. A daemon that measures its own starvation and then ignores the",
+    "measurement is the band-aid version of this fix: it looks like it distinguishes the two",
+    "conditions and does not. Only the starvation branch reddens.",
+    "",
+    "M4 AND M5 ARE THE CONTROLS, and they matter more than the others because the failure mode this",
+    "repair could introduce — a daemon that outlives a dead broker, or two daemons serving one shard —",
+    "is WORSE than the defect it removes. M4 makes the starvation credit unbounded by deleting the",
+    "backstop; M5 makes a lease genuinely held by another daemon keep serving. Each reddens exactly",
+    "the cell that stands for a preserved guarantee, and each leaves every starvation cell green,",
+    "which is what proves the suite grades both directions rather than only the permissive one.",
+    "",
+    "M6 IS THE OTHER HALF OF THE LEASE CONTROL, in the direction the shipped code got wrong. It makes",
+    "an UNKNOWN re-read exit — 'I could not ask the broker' treated as 'another daemon holds it' —",
+    "which is the `wrong last sequence: 0` exit from the measured incident. The refusing cell (E3)",
+    "reddens while the genuine-takeover cell (E5) stays green, so the two are graded separately",
+    "rather than by one assertion that a takeover exits."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the defect restored: elapsed wall-clock time alone decides the broker is gone",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (e.transportConnected) return { exit: false, reason: \"transport-live\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.\n  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };",
+      "replace": "  return { exit: true, reason: \"broker-gone\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.",
+      "expectRed": "C1 does NOT exit: 20s elapsed with zero completed probes",
+      "cell": "C1 does NOT exit: 20s elapsed with zero completed probes",
+      "note": "Past the window with no evidence gathered at all, the daemon declares the broker gone. This is exactly what `Date.now() - lastReachable > BROKER_GONE_MS` did, and what ended Plane-3 twice on 2026-09-05 while nats-server had been up for 7.3 days."
+    },
+    {
+      "name": "M1-live the same defect, graded end to end against a real daemon and a real broker",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (e.transportConnected) return { exit: false, reason: \"transport-live\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.\n  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };",
+      "replace": "  return { exit: true, reason: \"broker-gone\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.",
+      "expectRed": "C6 the daemon did NOT exit while it could not complete a fresh handshake",
+      "cell": "C6 the daemon did NOT exit while it could not complete a fresh handshake",
+      "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+      "completionMarker": "DELIVERY-STARVATION SMOKE",
+      "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+      "note": "The daemon is spawned through bin/cotal.ts, which resolves @cotal-ai/delivery to dist/, so this mutation MUST build or it would grade the previous build and come back SURVIVED while the source was broken. The broker-killed cells stay green in the same run, which is the asymmetry the issue describes."
+    },
+    {
+      "name": "M2 a probe answer that arrived long past its own deadline counts against the broker again",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (elapsedMs > ceiling) return { counts: \"starved\", lateBy: elapsedMs - budgetMs };",
+      "replace": "  void ceiling;",
+      "expectRed": "J4 a false at 2554ms on a 1000ms budget is STARVED, not a negative",
+      "cell": "J4 a false at 2554ms on a 1000ms budget is STARVED, not a negative",
+      "note": "`isReachable` flattens a starved client and a dead server to the same `false`; the arrival time relative to the probe's OWN deadline is what separates them. Removing it restores the third mechanism from the issue. `void ceiling` keeps the binding used so the mutant compiles — a mutation that cannot build grades the compiler, not the suite."
+    },
+    {
+      "name": "M2-live the lateness signal removed, graded against the blackhole reproduction",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (elapsedMs > ceiling) return { counts: \"starved\", lateBy: elapsedMs - budgetMs };",
+      "replace": "  void ceiling;",
+      "expectRed": "C7 and it never claimed the broker was gone",
+      "cell": "C7 and it never claimed the broker was gone",
+      "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+      "completionMarker": "DELIVERY-STARVATION SMOKE",
+      "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+      "note": "Proves the live blackhole cell grades the lateness signal specifically, and not merely 'some daemon stayed up'."
+    },
+    {
+      "name": "M3 measured local starvation is observed and then ignored",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  const unstarvedMs = e.msSinceLastReachable - e.starvedMs;",
+      "replace": "  const unstarvedMs = e.msSinceLastReachable;",
+      "expectRed": "B1 does NOT exit: the same 20s window with 19s of measured loop lag",
+      "cell": "B1 does NOT exit: the same 20s window with 19s of measured loop lag",
+      "note": "The band-aid shape: the daemon measures its own scheduler lag, reports it, and does not let it change the verdict. Indistinguishable from the fix by inspection of the log lines alone."
+    },
+    {
+      "name": "M4 CONTROL: the starvation credit becomes unbounded, so a daemon can outlive a dead broker",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };",
+      "replace": "  void e.backstopMs;",
+      "expectRed": "F1 exits past the backstop even with zero completed probes and full starvation credit",
+      "cell": "F1 exits past the backstop even with zero completed probes and full starvation credit",
+      "note": "Positive control for the failure mode this repair could otherwise introduce, which is WORSE than the defect: a daemon that never exits loops reconnect attempts forever and nothing recovers it. Every starvation cell stays green and only the backstop cell reddens, which proves the two are graded independently."
+    },
+    {
+      "name": "M5 CONTROL: a lease genuinely held by another daemon no longer ends this one",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "    case \"taken\": return \"exit\";",
+      "replace": "    case \"taken\": return \"keep-serving\";",
+      "expectRed": "G5 STILL exits on `taken` — the single-holder guarantee is preserved",
+      "cell": "G5 STILL exits on `taken` — the single-holder guarantee is preserved",
+      "note": "Positive control for the guarantee the repair must preserve. Two daemons serving one shard SPLIT a durable's delivery, which is a correctness failure rather than an availability one."
+    },
+    {
+      "name": "M6 CONTROL: an unanswerable lease question is treated as a negative answer again",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "    case \"unknown\": return \"keep-serving\";",
+      "replace": "    case \"unknown\": return \"exit\";",
+      "expectRed": "G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer",
+      "cell": "G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer",
+      "note": "The incident's second exit line, `lost the lease (wrong last sequence: 0)`, in decision form. The genuine-takeover cell stays green in the same run, so the refusing case and the accepting case are graded separately rather than by one assertion."
+    }
+  ]
+}
