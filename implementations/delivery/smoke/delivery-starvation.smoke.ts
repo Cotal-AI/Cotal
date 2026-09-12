@@ -50,9 +50,15 @@ const check = (name: string, cond: boolean, detail?: unknown) => {
 const WINDOW_MS = 2000;
 /** Starve for well past the window, so a wall-clock predicate has certainly blown it. */
 const STARVE_MS = 8000;
-/** Cell C's blackhole: long enough to span several broker-gone windows, so a predicate that reads
- *  elapsed time has no way to avoid tripping. */
-const CHOP_TOTAL_MS = 24_000;
+/** Cell D's budget for a cut-off daemon to notice and exit. Stated against the BACKSTOP rather than
+ *  borrowed from cell C: D's claim is that a daemon with no obtainable evidence exits on gathered
+ *  negatives, well before the hard bound, so the window it is given has to be larger than the bound
+ *  it must beat. Sharing C's constant silently coupled a shrinking blackhole to D's deadline. */
+const CUT_EXIT_BUDGET_MS = 30_000;
+/** Cell C's blackhole: several broker-gone windows, but deliberately INSIDE the hard backstop. The
+ *  backstop is absolute and outranks every other signal, so a blackhole run past it would grade the
+ *  backstop (cell D does that) rather than the transport evidence cell C exists for. C4b pins it. */
+const CHOP_TOTAL_MS = 6_000;
 /** Long enough to span at least one lease renew (~half the 30s TTL), so "the revision advanced" is
  *  a statement about a live renew loop rather than about polling luck. */
 const LEASE_RENEW_OBSERVE_MS = 18_000;
@@ -389,15 +395,23 @@ try {
   // THIS is the mechanism the issue's own triage reproduced, and the one with no luck in it. The
   // daemon reaches the broker through a proxy that PRESERVES every already-established socket and
   // blackholes only NEW connections. The daemon's standing connection keeps working, so it is
-  // serving the whole time; its 2s side-probe opens a fresh connection every tick, and each one now
-  // hangs until `isReachable`'s own 1s deadline ends it and flattens it to `false`. That is a
-  // process that cannot complete a handshake against a server that is up and answering — which is
-  // exactly what local CPU starvation does to a client, delivered deterministically instead of by
-  // fighting the scheduler.
+  // serving the whole time; its 2s side-probe opens a fresh connection every tick, and each one
+  // hangs until `isReachable`'s own deadline ends it and flattens it to `false`.
+  //
+  // WHAT SAVES THE DAEMON HERE IS THE OPEN TRANSPORT, AND ONLY THAT. An earlier draft of this
+  // comment also claimed the probe answers were "far past their own budget" and therefore read as
+  // starvation. That was wrong, and a reviewer's measurement is what showed it: a blackholed probe
+  // is ended BY its own deadline, so it arrives AT the budget, not past it — and on an unstarved
+  // host the server genuinely had that whole second and genuinely failed to complete a handshake.
+  // Those are honest negatives about this address, and they are counted as such. The daemon stays
+  // only because its existing connection to that same broker is open and serving, which is real
+  // evidence that the broker is there and this process merely cannot open a NEW socket to it.
+  //
+  // The blackhole therefore runs INSIDE the hard backstop. Past the backstop this daemon SHOULD
+  // exit even with a live transport — that is the bound, and cell D grades it.
   //
   // The pre-fix predicate cannot tell this from a dead server: it sees `false` and a window that has
-  // elapsed, and it exits. The repaired predicate has two independent reasons not to: the answers
-  // arrive far past their own budget, and this daemon's own transport to that broker never closed.
+  // elapsed, and it exits.
   console.log("\nC. new connections are blackholed while the daemon's established socket keeps working");
   const proxy = startFreshConnectBlackholeProxy();
   const proxyPort = await proxy.listening;
@@ -424,7 +438,12 @@ try {
   }
   check("C3 the broker answered this process directly throughout", brokerStayedUp);
   check("C4 the blackhole lasted several multiples of the daemon's broker-gone window",
-    Date.now() - choppedStart > WINDOW_MS * 4, { ranMs: Date.now() - choppedStart, windowMs: WINDOW_MS });
+    Date.now() - choppedStart > WINDOW_MS * 2, { ranMs: Date.now() - choppedStart, windowMs: WINDOW_MS });
+  // ...and stayed INSIDE the hard backstop, so what is being graded is the transport evidence rather
+  // than the bound. A cell that silently drifted past the backstop would grade the wrong thing and
+  // still look green for the wrong reason.
+  check("C4b and stayed inside the hard backstop, so this cell grades the transport, not the bound",
+    Date.now() - choppedStart < WINDOW_MS * 4, { ranMs: Date.now() - choppedStart, backstopMs: WINDOW_MS * 4 });
   check("C5 the daemon's side-probes were actually being blackholed",
     proxy.blackholed > 0, { blackholed: proxy.blackholed, established: proxy.established });
   check("C6 the daemon did NOT exit while it could not complete a fresh handshake",
@@ -468,14 +487,18 @@ try {
   cutProxy.blackholeNew = true;
   cutProxy.dropEstablished();
   const cutAt = Date.now();
-  const exitedCut = await untilExit(cut, CHOP_TOTAL_MS);
+  const exitedCut = await untilExit(cut, CUT_EXIT_BUDGET_MS);
   check("D3 the daemon EXITS once its transport is down and it still cannot reach the broker", exitedCut, tail(cut));
   check("D4 and the exit names the broker-gone reason rather than being any exit at all",
     cut.stderr.includes("exiting (coupled to the broker)"), tail(cut));
   // The prompt exit is the POINT of the coupling. A repair that keeps the exit but defers it for
-  // minutes has traded the defect for a quieter version of itself, so the latency is graded too.
+  // minutes has traded the defect for a quieter version of itself, so the latency is graded too —
+  // and graded against the BACKSTOP, because the claim is that gathered negatives end this daemon
+  // before the hard bound has to. An exit that only ever arrived at the backstop would mean the
+  // evidence path is unreachable, which is the failure a reviewer measured in two other shapes.
   const cutExitMs = Date.now() - cutAt;
-  check("D5 and it exited promptly rather than waiting out the backstop", cutExitMs < CHOP_TOTAL_MS, cutExitMs);
+  check("D5 and it exited on gathered evidence, before the hard backstop had to end it",
+    cutExitMs < WINDOW_MS * 4, { cutExitMs, backstopMs: WINDOW_MS * 4 });
   cutProxy.close();
 
   // ── E. THE INCIDENT'S OWN CONDITION: starved but still running, so probes complete LATE ─────────
@@ -609,7 +632,7 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 42;
+  const EXPECTED_CELLS = 43;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
