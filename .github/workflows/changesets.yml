@@ -190,6 +190,41 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md"
           echo "Created GitHub Release $tag."
 
+  # Post-publish installability probe (#1412). Pack the workspace cotal-ai package, extract the
+  # tarball, verify the bin entry exists, and run the binary (`--version`, `--help`). A broken
+  # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
+  # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
+  # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
+  # #1502). It validates the SHAPE of cotal-ai's OWN packed artifact (structure, binary presence,
+  # startup). It does not pack the sibling workspace packages, so their packaging is not exercised,
+  # and it does not cover registry-side propagation or native-asset loading.
+  install-probe:
+    if: github.event_name == 'push' || inputs.snapshot == ''
+    needs: [version]
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run install probe
+        run: node scripts/post-publish-install-probe.mjs
+
   # Snapshot release — publishes <version>-<tag>-<datetime> under the given npm dist-tag.
   # Bound to the npm-publish Environment; the operator's deployment branch policy controls
   # which refs can request an OIDC token. If the policy allows only main, snapshots from

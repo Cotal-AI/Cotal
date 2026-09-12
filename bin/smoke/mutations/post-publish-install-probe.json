@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "bin/smoke/post-publish-install-probe.smoke.ts"
+  ],
+  "guard": "pnpm smoke:post-publish-install-probe",
+  "command": "pnpm smoke:post-publish-install-probe",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/post-publish-install-probe.json",
+  "why": [
+    "The install probe validates the packed tarball shape and binary startup. Each mutation",
+    "below breaks a different decision the probe makes and must be caught by the named cell."
+  ],
+  "mutations": [
+    {
+      "name": "verifyBinEntry always reports the file exists, so a missing binary is not caught",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "  return { binName: name, binRel: relPath, binPath: absPath, exists: existsSync(absPath) };",
+      "replace": "  return { binName: name, binRel: relPath, binPath: absPath, exists: true };",
+      "expectRed": "a tarball with the bin entry removed FAILS verifyBinEntry",
+      "cell": "a tarball with the bin entry removed FAILS verifyBinEntry"
+    },
+    {
+      "name": "the fake registry serves 200 for unknown packages instead of 404",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "    res.writeHead(404);\n    res.end(\"not found\");",
+      "replace": "    res.writeHead(200, { \"content-type\": \"application/json\" });\n    res.end(\"{}\");",
+      "expectRed": "the fake registry returns 404 for unknown packages",
+      "cell": "the fake registry returns 404 for unknown packages"
+    },
+    {
+      "name": "the bin path is not joined with the package directory, so it resolves against the wrong root",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "  const absPath = join(pkgDir, relPath);",
+      "replace": "  const absPath = relPath;",
+      "expectRed": "the bin entry file exists in the extracted tarball",
+      "cell": "the bin entry file exists in the extracted tarball"
+    },
+    {
+      "name": "verifyBinEntry returns no bin name when the entry exists",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "  if (entries.length === 0) return { binName: null, binRel: null, binPath: null, exists: false };",
+      "replace": "  return { binName: null, binRel: null, binPath: null, exists: false };",
+      "expectRed": "verifyBinEntry finds the cotal bin entry",
+      "cell": "verifyBinEntry finds the cotal bin entry"
+    }
+  ]
+}
