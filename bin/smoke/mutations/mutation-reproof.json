@@ -222,6 +222,22 @@
       "replace": "      return { kind: \"origin\", value: separator === -1 ? \"<TMP>\" : `<TMP>/${remainder.slice(separator + 1)}` };",
       "expectRed": "different depth-zero temp-root filenames remain different root and clean-head failure origins",
       "cell": "different depth-zero temp-root filenames remain different root and clean-head failure origins"
+    },
+    {
+      "name": "runCommand drops its SIGKILL timeout while the constant survives elsewhere",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    cwd, shell: true, encoding: \"utf8\", timeout: COMMAND_TIMEOUT_MS,\n    maxBuffer: 64 * 1024 * 1024, killSignal: \"SIGKILL\",",
+      "replace": "    cwd, shell: true, encoding: \"utf8\",\n    maxBuffer: 64 * 1024 * 1024,",
+      "expectRed": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
+      "cell": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)"
+    },
+    {
+      "name": "runProof loses its SIGKILL timeout",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    cwd, encoding: \"utf8\", timeout: PROOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,\n    killSignal: \"SIGKILL\", env,",
+      "replace": "    cwd, encoding: \"utf8\", maxBuffer: 64 * 1024 * 1024,\n    env,",
+      "expectRed": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
+      "cell": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)"
     }
   ]
 }

@@ -1901,14 +1901,36 @@ try {
 }
 
 const source = readFileSync(SCAN, "utf8");
+// A function body, not a character window: a prologue added to runCommand (the live-shaped refusal
+// from #1492) or to runProof must not red this cell, and a timeout that migrated to a neighbouring
+// function must not green it. Each body is cut from its `function name(` header to the first line
+// that is exactly `}`.
+const functionBody = (name: string): string => {
+  const at = source.indexOf(`function ${name}(`);
+  if (at === -1) return "";
+  const end = source.indexOf("\n}\n", at);
+  return end === -1 ? source.slice(at) : source.slice(at, end + 2);
+};
+const runProofBody = functionBody("runProof");
+const runCommandBody = functionBody("runCommand");
+const rootProofSpawn = (() => {
+  const at = source.indexOf('spawnSync(process.execPath, [PROOF, "--config", path], {');
+  if (at === -1) return "";
+  const end = source.indexOf("});", at);
+  return end === -1 ? source.slice(at) : source.slice(at, end + 3);
+})();
+const spawnsWith = (body: string, timeoutName: string): boolean =>
+  body.includes("spawnSync(")
+  && new RegExp(`timeout: ${timeoutName},`).test(body)
+  && /killSignal: "SIGKILL"/.test(body);
 check(
   "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
   /const COMMAND_TIMEOUT_MS = 900_000;/.test(source)
     && /const PROOF_TIMEOUT_MS = 140 \* 60 \* 1000;/.test(source)
-    && /function runProof\([\s\S]{0,700}?timeout: PROOF_TIMEOUT_MS,[\s\S]{0,160}?killSignal: "SIGKILL"/.test(source)
-    && /spawnSync\(process\.execPath, \[PROOF, "--config", path\], \{[\s\S]{0,180}?timeout: PROOF_TIMEOUT_MS,[\s\S]{0,80}?killSignal: "SIGKILL"/.test(source)
-    && /function runCommand\([\s\S]{0,240}?timeout: COMMAND_TIMEOUT_MS,[\s\S]{0,80}?killSignal: "SIGKILL"/.test(source),
-  "runProof and the root PROOF spawn must pass timeout: PROOF_TIMEOUT_MS; runCommand keeps COMMAND_TIMEOUT_MS",
+    && spawnsWith(runProofBody, "PROOF_TIMEOUT_MS")
+    && spawnsWith(rootProofSpawn, "PROOF_TIMEOUT_MS")
+    && spawnsWith(runCommandBody, "COMMAND_TIMEOUT_MS"),
+  `runProof and the root PROOF spawn must pass timeout: PROOF_TIMEOUT_MS; runCommand keeps COMMAND_TIMEOUT_MS (runProof body ${runProofBody.length} chars, runCommand body ${runCommandBody.length} chars, root spawn ${rootProofSpawn.length} chars)`,
 );
 
 console.log(`mutation-reproof smoke: ${passed} passed, ${failed} failed`);
