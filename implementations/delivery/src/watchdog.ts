@@ -31,6 +31,10 @@ export const PROBE_BUDGET_MS = 1000;
  *  which would blunt the true-positive path this repair is required to preserve. */
 export const PROBE_LATE_FACTOR = 2;
 
+/** How often the deschedule sampler wakes during a probe. Short enough to resolve the stalls that
+ *  matter (tens of ms), long enough that the measurement is not itself a meaningful load. */
+export const PROBE_SAMPLE_MS = 25;
+
 /**
  * What a single probe actually established, given how long its answer took to arrive.
  *
@@ -66,6 +70,7 @@ export function classifyProbe(
   elapsedMs: number,
   budgetMs: number = PROBE_BUDGET_MS,
   lateFactor: number = PROBE_LATE_FACTOR,
+  descheduledDuringMs: number = 0,
 ): ProbeEvidence {
   if (ok === undefined) return { counts: "incomplete" };
   // A POSITIVE IS BELIEVED HOWEVER LATE IT IS. A slow yes still required a server to say it, so
@@ -73,8 +78,75 @@ export function classifyProbe(
   // daemon unable to ever clear its own window, which is the defect again with the sign flipped.
   if (ok) return { counts: "positive" };
   const ceiling = budgetMs * lateFactor;
+  // (1) THE ANSWER ARRIVED FAR PAST ITS OWN DEADLINE. The deadline was enforced against this
+  // process, not against the server: a 1000ms budget that reports at 2554ms did not measure a
+  // server for 2554ms, it measured a process that could not get back on the CPU to stop waiting.
+  // This is the form the #1318 triage captured directly, and it needs no other instrumentation.
   if (elapsedMs > ceiling) return { counts: "starved", lateBy: elapsedMs - budgetMs };
+  // (2) THE DEADLINE EXPIRED WITHOUT THE SERVER EVER GETTING THE BUDGET IT WAS PROMISED. A refusal
+  // is only evidence if the server had the time to answer in. Subtracting the stretch this process
+  // spent OFF the runqueue leaves what the server actually had, and the two cases separate cleanly:
+  //
+  //   - a genuinely dead port answers ECONNREFUSED in about a millisecond, so `elapsed` never
+  //     reaches the budget at all and this clause does not apply. That is a prompt, honest negative
+  //     and it must stay one, or the repair would buy availability by making a dead broker
+  //     survivable — which is the failure mode worse than the defect.
+  //   - a process getting short slices of CPU issues a connect, is descheduled, and its deadline
+  //     timer fires the instant it is scheduled again. Wall-clock elapsed looks like a normal,
+  //     prompt timeout; almost none of it was time the server was given. Judged by the clock alone
+  //     this is indistinguishable from a dead server, which is exactly the confusion #1318 is about.
+  //
+  // Clamped to the probe's own span so a bad measurement cannot manufacture credit.
+  const attributableMs = elapsedMs - Math.max(0, Math.min(descheduledDuringMs, elapsedMs));
+  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {
+    return { counts: "starved", lateBy: elapsedMs - attributableMs };
+  }
   return { counts: "negative" };
+}
+
+/**
+ * Measure how long this process spends OFF the runqueue across a span, by watching a short timer's
+ * own lateness.
+ *
+ * A timer asked to fire every `sampleMs` that instead fires `sampleMs + d` later reports `d` of
+ * delay this process could not avoid: the event loop was ready and the process was not running.
+ * Summed across a probe, that is the part of the probe's wall-clock that the server was never
+ * actually given, which is the difference between "the server did not answer in a second" and "a
+ * second passed, and the server had 40ms of it".
+ *
+ * This measures the same underlying condition as {@link LoopLagMeter} at a finer grain and over a
+ * bounded span, which is what lets a per-probe verdict use it. It deliberately reads only the
+ * clock: `/proc` sampling, `getrusage`, or cgroup pressure would all be sharper, and all of them are
+ * platform-specific in a way that would make this daemon behave differently on the hosts that most
+ * need it. A late timer is available everywhere the daemon runs.
+ */
+export class DescheduleSampler {
+  private accumulated = 0;
+  private last = 0;
+  private timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(private readonly sampleMs: number = PROBE_SAMPLE_MS) {}
+
+  start(now: number = Date.now()): void {
+    this.accumulated = 0;
+    this.last = now;
+    this.timer = setInterval(() => {
+      const t = Date.now();
+      this.accumulated += Math.max(0, t - this.last - this.sampleMs);
+      this.last = t;
+    }, this.sampleMs);
+    // Never hold the process open for a measurement: the daemon's lifetime is decided elsewhere.
+    this.timer.unref?.();
+  }
+
+  /** Stop sampling and return the total off-runqueue time observed. Charging the final partial gap
+   *  matters: under heavy starvation the single longest stall is often the one still in progress
+   *  when the probe resolves, and dropping it would undercount exactly the worst case. */
+  stop(now: number = Date.now()): number {
+    if (this.timer !== undefined) { clearInterval(this.timer); this.timer = undefined; }
+    this.accumulated += Math.max(0, now - this.last - this.sampleMs);
+    return this.accumulated;
+  }
 }
 
 /**

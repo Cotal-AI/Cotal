@@ -77,7 +77,7 @@
       "note": "`isReachable` flattens a starved client and a dead server to the same `false`; the arrival time relative to the probe's OWN deadline is what separates them. Removing it restores the third mechanism from the issue. `void ceiling` keeps the binding used so the mutant compiles — a mutation that cannot build grades the compiler, not the suite."
     },
     {
-      "name": "M2-live the lateness signal removed, graded against the blackhole reproduction",
+      "name": "M2-live the loud-lateness rule removed, graded end to end",
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "  if (elapsedMs > ceiling) return { counts: \"starved\", lateBy: elapsedMs - budgetMs };",
       "replace": "  void ceiling;",
@@ -86,7 +86,7 @@
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "Proves the live blackhole cell grades the lateness signal specifically, and not merely 'some daemon stayed up'."
+      "note": "Cell C was NOT enough on its own: with the transport still open, transport-live carried the verdict and this mutation SURVIVED. That survivor is what produced cells D and E. Recorded here because the live cells only mean something once the mutation that used to slip past them is shown to be caught."
     },
     {
       "name": "M3 measured local starvation is observed and then ignored",
@@ -123,6 +123,45 @@
       "expectRed": "G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer",
       "cell": "G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer",
       "note": "The incident's second exit line, `lost the lease (wrong last sequence: 0)`, in decision form. The genuine-takeover cell stays green in the same run, so the refusing case and the accepting case are graded separately rather than by one assertion."
+    },
+    {
+      "name": "M7 the quiet form of starvation is invisible again: a probe is judged by the clock alone",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {\n    return { counts: \"starved\", lateBy: elapsedMs - attributableMs };\n  }",
+      "replace": "  void attributableMs;",
+      "expectRed": "K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative",
+      "cell": "K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative",
+      "note": "The condition the measured incident was actually in: the timer fires, the probes complete, each one is a prompt-looking false that the server was never given time to answer. The loud-lateness rule (J) does not see it, which is why this clause exists and why it needs its own mutation."
+    },
+    {
+      "name": "M7-live the same, graded against a real daemon duty-cycled off the CPU",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {\n    return { counts: \"starved\", lateBy: elapsedMs - attributableMs };\n  }",
+      "replace": "  void attributableMs;",
+      "expectRed": "E5 the daemon did NOT exit on answers its own scheduling delay produced",
+      "cell": "E5 the daemon did NOT exit on answers its own scheduling delay produced",
+      "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+      "completionMarker": "DELIVERY-STARVATION SMOKE",
+      "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+      "note": "A real daemon on a ~10% duty cycle against a live broker. Without this clause it exits with \"2 completed probes refused within their deadline\" — the incident, reproduced end to end."
+    },
+    {
+      "name": "M8 the deschedule sampler charges ordinary timer jitter as starvation",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "      this.accumulated += Math.max(0, t - this.last - this.sampleMs);",
+      "replace": "      this.accumulated += Math.max(0, t - this.last);",
+      "expectRed": "L3 a span inside one sample interval charges nothing",
+      "cell": "L3 a span inside one sample interval charges nothing",
+      "note": "CONTROL on the measurement itself. A sampler that counts the whole gap rather than the EXCESS over its own interval reports a healthy host as permanently starved, which would make the daemon slow to exit when the broker really is gone — the failure mode worse than the defect, arriving through the measurement rather than the predicate."
+    },
+    {
+      "name": "M9 CONTROL: measured starvation excuses even a refusal that beat its budget",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {",
+      "replace": "  if (attributableMs < budgetMs) {",
+      "expectRed": "K2 a dead port answers in ~1ms, and that is a negative however starved the host is",
+      "cell": "K2 a dead port answers in ~1ms, and that is a negative however starved the host is",
+      "note": "The band-aid this clause could so easily have been: drop the requirement that the probe actually ran out its budget, and a starved host excuses EVERY refusal, including the ~1ms ECONNREFUSED from a genuinely dead port. That is a daemon that outlives its broker whenever the host is busy. K2/K5 are the pair that pins it: same measured starvation, opposite readings, decided by whether the answer beat the budget."
     }
   ]
 }

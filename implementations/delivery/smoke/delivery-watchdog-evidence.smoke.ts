@@ -25,6 +25,7 @@ import {
   PROBE_BUDGET_MS,
   PROBE_INTERVAL_MS,
   PROBE_LATE_FACTOR,
+  DescheduleSampler,
   type BrokerWatchEvidence,
   type LeaseReading,
 } from "../src/watchdog.js";
@@ -194,6 +195,76 @@ check("J6 a rejected probe is incomplete, not a negative", classifyProbe(undefin
 check("J6b and lateness does not turn an incomplete into a starved reading",
   classifyProbe(undefined, 60_000).counts === "incomplete");
 
+console.log("\nK. the probe classifier, given what the process measured about its OWN scheduling");
+// J's rule catches the LOUD form of starvation: an answer so late that its own deadline plainly did
+// not hold. It cannot catch the quiet form, and cell E of the live suite is what established that.
+// A process getting short slices of CPU issues a connect, is descheduled, and its deadline timer
+// fires the moment it is scheduled again. Wall-clock elapsed then looks like an ordinary, prompt
+// timeout — well inside the late ceiling — while almost none of it was time the server was given.
+// Read by the clock alone that is indistinguishable from a dead server, which is the confusion this
+// whole repair is about. So the classifier is told what the process measured about itself.
+//
+// ACCEPTING: the server genuinely had its budget, so the refusal stands as evidence about it.
+check("K1 a full-budget false with NO descheduling is a negative: the server had its second",
+  classifyProbe(false, PROBE_BUDGET_MS, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 0).counts === "negative");
+check("K2 a dead port answers in ~1ms, and that is a negative however starved the host is",
+  classifyProbe(false, 1, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 5_000).counts === "negative");
+check("K3 and a mostly-scheduled probe is still a negative: the server had nearly all of it",
+  classifyProbe(false, PROBE_BUDGET_MS + 50, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 20).counts === "negative");
+// REFUSING, differing ONLY in what the process measured about itself: same verdict, same elapsed
+// time, same live server — but 960ms of that second was spent off the runqueue, so the server was
+// given 40ms and refusing it a verdict is the only honest reading.
+const quiet = classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 960);
+check("K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative", quiet.counts === "starved", quiet);
+check("K4b and it credits the time the server never got", quiet.counts === "starved" && quiet.lateBy === 960, quiet);
+// K2 and K5 are the SAME measured starvation, differing only in whether the answer beat the budget.
+// This is the pair that keeps the clause from becoming a blanket excuse: a starved host does not
+// make every refusal unbelievable, it makes unbelievable only the refusals it actually decided.
+check("K5 the identical starvation does NOT excuse a refusal that beat the budget anyway",
+  classifyProbe(false, 40, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 5_000).counts === "negative");
+// A measurement larger than the probe itself is nonsense; it must not manufacture credit. Clamped,
+// it reads as a fully-starved probe rather than as a negative lateBy or an exit-blocking absurdity.
+const absurd = classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 99_000);
+check("K6 a deschedule measurement longer than the probe is clamped, not trusted as given",
+  absurd.counts === "starved" && absurd.lateBy === 1000, absurd);
+check("K7 a negative deschedule measurement cannot credit anything",
+  classifyProbe(false, 1, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, -5_000).counts === "negative");
+// And the loud form still works when nothing was measured, so K did not replace J.
+check("K8 the late-ceiling rule still applies with no deschedule measurement at all",
+  classifyProbe(false, 2554, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 0).counts === "starved");
+check("K9 a late POSITIVE is still believed however starved the host was",
+  classifyProbe(true, 9_000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 8_900).counts === "positive");
+
+console.log("\nL. the deschedule sampler — a timer's own lateness measures being off the runqueue");
+// The sampler is how K's argument is obtained at runtime. A timer asked for 25ms that fires at 25ms
+// reports nothing; the same timer firing at 500ms reports 475ms this process was not running.
+const idle = new DescheduleSampler(25);
+idle.start(1_000);
+check("L1 a span with no firings and no elapsed time measures nothing", idle.stop(1_000) === 0);
+// ACCEPTING: a span longer than one sample interval charges the gap the process could not account
+// for. Driven on the CLOCK rather than on real time so the cell is deterministic under CI load —
+// a sampler graded by sleeping would be measuring the test runner's own starvation.
+const stalled = new DescheduleSampler(25);
+stalled.start(0);
+check("L2 a 500ms span with a 25ms sampler charges the 475ms the process was not running",
+  stalled.stop(500) === 475, stalled);
+// REFUSING: a span at or inside one sample interval is not evidence of starvation. Every timer is
+// a little late, and a sampler that charged for ordinary jitter would credit lag to a healthy host
+// and make the daemon slower to exit when the broker really is gone.
+const prompt = new DescheduleSampler(25);
+prompt.start(0);
+check("L3 a span inside one sample interval charges nothing", prompt.stop(25) === 0, prompt);
+const backwardsSampler = new DescheduleSampler(25);
+backwardsSampler.start(1_000);
+check("L4 a clock that ran backwards cannot credit negative time", backwardsSampler.stop(0) === 0, backwardsSampler);
+// Restarting must clear the previous span, or a long-running daemon would accumulate credit forever
+// and eventually become unable to exit at all.
+const reused = new DescheduleSampler(25);
+reused.start(0);
+reused.stop(5_000);
+reused.start(0);
+check("L5 a restart clears the previous span's accumulation", reused.stop(25) === 0, reused);
+
 console.log("\nG. the lease decision — a failed renew is a question, not a verdict");
 const readings: Array<[string, LeaseReading, "keep-serving" | "reacquire" | "exit"]> = [
   ["held: the key is still ours", { kind: "held", revision: 7 }, "keep-serving"],
@@ -258,7 +329,7 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-const EXPECTED_CELLS = 53;
+const EXPECTED_CELLS = 69;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
