@@ -90,8 +90,22 @@ const extraTally = parseSentinel("FROZEN-EXPORTS SMOKE OK ✅  (12 passed, 0 fai
 check("a parenthetical tally still counts when extra text follows failed", extraTally?.kind === "legacy" && extraTally.cells === 12 && extraTally.passed === 12);
 const prefixed = parseSentinel("artifact-contract: 5 passed, 0 failed\n");
 check("a prefixed N passed, M failed line is a tally", prefixed?.kind === "legacy" && prefixed.cells === 5 && prefixed.passed === 5);
+const annotated = parseSentinel("agui-map smoke: 51 passed, 0 failed  [session: session-shape.jsonl, 2200 records]\n");
+check(
+  "a prefixed tally still counts when a double-space annotation follows failed",
+  annotated?.kind === "legacy" && annotated.cells === 51 && annotated.passed === 51 && annotated.failed === 0,
+  annotated,
+);
+check(
+  "a single-space clause after failed is not a tally",
+  parseSentinel("note: 1 passed, 0 failed files remaining\n") === null,
+);
+const cellsPassed = parseSentinel("transform.smoke: 40 cells passed\n");
+check("an N cells passed banner is a tally", cellsPassed?.kind === "legacy" && cellsPassed.cells === 40 && cellsPassed.passed === 40);
+const tapOk = parseSentinel("  ok the transform emits\n  ok and reaches no seam member\n");
+check("indented TAP ok lines are per-cell tallies", tapOk?.kind === "legacy" && tapOk.cells === 2 && tapOk.passed === 2);
 
-const EXPECTED = 13;
+const EXPECTED = 17;
 check(
   `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
   passed() + failed() === EXPECTED,

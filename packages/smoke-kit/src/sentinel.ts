@@ -61,7 +61,9 @@ export function parseSentinel(text: string): ParsedSentinel | null {
       last = { cells: passed + failed, passed, failed, kind: "legacy" };
       continue;
     }
-    const suiteComplete = line.match(/^(?:SUITE COMPLETE:\s*)?(?:.*?:\s*)?(\d+) passed, (\d+) failed(?:;.*)?$/);
+    // Trailing `;…` or a double-space annotation (`  [session: …]`) is extra, not a new clause.
+    // A single space then words is refused so prose cannot mint a tally.
+    const suiteComplete = line.match(/^(?:SUITE COMPLETE:\s*)?(?:.*?:\s*)?(\d+) passed, (\d+) failed(?:(?:;|\s{2}).*)?$/);
     if (suiteComplete) {
       const passed = Number(suiteComplete[1]);
       const failed = Number(suiteComplete[2]);
@@ -141,12 +143,17 @@ export function parseSentinel(text: string): ParsedSentinel | null {
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
+    const cellsPassed = line.match(/(\d+) cells passed/);
+    if (cellsPassed) {
+      const cells = Number(cellsPassed[1]);
+      last = { cells, passed: cells, failed: 0, kind: "legacy" };
+      continue;
+    }
   }
   if (last) return last;
   const passed =
     (String(text).match(/^\s*✓/gm) ?? []).length +
-    (String(text).match(/^ok - /gm) ?? []).length +
-    (String(text).match(/^\s*ok {2,}/gm) ?? []).length;
+    (String(text).match(/^\s*ok(?: -)? /gm) ?? []).length;
   const failed =
     (String(text).match(/^\s*✗/gm) ?? []).length +
     (String(text).match(/^not ok - /gm) ?? []).length +
