@@ -15,9 +15,7 @@
     "while the guard is absent in two ways: a rebuild that dials before exp presents a cred the",
     "broker still accepts, and a denial that does land can fall outside the slice the cell inspects,",
     "because failedRebuildLogStart only records that the marker fired. Under the mutation that cell",
-    "was observed both red and green on the same machine, and green in CI."
-  ],
-  "anchorNote": [
+    "was observed both red and green on the same machine, and green in CI.",
     "RE-ANCHORED when the refusal moved off the pre-dial path. The block this used to quote lived in",
     "bindConnection and was DELETED, not edited: keeping a copy there would have left the tree with",
     "two expiry checks and let a later dial site miss the one that matters. The equivalent statement",
