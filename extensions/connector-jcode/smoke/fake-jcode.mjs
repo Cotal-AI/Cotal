@@ -177,6 +177,12 @@ function runTurn(frame, socket) {
       if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
         log({ ev: "orientation_done", turn: orientationTurns });
         event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+        if (process.env.FAKE_JCODE_WITHHOLD_TURN_DONE === "1") {
+          // #1440: the required orientation call has arrived; keep the turn open so a host
+          // that still waits for turn_done times out and kills a functional seat.
+          log({ ev: "turn_done_withheld", content: frame.content });
+          return;
+        }
         const externalMs = Number(process.env.FAKE_JCODE_EXTERNAL_TURN_MS ?? "0");
         if (externalMs > 0) {
           // A TUI-owned turn: the session is busy without a host send_message. The host only
