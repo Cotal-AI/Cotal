@@ -22,7 +22,13 @@
     "Probing the branch directly showed a static empty credential dialing ANONYMOUSLY and coming",
     "back `Authorization Violation`, so the survivor was a real coverage gap over a real hole, not a",
     "mis-written fixture. Both were fixed: the gate is now `!== undefined`, and the mutation below",
-    "targets that gate."
+    "targets that gate.",
+    "The fifth mutation exists because a reviewer showed the recovery cell could not fail. It looped",
+    "on `setActivity`, but the endpoint under test sets registerPresence:false, so publishPresence",
+    "returns at its first line without touching the wire and the call cannot throw whether or not a",
+    "connection exists -- the cell would have gone green against an endpoint that never reconnected.",
+    "It now counts `connection {connected:true}` emissions and requires a SECOND one, and the",
+    "mutation below severs the self-heal so that the fails-closed half is graded on a real rebind."
   ],
   "mutations": [
     {
@@ -60,6 +66,15 @@
       "expectRed": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
       "cell": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
       "note": "A one-character weakening that reads as a harmless falsiness idiom. Under it an empty creds string is indistinguishable from 'no creds configured', so the endpoint dials with no auth material and the broker answers `Authorization Violation` -- a permissions-shaped error for what is a supply mistake. The named cell asserts BOTH that the refusal names the empty credential AND that the broker's violation text is absent, so a red here cannot be satisfied by any failure that merely happened. Its accepting twin (no creds at all still connects) stays green under this mutation, which is what confines the mutation to the empty case rather than to anonymity."
+    },
+    {
+      "name": "the self-heal never runs after a credential refusal (the guard strands a renewable endpoint)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      void this.reestablishLoop();\n",
+      "replace": "      if (!this.credsSource) void this.reestablishLoop();\n",
+      "expectRed": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
+      "cell": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
+      "note": "This is the wrong repair that a guard-only fix invites: refuse the expired credential and never come back, which satisfies every ZERO cell in the suite while leaving a renewable endpoint permanently dead. The mutation is conditioned on credsSource so it severs the self-heal only for endpoints with a renewal source, leaving the static-cred cells untouched and confining the red to the recovery half. It is also the mutation that proves the recovery cell is no longer vacuous: against the previous setActivity-based version this mutation SURVIVED, because with registerPresence:false that call returns without a wire and reports success on a dead endpoint."
     }
   ]
 }

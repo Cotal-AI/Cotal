@@ -220,12 +220,6 @@ try {
     // cap on our own rebuild backoff is far longer, so 12s covers several attempts of each.
     await wait(12_000);
     const postRestart = brokerLog.slice(markAtRestart);
-    // NON-VACUITY, and this cell is why the zero below means anything. A zero could be reached two
-    // ways: the supply refused (the property), or nothing dialed at all (the window was simply
-    // quiet, which proves nothing). The authenticator is evaluated while composing the CONNECT,
-    // AFTER the socket is up, so a refused attempt still shows as `Client connection created` on
-    // the broker. Requiring at least one means the loop DID reach the broker and was turned back at
-    // the credential, rather than never arriving.
     // NON-VACUITY, and this cell is what makes the zero below mean anything. A zero is reachable two
     // ways: the supply refused every attempt (the property), or nothing tried at all (a quiet window,
     // which proves nothing). This must hold on BOTH a fixed and an unfixed tree, or it is not a
@@ -299,6 +293,16 @@ try {
     });
     ep.on("error", () => { /* the expiry close rides here */ });
     ep.on("warning", (e: Error) => warnings.push(e.message));
+    // RECOVERY WITNESS. `setActivity` is NOT one: this endpoint is constructed with
+    // registerPresence:false, so `publishPresence` returns at its first line (`!this.doRegister`)
+    // without touching the wire, and the call therefore CANNOT throw whether or not a connection
+    // exists. An earlier version of the cell below looped on it and would have gone green against
+    // an endpoint that never reconnected at all. Count successful binds instead: endpoint.ts:1304
+    // emits `connection {connected:true}` at the end of every successful bind, on the initial
+    // start and on each self-heal rebuild alike, so a SECOND one is positive evidence that
+    // `reestablishLoop` re-fetched from the recovered source and re-bound a real wire.
+    let successfulBinds = 0;
+    ep.on("connection", (s: { connected: boolean }) => { if (s.connected) successfulBinds++; });
     const t0 = Date.now();
     await ep.start();
 
@@ -331,16 +335,19 @@ try {
     );
 
     allowRecovery = true;
-    let recovered = false;
+    const bindsBeforeRecovery = successfulBinds;
     const deadline = Date.now() + 30_000;
-    while (!recovered && Date.now() < deadline) {
-      try { await ep.setActivity("recovered"); recovered = true; }
-      catch { await wait(200); }
-    }
+    while (successfulBinds <= bindsBeforeRecovery && Date.now() < deadline) await wait(200);
+    const recovered = successfulBinds > bindsBeforeRecovery;
     check(
       "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
       recovered,
-      { reads },
+      { reads, successfulBinds, bindsBeforeRecovery },
+    );
+    check(
+      "CONTROL: the recovery above is a NEW bind, not the one start() already made",
+      bindsBeforeRecovery >= 1 && successfulBinds >= 2,
+      { successfulBinds, bindsBeforeRecovery },
     );
     await ep.stop();
   }
