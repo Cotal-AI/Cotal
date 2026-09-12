@@ -24,7 +24,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { brokerGoneVerdict, classifyProbe, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, type LeaseReading } from "./watchdog.js";
+import { brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_BUDGET_MS, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
@@ -684,13 +684,19 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // who enables TLS would get a protected main path and an unprotected watchdog. An inconsistent
     // guarantee is worse than a uniformly absent one, because the operator now believes something.
     const probeStarted = Date.now();
+    // Watch this process's own scheduling FOR THE DURATION OF THE PROBE. A refusal is only evidence
+    // about the server if the server was actually given the time the deadline promised it, and
+    // under short CPU slices most of a probe's wall-clock can be time this process was not running.
+    const sampler = new DescheduleSampler();
+    sampler.start(probeStarted);
     void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
       .then(
-        (ok) => classifyProbe(ok, Date.now() - probeStarted),
+        (ok) => classifyProbe(ok, Date.now() - probeStarted, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, sampler.stop()),
         // A REJECTED probe is an unanswered question, not a negative answer. It used to be swallowed
         // whole by `.catch(() => {})`, so it neither refreshed the window nor evaluated anything and
         // silently aged the daemon toward an exit it had gathered no evidence for.
         (e: Error) => {
+          sampler.stop();
           console.error(`! delivery: the broker probe did not complete (${e.message}) — no verdict from it; serving, retrying`);
           return classifyProbe(undefined, Date.now() - probeStarted);
         },

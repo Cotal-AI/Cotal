@@ -56,6 +56,9 @@ const CHOP_TOTAL_MS = 24_000;
 /** Long enough to span at least one lease renew (~half the 30s TTL), so "the revision advanced" is
  *  a statement about a live renew loop rather than about polling luck. */
 const LEASE_RENEW_OBSERVE_MS = 18_000;
+/** Cell E's duty cycle: long enough that many probes are issued and answered late, and several
+ *  multiples of the broker-gone window so a predicate reading elapsed time cannot avoid tripping. */
+const DUTY_CYCLE_MS = 20_000;
 
 /** Last few lines of a daemon's output — enough to diagnose a red without printing its whole life. */
 const tail = (d: Daemon): string => d.stderr.trimEnd().split("\n").slice(-4).join("\n");
@@ -69,6 +72,10 @@ const spaceB = `delivery-couple-${randomUUID().slice(0, 8)}`;
 // Cell C needs a third, for the same reason: its daemon runs concurrently with neither, but the
 // lease bucket's 30s TTL outlives cell A's daemon and would refuse it the slot.
 const spaceC = `delivery-chop-${randomUUID().slice(0, 8)}`;
+// Cell D needs a fourth, for the same lease-bucket reason as B and C.
+const spaceD = `delivery-cut-${randomUUID().slice(0, 8)}`;
+// Cell E needs a fifth, same lease-bucket reason again.
+const spaceE = `delivery-late-${randomUUID().slice(0, 8)}`;
 // ONE broker, TWO accounts under its single operator. Two independently created brokers would be
 // two operators, and `serverConfig` refuses to compose trust across them — correctly, and that
 // refusal is what pins the shape here rather than a second server on a second port.
@@ -76,16 +83,22 @@ const broker = await createBrokerAuth(space);
 const accountA = await createSpaceAccountAuth(broker, space);
 const accountB = await createSpaceAccountAuth(broker, spaceB);
 const accountC = await createSpaceAccountAuth(broker, spaceC);
+const accountD = await createSpaceAccountAuth(broker, spaceD);
+const accountE = await createSpaceAccountAuth(broker, spaceE);
 const auth = composeSpaceAuth(broker, accountA);
 const authB = composeSpaceAuth(broker, accountB);
 const authC = composeSpaceAuth(broker, accountC);
+const authD = composeSpaceAuth(broker, accountD);
+const authE = composeSpaceAuth(broker, accountE);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(broker, [accountA, accountB, accountC], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(broker, [accountA, accountB, accountC, accountD, accountE], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 const credsPath = join(dir, "delivery.creds");
 const credsPathB = join(dir, "delivery-b.creds");
 const credsPathC = join(dir, "delivery-c.creds");
+const credsPathD = join(dir, "delivery-d.creds");
+const credsPathE = join(dir, "delivery-e.creds");
 // The scratch workspace root the daemon runs in, and the $SYS observer cred its startup admission
 // requires (`cotal up` provisions this on a live mesh; minted here the way `up` does).
 const wsRoot = join(dir, "ws");
@@ -105,13 +118,14 @@ const daemons: Daemon[] = [];
  *  registry, and a scratch workspace root WITH a `.cotal` pins findCotalRoot's cwd walk — without
  *  it the walk climbs out of the repo, adopts a developer's live workspace, and the daemon's
  *  tenancy guard correctly refuses the foreign account before it ever reaches the code under test. */
-function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS): Daemon {
+function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extraEnv: NodeJS.ProcessEnv = {}): Daemon {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
   env.XDG_CONFIG_HOME = join(dir, "xdg");
   env.COTAL_HOME = join(dir, "cotal-home");
   env.COTAL_SKIP_CONNECTOR_SEED = "1";
   env.COTAL_DELIVERY_BROKER_GONE_MS = String(WINDOW_MS);
+  Object.assign(env, extraEnv);
   const proc = spawn(
     join(repoRoot, "node_modules", ".bin", "tsx"),
     [join(repoRoot, "bin", "cotal.ts"), "deliver", "--space", inSpace, "--server", via, "--creds", creds],
@@ -186,10 +200,12 @@ function startFreshConnectBlackholeProxy(): {
   listening: Promise<number>;
   close: () => void;
   blackholeNew: boolean;
+  dropEstablished: () => void;
   readonly established: number;
   readonly blackholed: number;
 } {
   const held: Socket[] = [];
+  const forwarded: Socket[] = [];
   let established = 0;
   let blackholed = 0;
   const state = { blackholeNew: false };
@@ -205,6 +221,7 @@ function startFreshConnectBlackholeProxy(): {
     const upstream = connectSocket({ host: "127.0.0.1", port: PORT });
     established += 1;
     held.push(client, upstream);
+    forwarded.push(client, upstream);
     client.pipe(upstream);
     upstream.pipe(client);
     const drop = () => { try { client.destroy(); } catch { /* gone */ } try { upstream.destroy(); } catch { /* gone */ } };
@@ -225,6 +242,11 @@ function startFreshConnectBlackholeProxy(): {
     },
     get blackholeNew() { return state.blackholeNew; },
     set blackholeNew(v: boolean) { state.blackholeNew = v; },
+    /** Cut every socket that is currently carrying traffic, so the daemon's TRANSPORT goes down
+     *  rather than merely its side-probes failing. Combined with `blackholeNew` this is the state
+     *  in which the daemon has no standing evidence left and cannot obtain any: the honest
+     *  "unreachable by every means available to me" that SHOULD end it. */
+    dropEstablished: () => { for (const s of forwarded.splice(0)) { try { s.destroy(); } catch { /* gone */ } } },
     get established() { return established; },
     get blackholed() { return blackholed; },
   };
@@ -262,11 +284,17 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   await setupSpaceStreams({ servers: SERVERS, space: spaceB, creds: mgrCredsB });
   await setupSpaceStreams({ servers: SERVERS, space: spaceC, creds: mgrCredsC });
+  const mgrCredsD = await mintCreds(authD, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space: spaceD, creds: mgrCredsD });
+  const mgrCredsE = await mintCreds(authE, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space: spaceE, creds: mgrCredsE });
   writeFileSync(credsPath, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
   writeFileSync(credsPathB, await mintCreds(authB, newIdentity(), "delivery"), { mode: 0o600 });
   writeFileSync(credsPathC, await mintCreds(authC, newIdentity(), "delivery"), { mode: 0o600 });
+  writeFileSync(credsPathD, await mintCreds(authD, newIdentity(), "delivery"), { mode: 0o600 });
+  writeFileSync(credsPathE, await mintCreds(authE, newIdentity(), "delivery"), { mode: 0o600 });
   mkdirSync(join(wsRoot, ".cotal"), { recursive: true });
-  for (const [s, a] of [[space, auth], [spaceB, authB], [spaceC, authC]] as const) {
+  for (const [s, a] of [[space, auth], [spaceB, authB], [spaceC, authC], [spaceD, authD], [spaceE, authE]] as const) {
     mkdirSync(spaceMaterialDir(wsRoot, s), { recursive: true });
     writeFileSync(
       join(spaceMaterialDir(wsRoot, s), "membership-observer.creds"),
@@ -389,6 +417,107 @@ try {
   signalGroup(chopped, "SIGKILL");
   await untilExit(chopped, 5000);
 
+  // ── D. THE REFUSING CASE FOR C: transport DOWN with the same failing probes, which MUST exit ────
+  //
+  // CELL C ALONE IS NOT ENOUGH, AND THE MUTATION RECORD IS WHAT SAID SO. Deleting the per-probe
+  // lateness signal entirely left C green: C's daemon keeps its standing socket, so the open
+  // transport alone carries the verdict there and the signal is never load-bearing. A cell that
+  // greens on a broken implementation grades nothing about it, so the signal needed a case where it
+  // is the only evidence in play. This is that case, and it is also the refusing side of the
+  // guarantee: the blackhole is exactly C's, but every established socket is CUT as well. The
+  // daemon now holds no standing evidence and can obtain none — it is not starved, it is genuinely
+  // cut off from that address by every means available to it — so the honest answer is to exit.
+  //
+  // C and D therefore pin the distinction from both sides. Same failing side-probes, same live
+  // server, opposite required outcomes, and the ONLY difference between them is the evidence the
+  // daemon holds about its own connection. That difference is the entire claim of this repair.
+  console.log("\nD. the transport is cut AND new connections are blackholed — no evidence is obtainable");
+  const cutProxy = startFreshConnectBlackholeProxy();
+  const cutPort = await cutProxy.listening;
+  const cut = spawnDaemon(spaceD, credsPathD, `nats://127.0.0.1:${cutPort}`);
+  const cutUp = await untilUp(cut);
+  check("D1 the daemon comes up and is serving through the proxy", cutUp, tail(cut));
+  if (!cutUp) throw new Error("the cut-off cell needs a daemon that was running; it never came up");
+  check("D2 it established at least one real connection before the cut", cutProxy.established > 0, cutProxy.established);
+  // Blackhole FIRST, then cut. The reverse order leaves a gap in which the client reconnects
+  // straight through the proxy, and the cell would grade a daemon that was never cut off at all.
+  cutProxy.blackholeNew = true;
+  cutProxy.dropEstablished();
+  const cutAt = Date.now();
+  const exitedCut = await untilExit(cut, CHOP_TOTAL_MS);
+  check("D3 the daemon EXITS once its transport is down and it still cannot reach the broker", exitedCut, tail(cut));
+  check("D4 and the exit names the broker-gone reason rather than being any exit at all",
+    cut.stderr.includes("exiting (coupled to the broker)"), tail(cut));
+  // The prompt exit is the POINT of the coupling. A repair that keeps the exit but defers it for
+  // minutes has traded the defect for a quieter version of itself, so the latency is graded too.
+  const cutExitMs = Date.now() - cutAt;
+  check("D5 and it exited promptly rather than waiting out the backstop", cutExitMs < CHOP_TOTAL_MS, cutExitMs);
+  cutProxy.close();
+
+  // ── E. THE INCIDENT'S OWN CONDITION: starved but still running, so probes complete LATE ─────────
+  //
+  // A AND D BETWEEN THEM STILL DO NOT GRADE THE LATENESS SIGNAL, and the mutation record is what
+  // established that. Under A's full SIGSTOP no probe completes at all, so there is nothing to be
+  // late; under D every blackholed probe is cut off by its own deadline ON TIME, at ~1000ms of a
+  // 1000ms budget, so it is an honest negative. Deleting the lateness rule left both green. The
+  // condition it exists for is neither: it is load 311 on 12 cores, where the process DOES run, just
+  // not when it meant to. A probe issued there completes — and its own deadline timer fires seconds
+  // after the deadline it was supposed to enforce, so the `false` it returns was decided by this
+  // host's runqueue rather than by the server. That is the third mechanism in #1318, and the
+  // measured incident is full of it.
+  //
+  // Duty-cycled SIGSTOP/SIGCONT is that state, reproduced with signals alone: the daemon runs in
+  // short slices and is off the runqueue in between, exactly like a process getting a few percent of
+  // a CPU. The transport is cut and new connects are blackholed as in D, so no other evidence can
+  // carry the verdict and the lateness of the answers is the ONLY thing standing between this
+  // daemon and an exit. The broker is alive throughout, so staying is the correct answer.
+  //
+  // The backstop is raised FOR THIS DAEMON ONLY, and that is not a thumb on the scale: the backstop
+  // is a different guarantee, graded on its own by cell D (which exits well inside it) and by the
+  // pure suite's F-section. Leaving it at 4× a 2s window would end this daemon on the backstop
+  // before the signal under test ever got to matter, and the cell would grade the backstop twice
+  // instead of grading lateness once.
+  console.log("\nE. the daemon is duty-cycled off the CPU, so its probes complete long past their own deadline");
+  const lateProxy = startFreshConnectBlackholeProxy();
+  const latePort = await lateProxy.listening;
+  const late = spawnDaemon(spaceE, credsPathE, `nats://127.0.0.1:${latePort}`, { COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS: String(DUTY_CYCLE_MS * 4) });
+  const lateUp = await untilUp(late);
+  check("E1 the daemon comes up and is serving through the proxy", lateUp, tail(late));
+  if (!lateUp) throw new Error("the late-probe cell needs a daemon that was running; it never came up");
+  lateProxy.blackholeNew = true;
+  lateProxy.dropEstablished();
+  // ~10% duty cycle: awake 100ms in every second. Long enough a slice that the daemon makes
+  // progress and issues probes, short enough that a 1000ms deadline lands many seconds late.
+  const dutyUntil = Date.now() + DUTY_CYCLE_MS;
+  while (Date.now() < dutyUntil && !late.exited) {
+    signalGroup(late, "SIGSTOP");
+    await wait(900);
+    signalGroup(late, "SIGCONT");
+    await wait(100);
+  }
+  if (!late.exited) signalGroup(late, "SIGCONT");
+  const dutyElapsed = DUTY_CYCLE_MS;
+  check("E2 the duty cycle lasted several multiples of the daemon's broker-gone window",
+    dutyElapsed > WINDOW_MS * 4, { dutyElapsed, window: WINDOW_MS });
+  check("E3 the broker answered this process directly throughout", await isReachable(SERVERS));
+  check("E4 the daemon's probes were being blackholed while it was descheduled",
+    lateProxy.blackholed > 0, { blackholed: lateProxy.blackholed });
+  // THE CELL. Every probe came back false; each was decided by a deadline this process could not
+  // honour. A predicate that reads those as statements about the server exits here.
+  check("E5 the daemon did NOT exit on answers its own scheduling delay produced", !late.exited, tail(late));
+  check("E6 and it never claimed the broker was gone",
+    !late.stderr.includes("exiting (coupled to the broker)"), tail(late));
+  // It must also RECOVER: a daemon that survives by going permanently quiet has not distinguished
+  // anything, it has just stopped reacting. Unblackhole and it should reconnect and serve.
+  lateProxy.blackholeNew = false;
+  await wait(WINDOW_MS * 3);
+  const eLease = await readLease(spaceE, credsPathE);
+  check("E7 and once the wire is healthy again it is serving: a live, ready lease on the far side",
+    eLease !== undefined && eLease.info.ready === true, { eLease, tail: tail(late) });
+  signalGroup(late, "SIGKILL");
+  await untilExit(late, 5000);
+  lateProxy.close();
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -406,7 +535,7 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 22;
+  const EXPECTED_CELLS = 35;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
