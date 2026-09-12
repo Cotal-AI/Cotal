@@ -1,5 +1,5 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -7,7 +7,9 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const originalHome = process.env.HOME ?? homedir();
 const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");

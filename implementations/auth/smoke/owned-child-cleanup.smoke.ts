@@ -1,9 +1,11 @@
 /** Executable control for fail-closed exact-child probe cleanup. */
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawn } from "node:child_process";
 import { stopOwnedChild } from "./_owned-child-cleanup.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const stubborn = spawn(process.execPath, ["-e", `
   process.on("SIGTERM", () => {});

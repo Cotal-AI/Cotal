@@ -13,7 +13,7 @@
  * and materialize.ts use.
  */
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
@@ -23,7 +23,9 @@ import {
   importInstalledExtension,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // Temp config home under the repo so the fixture packages resolve @cotal-ai/core to the repo copy
 // (node walks up to packages/workspace/node_modules), sharing this process's registry singleton.

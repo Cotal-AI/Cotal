@@ -1,11 +1,13 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 type Classification = "honest-text" | "presence-only-glyph/count" | "command-ack" | "non-render/control";
 type CandidateKind = "status-token" | "derived-output" | "indexed-map" | "renderer-call";

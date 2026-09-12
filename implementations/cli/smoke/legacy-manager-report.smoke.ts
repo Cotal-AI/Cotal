@@ -1,8 +1,10 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { sessionContinuityClass } from "@cotal-ai/core";
 import { legacyManagerReport } from "../src/lib/legacy-manager-report.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const classes = [
   [{ supportsSessionContinuation: true, supportsResume: true, supportsFreshStart: true }, "exact"],

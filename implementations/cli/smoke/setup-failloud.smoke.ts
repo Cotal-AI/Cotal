@@ -13,13 +13,15 @@
  * Run: pnpm smoke:setup-failloud
  */
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Connector } from "@cotal-ai/core";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
 import { connectorSetupStep, setupConnectorSurface } from "../src/commands/setup.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const tmp = mkdtempSync(join(import.meta.dirname, ".setup-failloud-"));
 process.env.XDG_CONFIG_HOME = tmp;

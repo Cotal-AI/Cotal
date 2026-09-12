@@ -20,12 +20,14 @@
  * Run: pnpm smoke:operator-env-keep
  */
 import { strict as nodeAssert } from "node:assert";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OPERATOR_ENV_KEEP } from "../src/launch.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const extensionsRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const repoRoot = join(extensionsRoot, "..");

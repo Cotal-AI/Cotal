@@ -1,7 +1,9 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { webProbeTarget } from "../src/commands/status.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const remote = webProbeTarget("node cotal web --host 192.0.2.10 --port 8123 --no-open");
 assert.ok(!("refused" in remote) && remote.url.href === "http://192.0.2.10:8123/api/meta",

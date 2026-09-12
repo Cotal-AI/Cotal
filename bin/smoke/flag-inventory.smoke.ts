@@ -25,7 +25,9 @@ import "@cotal-ai/runtime"; // registers run
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
   // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.

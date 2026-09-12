@@ -1,7 +1,9 @@
 import { strict as nodeAssert } from "node:assert";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createSpaceAuth, serverConfig, openServerConfig } from "../src/index.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // Every CALL-SITE SHAPE of the broker config renderers, exercised in a GATED suite.
 //

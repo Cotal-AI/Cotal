@@ -1,9 +1,11 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentHandle, Runtime, RuntimeReference } from "../src/runtime.js";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const reference: RuntimeReference = { kind: "fixture", id: "opaque-local-reference" };
 const handle: AgentHandle = {

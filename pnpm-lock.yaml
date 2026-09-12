@@ -723,6 +723,10 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
 packages:
 

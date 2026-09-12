@@ -1,5 +1,5 @@
 import { strict as nodeAssert } from "node:assert";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,9 @@ import net from "node:net";
 import tlsMod from "node:tls";
 import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // The broker-TLS fence, proved by EXECUTION rather than by inspecting the rendered config.
 //

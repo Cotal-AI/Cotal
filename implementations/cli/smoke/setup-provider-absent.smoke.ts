@@ -1,12 +1,14 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installAgentSkills } from "../src/lib/agent-skills.js";
 import { setupProviderAvailable } from "../src/commands/setup.js";
 
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-provider-absent-"));
 const priorHome = process.env.HOME;

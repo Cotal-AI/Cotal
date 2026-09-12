@@ -19,7 +19,9 @@ import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
 import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
 import type { CotalEndpoint } from "@cotal-ai/core";
-const { assert, cells } = countedAssert(nodeAssert);
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // cotalToolSpecs is capability-gated: cotal_spawn only renders for a spawn-capable agent.
 process.env.COTAL_SPACE ||= "parity";
