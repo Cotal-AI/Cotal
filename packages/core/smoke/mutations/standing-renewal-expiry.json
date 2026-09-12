@@ -9,13 +9,24 @@
   "why": [
     "The endpoint's pre-connect refresh is deliberately best-effort after the first connection. If",
     "the source is down when the cached cred expires, removing this guard restores the reported",
-    "behavior exactly: connectAndBind presents credential material it has already decoded as expired.",
+    "behavior exactly: the endpoint presents credential material it has already decoded as expired.",
     "The named cell asserts the refusal is raised, so it goes red on the deleted block itself.",
     "The sibling cell counting broker denials cannot grade this mutation. It can read zero denials",
     "while the guard is absent in two ways: a rebuild that dials before exp presents a cred the",
     "broker still accepts, and a denial that does land can fall outside the slice the cell inspects,",
     "because failedRebuildLogStart only records that the marker fired. Under the mutation that cell",
     "was observed both red and green on the same machine, and green in CI."
+  ],
+  "anchorNote": [
+    "RE-ANCHORED when the refusal moved off the pre-dial path. The block this used to quote lived in",
+    "bindConnection and was DELETED, not edited: keeping a copy there would have left the tree with",
+    "two expiry checks and let a later dial site miss the one that matters. The equivalent statement",
+    "is now the throw inside `presentableCreds`, the single checkpoint every presentation routes",
+    "through, so the anchor points at that instead. The named cell is unchanged and still grades the",
+    "same property from this suite's own angle: a REBUILD, after renewal has failed, must refuse",
+    "rather than dial. It reds under the mutation for the same reason it did before -- the refusal",
+    "text it matches exists only inside the removed statement -- so the re-anchor preserves what the",
+    "fixture proved and does not quietly re-point it at unrelated code."
   ],
   "mutations": [
     {
@@ -30,11 +41,11 @@
     {
       "name": "the creds pre-dial expiry guard is removed",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;\n    if (typeof credsExp === \"number\" && credsExp * 1000 <= Date.now())\n      throw new Error(\n        this.credsSource\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
+      "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())\n      throw new Error(\n        opts.renewable\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
       "replace": "",
       "expectRed": "the pre-dial refusal is loud and names the failing renewal path",
       "cell": "the pre-dial refusal is loud and names the failing renewal path",
-      "note": "Deleting the block is the issue's pre-fix behavior and leaves the tree compiling. The refusal text the named cell matches exists only inside the deleted block, so removing it is what makes the cell red. The suite's own recovery path is unaffected: the source fails twice and then returns."
+      "note": "Deleting the statement is the issue's pre-fix behavior and leaves the tree compiling -- presentableCreds still decodes the claims and still returns the cred, it just stops refusing an expired one. The refusal text the named cell matches exists only inside the removed statement, so removing it is what makes the cell red. The suite's own recovery path is unaffected: the source fails twice and then returns."
     }
   ]
 }

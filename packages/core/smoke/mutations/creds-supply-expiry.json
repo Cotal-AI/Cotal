@@ -1,0 +1,61 @@
+{
+  "suite": [
+    "packages/core/smoke/creds-supply-expiry-auth.smoke.ts"
+  ],
+  "guard": "this endpoint never presents a credential it has already decoded as expired, on ANY path that can reach a broker",
+  "command": "pnpm smoke:creds-supply-expiry",
+  "completionMarker": "CREDS SUPPLY EXPIRY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/creds-supply-expiry.json",
+  "why": [
+    "The refusal used to sit inside bindConnection, which only start() and doRebuild reach. That",
+    "covered the endpoint's OWN dial and nothing else, so the reconnects nats.js performs on its own",
+    "read the cache through an unchecked getter and presented whatever was last fetched. Moving the",
+    "refusal onto the SUPPLY is the fix, so the mutations below each sever one path from the",
+    "checkpoint and leave the others intact -- which is what distinguishes this suite from one that",
+    "merely re-proves the old pre-dial guard.",
+    "Each mutation leaves the tree compiling and the other paths correct. A suite that only watched",
+    "the endpoint's own dial would stay GREEN under the first two, because that path never regresses",
+    "in them: it is the library's reconnect and the adoption preflight that start leaking.",
+    "The empty-supply mutation is here because the getter it replaced was a non-null assertion. Under",
+    "it the tree still compiles and still refuses expired creds; what changes is that a first fetch",
+    "which never returned dials with an empty credential instead of failing loud."
+  ],
+  "mutations": [
+    {
+      "name": "the wire getter is unchecked again (the reported defect: internal reconnects read the raw cache)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "creds: this.currentCreds || this.credsSource ? () => this.credsForWire() : undefined",
+      "replace": "creds: this.credsSource ? () => this.currentCreds! : this.currentCreds",
+      "expectRed": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
+      "cell": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
+      "note": "This restores the exact expression from before the fix, so it reproduces the issue as filed. The checkpoint still exists and the preflight still uses it; only the authenticator handed to nats.js goes back to reading the cache raw. The named cell watches a dial loop that was ALREADY RUNNING when exp passed, which no pre-dial guard can reach, so it grades this mutation on the property the fix actually added."
+    },
+    {
+      "name": "the adoption preflight bypasses the checkpoint and presents the candidate unchecked",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const proven = CotalEndpoint.presentableCreds(candidate, { renewable: true });\n",
+      "replace": "    const proven = candidate;\n",
+      "expectRed": "the refused candidate never reaches the broker (no preflight presentation on the wire)",
+      "cell": "the refused candidate never reaches the broker (no preflight presentation on the wire)",
+      "note": "The preflight is the one presentation that does NOT read the cache, so the wire getter cannot cover it: a re-signed generation that is already dead goes to the broker on a disposable connection. The named cell is the one that reads the wire; its sibling REFUSE cell still fails the reload (the broker rejects it) and so cannot distinguish a local refusal from a remote one, which is exactly why the wire cell is the one named here."
+    },
+    {
+      "name": "the expiry comparison is loosened to a strict past-check (a cred expiring THIS instant is presented)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())",
+      "replace": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now() - 30_000)",
+      "expectRed": "REFUSE: a STATIC expired cred is refused and names replacement, not renewal",
+      "cell": "REFUSE: a STATIC expired cred is refused and names replacement, not renewal",
+      "note": "A grace window is the most plausible wrong repair of this defect and the one a reviewer is most likely to wave through, because it still 'checks expiry'. It is wrong because the broker applies none: inside the window the endpoint presents material the broker has already rejected. The named cell mints a cred a few seconds past exp, so it sits inside a 30s grace and goes red on it while the far-past cases stay green."
+    },
+    {
+      "name": "the empty-supply refusal is replaced by the non-null assertion it removed",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!this.currentCreds)\n      throw new Error(\"this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material\");\n",
+      "replace": "",
+      "expectRed": "REFUSE: a first fetch that never returned fails loud instead of dialing with no credential",
+      "cell": "REFUSE: a first fetch that never returned fails loud instead of dialing with no credential",
+      "note": "Without the check, credsForWire hands `undefined` to presentableCreds and the failure surfaces as a decode error about malformed credential material rather than as the source failure that caused it. The named cell asserts the ORIGINAL source error reaches the caller, so it reds on the substituted message instead of accepting any throw -- an assertion on 'it threw' would have survived this."
+    }
+  ]
+}
