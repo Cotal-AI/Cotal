@@ -27,7 +27,7 @@ import {
   InterpreterDefect,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
-import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
+import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
 import { parseDuration } from "./duration.js";
@@ -279,7 +279,7 @@ class Frame {
     readonly depth: number = 0,
   ) {}
 
-  branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): Frame {
+  branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): Frame {
     return new Frame(
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),

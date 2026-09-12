@@ -380,6 +380,7 @@ try {
       monitor: (r, x) => sim.monitor(r, x),
       openConclave: (r, x) => sim.openConclave(r, x),
       closeConclave: (r, x) => sim.closeConclave(r, x),
+      observe: (r, x) => sim.observe(r, x),
     };
     let trapResolve!: (v: string) => void;
     const trap = new Promise<string>((resolve) => { trapResolve = resolve; });
@@ -443,6 +444,7 @@ try {
       monitor: (r, x) => sim.monitor(r, x),
       openConclave: (r, x) => sim.openConclave(r, x),
       closeConclave: (r, x) => sim.closeConclave(r, x),
+      observe: (r, x) => sim.observe(r, x),
     };
     const outcome = await runOnHostedEngine({
       source: `const a = await spawn("x", { name: "s" })\nconst b = await spawn("y", { name: "t" })\nlog("done", 2)`,

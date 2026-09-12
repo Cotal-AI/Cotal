@@ -101,6 +101,7 @@ import {
   type JournalEntry,
   type MonitorRequest,
   type NotifyRequest,
+  type ObserveRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,
@@ -515,6 +516,21 @@ export class MeshHandler {
         if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string")
           this.turnGoals.get(`${x.name}#${x.uid}`)?.delete(x.goalId);
       }
+      if (e.kind === "waitUntil") {
+        // A `waitUntil` arms ONE cadence pause per observation, each under a derived token, so the
+        // sweep releases the one that is actually open: the observation the entry is on. The
+        // earlier ones already settled (that is how the wait got here) and `cancelTimer` tolerates
+        // a claim that loses its own race, so releasing the current index is both necessary and
+        // sufficient. Attempt 0 never arms anything, which is why the index is the observation
+        // COUNT rather than the count minus one.
+        const attempt = (e.observations ?? []).length;
+        if (attempt > 0)
+          await this.cancelTimer({
+            endpoint: this.binding.endpoint,
+            token: derivedToken(e.requestId, `observe-${attempt}`),
+          });
+        continue;
+      }
       if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") continue;
       // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
       // crash before the first bind leaves attempt 1, which is the request id itself.
@@ -674,6 +690,48 @@ export class MeshHandler {
 
     await this.settle(ref, ctx.signal);
     return null;
+  }
+
+  /**
+   * `waitUntil`'s cadence, as a durable pause nobody answers.
+   *
+   * THE SAME PLANE AS `sleep`, for the reason `sleep` gives for reusing the checkpoint plane: a
+   * durable pause with a deadline, a token that survives a crash and a one-use settle is what this
+   * needs, and a second timer mechanism would be a second thing to get wrong. What differs is that
+   * a `waitUntil` parks MANY times under one step, so each observation's pause takes its own
+   * DERIVED token (`observe-<n>`), exactly as an ask's re-attempts and a wait's second deadline do.
+   * Deriving rather than remembering is what makes it recoverable: a resumed run re-derives the
+   * same token from the request id and the attempt index, and re-attaches to the pause the crashed
+   * attempt armed instead of arming a second one.
+   *
+   * THIS HANDLER NEVER OBSERVES ANYTHING. The probe is the program's and the interpreter calls it;
+   * all that happens here is the waiting. So there is nothing to bind and nothing to read back:
+   * the observations are the journal's, written by the interpreter, and this returns only whether
+   * there was time left.
+   */
+  async observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    // OUT OF TIME IS ANSWERED BEFORE ANYTHING IS ARMED. A pause armed at an instant that has
+    // already passed is a timer that fires immediately and a record nobody needs, and the caller's
+    // next act on `false` is to fail the step.
+    if (this.now() >= req.deadlineAt) return false;
+    // ATTEMPT 0 LOOKS IMMEDIATELY: a wait that sleeps before it has ever looked cannot notice a
+    // predicate that already holds, and "are the checks finished" is often already true.
+    if (req.attempt === 0) return true;
+
+    // The cadence, CLAMPED to the deadline. Parking past it would hold the run beyond the instant
+    // the program said to give up at, and then report a lateness the wait never agreed to.
+    const wake = Math.min(this.now() + parseDuration(req.every), req.deadlineAt);
+    const ref: CheckpointRef = {
+      endpoint: this.binding.endpoint,
+      token: derivedToken(ctx.requestId, `observe-${req.attempt}`),
+    };
+    await this.arm(ref, wake);
+    await this.settle(ref, ctx.signal);
+    // Re-read the clock rather than trusting the arithmetic: the pause may have been settled by a
+    // heartbeat-advanced deadline or by this host being away, and what decides whether there is
+    // still time is where the clock actually is now.
+    return this.now() < req.deadlineAt;
   }
 
   /**

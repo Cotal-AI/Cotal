@@ -139,6 +139,53 @@ export interface WaitRequest {
   readonly timeout?: string;
 }
 
+/**
+ * ONE observation of something outside the mesh, asked for by {@link EffectHandler.observe}.
+ *
+ * The handler's whole job here is the WAITING, not the looking: the probe belongs to the program
+ * and the interpreter calls it. What the handler owns is the cadence (sleep `every` between
+ * observations, durably, so a host that dies mid-cadence does not lose the wait) and the answer to
+ * "is there any time left". That split is what keeps the predicate in the program where an author
+ * can read it, and the durability in the host where it belongs.
+ */
+export interface ObserveRequest {
+  /** The step's own name, for tracing and for the operator surface. A handler never keys on it. */
+  readonly name: string;
+  /**
+   * The cadence between observations, ALWAYS present, including on the first observation, which
+   * does not wait.
+   *
+   * "Absent means do not wait" was the first shape and it was wrong in a way worth recording: the
+   * cadence is a property of the STEP, so a request that dropped it on the first observation left
+   * every operator surface and every dry-run plan reporting the cadence as unknown for exactly the
+   * request they see first. `attempt` already says which observation this is, so the handler has
+   * the fact it needs to skip the first wait without the cadence having to disappear to say so.
+   */
+  readonly every: string;
+  /** The absolute instant the wait fails at, already resolved against the recorded start. */
+  readonly deadlineAt: number;
+  /**
+   * The deadline AS THE PROGRAM WROTE IT, beside the absolute instant rather than instead of it.
+   *
+   * The instant is what a handler compares against and the only form that survives a resume
+   * correctly; the duration is what an operator surface and a dry-run plan can show. Deriving
+   * either from the other needs the step's start, which a handler does not hold, so carrying both
+   * is what keeps a plan from having to guess.
+   */
+  readonly deadline: string;
+  /**
+   * Which observation this is, counted from 0.
+   *
+   * ATTEMPT 0 DOES NOT WAIT. A wait that sleeps before it has ever looked cannot notice a
+   * predicate that already holds, and "are the checks finished" is very often already true when
+   * the run asks. So a handler waits `every` before observations 1, 2, 3 and returns immediately
+   * for 0. It is counted from the RECORDED observations, so a resumed wait continues its count
+   * rather than restarting it, and a resume therefore does not get a free immediate look on every
+   * activation.
+   */
+  readonly attempt: number;
+}
+
 export interface NotifyRequest {
   readonly agents: readonly AgentHandleValue[];
   readonly fact: NotifyFact;
@@ -389,6 +436,18 @@ export interface EffectHandler {
   checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw>;
   sleep(req: SleepRequest, ctx: EffectContext): Promise<null>;
   wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null>;
+  /**
+   * Hold the run until it is time to observe again, and say whether there was time.
+   *
+   * `true` means "observe now"; `false` means the deadline passed while waiting, and the
+   * interpreter raises the catchable L4023. The handler never evaluates the predicate and never
+   * sees the observation: the probe is the program's, the interpreter calls it, and this is only
+   * the durable pause between two calls. A handler with no durable timer may implement it with
+   * whatever it has — the simulator parks on its virtual clock — and one that cannot wait durably
+   * at all should refuse with {@link EffectRefused} rather than busy-wait, exactly as any other
+   * effect it has no substrate for.
+   */
+  observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean>;
   notify(req: NotifyRequest, ctx: EffectContext): Promise<null>;
   monitor(req: MonitorRequest, ctx: EffectContext): Promise<null>;
   openConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ChannelHandleValue>;

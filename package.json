@@ -81,6 +81,7 @@
     "smoke:lang-migrate": "tsx packages/lang/smoke/migrate.smoke.ts",
     "smoke:lang-semantics": "tsx packages/lang/smoke/semantics.smoke.ts",
     "smoke:lang-surface": "tsx packages/lang/smoke/surface.smoke.ts",
+    "smoke:lang-wait-until": "tsx packages/lang/smoke/wait-until.smoke.ts",
     "smoke:lang-conformance": "tsx packages/lang/smoke/conformance.smoke.ts",
     "smoke:lang-transform": "tsx packages/lang/smoke/transform.smoke.ts",
     "smoke:lang-engine": "pnpm --filter @cotal-ai/lang build:emit && tsx packages/lang/smoke/engine.smoke.ts",

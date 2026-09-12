@@ -73,6 +73,13 @@ export const CATALOG = {
   L3042: "Function passed as effect data",
   L3043: "`notify` fact is not a bounded decision record",
   L3044: "`to` without `onExpiry: \"escalate\"`",
+  // `waitUntil` is the one primitive whose first argument is a FUNCTION the runtime calls, and the
+  // one whose cadence and deadline are the runtime's to own rather than the program's. Each of the
+  // three is refused where the source shows it, because all three are statically visible and a
+  // program that gets one wrong would otherwise find out an hour into a wait.
+  L3045: "`waitUntil` probe is not a function",
+  L3046: "`waitUntil` needs a cadence and a deadline",
+  L3047: "`waitUntil` cadence is zero, or does not divide its deadline usefully",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",
@@ -97,6 +104,17 @@ export const CATALOG = {
   L4020: "A method is not a value",
   L4021: "A callable `then` is not a record member",
   L4022: "Unreadable ask schema",
+  // `waitUntil`'s deadline, and it is CATCHABLE with a code of its own exactly as `turn`'s L4003
+  // is. A wait that gave up is a fact about the world the program asked about (the predicate did
+  // not hold in the time allowed), so the program is the right place to decide what happens next:
+  // chase someone, escalate, proceed degraded. Folding it into L4003 would have one code mean two
+  // different waits, and a program branching on it could not tell which had elapsed.
+  L4023: "`waitUntil` deadline elapsed",
+  // The probe answered with something that has no canonical form, or `terminal` answered with a
+  // non-boolean. Its own code because the blame is specific and the repair differs from L3041's:
+  // nothing crossed a boundary wrongly at a CALL, a program function the runtime invoked returned
+  // the wrong shape, and the author needs to be told which of the two it was.
+  L4024: "`waitUntil` probe or predicate answered the wrong shape",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",
