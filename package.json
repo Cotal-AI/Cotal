@@ -673,7 +673,8 @@
     "smoke:split-topology-docs": "tsx bin/smoke/split-topology-docs.smoke.ts",
     "smoke:delivery-explicit-space": "tsx implementations/cli/smoke/delivery-explicit-space.smoke.ts",
     "smoke:registration-executor-resume": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/registration-executor-resume.smoke.ts",
-    "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts"
+    "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts",
+    "smoke:publish-closure-gate": "tsx bin/smoke/publish-closure-gate.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

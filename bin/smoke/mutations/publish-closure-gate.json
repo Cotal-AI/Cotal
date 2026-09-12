@@ -1,0 +1,65 @@
+{
+  "suite": [
+    "bin/smoke/publish-closure-gate.smoke.ts",
+    "scripts/verify-publish-closure.mjs",
+    ".github/workflows/changesets.yml"
+  ],
+  "guard": "The post-publish closure gate checks every package in the lockstep group against the registry, validates response bodies, and gates the GitHub Release on the result",
+  "command": "pnpm smoke:publish-closure-gate",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/publish-closure-gate.json",
+  "why": [
+    "The release workflow used to check one package of twenty-two and cut a Release on that alone. A sibling that failed to publish was invisible. The closure gate now checks every package and the Release step depends on it.",
+    "A 200 without a body identifying the package at the requested version is no longer treated as presence. Each mutation below breaks one property the smoke is supposed to hold."
+  ],
+  "mutations": [
+    {
+      "name": "the closure-gate step is removed from the workflow",
+      "file": ".github/workflows/changesets.yml",
+      "find": "        id: closure-gate\n",
+      "replace": "        id: old-check\n",
+      "expectRed": "the version job has a step with id 'closure-gate'",
+      "cell": "the version job has a step with id 'closure-gate'"
+    },
+    {
+      "name": "the release step stops referencing the closure-gate output",
+      "file": ".github/workflows/changesets.yml",
+      "find": "steps.closure-gate.outputs.closure_ok == 'true'",
+      "replace": "true",
+      "expectRed": "the release step's 'if' references the closure-gate step output",
+      "cell": "the release step's 'if' references the closure-gate step output"
+    },
+    {
+      "name": "the closure-gate step stops invoking verify-publish-closure.mjs",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          node scripts/verify-publish-closure.mjs \"$version\"\n",
+      "replace": "          echo \"skipping closure check\"\n",
+      "expectRed": "the closure-gate step invokes verify-publish-closure.mjs",
+      "cell": "the closure-gate step invokes verify-publish-closure.mjs"
+    },
+    {
+      "name": "the body validation is removed so any 200 counts as presence again",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        const body = await res.json();\n        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        continue;",
+      "expectRed": "fake registry: one 200 with wrong version in body -> does NOT pass as published",
+      "cell": "fake registry: one 200 with wrong version in body -> does NOT pass as published"
+    },
+    {
+      "name": "a wrong-version body is accepted as presence",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        if (body && body.name === pkg) continue;",
+      "expectRed": "fake registry: one 200 with wrong version in body -> does NOT pass as published",
+      "cell": "fake registry: one 200 with wrong version in body -> does NOT pass as published"
+    },
+    {
+      "name": "a wrong-name body is accepted as presence",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        if (body && body.version === version) continue;",
+      "expectRed": "fake registry: one 200 naming a different package -> does NOT pass as published",
+      "cell": "fake registry: one 200 naming a different package -> does NOT pass as published"
+    }
+  ]
+}

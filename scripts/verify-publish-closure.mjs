@@ -184,6 +184,7 @@ async function readClosure(packages, version, opts, fetchImpl, budgetEndsAt) {
     // on its own deadline instead of on the job's.
     const remainingMs = Math.max(0, budgetEndsAt - Date.now());
     let status;
+    let res;
     try {
       // `redirect: "manual"` is load-bearing, not tidiness. Node's fetch FOLLOWS redirects by
       // default, so a registry that 302s a missing version onto a generic 200 page hands back
@@ -191,7 +192,7 @@ async function readClosure(packages, version, opts, fetchImpl, budgetEndsAt) {
       // direction that cuts a Release for something unpublished. Not following turns the 3xx into
       // a status this function already classifies as no-evidence. Verified against the real
       // registry: it does not redirect this endpoint, so manual changes nothing on the live path.
-      const res = await readWithinBudget(fetchImpl, versionUrl(opts.registryBase, pkg, version), remainingMs);
+      res = await readWithinBudget(fetchImpl, versionUrl(opts.registryBase, pkg, version), remainingMs);
       status = res.status;
     } catch {
       // A budget expiry lands here with the throws: an unanswered read is no evidence about the
@@ -207,7 +208,23 @@ async function readClosure(packages, version, opts, fetchImpl, budgetEndsAt) {
     // cry-wolf direction this file argues is worse than the hole it closes; and a total 5xx outage
     // reported `none`, the same quiet skip as an unreachable registry, with a status code instead
     // of a throw. A throw and a 500 are the same fact arriving by different routes.
-    if (status === 200) continue;
+    if (status === 200) {
+      // #1257: a 200 is not evidence of presence unless the body identifies this package at this
+      // version. A 200 carrying an error, an empty body, a body naming another package, or a body
+      // naming another version is no evidence -- the same rule a 5xx already follows. Without this,
+      // a registry that answers 200 to every path (a misconfigured mirror, a proxy error page, or a
+      // CDN default) reads as "fully published" and cuts a Release for a version that did not ship.
+      try {
+        const body = await res.json();
+        if (body && body.name === pkg && body.version === version) continue;
+        // The body was parseable but does not identify this package at this version.
+        errored.push(pkg);
+      } catch {
+        // Unparseable or unreadable body: no evidence about the package.
+        errored.push(pkg);
+      }
+      continue;
+    }
     if (status === 404) missing.push(pkg);
     else errored.push(pkg);
   }

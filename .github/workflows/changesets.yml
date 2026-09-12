@@ -124,38 +124,51 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
-      # Cut the GitHub Release ONLY when this push actually published a new version to npm.
-      # ci:publish is `pnpm publish` (for OIDC provenance), whose output the changesets action
-      # can't parse — so `outputs.published` is unreliable and we can't gate on it. The naive
-      # `node -p "require('./bin/package.json').version"` is ALSO wrong: the `version` step above
-      # runs `changeset version`, which bumps the WORKSPACE package.json to the *staged next*
-      # version even on a version-PR push that publishes nothing — that read once cut a phantom
-      # `v0.6.0` Release with no npm artifact. So gate on two facts: (1) the version COMMITTED on
-      # the merge commit (immune to the workspace bump), and (2) that exact `cotal-ai` version being
-      # live on npm (a short retry covers post-publish registry propagation). The step stays
-      # idempotent — it no-ops once the Release exists. Uses GH_PAT (not the default GITHUB_TOKEN)
-      # so the published Release still triggers the Discord webhook.
-      - name: Tag and cut the GitHub Release on publish
+      # Gate: verify that EVERY package in the lockstep group reached the registry before cutting
+      # a Release. The old check asked only about `cotal-ai`; if that single package published and
+      # a sibling did not, the Release was cut and the announcement went out for a version a consumer
+      # could not resolve. The closure gate polls the whole fixed group and distinguishes registry
+      # propagation lag from a genuine partial publish (#1286).
+      - name: Verify publish closure
+        id: closure-gate
         if: success() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Read the COMMITTED version, not the workspace (which `changeset version` may have bumped).
           version=$(git show "$GITHUB_SHA:bin/package.json" | jq -r .version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          set +e
+          node scripts/verify-publish-closure.mjs "$version"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "closure_ok=true" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 1 ]; then
+            echo "PARTIAL PUBLISH — failing the job."
+            exit 1
+          elif [ "$rc" -eq 2 ]; then
+            echo "UNSETTLED — the registry has not converged. Skipping the Release."
+          elif [ "$rc" -eq 3 ]; then
+            echo "NONE — this push published nothing. Skipping the Release."
+          else
+            echo "Unexpected exit code $rc from verify-publish-closure.mjs — failing the job."
+            exit 1
+          fi
+
+      # Cut the GitHub Release ONLY when this push actually published a new version to npm AND the
+      # full closure gate passed. The gate exits non-zero on a partial publish, an unsettled registry,
+      # or a version nothing serves, so the Release step runs only after every package in the fixed
+      # group is verified present at the requested version on the registry.
+      - name: Tag and cut the GitHub Release on publish
+        id: release-step
+        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          version="${{ steps.closure-gate.outputs.version }}"
           tag="v$version"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists — nothing to do."
-            exit 0
-          fi
-          # Only cut a Release for a version that actually published to npm — guards a staged-but-
-          # unpublished bump; retry briefly for registry propagation right after publish.
-          published=
-          for i in 1 2 3 4 5; do
-            if npm view "cotal-ai@$version" version >/dev/null 2>&1; then published=1; break; fi
-            echo "cotal-ai@$version not yet on npm (attempt $i/5) — waiting…"; sleep 5
-          done
-          if [ -z "$published" ]; then
-            echo "cotal-ai@$version is not on npm — this push published nothing; skipping the Release."
             exit 0
           fi
           notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
