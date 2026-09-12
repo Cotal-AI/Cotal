@@ -29,6 +29,7 @@ import {
   type BrokerWatchEvidence,
   type LeaseReading,
 } from "../src/watchdog.js";
+import { defaultProbeTimeoutMs } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, detail?: unknown) => {
@@ -295,6 +296,54 @@ const blockedCharged = blocked.stop();
 check("L7 a genuinely blocked event loop is charged as time this process was not running",
   blockedCharged >= BLOCK_MS / 2, { blockedCharged, BLOCK_MS });
 
+console.log("\nM. the material-share line: ordinary jitter is not starvation, and the budget is the probe's own");
+// BOTH CELLS IN THIS SECTION EXIST BECAUSE A REVIEWER MEASURED WHAT THE CODE ACTUALLY DID, and in
+// both cases the bug had the same shape: a refusal that was honest evidence about the server got
+// filed as this process's starvation, so the completed-negative count could never rise and a
+// genuinely dead broker would be ended only by the backstop — four times slower than the shipped
+// window, with the wrong reason in the operator's log. Neither broke the exit guarantee. Both made
+// the evidence path unreachable in production, which is most of the point of the repair.
+//
+// (1) THE JITTER LEAK. Requiring merely `attributable < budget` meant ANY non-zero measurement
+// disqualified a budget-ended refusal. The reviewer measured 11-26ms of ordinary Node timer jitter
+// on a healthy, unstarved host and 10 of 10 blackholed probes read STARVED. So the server must have
+// been denied a MATERIAL share of its budget, not an instant of it.
+const JITTER = [11, 15, 26, 50, 120];
+check("M1 a budget-ended refusal with ordinary timer jitter is a NEGATIVE, not starvation",
+  JITTER.every((d) => classifyProbe(false, 1002, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, d).counts === "negative"),
+  JITTER.map((d) => [d, classifyProbe(false, 1002, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, d).counts]));
+// REFUSING case, differing only in HOW MUCH of the budget the server actually got: past the halfway
+// line the refusal stops being evidence about the server, because the server never had the time.
+check("M2 but a refusal where the server got less than half its budget IS starvation",
+  classifyProbe(false, 1002, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 600).counts === "starved",
+  classifyProbe(false, 1002, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 600));
+// The boundary itself, from both sides, so the line is pinned rather than merely somewhere.
+check("M3 exactly half the budget is NOT yet starvation",
+  classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 500).counts === "negative");
+check("M4 one millisecond past half is",
+  classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 501).counts === "starved");
+// And the guarantee this threshold protects: a dead port is still a negative at any measurement.
+check("M5 a dead port's ~1ms refusal stays a negative however starved the host measured itself",
+  classifyProbe(false, 1, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 5_000).counts === "negative");
+
+// (2) THE WEBSOCKET BUDGET. `isReachable` gives a ws(s) broker 5s and a TCP broker 1s, because a ws
+// broker rides an HTTPS edge where TLS + upgrade + INFO + auth routinely exceeds a second. The
+// watchdog judged every probe against a hardcoded 1000, so an honest ws refusal at 2-5s was filed as
+// starvation by the late-ceiling rule and a dead ws broker could never accumulate one negative. The
+// daemon now asks the same function that hands the probe its deadline.
+check("M6 the probe budget is the transport's own: ws gets 5s, tcp gets 1s",
+  defaultProbeTimeoutMs("wss://edge.example/nats") === 5000 && defaultProbeTimeoutMs("nats://127.0.0.1:4222") === 1000,
+  [defaultProbeTimeoutMs("wss://edge.example/nats"), defaultProbeTimeoutMs("nats://127.0.0.1:4222")]);
+const WS_BUDGET = defaultProbeTimeoutMs("wss://edge.example/nats");
+check("M7 an honest 3s refusal from a ws broker is a NEGATIVE against its own 5s budget",
+  classifyProbe(false, 3000, WS_BUDGET, PROBE_LATE_FACTOR, 0).counts === "negative");
+// REFUSING case: the SAME answer judged against a TCP budget it was never given is misread, which
+// is exactly the bug. Kept as a cell so the reason the budget must be per-transport stays visible.
+check("M8 and the identical answer against a 1s budget would be misread as starvation",
+  classifyProbe(false, 3000, 1000, PROBE_LATE_FACTOR, 0).counts === "starved");
+check("M9 a ws refusal past its OWN late ceiling is still starvation",
+  classifyProbe(false, 11_000, WS_BUDGET, PROBE_LATE_FACTOR, 0).counts === "starved");
+
 console.log("\nG. the lease decision — a failed renew is a question, not a verdict");
 const readings: Array<[string, LeaseReading, "keep-serving" | "reacquire" | "exit"]> = [
   ["held: the key is still ours", { kind: "held", revision: 7 }, "keep-serving"],
@@ -359,7 +408,7 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-const EXPECTED_CELLS = 70;
+const EXPECTED_CELLS = 80;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

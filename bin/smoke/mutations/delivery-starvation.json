@@ -126,7 +126,7 @@
     {
       "name": "M7 the quiet form of starvation is invisible again: a probe is judged by the clock alone",
       "file": "implementations/delivery/src/watchdog.ts",
-      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {\n    return { counts: \"starved\", lateBy: elapsedMs - attributableMs };\n  }",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs * STARVED_SHARE) {\n    return { counts: \"starved\", lateBy: elapsedMs - attributableMs };\n  }",
       "replace": "  void attributableMs;",
       "expectRed": "K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative",
       "cell": "K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative",
@@ -135,7 +135,7 @@
     {
       "name": "M7-live the same, graded against a real daemon duty-cycled off the CPU",
       "file": "implementations/delivery/src/watchdog.ts",
-      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {\n    return { counts: \"starved\", lateBy: elapsedMs - attributableMs };\n  }",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs * STARVED_SHARE) {\n    return { counts: \"starved\", lateBy: elapsedMs - attributableMs };\n  }",
       "replace": "  void attributableMs;",
       "expectRed": "E5 the daemon did NOT exit on answers its own scheduling delay produced",
       "cell": "E5 the daemon did NOT exit on answers its own scheduling delay produced",
@@ -156,11 +156,43 @@
     {
       "name": "M9 CONTROL: measured starvation excuses even a refusal that beat its budget",
       "file": "implementations/delivery/src/watchdog.ts",
-      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {",
-      "replace": "  if (attributableMs < budgetMs) {",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs * STARVED_SHARE) {",
+      "replace": "  if (attributableMs < budgetMs * STARVED_SHARE) {",
       "expectRed": "K2 a dead port answers in ~1ms, and that is a negative however starved the host is",
       "cell": "K2 a dead port answers in ~1ms, and that is a negative however starved the host is",
       "note": "The band-aid this clause could so easily have been: drop the requirement that the probe actually ran out its budget, and a starved host excuses EVERY refusal, including the ~1ms ECONNREFUSED from a genuinely dead port. That is a daemon that outlives its broker whenever the host is busy. K2/K5 are the pair that pins it: same measured starvation, opposite readings, decided by whether the answer beat the budget."
+    },
+    {
+      "name": "M10 CONTROL: ordinary timer jitter excuses an honest budget-ended refusal again",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs * STARVED_SHARE) {",
+      "replace": "  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {",
+      "expectRed": "M1 a budget-ended refusal with ordinary timer jitter is a NEGATIVE, not starvation",
+      "cell": "M1 a budget-ended refusal with ordinary timer jitter is a NEGATIVE, not starvation",
+      "note": "A REVIEWER FINDING, and the subtlest failure in this PR. Requiring merely attributable < budget means ANY non-zero measurement disqualifies a budget-ended refusal, and ordinary Node timer jitter on a healthy host measures 10-30ms: 10 of 10 blackholed probes read STARVED on an unstarved box. The exit guarantee survives (the backstop still fires) but the EVIDENCE path becomes unreachable in production, so a genuinely dead broker is ended four times slower than the shipped window with the wrong reason in the log. The material-share line is what separates \"the server got almost none of its second\" from \"the server got 984ms of it\"."
+    },
+    {
+      "name": "M11 CONTROL: every probe is judged against a budget the ws transport never had",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "  const probeBudgetMs = defaultProbeTimeoutMs(server);",
+      "replace": "  const probeBudgetMs = 1000;",
+      "expectRed": "M6 the probe budget is the transport's own: ws gets 5s, tcp gets 1s",
+      "cell": "M6 the probe budget is the transport's own: ws gets 5s, tcp gets 1s",
+      "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-watchdog-evidence",
+      "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+      "note": "A REVIEWER FINDING. isReachable gives a ws(s) broker 5s because it rides an HTTPS edge; judging its honest 2-5s refusals against a hardcoded 1000 files every one as this process starvation, so a dead ws broker can never accumulate a single completed negative. Same shape as M10: the guarantee holds, the evidence path does not."
+    },
+    {
+      "name": "M12 CONTROL: a departing daemon deletes its replacement lease on the way out",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (revision === undefined) return;\n    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }",
+      "replace": "    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }",
+      "expectRed": "F7 the replacement STILL holds a live, ready lease after the loser finished exiting",
+      "cell": "F7 the replacement STILL holds a live, ready lease after the loser finished exiting",
+      "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+      "completionMarker": "DELIVERY-STARVATION SMOKE",
+      "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+      "note": "A REVIEWER FINDING, and the merge blocker. Every takeover path ends in shutdown(1), and shutdown released the lease with an UNCONDITIONAL KV delete. By the time a daemon exits because another daemon took the shard, the row belongs to the replacement — so the polite release deleted the new holder lease and left the shard unserved. That is the #1318 outage again, reached through the lease path instead of the broker watch. Only a live cell can see it: leaseAction was always correct, and the damage happened downstream of the decision."
     }
   ]
 }

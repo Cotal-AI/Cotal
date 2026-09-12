@@ -3534,12 +3534,23 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort — a crash just lets the bucket TTL expire it). */
-  async releaseDeliveryLease(shardIndex: number): Promise<void> {
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }
+   *  effort — a crash just lets the bucket TTL expire it).
+   *
+   *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
+   *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
+   *  paths that matter most are precisely the ones where another daemon has taken the shard, so the
+   *  departing process would delete the REPLACEMENT's lease on its way out and leave the shard with
+   *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
+   *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
+   *  on is left alone. A caller with no revision to offer releases nothing, which is the safe
+   *  direction: the bucket TTL is the crash-safe authority and will expire a genuinely stale row. */
+  async releaseDeliveryLease(shardIndex: number, revision?: number): Promise<void> {
+    if (revision === undefined) return;
+    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
     catch {
       // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
-      // and clean shutdown must continue even when the broker is already gone or draining.
+      // and clean shutdown must continue even when the broker is already gone or draining. A refused
+      // CAS lands here too, which is the correct outcome — someone else owns the row.
     }
   }
 
@@ -5757,8 +5768,14 @@ export function wsServers(servers: string): boolean {
  *  probe dials; a ws(s) broker is by definition published through an HTTPS edge (CDN tunnel,
  *  reverse proxy), where TLS + upgrade + INFO + the auth round-trip routinely exceeds 1s cold —
  *  measured ~60% spurious "not reachable" against a Cloudflare-fronted broker. Callers passing an
- *  explicit `timeoutMs` are untouched. */
-function defaultProbeTimeoutMs(servers: string): number {
+ *  explicit `timeoutMs` are untouched.
+ *
+ *  EXPORTED because a caller that judges a probe by WHEN it answered has to compare against the
+ *  deadline this function actually handed the probe. The delivery watchdog does exactly that, and
+ *  hardcoding 1000 there silently misread every ws broker: honest refusals arrive at 2-5s, past a
+ *  budget that was never theirs, and would be classified as this process's starvation rather than
+ *  the server's refusal. The budget and the judgment must come from one place. */
+export function defaultProbeTimeoutMs(servers: string): number {
   return wsServers(servers) ? 5000 : 1000;
 }
 

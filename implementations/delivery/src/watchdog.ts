@@ -35,6 +35,13 @@ export const PROBE_LATE_FACTOR = 2;
  *  matter (tens of ms), long enough that the measurement is not itself a meaningful load. */
 export const PROBE_SAMPLE_MS = 25;
 
+/** How much of its promised budget the server must have been DENIED before a refusal stops counting
+ *  as evidence about the server. Ordinary Node timer jitter measures tens of milliseconds on a
+ *  perfectly healthy host, so any non-zero threshold would disqualify every honest budget-ended
+ *  refusal and leave the daemon exiting only on its backstop. A server handed more than half the
+ *  time it was promised and still refusing is refusing on its own account. */
+export const STARVED_SHARE = 0.5;
+
 /**
  * What a single probe actually established, given how long its answer took to arrive.
  *
@@ -96,9 +103,18 @@ export function classifyProbe(
   //     prompt timeout; almost none of it was time the server was given. Judged by the clock alone
   //     this is indistinguishable from a dead server, which is exactly the confusion #1318 is about.
   //
+  // THE MATERIAL-SHARE TEST IS WHAT KEEPS THIS FROM SWALLOWING EVERY REFUSAL, and it was a review
+  // finding: requiring merely `attributable < budget` meant ANY non-zero measurement disqualified an
+  // honest budget-ended refusal, and ordinary Node timer jitter on a healthy host measures 10-30ms.
+  // Every blackholed probe everywhere then read as starvation, the completed-negative count could
+  // never rise, and a genuinely dead broker would be exited only by the backstop — four times slower
+  // than the shipped window, with the wrong reason in the log. So the server must have been denied a
+  // MATERIAL share of its budget, not merely an instant of it. Half is the line: a server given more
+  // than half the time it was promised and still refusing is refusing on its own account.
+  //
   // Clamped to the probe's own span so a bad measurement cannot manufacture credit.
   const attributableMs = elapsedMs - Math.max(0, Math.min(descheduledDuringMs, elapsedMs));
-  if (elapsedMs >= budgetMs && attributableMs < budgetMs) {
+  if (elapsedMs >= budgetMs && attributableMs < budgetMs * STARVED_SHARE) {
     return { counts: "starved", lateBy: elapsedMs - attributableMs };
   }
   return { counts: "negative" };

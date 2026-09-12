@@ -8,6 +8,7 @@ import {
   credsClaims,
   dialerFor,
   idFromCreds,
+  defaultProbeTimeoutMs,
   isReachable,
   mintCreds,
   newIdentity,
@@ -24,7 +25,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_BUDGET_MS, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
+import { brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
@@ -383,7 +384,12 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
   // frees a crashed holder's lease so a fresh daemon re-acquires.
-  let revision: number;
+  // THE REVISION THIS PROCESS OWNS, or `undefined` once it knows it does not own the row any more.
+  // `releaseDeliveryLease` takes it as a compare-and-swap, so a shutdown that no longer holds the
+  // shard releases NOTHING rather than deleting whatever row is there. The exits where that matters
+  // are exactly the takeover exits below: without it, the departing daemon removes the REPLACEMENT's
+  // lease on its way out and leaves the shard with no holder at all.
+  let revision: number | undefined;
   try {
     revision = await ep.acquireDeliveryLease(shard);
   } catch {
@@ -512,7 +518,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
-      try { await ep.releaseDeliveryLease(shard); } catch { /* broker may be gone */ }
+      try { await ep.releaseDeliveryLease(shard, revision); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();
@@ -530,7 +536,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // Held by us. The revision is not carried on the record, so the caller re-reads it via the CAS
     // it is about to attempt; `revision` stays as-is and the next renew re-synchronises against the
     // broker's own sequence. Reported as `held` because the identity question is what was asked.
-    return { kind: "held", revision };
+    return { kind: "held", revision: revision ?? 0 };
   };
 
   /** Print a lease state only when it CHANGES. The renew ticks every few seconds, so a broker
@@ -560,6 +566,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     renewInFlight = true;
     void (async () => {
       try {
+        // A renew with no owned revision is not a renew: this process already established that the
+        // shard is someone else's and is on its way out. Attempting one would either fail noisily or,
+        // worse, be graded as a lease question when ownership is already settled.
+        if (revision === undefined) return;
         revision = await ep.renewDeliveryLease(shard, revision);
         noteLease("held", "renews its delivery lease again");
         return;
@@ -580,8 +590,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
               revision = await ep.acquireDeliveryLease(shard);
               noteLease("held", `found its lease key gone (renew: ${why}) and re-acquired it at revision ${revision}`);
             } catch (e) {
-              // The atomic create was refused, so a live lease exists that is not ours: a
-              // replacement daemon holds this shard. THIS is the genuine loss, and it exits.
+              // Refused: a live lease exists that is not ours, so a replacement daemon holds this
+              // shard. THIS is the genuine loss, and it exits — WITHOUT a revision to release, or
+              // the exit would delete the replacement's row.
+              revision = undefined;
               console.error(
                 `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}) — exiting so the holder is single`,
               );
@@ -589,6 +601,9 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
             }
             return;
           case "exit":
+            // Another daemon's row. Forget our revision first: releasing on the way out would delete
+            // the holder's lease and turn a clean handover into an unheld shard.
+            revision = undefined;
             console.error(
               `✗ delivery: the lease for shard ${shard} is held by ${reading.kind === "taken" ? reading.by : "another daemon"}, not by this process (renew: ${why}) — exiting so the holder is single`,
             );
@@ -669,6 +684,13 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     transportConnected = t.connected;
     if (t.connected) sawBroker();
   });
+  // THE BUDGET THE PROBE IS ACTUALLY GIVEN, asked of the one function that decides it. A ws(s)
+  // broker rides an HTTPS edge and gets 5s, not the 1s a loopback TCP broker gets; judging a ws
+  // probe against 1000 would read every honest refusal on such a broker as this process's own
+  // starvation, so the completed-negative count could never rise and a genuinely dead ws broker
+  // would be ended only by the backstop, with the wrong reason in its log. The budget and the
+  // judgment have to come from the same place.
+  const probeBudgetMs = defaultProbeTimeoutMs(server);
   const brokerWatch = setInterval(() => {
     if (stopping) return;
     // Measure FIRST, before any await: this is the gap since the previous firing, and it is the
@@ -691,7 +713,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     sampler.start(probeStarted);
     void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
       .then(
-        (ok) => classifyProbe(ok, Date.now() - probeStarted, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, sampler.stop()),
+        (ok) => classifyProbe(ok, Date.now() - probeStarted, probeBudgetMs, PROBE_LATE_FACTOR, sampler.stop()),
         // A REJECTED probe is an unanswered question, not a negative answer. It used to be swallowed
         // whole by `.catch(() => {})`, so it neither refreshed the window nor evaluated anything and
         // silently aged the daemon toward an exit it had gathered no evidence for.

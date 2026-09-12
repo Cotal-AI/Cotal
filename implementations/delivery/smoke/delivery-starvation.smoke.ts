@@ -76,6 +76,8 @@ const spaceC = `delivery-chop-${randomUUID().slice(0, 8)}`;
 const spaceD = `delivery-cut-${randomUUID().slice(0, 8)}`;
 // Cell E needs a fifth, same lease-bucket reason again.
 const spaceE = `delivery-late-${randomUUID().slice(0, 8)}`;
+// Cell F needs a sixth: it runs TWO daemons in one space on purpose, which is the point of it.
+const spaceF = `delivery-hand-${randomUUID().slice(0, 8)}`;
 // ONE broker, TWO accounts under its single operator. Two independently created brokers would be
 // two operators, and `serverConfig` refuses to compose trust across them — correctly, and that
 // refusal is what pins the shape here rather than a second server on a second port.
@@ -85,13 +87,15 @@ const accountB = await createSpaceAccountAuth(broker, spaceB);
 const accountC = await createSpaceAccountAuth(broker, spaceC);
 const accountD = await createSpaceAccountAuth(broker, spaceD);
 const accountE = await createSpaceAccountAuth(broker, spaceE);
+const accountF = await createSpaceAccountAuth(broker, spaceF);
 const auth = composeSpaceAuth(broker, accountA);
 const authB = composeSpaceAuth(broker, accountB);
 const authC = composeSpaceAuth(broker, accountC);
 const authD = composeSpaceAuth(broker, accountD);
 const authE = composeSpaceAuth(broker, accountE);
+const authF = composeSpaceAuth(broker, accountF);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(broker, [accountA, accountB, accountC, accountD, accountE], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(broker, [accountA, accountB, accountC, accountD, accountE, accountF], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 const credsPath = join(dir, "delivery.creds");
@@ -99,6 +103,7 @@ const credsPathB = join(dir, "delivery-b.creds");
 const credsPathC = join(dir, "delivery-c.creds");
 const credsPathD = join(dir, "delivery-d.creds");
 const credsPathE = join(dir, "delivery-e.creds");
+const credsPathF = join(dir, "delivery-f.creds");
 // The scratch workspace root the daemon runs in, and the $SYS observer cred its startup admission
 // requires (`cotal up` provisions this on a live mesh; minted here the way `up` does).
 const wsRoot = join(dir, "ws");
@@ -254,6 +259,22 @@ function startFreshConnectBlackholeProxy(): {
   return handle;
 }
 
+/** Remove this shard's lease row on a connection of the suite's OWN, so cell F can stage a handover
+ *  the way an operator-driven replacement does: the row goes, and the next daemon wins the create.
+ *  Done from outside rather than by stopping the holder, because the holder must stay RUNNING — the
+ *  whole question is what its shutdown does to a row it no longer owns. */
+async function deleteLease(inSpace: string, credsFile: string): Promise<void> {
+  const creds = readFileSync(credsFile, "utf8");
+  const nc = await connect({
+    servers: SERVERS,
+    ...standaloneConnectOpts({ creds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+    maxReconnectAttempts: 0,
+  });
+  try { await (await openDeliveryRegistry(nc, inSpace)).delete(leaseKey(0)); }
+  finally { try { await nc.drain(); } catch { /* already gone */ } }
+}
+
 /** Read a shard-0 delivery lease straight from the broker, on a connection of this suite's own.
  *  Asking the BROKER rather than the daemon is the point: a daemon reporting on its own liveness is
  *  the thing under test, so the evidence has to come from the other side of the wire. */
@@ -288,13 +309,16 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space: spaceD, creds: mgrCredsD });
   const mgrCredsE = await mintCreds(authE, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space: spaceE, creds: mgrCredsE });
+  const mgrCredsF = await mintCreds(authF, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space: spaceF, creds: mgrCredsF });
   writeFileSync(credsPath, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
   writeFileSync(credsPathB, await mintCreds(authB, newIdentity(), "delivery"), { mode: 0o600 });
   writeFileSync(credsPathC, await mintCreds(authC, newIdentity(), "delivery"), { mode: 0o600 });
   writeFileSync(credsPathD, await mintCreds(authD, newIdentity(), "delivery"), { mode: 0o600 });
   writeFileSync(credsPathE, await mintCreds(authE, newIdentity(), "delivery"), { mode: 0o600 });
+  writeFileSync(credsPathF, await mintCreds(authF, newIdentity(), "delivery"), { mode: 0o600 });
   mkdirSync(join(wsRoot, ".cotal"), { recursive: true });
-  for (const [s, a] of [[space, auth], [spaceB, authB], [spaceC, authC], [spaceD, authD], [spaceE, authE]] as const) {
+  for (const [s, a] of [[space, auth], [spaceB, authB], [spaceC, authC], [spaceD, authD], [spaceE, authE], [spaceF, authF]] as const) {
     mkdirSync(spaceMaterialDir(wsRoot, s), { recursive: true });
     writeFileSync(
       join(spaceMaterialDir(wsRoot, s), "membership-observer.creds"),
@@ -518,6 +542,56 @@ try {
   await untilExit(late, 5000);
   lateProxy.close();
 
+  // ── F. THE HANDOVER: a departing daemon must not delete its REPLACEMENT's lease ─────────────────
+  //
+  // THIS CELL EXISTS BECAUSE A REVIEWER FOUND THE HOLE, and it is the refusing case for the exit
+  // this whole issue is about. Every takeover path ends in `shutdown(1)`, and shutdown released the
+  // lease — with an unconditional KV delete, which removes whatever row is present rather than the
+  // row this process owned. By the time a daemon exits BECAUSE another daemon took the shard, the
+  // row is the replacement's. So the old daemon's polite release deleted the new holder's lease and
+  // left the shard with nobody serving it: a cleaner, quieter version of exactly the outage #1318
+  // is about, reachable through the lease path instead of the broker-watch path.
+  //
+  // The repair makes release a compare-and-swap on the revision this endpoint last owned, and drops
+  // the revision on the takeover paths so a departing daemon offers nothing to release. Graded here
+  // end to end rather than on `leaseAction` alone: the pure decision was always correct, and the
+  // damage happened downstream of it, which is precisely why a pure cell could not see it.
+  console.log("\nF. a daemon that loses the shard must not delete the winner's lease on its way out");
+  const holder = spawnDaemon(spaceF, credsPathF);
+  const holderUp = await untilUp(holder);
+  check("F1 the first daemon comes up and holds the shard", holderUp, tail(holder));
+  if (!holderUp) throw new Error("the handover cell needs a daemon that was running; it never came up");
+  const beforeHandover = await readLease(spaceF, credsPathF);
+  check("F2 its lease is live and ready before the handover", beforeHandover?.info.ready === true, beforeHandover);
+
+  // Take the shard away from underneath it, exactly as an operator-driven replacement does: delete
+  // the row, then let a SECOND daemon win the atomic create. The first daemon's next renew fails,
+  // it re-reads, and it finds the shard held by someone else.
+  await deleteLease(spaceF, credsPathF);
+  const winner = spawnDaemon(spaceF, credsPathF);
+  const winnerUp = await untilUp(winner);
+  check("F3 a replacement daemon acquires the shard", winnerUp, tail(winner));
+  const winnerLease = await readLease(spaceF, credsPathF);
+  check("F4 the replacement's lease is live and ready", winnerLease?.info.ready === true, winnerLease);
+
+  // The loser must now exit on its own — that is the single-holder guarantee, and it is preserved.
+  const loserExited = await untilExit(holder, 45_000);
+  check("F5 the displaced daemon exits so the holder is single", loserExited, tail(holder));
+  check("F6 and it says the shard is held by another daemon rather than claiming a broker loss",
+    /taken shard|is held by/.test(holder.stderr) && !holder.stderr.includes("exiting (coupled to the broker)"), tail(holder));
+
+  // THE CELL. Read the lease from the BROKER after the loser has finished shutting down. Its
+  // shutdown path runs asynchronously after the exit, so settle past it before reading.
+  await wait(4000);
+  const afterHandover = await readLease(spaceF, credsPathF);
+  check("F7 the replacement STILL holds a live, ready lease after the loser finished exiting",
+    afterHandover?.info.ready === true, { afterHandover, winnerLease });
+  check("F8 and it is the same holder the replacement acquired, not a third row",
+    afterHandover !== undefined && winnerLease !== undefined && afterHandover.info.holder === winnerLease.info.holder,
+    { after: afterHandover?.info.holder, winner: winnerLease?.info.holder });
+  signalGroup(winner, "SIGKILL");
+  await untilExit(winner, 5000);
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -535,7 +609,7 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 34;
+  const EXPECTED_CELLS = 42;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
