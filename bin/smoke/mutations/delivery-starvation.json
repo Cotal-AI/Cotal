@@ -149,9 +149,9 @@
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "      this.accumulated += Math.max(0, t - this.last - this.sampleMs);",
       "replace": "      this.accumulated += Math.max(0, t - this.last);",
-      "expectRed": "L3 a span inside one sample interval charges nothing",
-      "cell": "L3 a span inside one sample interval charges nothing",
-      "note": "CONTROL on the measurement itself. A sampler that counts the whole gap rather than the EXCESS over its own interval reports a healthy host as permanently starved, which would make the daemon slow to exit when the broker really is gone — the failure mode worse than the defect, arriving through the measurement rather than the predicate."
+      "expectRed": "L6 an idle real-time span charges only the excess, not the whole gap",
+      "cell": "L6 an idle real-time span charges only the excess, not the whole gap",
+      "note": "CONTROL on the measurement itself. A sampler that counts the whole gap rather than the EXCESS over its own interval reports a healthy host as permanently starved, which would make the daemon slow to exit when the broker really is gone — the failure mode worse than the defect, arriving through the measurement rather than through the predicate. It SURVIVED the first run of this fixture: L1-L5 drive stop() directly for determinism, so the timer callback never fired in any of them and the clause was unreachable. L6 is the cell that actually grades it, by passing real time and letting the callback run."
     },
     {
       "name": "M9 CONTROL: measured starvation excuses even a refusal that beat its budget",
