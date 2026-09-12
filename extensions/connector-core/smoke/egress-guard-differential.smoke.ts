@@ -757,7 +757,14 @@ const PAIRS: Pair[] = [
     baseRef: PREDECESSOR,
     headRef: "HEAD",
     expectWeakerMin: 0,
-    expectStricterMax: 0,
+    // #1432: the closed-schema check intentionally refuses frames whose events carry
+    // keys outside the per-type allowlist. The corpus row "allowed: well-formed CUSTOM"
+    // builds a CUSTOM event by spreading TextMessageContent (adding `messageId` and
+    // `delta`), which the predecessor never checked. BaseEventSchema is `.passthrough()`
+    // for ALL event types (not just CUSTOM), so the upstream schema would accept the
+    // extra keys, but the egress fence enforces the closed shape Cotal publishes:
+    // CUSTOM's extension point is `value: z.any()`, not arbitrary sibling keys.
+    expectStricterMax: 1,
   },
 ];
 
