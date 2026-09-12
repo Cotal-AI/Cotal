@@ -54,10 +54,18 @@
     {
       "name": "Changesets version publish skips the shared assembler",
       "file": "package.json",
-      "find": "    \"ci:publish\": \"pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
-      "replace": "    \"ci:publish\": \"pnpm build && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "find": "    \"ci:publish\": \"node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "replace": "    \"ci:publish\": \"node scripts/preflight-npm-publish.mjs && pnpm build && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
       "expectRed": "changesets.yml version publish path runs the shared assembler",
       "cell": "changesets.yml version publish path runs the shared assembler"
+    },
+    {
+      "name": "Changesets version job bypasses the release preflight",
+      "file": "package.json",
+      "find": "    \"ci:publish\": \"node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "replace": "    \"ci:publish\": \"pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "expectRed": "Changesets version job reaches the release preflight before its recursive publish",
+      "cell": "Changesets version job reaches the release preflight before its recursive publish"
     },
     {
       "name": "Changesets snapshot drops the arm64 builder from needs",
@@ -78,16 +86,24 @@
     {
       "name": "Changesets snapshot stops calling the shared assembler",
       "file": ".github/workflows/changesets.yml",
-      "find": "          pnpm build\n          node scripts/seat-assemble-natives.mjs\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
-      "replace": "          pnpm build\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
+      "find": "          node scripts/preflight-npm-publish.mjs\n          pnpm build\n          node scripts/seat-assemble-natives.mjs\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
+      "replace": "          node scripts/preflight-npm-publish.mjs\n          pnpm build\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
       "expectRed": "changesets.yml snapshot runs the shared assembler",
       "cell": "changesets.yml snapshot runs the shared assembler"
     },
     {
+      "name": "Changesets snapshot job bypasses the release preflight",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          node scripts/preflight-npm-publish.mjs\n          pnpm build\n          node scripts/seat-assemble-natives.mjs\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
+      "replace": "          pnpm build\n          node scripts/seat-assemble-natives.mjs\n          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}\n",
+      "expectRed": "Changesets snapshot job reaches the release preflight before its recursive publish",
+      "cell": "Changesets snapshot job reaches the release preflight before its recursive publish"
+    },
+    {
       "name": "a release retry skips dependency builds for already-published packages",
       "file": "package.json",
-      "find": "    \"ci:publish\": \"pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
-      "replace": "    \"ci:publish\": \"node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "find": "    \"ci:publish\": \"node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
+      "replace": "    \"ci:publish\": \"node scripts/preflight-npm-publish.mjs && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
       "expectRed": "Changesets publish builds dependencies before assembly and publication on every retry",
       "cell": "Changesets publish builds dependencies before assembly and publication on every retry"
     }

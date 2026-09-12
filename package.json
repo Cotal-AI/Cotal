@@ -19,6 +19,7 @@
     "gen:reaper-dts": "tsx bin/smoke/gen-reaper-dts.mts",
     "gen:ci-suites-dts": "tsx bin/smoke/gen-ci-suites-dts.mts",
     "gen:publish-closure-dts": "tsx bin/smoke/gen-publish-closure-dts.mts",
+    "gen:npm-publish-preflight-dts": "tsx bin/smoke/gen-npm-publish-preflight-dts.mts",
     "mutation-proof": "node scripts/mutation-proof.mjs",
     "mutation-coverage": "node scripts/mutation-coverage.mjs",
     "doc-binding": "node scripts/doc-binding.mjs",
@@ -41,7 +42,7 @@
     "changeset": "changeset",
     "version": "changeset version",
     "ci:version": "pnpm build && pnpm changeset version && pnpm gen:tooldocs && pnpm gen:docsbundle",
-    "ci:publish": "pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks",
+    "ci:publish": "node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks",
     "smoke": "tsx packages/core/smoke.ts",
     "smoke:auth": "tsx packages/core/smoke-auth.ts",
     "smoke:lang-grammar": "tsx packages/lang/smoke/grammar.smoke.ts",
@@ -665,7 +666,8 @@
     "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts",
     "smoke:manager-log-guidance": "tsx bin/smoke/manager-log-guidance.smoke.ts",
     "smoke:delivery-explicit-space": "tsx implementations/cli/smoke/delivery-explicit-space.smoke.ts",
-    "smoke:registration-executor-resume": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/registration-executor-resume.smoke.ts"
+    "smoke:registration-executor-resume": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/registration-executor-resume.smoke.ts",
+    "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

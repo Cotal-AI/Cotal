@@ -76,10 +76,42 @@ Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
 
 `ci:publish` in the root `package.json` is:
 
+- an exact-version census of every package in the Changesets fixed group against the registry;
+- a check that the public recursive workspace set is the complete Changesets fixed group;
+- one GitHub OIDC exchange per package when the release job exposes the OIDC requester;
+- a GET of each package's trusted-publisher document with that exchanged token, which must list
+  a direct `npm publish` Allowed action on THIS repository's `changesets.yml` publisher;
+- only after those checks, the workspace build, native assembly, and recursive publish.
+
+The census prints every package, version, OIDC result, and direct-publish result before it refuses.
+If any exact version already exists, the recursive publish set is not the full fixed group, an
+OIDC exchange fails, or any package is stage-only, the command exits before `pnpm publish`.
+
+HTTP 201 from the OIDC exchange is identity only. npm's trusted-publisher Allowed actions always
+permit `npm stage publish`; configurations created after 2026-09-03 default to stage and may omit
+direct `npm publish`. Both paths use the same successful exchange, so the preflight never treats
+that 201 as proof that sequential `pnpm publish -r` can write. Binding those Allowed actions to a
+GitHub Environment is #1381 and is out of scope here.
+
+pnpm's `--batch` option was evaluated. It exists from pnpm 11.7 and is all-or-nothing only on a
+registry implementing `PUT /-/pnpm/v1/publish` (pnpr does). npm's registry returns 404 for read-only
+`GET` and `OPTIONS` probes of that endpoint, and its published Registry API does not document it.
+pnpm batch publishing also rejects provenance and requires one shared credential for the batch
+instead of the per-package OIDC exchanges used here. The repository stays on the normal npm publish
+protocol and treats the preflight as the fail-before-first-write control.
+
 ```bash
-pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
+node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
 ```
 
+- `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
+  GitHub Actions it exchanges a package-specific OIDC token, then GETs `/-/package/<name>/trust`
+  and refuses unless THIS repository's `changesets.yml` publisher lists a direct-publish Allowed
+  action. npm documents that identity on GET `/-/package/<name>/trust` as `claims.repository` and
+  `claims.workflow_ref.file` with a `permissions` array. Other GitHub publishers on the same package
+  are not proof that this job can publish.
+  A manual run
+  with `NPM_TOKEN` still gets the registry and closure census; npm verifies that token on publish.
 - `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
   when a partial retry publishes only the packages still missing.
 - `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.

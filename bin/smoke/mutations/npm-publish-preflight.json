@@ -1,0 +1,122 @@
+{
+  "suite": [
+    "scripts/preflight-npm-publish.mjs",
+    "scripts/preflight-npm-publish.d.mts",
+    "bin/smoke/gen-npm-publish-preflight-dts.mts",
+    "bin/smoke/npm-publish-preflight.smoke.ts"
+  ],
+  "guard": "The fixed-group npm census refuses partial, incomplete, or stage-only releases before any registry write",
+  "command": "pnpm smoke:npm-publish-preflight",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/npm-publish-preflight.json",
+  "why": [
+    "A sequential recursive publish cannot recover after one package version lands and a later package refuses.",
+    "npm OIDC HTTP 201 proves identity, not the direct-publish Allowed action. These mutations remove one fail-before-write property at a time and every one must be killed by the fake registry smoke."
+  ],
+  "mutations": [
+    {
+      "name": "an already-published exact version is treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 200) return \"present\";\n",
+      "replace": "    if (response.status === 200) return \"absent\";\n",
+      "expectRed": "one already-published package refuses the whole preflight",
+      "cell": "one already-published package refuses the whole preflight"
+    },
+    {
+      "name": "a mixed present and absent census is allowed to continue",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (unknown.length || present.length > 0) {\n",
+      "replace": "  if (unknown.length) {\n",
+      "expectRed": "one already-published package refuses the whole preflight",
+      "cell": "one already-published package refuses the whole preflight"
+    },
+    {
+      "name": "the recursive publish set may omit one fixed-group package",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (invalid.length || missingManifests.length || outsideFixedGroup.length || manifests.size !== fixed.length) {\n",
+      "replace": "  if (invalid.length || outsideFixedGroup.length) {\n",
+      "expectRed": "one fixed-group package missing from the recursive publish set refuses",
+      "cell": "one fixed-group package missing from the recursive publish set refuses"
+    },
+    {
+      "name": "clean release skips per-package OIDC exchanges",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      try {\n        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n        row.oidc = exchanged.oidc;\n        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n        row.direct = \"not-run\";\n      }\n    }\n",
+      "replace": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      row.oidc = \"exchanged\";\n      row.direct = \"createPackage\";\n    }\n",
+      "expectRed": "clean preflight exchanges OIDC for every package before publishing",
+      "cell": "clean preflight exchanges OIDC for every package before publishing"
+    },
+    {
+      "name": "a refused OIDC exchange is treated as ready",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (response.status !== 201) return { oidc: `refused:${response.status}`, token: null };\n",
+      "replace": "  if (response.status !== 201) return { oidc: \"exchanged\", token: \"opaque-exchange-token\" };\n",
+      "expectRed": "one refused OIDC exchange refuses the full release",
+      "cell": "one refused OIDC exchange refuses the full release"
+    },
+    {
+      "name": "partial release begins OIDC exchanges before the complete registry census",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n  }\n",
+      "replace": "  for (const pkg of packages) {\n    const exchanged = env.ACTIONS_ID_TOKEN_REQUEST_URL ? await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) : { oidc: \"not-run\", token: null };\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: exchanged.oidc, direct: \"not-run\" });\n  }\n",
+      "expectRed": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call",
+      "cell": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call"
+    },
+    {
+      "name": "an opaque HTTP 201 exchange is treated as direct-publish proof",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n",
+      "replace": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = \"createPackage\";\n        } else {\n          row.direct = \"not-run\";\n        }\n",
+      "expectRed": "an opaque HTTP 201 exchange is not treated as direct-publish proof",
+      "cell": "an opaque HTTP 201 exchange is not treated as direct-publish proof"
+    },
+    {
+      "name": "a stage-only Allowed-actions sibling is allowed to continue",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  return n === \"publish\" || n === \"npmpublish\" || n === \"createpackage\" || n === \"direct\" || n === \"directpublish\";\n",
+      "replace": "  return n === \"publish\" || n === \"npmpublish\" || n === \"createpackage\" || n === \"direct\" || n === \"directpublish\" || n === \"stage\" || n === \"npmstagepublish\";\n",
+      "expectRed": "one stage-only Allowed-actions sibling refuses the whole preflight",
+      "cell": "one stage-only Allowed-actions sibling refuses the whole preflight"
+    },
+    {
+      "name": "a 401 trust census is treated as direct-publish proof",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status !== 200) return `refused:${response.status}`;\n",
+      "replace": "    if (response.status !== 200) return \"createPackage\";\n",
+      "expectRed": "a 401 trust census refuses before any publish call",
+      "cell": "a 401 trust census refuses before any publish call"
+    },
+    {
+      "name": "empty Allowed-actions lists are treated as direct publish",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (withDirect.length > 0) return \"createPackage\";\n  return \"stage-only\";\n",
+      "replace": "  if (withDirect.length > 0) return \"createPackage\";\n  return \"createPackage\";\n",
+      "expectRed": "classifier treats an empty Allowed-actions list as stage-only",
+      "cell": "classifier treats an empty Allowed-actions list as stage-only"
+    },
+    {
+      "name": "any GitHub publisher with createPackage proves this job can publish",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const mine = entries.filter((entry) => isThisReleasePublisher(entry, identity));\n  if (mine.length === 0) return \"refused:no-github-publisher\";\n  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));\n",
+      "replace": "  const mine = entries.filter(isGithubPublisher);\n  if (mine.length === 0) return \"refused:no-github-publisher\";\n  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));\n",
+      "expectRed": "classifier ignores an unrelated GitHub publisher that lists createPackage",
+      "cell": "classifier ignores an unrelated GitHub publisher that lists createPackage"
+    },
+    {
+      "name": "GET trust claims identity is ignored",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const claims = entry.claims && typeof entry.claims === \"object\" ? entry.claims : {};\n  const workflowRef = claims.workflow_ref;\n  const claimsWorkflow = typeof workflowRef === \"string\"\n    ? workflowRef\n    : workflowRef && typeof workflowRef === \"object\"\n      ? String(workflowRef.file ?? workflowRef.filename ?? \"\")\n      : \"\";\n  return {\n    type: String(entry.type ?? nested.type ?? \"\"),\n    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? claims.repository ?? \"\"),\n    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? claimsWorkflow ?? claims.workflow ?? \"\"),\n  };\n",
+      "replace": "  return {\n    type: String(entry.type ?? nested.type ?? \"\"),\n    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? \"\"),\n    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? \"\"),\n  };\n",
+      "expectRed": "classifier accepts official GitHub GET trust claims with createPackage",
+      "cell": "classifier accepts official GitHub GET trust claims with createPackage"
+    },
+    {
+      "name": "an exported signature changes without regenerating its declaration",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export function trustUrl(registryBase, name) {\n",
+      "replace": "export function trustUrl(registryBase, name, extra = \"\") {\n  void extra;\n",
+      "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
+      "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)"
+    }
+  ]
+}
