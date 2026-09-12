@@ -96,8 +96,8 @@
       "find": "export const UNRECOGNISED_STORED_SESSION_CAUSE = \"unrecognised harness failure\";",
       "replace": "export const UNRECOGNISED_STORED_SESSION_CAUSE = \"harness connection closed\";",
       "command": "pnpm smoke:jcode-stored-sessions",
-      "expectRed": "an out-of-memory spawn failure is not reported as a closed connection",
-      "cell": "an out-of-memory spawn failure is not reported as a closed connection"
+      "expectRed": "unrelated child text is not forwarded",
+      "cell": "unrelated child text is not forwarded"
     }
   ]
 }
