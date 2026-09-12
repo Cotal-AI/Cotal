@@ -172,18 +172,26 @@ try {
   check("chunk-size panic text is reduced to the assertion", boundStoredSessionCause("x chunk size must be non-zero y") === "chunk size must be non-zero");
   check("connection-closed is kept", boundStoredSessionCause("harness connection closed") === "harness connection closed");
   check("write EPIPE is kept", boundStoredSessionCause("write EPIPE") === "write EPIPE");
-  check("unrelated child text is not forwarded", boundStoredSessionCause("sk-live-secret-material") === UNRECOGNISED_STORED_SESSION_CAUSE);
+  // These compare against LITERALS, not the exported constant. Asserting `x === CONSTANT` when the
+  // implementation returns CONSTANT is circular: it holds for any value the constant is given, so a
+  // mutation that renames it back to a specific wrong cause would pass unnoticed.
+  check("unrelated child text is not forwarded", boundStoredSessionCause("sk-live-secret-material") === "unrecognised harness failure", boundStoredSessionCause("sk-live-secret-material"));
   // A bounded output must not be a bounded lie: an unrecognised failure is reported as unrecognised
   // rather than as one of the three named causes, which would send the operator to the wrong place.
   check(
     "an out-of-memory spawn failure is not reported as a closed connection",
-    boundStoredSessionCause("spawn ENOMEM") === UNRECOGNISED_STORED_SESSION_CAUSE,
+    boundStoredSessionCause("spawn ENOMEM") === "unrecognised harness failure",
     boundStoredSessionCause("spawn ENOMEM"),
   );
   check(
     "a refused socket is not reported as a closed connection",
-    boundStoredSessionCause("connect ECONNREFUSED /run/jcode.sock") === UNRECOGNISED_STORED_SESSION_CAUSE,
+    boundStoredSessionCause("connect ECONNREFUSED /run/jcode.sock") === "unrecognised harness failure",
     boundStoredSessionCause("connect ECONNREFUSED /run/jcode.sock"),
+  );
+  check(
+    "the exported fallback constant is the non-committal token itself",
+    UNRECOGNISED_STORED_SESSION_CAUSE === "unrecognised harness failure",
+    UNRECOGNISED_STORED_SESSION_CAUSE,
   );
 
   console.log("\n4. named fatal carries the cause and path, never unknown");
