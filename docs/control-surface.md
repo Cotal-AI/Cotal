@@ -256,8 +256,10 @@ next start, which is what makes the operator's decision a recoverable one.
 session offer: the manager mints a token bound to the caller, the target lifecycle, its own
 instance id and epoch, and an expiry, and replies with a session id and expiry only, no URL
 and no secret in the reply. The CLI redeems the offer over the mesh (a second redeem is
-refused), and terminal bytes then stream on core-NATS session subjects scoped to the two
-parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
+refused). On a registered open mesh that redeem is a bare connection, the same path other
+control commands already use; on a static-auth mesh it is still a session-caller credential
+minted from the resolved root's seed. Terminal bytes then stream on core-NATS session subjects
+scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
 states: a restarted manager's successor refuses the old epoch's sessions and the client

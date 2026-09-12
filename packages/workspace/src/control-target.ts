@@ -35,6 +35,10 @@ export interface ControlTarget {
   spaceAuth?: SpaceAuth;
   /** The root the mesh resolved to. Absent for a raw off-registry connection. */
   root?: string;
+  /** The registered mesh contract, carried forward from {@link Connection.mode}. Absent on a
+   *  raw off-registry connect. Open-vs-static decisions read this field, never the absence of
+   *  {@link spaceAuth}. */
+  mode?: MeshTarget["mode"];
 }
 
 /** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
@@ -98,6 +102,7 @@ export async function resolveControlTarget(
         server: conn.server,
         auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
         ...(conn.root !== undefined ? { root: conn.root } : {}),
+        ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
       };
     }
   }
@@ -108,6 +113,7 @@ export async function resolveControlTarget(
     auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
     ...(conn.auth ? { spaceAuth: conn.auth } : {}),
     ...(conn.root !== undefined ? { root: conn.root } : {}),
+    ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
   };
 }
 
