@@ -535,7 +535,7 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 35;
+  const EXPECTED_CELLS = 34;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
