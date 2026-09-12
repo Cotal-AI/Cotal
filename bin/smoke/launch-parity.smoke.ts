@@ -12,12 +12,16 @@
  *      under that window kills real spawns while the launch proceeds.
  * Run: pnpm smoke:launch-parity
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { launchFlags } from "@cotal-ai/workspace";
 import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
 import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
 import type { CotalEndpoint } from "@cotal-ai/core";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // cotalToolSpecs is capability-gated: cotal_spawn only renders for a spawn-capable agent.
 process.env.COTAL_SPACE ||= "parity";
@@ -123,3 +127,4 @@ assert.equal(launchCommand, "launch", "launchAgent must invoke the manager's lau
 assert.equal(launchTimeout, START_TIMEOUT_MS, "launchAgent must send the launch op with START_TIMEOUT_MS");
 
 console.log(`✓ launch-parity smoke passed (${launchFlags.length} grammar flags · ${toolParams.length} MCP params · readiness window ${READINESS_TIMEOUT_MS}ms < clients ${START_TIMEOUT_MS}/${SPAWN_TIMEOUT_MS}ms)`);
+emitSentinel({ passed: cells(), failed: 0 });

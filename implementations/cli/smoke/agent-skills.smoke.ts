@@ -7,11 +7,15 @@
  * symlink-clobber guard, and manifest integrity (traversal-key rejection, array-shape rejection,
  * corrupt-JSON fail-loud). Run: pnpm smoke:agent-skills
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const sha = (b: Buffer | string) => "sha256:" + createHash("sha256").update(b).digest("hex");
 const created: string[] = [];
@@ -208,3 +212,4 @@ try {
 } finally {
   for (const d of created) rmSync(d, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

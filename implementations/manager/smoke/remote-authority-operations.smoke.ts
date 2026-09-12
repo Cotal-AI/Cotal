@@ -1,8 +1,12 @@
 /** Broker-free routing checks for authenticated remote manager maintenance operations. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid, newIdentity, remoteManagerActors } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerGoalIndexEntries } from "../src/remote-authority.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const instanceId = mintLifecycleUid();
 const identities = {
@@ -181,3 +185,4 @@ assert.deepEqual(effects, []);
 assert.equal(remoteChecks, 10);
 
 console.log("remote authority operations: 31 passed, 0 failed");
+emitSentinel({ passed: cells(), failed: 0 });

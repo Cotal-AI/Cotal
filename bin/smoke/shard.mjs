@@ -9,12 +9,17 @@
  * use a stable hash of their suite name, so an independently-merged fragment cannot move another.
  * Each smoke runs in its own `pnpm` subprocess (separate broker/ports) exactly as the serial chain
  * does; the shards run on SEPARATE runners, so there is no cross-smoke port contention within a shard.
+ *
+ * Exit status is not enough. A suite that returns 0 having run zero cells is the same false green
+ * as an empty chain; the runner parses a cell-count sentinel from the suite's own output and refuses
+ * a missing sentinel or a zero-cell run, naming the suite and the reason.
  */
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { parseCiSuites, readCiSuiteFragments, suitesForShard, CI_SUITES_PATH } from "./ci-suites.mjs";
 import { readFileSync } from "node:fs";
 import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 import { neverRanBlock } from "./shard-never-ran.mjs";
+import { parseSentinel } from "./sentinel.mjs";
 
 const shard = Number(process.argv[2]);
 const count = Number(process.argv[3]);
@@ -44,40 +49,83 @@ if (pre.supported && pre.reaped.length > 0) {
 }
 
 const isWin = process.platform === "win32";
-const leaked = [];
-let failure;
-for (let i = 0; i < mine.length; i++) {
-  const cmd = mine[i];
-  const [bin, ...args] = cmd.split(/\s+/);
-  console.log(`\n===== ${cmd} =====`);
-  // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
-  const r = spawnSync(bin, args, { stdio: "inherit", shell: isWin });
-  // Reap BEFORE deciding what to do about the exit status, so a suite that fails does not also get to
-  // abandon its broker for the rest of the run. Anything with the token here is new since the sweep
-  // above, so it belongs to the suite that just returned.
-  const after = reapSmokeBrokers();
-  reportReaped(cmd, after);
-  if (after.reaped.length > 0) leaked.push({ cmd, count: after.reaped.length });
-  if (r.status !== 0) {
-    console.error(`\n✗ shard ${shard}/${count} FAILED at: ${cmd} (exit ${r.status})`);
-    const never = neverRanBlock(mine, i);
-    if (never) console.error(never);
-    failure = r.status || 1;
-    break;
-  }
+
+/** Capture stdout+stderr while still writing them, so the sentinel can be parsed from the suite. */
+function runSuite(bin, args) {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"], shell: isWin });
+    let out = "";
+    const take = (buf, write) => {
+      const s = typeof buf === "string" ? buf : buf.toString();
+      out += s;
+      write(s);
+    };
+    child.stdout?.on("data", (buf) => take(buf, (s) => process.stdout.write(s)));
+    child.stderr?.on("data", (buf) => take(buf, (s) => process.stderr.write(s)));
+    child.on("error", (err) => {
+      resolve({ status: 1, out: `${out}${err}\n` });
+    });
+    child.on("close", (status, signal) => {
+      resolve({ status: status === null ? (signal ? 1 : 1) : status, out });
+    });
+  });
 }
 
-// A suite that passes its assertions and leaves a broker running is a FALSE GREEN, so it fails the
-// shard. It is reported at the end rather than at the first offender because one full run naming
-// every leaking suite is worth more than a run that stops at the first and hides the rest. A failing
-// suite is reported by its own status first: it already has a reason, and a leak on the way out is a
-// consequence of it, not an independent finding.
-if (failure !== undefined) process.exit(failure);
-if (leaked.length > 0) {
-  console.error(`\n✗ shard ${shard}/${count}: ${leaked.length} suite(s) passed but LEAKED a broker they owned:`);
-  for (const { cmd, count: n } of leaked) console.error(`    ${cmd} (${n})`);
-  console.error(`  A green suite that leaves a broker running is a false green. Each of these tore down on`);
-  console.error(`  its normal path in review, so this is a real regression in one of them, not reaper noise.`);
-  process.exit(1);
+const leaked = [];
+let failure;
+let totalCells = 0;
+
+/** One emit site: later suites that never started stay named the same way for every break reason. */
+function failAt(cmd, i, reason, status) {
+  console.error(`\n✗ shard ${shard}/${count} FAILED at: ${cmd} (${reason})`);
+  const never = neverRanBlock(mine, i);
+  if (never) console.error(never);
+  failure = status;
 }
-console.log(`\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes)`);
+
+async function main() {
+  for (let i = 0; i < mine.length; i++) {
+    const cmd = mine[i];
+    const [bin, ...args] = cmd.split(/\s+/);
+    console.log(`\n===== ${cmd} =====`);
+    // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
+    const r = await runSuite(bin, args);
+    // Reap BEFORE deciding what to do about the exit status, so a suite that fails does not also get to
+    // abandon its broker for the rest of the run. Anything with the token here is new since the sweep
+    // above, so it belongs to the suite that just returned.
+    const after = reapSmokeBrokers();
+    reportReaped(cmd, after);
+    if (after.reaped.length > 0) leaked.push({ cmd, count: after.reaped.length });
+    if (r.status !== 0) {
+      failAt(cmd, i, `exit ${r.status}`, r.status || 1);
+      break;
+    }
+    const sentinel = parseSentinel(r.out);
+    if (!sentinel) {
+      failAt(cmd, i, "no sentinel", 1);
+      break;
+    }
+    if (sentinel.cells === 0) {
+      failAt(cmd, i, "zero cells", 1);
+      break;
+    }
+    totalCells += sentinel.cells;
+  }
+
+  // A suite that passes its assertions and leaves a broker running is a FALSE GREEN, so it fails the
+  // shard. It is reported at the end rather than at the first offender because one full run naming
+  // every leaking suite is worth more than a run that stops at the first and hides the rest. A failing
+  // suite is reported by its own status first: it already has a reason, and a leak on the way out is a
+  // consequence of it, not an independent finding.
+  if (failure !== undefined) process.exit(failure);
+  if (leaked.length > 0) {
+    console.error(`\n✗ shard ${shard}/${count}: ${leaked.length} suite(s) passed but LEAKED a broker they owned:`);
+    for (const { cmd, count: n } of leaked) console.error(`    ${cmd} (${n})`);
+    console.error(`  A green suite that leaves a broker running is a false green. Each of these tore down on`);
+    console.error(`  its normal path in review, so this is a real regression in one of them, not reaper noise.`);
+    process.exit(1);
+  }
+  console.log(`\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells)`);
+}
+
+await main();

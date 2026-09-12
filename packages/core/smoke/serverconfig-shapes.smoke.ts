@@ -1,5 +1,9 @@
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createSpaceAuth, serverConfig, openServerConfig } from "../src/index.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // Every CALL-SITE SHAPE of the broker config renderers, exercised in a GATED suite.
 //
@@ -95,3 +99,4 @@ for (const [what, tlsConf, plainConf] of [
 }
 
 console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material`);
+emitSentinel({ passed: cells(), failed: 0 });

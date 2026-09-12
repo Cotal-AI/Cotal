@@ -11,8 +11,12 @@
  * Plus: the real production path. A dynamic import()'s self-registration is captured by the stage
  * (ALS crosses module evaluation), invisible until commit, then resolvable.
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { Registry, registry } from "../src/registry.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // 1. register-before-rejecting-await is invisible AND discarded (nothing live; key is free again).
 {
@@ -109,3 +113,4 @@ import { Registry, registry } from "../src/registry.js";
 }
 
 console.log("registry-staging.smoke: all assertions passed");
+emitSentinel({ passed: cells(), failed: 0 });

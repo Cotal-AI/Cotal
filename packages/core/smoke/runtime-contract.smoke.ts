@@ -1,7 +1,11 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentHandle, Runtime, RuntimeReference } from "../src/runtime.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const reference: RuntimeReference = { kind: "fixture", id: "opaque-local-reference" };
 const handle: AgentHandle = {
@@ -34,3 +38,4 @@ assert.doesNotMatch(contract, /\b(?:Pty|IPty)\b/, "the generic Runtime contract 
 const managerAdopt = readFileSync(join(import.meta.dirname, "..", "..", "..", "implementations", "manager", "src", "runtime", "index.ts"), "utf8");
 assert.match(managerAdopt, /runtime "\$\{runtime\.kind\}" does not support adopt/, "the manager refuses by name when adopt is absent");
 console.log("runtime contract smoke OK");
+emitSentinel({ passed: cells(), failed: 0 });

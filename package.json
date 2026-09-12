@@ -601,6 +601,7 @@
     "smoke:ci-declarations": "tsx bin/smoke/ci-declarations.smoke.ts",
     "smoke:shard-stability": "tsx bin/smoke/shard-stability.smoke.ts",
     "smoke:shard-never-ran": "tsx bin/smoke/shard-never-ran.smoke.ts",
+    "smoke:shard-sentinel": "tsx bin/smoke/shard-sentinel.smoke.ts",
     "smoke:workflow-concurrency": "tsx bin/smoke/workflow-concurrency.smoke.ts",
     "smoke:live-job-conclusion": "tsx bin/smoke/live-job-conclusion.smoke.ts",
     "smoke:live-suite": "tsx bin/smoke/live-suite.smoke.ts",

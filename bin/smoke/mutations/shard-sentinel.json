@@ -1,0 +1,41 @@
+{
+  "suite": [
+    "bin/smoke/shard-sentinel.smoke.ts"
+  ],
+  "guard": "shard.mjs refuses a suite that exits 0 with no sentinel or zero cells, and reports cells graded",
+  "command": "pnpm smoke:shard-sentinel",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/shard-sentinel.json",
+  "why": [
+    "Issue #1297 is a runner that grades on exit status alone. Isolating parseSentinel stays green if",
+    "shard.mjs never consults it. Each mutation targets a unique shipped-runner line so a revert to",
+    "status-only grading, a swallowed missing sentinel, a swallowed zero-cell run, or a suites-only",
+    "banner reddens the named cell through the shipped shard, not a helper."
+  ],
+  "mutations": [
+    {
+      "name": "the shard no longer requires a sentinel after exit 0",
+      "file": "bin/smoke/shard.mjs",
+      "find": "    const sentinel = parseSentinel(r.out);\n    if (!sentinel) {\n      failAt(cmd, i, \"no sentinel\", 1);",
+      "replace": "    const sentinel = parseSentinel(r.out) ?? { cells: 1, passed: 1, failed: 0, kind: \"canonical\" };\n    if (false && !sentinel) {\n      failAt(cmd, i, \"no sentinel\", 1);",
+      "expectRed": "a no-op suite that exits 0 is named FAILED with no sentinel",
+      "cell": "a no-op suite that exits 0 is named FAILED with no sentinel"
+    },
+    {
+      "name": "the shard accepts a zero-cell sentinel as a pass",
+      "file": "bin/smoke/shard.mjs",
+      "find": "    if (sentinel.cells === 0) {\n      failAt(cmd, i, \"zero cells\", 1);",
+      "replace": "    if (false && sentinel.cells === 0) {\n      failAt(cmd, i, \"zero cells\", 1);",
+      "expectRed": "a suite that prints a sentinel with zero cells is named FAILED with zero cells",
+      "cell": "a suite that prints a sentinel with zero cells is named FAILED with zero cells"
+    },
+    {
+      "name": "the green banner reports suites only",
+      "file": "bin/smoke/shard.mjs",
+      "find": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells)`);",
+      "replace": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes)`);",
+      "expectRed": "a sentinel-emitting suite greens the shard with the cell count",
+      "cell": "a sentinel-emitting suite greens the shard with the cell count"
+    }
+  ]
+}

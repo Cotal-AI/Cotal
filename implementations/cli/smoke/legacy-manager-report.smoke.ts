@@ -1,6 +1,10 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { sessionContinuityClass } from "@cotal-ai/core";
 import { legacyManagerReport } from "../src/lib/legacy-manager-report.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const classes = [
   [{ supportsSessionContinuation: true, supportsResume: true, supportsFreshStart: true }, "exact"],
@@ -39,3 +43,4 @@ assert.deepEqual(report, {
 assert.equal(await legacyManagerReport({ custody: "custodied" }, [], async () => ({})), undefined);
 
 console.log("legacy manager report smoke OK");
+emitSentinel({ passed: cells(), failed: 0 });
