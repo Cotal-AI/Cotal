@@ -4,7 +4,7 @@
     "extensions/connector-jcode/smoke/jcode-queue-fallback-policy.smoke.ts"
   ],
   "guard": "a soft-interrupt timeout never leaves the automatic delivery queue unserved, and a seat holding a queue that has made no progress does not report itself ready",
-  "command": "pnpm smoke:jcode-queue-fallback && pnpm smoke:jcode-queue-fallback-policy",
+  "command": "pnpm smoke:jcode-queue-fallback-policy && pnpm smoke:jcode-queue-fallback",
   "progressPattern": "  ✓ ",
   "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-queue-fallback.json",
@@ -13,6 +13,7 @@
     "The drain cell's DEADLINE is load-bearing and is therefore mutated in its own right (M2). Measured against the pre-fix tree, the message does eventually arrive, because the pre-existing idle-boundary path delivers it once the seat goes idle. A cell that merely waited for arrival was GREEN on the defect. Requiring arrival while the seat is still busy is what makes it a statement about draining.",
     "M1 severs the delivery itself: the level-triggered server is never armed, which is exactly the shipped behaviour. M2 severs the fallback tier in the policy table, so a timed-out handoff resolves to a path that cannot deliver while busy. M3 restores the shipped `connectionState` derivation, under which a bound seat with a live transport is `ready` whatever its queue is doing. M4 counts any inbox drain as automatic progress, which is the specific lie the measured seat would have told: it drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. M5 makes the fallback record acceptance for a batch it did not send, which is the at-most-once failure that would turn a late delivery into a lost one.",
     "M1 and M2 are separate on purpose. M2 alone leaves the server armed and it would still drive at the next idle transition, and M1 alone leaves the policy table correct while nothing consults it. One mutation standing in for both would leave whichever ran second ungraded.",
+    "ORDER IN `command` IS DELIBERATE. The policy arm runs FIRST. The two are chained with `&&`, so whichever reds first short-circuits the other, and M2's named cell lives in the policy arm: with the end-to-end arm first, M2 reddened the drain cell, the policy cell never printed, and mutation-proof graded it WRONG-RED. That verdict was right — the run had not shown the branch M2 claims to grade.",
     "The suites import connector-jcode and connector-core source relatively or through the workspace, and the end-to-end arm spawns the host through tsx against src/host-main.ts, so mutation-proof executes the changed source directly. `@cotal-ai/connector-core` is consumed as a workspace package by the end-to-end arm, so its two mutations carry a build command and an afterRestore rebuild; without them the arm would audit the last dist/ rather than the mutant."
   ],
   "mutations": [
