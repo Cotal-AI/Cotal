@@ -17,8 +17,8 @@
       "cell": "a frontmattered prompt writes exactly one frontmatter block",
       "name": "composeWirePersona wraps the prompt as body instead of parsing leading frontmatter",
       "file": "packages/core/src/agent-file.ts",
-      "find": "  if (!prompt.startsWith(\"---\")) return { body: prompt };",
-      "replace": "  if (true || !prompt.startsWith(\"---\")) return { body: prompt };",
+      "find": "    const def = parseAgentFileSource(`---\\n${fm}\\n---\\n${rest}`, \"<prompt>\");\n    def.name = fallbackName;\n    return { body: rest.trim(), def };",
+      "replace": "    return { body: prompt };",
       "expectRed": "✗ FAIL: a frontmattered prompt writes exactly one frontmatter block",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
