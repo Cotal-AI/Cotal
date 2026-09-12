@@ -1,0 +1,58 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/agui-egress-closed-schema.smoke.ts"
+  ],
+  "guard": "the egress fence validates the whole frame envelope against a closed schema: known top-level frame keys and known per-event keys per type; an envelope with an unknown or extra property at any level is refused naming the path; a frozen body carrying an extra property halts AguiEmitter.start recovery rather than republishing",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:agui-egress-closed-schema",
+  "completionMarker": "agui-egress-closed-schema smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-egress-closed-schema.json",
+  "why": [
+    "THE FIX IS A CLOSED SCHEMA, NOT AN EVENT-TYPE ALLOWLIST. The fence already had event-kind control",
+    "on .events[].type; extending that list is the enumerated-bad-input shape the fence already has.",
+    "The closed-schema approach validates the WHOLE envelope: known frame keys, known per-event keys",
+    "per type, and refuses any unknown property naming its path. This is a structural fix, not a",
+    "band-aid.",
+    "",
+    "T-SCHEMA-BYPASS removes the extraPropertyPath call from frozenBodyEgressVerdict, reopening the",
+    "sibling-property gap. T-ATTEMPT-EXTRA removes the extra-property halt from attempt(), so the",
+    "recovery path publishes the sibling bytes. T-LIVENESS adds a fake key to KNOWN_FRAME_KEYS,",
+    "proving the fence actually checks frame keys and is not vacuously passing.",
+    "",
+    "T-EVENT-LIVENESS adds a fake key to the RUN_STARTED event type's known keys, proving per-event",
+    "key checking is not vacuous."
+  ],
+  "mutations": [
+    {
+      "name": "T-SCHEMA-BYPASS the extraPropertyPath check is removed from frozenBodyEgressVerdict so the fence reverts to event-kind-only control",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "        const extra = extraPropertyPath(part as Record<string, unknown>);\n        if (extra !== undefined) return \"extra-property\";\n      } catch {",
+      "replace": "      } catch {",
+      "expectRed": "closed-schema:sibling-property frame-level tool bytes are refused",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-ATTEMPT-EXTRA the extra-property verdict is silently swallowed in attempt() so AguiEmitter.start republishes a frozen body with extra properties",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      throw this.halt(\n        \"egress-extra-property\",",
+      "replace": "      void this.halt(\n        \"egress-extra-property\",",
+      "expectRed": "recover:AguiEmitter.start halts with egress-extra-property for frozen sibling-property body",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-LIVENESS KNOWN_FRAME_KEYS is widened with a fake key, proving the fence does not vacuously pass frame-level checks",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "const KNOWN_FRAME_KEYS: ReadonlySet<string> = new Set([\n  \"kind\", \"protocol\", \"threadId\", \"runId\", \"epoch\", \"seq\", \"events\",\n]);",
+      "replace": "const KNOWN_FRAME_KEYS: ReadonlySet<string> = new Set([\n  \"kind\", \"protocol\", \"threadId\", \"runId\", \"epoch\", \"seq\", \"events\",\n  \"recovery\", \"smuggled\",\n]);",
+      "expectRed": "closed-schema:sibling-property frame-level tool bytes are refused",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-EVENT-LIVENESS KNOWN_EVENT_KEYS_BY_TYPE for RUN_STARTED is widened with a fake key, proving per-event key checking is not vacuous",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "[AGUI_EVENT_TYPE.RUN_STARTED, new Set([\"type\", \"timestamp\", \"rawEvent\", \"threadId\", \"runId\", \"parentRunId\", \"input\", \"cotal\"])],",
+      "replace": "[AGUI_EVENT_TYPE.RUN_STARTED, new Set([\"type\", \"timestamp\", \"rawEvent\", \"threadId\", \"runId\", \"parentRunId\", \"input\", \"cotal\", \"leaked\"])],",
+      "expectRed": "closed-schema:nested-event-field tool bytes are refused",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    }
+  ]
+}
