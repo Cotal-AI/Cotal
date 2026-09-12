@@ -20,8 +20,12 @@ globalThis.fetch = async (url) => {
   // package name the test actually named.
   const decoded = decodeURIComponent(path.slice(path.indexOf("/", path.indexOf("://") + 3)));
   const name = decoded.slice(1, decoded.lastIndexOf("/"));
-  return new Response("{}", {
-    status: missing.has(name) ? 404 : 200,
-    headers: { "content-type": "application/json" },
-  });
+  const version = decoded.slice(decoded.lastIndexOf("/") + 1);
+  if (missing.has(name)) {
+    return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
+  }
+  // A 200 must carry a body that identifies the package at the requested version, or the gate
+  // treats it as no-evidence (#1257). The fixture returns the minimum viable body.
+  const body = JSON.stringify({ name, version });
+  return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
 };
