@@ -1078,7 +1078,7 @@ time, L5xxx durability, L6xxx simulation.
 | L3044 | `to` without `onExpiry: "escalate"` |
 | L3045 | `waitUntil` probe is not a function |
 | L3046 | `waitUntil` needs a cadence and a deadline |
-| L3047 | `waitUntil` cadence does not divide its deadline usefully |
+| L3047 | `waitUntil` cadence is zero, or does not divide its deadline usefully |
 | L4001 | Permit exhausted |
 | L4002 | Agent down |
 | L4003 | Turn deadline elapsed |

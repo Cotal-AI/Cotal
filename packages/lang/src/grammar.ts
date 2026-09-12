@@ -683,7 +683,21 @@ function checkWaitUntil(args: AnyNode[], given: Map<string, AnyNode>, v: Validat
   };
   const e = literal(every);
   const d = literal(deadline);
-  if (e !== undefined && d !== undefined && isDuration(e) && isDuration(d) && parseDuration(e) > parseDuration(d)) {
+  // A ZERO CADENCE IS NOT A CADENCE. `parseDuration("0ms")` is a perfectly good 0, so a bare
+  // `every > deadline` test lets it through, and what it describes is a wait that observes with no
+  // pause between looks: a busy loop against somebody else's resource, appending an observation to
+  // a durable journal on every turn of it. The whole reason `every` has no default is that the
+  // runtime must not guess how expensive a resource is to poll, and accepting zero is that same
+  // guess made by omission.
+  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {
+    v.fail(
+      "L3047",
+      every as AnyNode,
+      `This observes every ${e}, which is no pause at all: the wait would poll the resource as fast as the run can turn and journal an observation each time.`,
+      "Give `every` a real interval, the slowest one that still notices in time.",
+      "waitUntil",
+    );
+  } else if (e !== undefined && d !== undefined && isDuration(e) && isDuration(d) && parseDuration(e) > parseDuration(d)) {
     v.fail(
       "L3047",
       every as AnyNode,

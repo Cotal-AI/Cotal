@@ -5,6 +5,7 @@
   ],
   "guard": "A `waitUntil`'s non-terminal observation is journalled AS AN OBSERVATION and leaves the entry pending, so a resumed run RE-OBSERVES the world instead of replaying what it last saw; only a terminal observation settles, each observation's probe is keyed in its own namespace, and the deadline is absolute across activations.",
   "command": "pnpm smoke:lang-wait-until && pnpm smoke:lang-options",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/wait-until-reobserve.json",
   "mutations": [
     {
@@ -21,7 +22,7 @@
       "find": "    case \"refused\":\n    case \"pending\":\n    case \"miss\":\n      break;\n  }\n\n  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n  const stop = host.options.shouldStop?.();\n  if (stop !== undefined) throw new RunReleased(stop);",
       "replace": "    case \"pending\":\n      return (verdict.entry.observations ?? []).at(-1)?.value;\n    case \"refused\":\n    case \"miss\":\n      break;\n  }\n\n  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n  const stop = host.options.shouldStop?.();\n  if (stop !== undefined) throw new RunReleased(stop);",
       "expectRed": "THE PROPERTY: the resumed wait OBSERVES THE WORLD AGAIN rather than replaying what it last saw",
-      "note": "The subtlest wrong fix available: the observations are still RECORDED as observations, and the entry is still left pending, so every cell about the journal's shape stays green. What changes is the only thing that matters \u2014 the resumed run hands back the newest recorded observation instead of looking. This is the mutant that would survive a suite which only inspected the record, which is why the property cell asserts on the handler's OWN look count rather than on what the program printed."
+      "note": "The subtlest wrong fix available: the observations are still RECORDED as observations, and the entry is still left pending, so every cell about the journal's shape stays green. What changes is the only thing that matters, which is that the resumed run hands back the newest recorded observation instead of looking. This is the mutant that would survive a suite which only inspected the record, which is why the property cell asserts on the handler's OWN look count rather than on what the program printed."
     },
     {
       "name": "every observation shares one key namespace, so the resumed probe replays the first look's answer",
@@ -62,6 +63,22 @@
       "replace": "    hashedOptions: [],",
       "expectRed": "the interpreter's projection matches the table on every option",
       "note": "Not a defect this change introduces: it exists so the cadence mutation above is GRADABLE. The prover cannot tell \"the suite does not test this file\" from \"this mutant changed no behaviour\" unless some mutation in the same file is killed. This one must redden the audit, and does, which is what makes a survivor in primitives.ts reportable rather than ambiguous."
+    },
+    {
+      "name": "a zero cadence is accepted at the call, so a wait can busy-poll a resource it does not own",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (everyMs <= 0) {",
+      "replace": "      if (false) {",
+      "expectRed": "and a zero cadence the validator CANNOT read, because it is computed rather than a literal, is refused at the CALL by the interpreter",
+      "note": "The ordering test below this guard cannot catch zero: `0 > deadline` is false, so removing the zero check restores a validator-invisible busy loop. Found in review by an independent seat rather than by me."
+    },
+    {
+      "name": "the static validator stops refusing a zero cadence, leaving only the runtime check",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {",
+      "replace": "  if (false) {",
+      "expectRed": "a ZERO cadence is refused, and it is not caught by the ordering test: `every: 0` is not greater than any deadline",
+      "note": "The static and runtime guards are separately necessary: this mutant proves the literal case is caught by the validator and not incidentally by the interpreter."
     }
   ]
 }

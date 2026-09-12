@@ -853,6 +853,17 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // a malformed cadence discovered an hour in is a wait that was never going to work.
       const everyMs = parseDuration(every);
       const deadlineMs = parseDuration(deadline);
+      // ZERO IS REFUSED BEFORE THE COMPARISON, because `0 > deadline` is false and a bare ordering
+      // test therefore ACCEPTS the one cadence that is not a cadence at all. A wait that pauses for
+      // nothing between looks is a busy loop against a resource the run does not own, and every
+      // turn of it appends to a journal that is rewritten whole. This is the computed-bag case the
+      // validator cannot see.
+      if (everyMs <= 0) {
+        throw new RuntimeFault(
+          "L3047",
+          `this \`waitUntil\` observes every ${every}, which is no pause at all: it would poll the resource as fast as the run can turn and journal an observation each time. Give \`every\` a real interval, the slowest one that still notices in time.`,
+        );
+      }
       if (everyMs > deadlineMs) {
         throw new RuntimeFault(
           "L3047",

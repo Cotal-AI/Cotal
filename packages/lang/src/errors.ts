@@ -79,7 +79,7 @@ export const CATALOG = {
   // program that gets one wrong would otherwise find out an hour into a wait.
   L3045: "`waitUntil` probe is not a function",
   L3046: "`waitUntil` needs a cadence and a deadline",
-  L3047: "`waitUntil` cadence does not divide its deadline usefully",
+  L3047: "`waitUntil` cadence is zero, or does not divide its deadline usefully",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",
