@@ -23,6 +23,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const env = { ...process.env };
+for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 delete env.BASE;
 delete env.HEAD;
 
