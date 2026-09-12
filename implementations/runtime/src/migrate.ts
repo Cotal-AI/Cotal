@@ -425,6 +425,22 @@ function classify(
     case "ask":
       return ignore("nothing outlives it");
 
+    // A `waitUntil` that FINISHED outlives nothing: it observed, the predicate held, and the wait
+    // is over. One still PENDING is a different fact, and it is not "live work" either: its
+    // durability is the entry itself, and the edit removing it is exactly how a program stops
+    // waiting for something it no longer needs. What it leaves behind is an armed cadence pause,
+    // which the run's own discharge sweep releases like any other timer. The OBSERVATIONS are what
+    // deserve saying out loud, because they are history a reader may want and the migration is
+    // where it would silently disappear.
+    case "waitUntil": {
+      const looked = (e.observations ?? []).length;
+      return ignore(
+        e.state === "pending"
+          ? `the edit stops waiting on this; ${looked} recorded observation${looked === 1 ? "" : "s"} stay in the journal, and its cadence timer is released with the run's other timers`
+          : "the wait finished, so nothing outlives it",
+      );
+    }
+
     case "turn":
       return {
         step,

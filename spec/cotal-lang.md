@@ -385,6 +385,7 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 | `checkpoint` | `checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? }) -> { status, value?, by?, at, artifact? }` | `checkpoint` | required, positional |
 | `sleep` | `sleep(duration, { name? }) -> null` | `sleep` | optional |
 | `wait` | `wait(event, { name?, timeout? }) -> value \| null` | `wait` | optional |
+| `waitUntil` | `waitUntil(probe, { name, every, deadline, terminal? }) -> observation` | `waitUntil` | required |
 | `notify` | `notify(agents, fact, { name? }) -> null` | `notify` | optional |
 | `monitor` | `monitor(agent, { name? }) -> null` | `monitor` | optional |
 | `parallel` | `parallel(branches, { name? }) -> results` | scope `parallel` | optional |
@@ -428,6 +429,7 @@ and requires exactly these to diverge (§11.1).
 | `checkpoint` | `{ prompt, schema, timeout }`, plus `{ onExpiry: "escalate", to }` when and only when `onExpiry` is `"escalate"` |
 | `sleep` | `{ duration }` |
 | `wait` | `{ event, timeout }` |
+| `waitUntil` | `{ every, deadline }` |
 | `notify` | `{ agents: [agent ids], fact }` |
 | `monitor` | `{ agent }` |
 | `parallel`, `race`, `fanOut` | `{ kind, name }` |
@@ -479,6 +481,33 @@ on `spawn` are policy over a result and are never hashed.
 - **`sleep`** is a durable timer; a resumed run does not re-sleep an elapsed sleep. It fails at the
   call, not in the handler, on a malformed duration.
 - **`wait`** awaits one event (§6.6) and resolves `null` on timeout rather than throwing.
+- **`waitUntil`** blocks until a predicate over a resource OUTSIDE the mesh holds, and it is the
+  only primitive whose observations are journalled as **observations** rather than as the step's
+  result (§10.1). `probe` is a program function the runtime calls; `every` is the cadence between
+  observations and `deadline` is when the wait gives up, both required and neither defaulted;
+  `terminal(observation)` decides whether an observation ENDS the wait, and defaults to
+  "the observation is not `null`". The division is normative: **the program owns the probe and the
+  predicate, the runtime owns the cadence and the deadline.**
+
+  Each observation is appended to the entry and **the entry stays `pending` until one is terminal**.
+  That is what a resume rests on: a resumed run finds a pending entry, re-enters the live path, and
+  **OBSERVES THE WORLD AGAIN**, where an ordinary effect would replay its recorded result. A wait
+  whose non-terminal observation settled as a result would answer "still pending" forever for a
+  resource that had since finished, which is the defect this primitive exists to remove rather than
+  a detail of it. Only the terminal observation settles the step, because only that one is an
+  answer; it is recorded as both the result and the last observation, so the history survives.
+
+  Each observation runs in **its own key namespace**, `/waitUntil:<name>#<n>/b:<i>`, counted from
+  0. A probe reaches the outside world by performing effects, and those effects are keyed in the
+  frame the probe runs in, so a shared namespace would have the second observation's probe replay
+  the first one's recorded result: the wait would re-observe while its probe did not.
+
+  An elapsed `deadline` is a **catchable** failure carrying `L4023`, as `turn`'s deadline carries
+  L4003: a wait that gave up is a fact about the world the program asked about, so the program
+  decides what happens next. A probe or a `terminal` that answers the wrong shape is L4024.
+  `every` and `deadline` are hashed (both stop observation); `terminal` is not, because it READS
+  an observation rather than making one, so a program may correct its own predicate on a run that
+  is already waiting.
 - **`notify`** tells agents about a branch decision. It writes a **notice** onto the run, rendered
   ahead of each addressee's next turn; it is never a channel message. The fact is bounded (§6.8).
 - **`monitor`** registers interest in an agent's health, after which `down(agent)` is an event a
@@ -776,8 +805,8 @@ The journal is an append-only log of entries. An entry is JSON:
   seq,                 // append order, for reading only; matching never uses it
   run,                 // the run id
   scope,               // the scope path string (§10.2)
-  kind,                // spawn | turn | ask | checkpoint | sleep | wait | notify | monitor
-                       //   | parallel | race | fanOut | conclave
+  kind,                // spawn | turn | ask | checkpoint | sleep | wait | waitUntil | notify
+                       //   | monitor | parallel | race | fanOut | conclave
   name,                // the step name, "" when unnamed
   occurrence,          // the n-th (kind, name) in this scope, from 0
   inputHash,           // "sha256:<hex>" (§6.4)
@@ -787,6 +816,8 @@ The journal is an append-only log of entries. An entry is JSON:
   result?,             // status ok: the recorded value
   error?,              // status failed or refused: { code, kind, message, detail? }
   external?,           // what the handler bound (recovery)
+  observations?,       // a waitUntil: [{ at, value }], what it has seen so far (§6.5)
+                       //   NOT results: a resumed run RE-OBSERVES rather than replaying these
   cancel?,             // a scope: { losers: [branch keys], issued }
   branchDigest?,       // a race: the digest over the losers' bodies (§10.6)
   branches?,           // a scope that failed: its branch keys
@@ -1045,6 +1076,9 @@ time, L5xxx durability, L6xxx simulation.
 | L3042 | Function passed as effect data |
 | L3043 | `notify` fact is not a bounded decision record |
 | L3044 | `to` without `onExpiry: "escalate"` |
+| L3045 | `waitUntil` probe is not a function |
+| L3046 | `waitUntil` needs a cadence and a deadline |
+| L3047 | `waitUntil` cadence does not divide its deadline usefully |
 | L4001 | Permit exhausted |
 | L4002 | Agent down |
 | L4003 | Turn deadline elapsed |
@@ -1067,6 +1101,8 @@ time, L5xxx durability, L6xxx simulation.
 | L4020 | A method is not a value |
 | L4021 | A callable `then` is not a record member |
 | L4022 | Unreadable ask schema |
+| L4023 | `waitUntil` deadline elapsed |
+| L4024 | `waitUntil` probe or predicate answered the wrong shape |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |

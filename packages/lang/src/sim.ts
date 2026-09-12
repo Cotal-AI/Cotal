@@ -23,6 +23,7 @@ import type {
   EffectHandler,
   MonitorRequest,
   NotifyRequest,
+  ObserveRequest,
   SleepRequest,
   SpawnRequest,
   TurnRequest,
@@ -359,6 +360,32 @@ export class SimHandler implements EffectHandler {
     if (value === null && req.timeout !== undefined) await this.timed(parseDuration(req.timeout), ctx);
     else await this.timedBy(this.script.clock?.wait, "1m", ctx);
     return value;
+  }
+
+  /**
+   * `waitUntil`'s cadence, on the virtual clock.
+   *
+   * NOTHING IS SCRIPTED HERE, and that is the correct shape rather than a gap. The OBSERVATION is
+   * the program's own probe, which the interpreter calls; this handler owns only the waiting. So
+   * there is no answer to invent and therefore nothing for the "an unscripted effect is an error"
+   * rule to protect: the simulator cannot green-light a broken program by guessing, because it is
+   * not being asked for a value at all.
+   *
+   * The cadence parks on the same event queue every other timed effect uses, so a wait that polls
+   * hourly for a day is simulated in microseconds while the run clock still moves a day. The
+   * deadline is compared on the virtual clock AFTER the park, so a cadence that steps over the
+   * deadline reports it rather than observing once more past it.
+   */
+  async observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean> {
+    this.checkFault(ctx);
+    // ATTEMPT 0 LOOKS IMMEDIATELY; every later one waits the cadence first.
+    if (req.attempt > 0) {
+      // The park itself must not overshoot the deadline: parking for the full cadence and then
+      // reporting late would advance the run clock past an instant the wait never reached.
+      const step = Math.min(parseDuration(req.every), Math.max(0, req.deadlineAt - this.virtualNow));
+      await this.timed(step, ctx);
+    }
+    return this.virtualNow < req.deadlineAt;
   }
 
   async notify(_req: NotifyRequest, ctx: EffectContext): Promise<null> {

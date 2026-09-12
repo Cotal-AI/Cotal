@@ -59,6 +59,7 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
     checkpoint: wrap("checkpoint", inner.checkpoint),
     sleep: wrap("sleep", inner.sleep),
     wait: wrap("wait", inner.wait),
+    observe: wrap("observe", inner.observe),
     notify: wrap("notify", inner.notify),
     monitor: wrap("monitor", inner.monitor),
     openConclave: wrap("openConclave", inner.openConclave),
@@ -291,9 +292,14 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   const ASK = (bag: string) => `const a = await spawn("p", { name: "a" });\nawait ask(a, { ${bag} });\n`;
   const CP = (bag: string) => `await checkpoint("gate", "ok?", { ${bag} });\n`;
   const WAIT = (bag: string) => `const a = await spawn("p", { name: "a" });\nawait wait(replied(a), { ${bag} });\n`;
+  // `waitUntil` takes its subject as a FUNCTION, so unlike every probe above it cannot be edited
+  // by swapping a literal: the probe and the predicate are unhashable by construction and the
+  // table's claim is entirely about the two durations beside them.
+  const WAIT_UNTIL = (bag: string) =>
+    `const a = await spawn("p", { name: "a" });\nawait waitUntil(async () => await ask(a, { name: "q", schema: { days: "number" } }), { ${bag} });\n`;
 
   const SOURCE: Readonly<Record<string, (bag: string) => string>> = {
-    spawn: SPAWN, turn: TURN, ask: ASK, checkpoint: CP, wait: WAIT,
+    spawn: SPAWN, turn: TURN, ask: ASK, checkpoint: CP, wait: WAIT, waitUntil: WAIT_UNTIL,
   };
 
   const PROBES: readonly Probe[] = [
@@ -321,6 +327,14 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
     { prim: "checkpoint", opt: "onExpiry", a: "fail", b: "proceed", bagA: 'timeout: "1m", onExpiry: "fail"', bagB: 'timeout: "1m", onExpiry: "proceed"' },
     { prim: "checkpoint", opt: "onExpiry", a: "proceed", b: "escalate", bagA: 'timeout: "1m", onExpiry: "proceed"', bagB: 'timeout: "1m", onExpiry: "escalate", to: "david"' },
     { prim: "checkpoint", opt: "to", a: "david", b: "sam", bagA: 'timeout: "1m", onExpiry: "escalate", to: "david"', bagB: 'timeout: "1m", onExpiry: "escalate", to: "sam"' },
+
+    // `waitUntil`'s two durations, for the same reason as `wait.timeout`: both STOP OBSERVATION.
+    // A wait that looked hourly did not ask what a minutely one asks, and a recorded answer to
+    // "within ten minutes" is not an answer to "within an hour". The `terminal` control lives in
+    // wait-until.smoke rather than here, because editing it is a function edit and this audit
+    // works by swapping literals.
+    { prim: "waitUntil", opt: "every", a: "1m", b: "5m", bagA: 'name: "u", every: "1m", deadline: "10m"', bagB: 'name: "u", every: "5m", deadline: "10m"' },
+    { prim: "waitUntil", opt: "deadline", a: "10m", b: "1h", bagA: 'name: "u", every: "1m", deadline: "10m"', bagB: 'name: "u", every: "1m", deadline: "1h"' },
   ];
 
   const script = {
@@ -364,10 +378,10 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   }
 
   // A count, because a loop that audits nothing prints the same green as one that audits everything.
-  ok("the hash audit ran every probe", audited === PROBES.length && audited >= 16, audited);
+  ok("the hash audit ran every probe", audited === PROBES.length && audited >= 18, audited);
   // Both halves present: an interpreter that diverged on EVERY edit would satisfy the positives
   // while breaking every reapply, and one that never diverged would satisfy the controls.
-  ok("with both hashed options and reapplied ones under test", hashedSeen >= 10 && cleanSeen >= 4, { hashedSeen, cleanSeen });
+  ok("with both hashed options and reapplied ones under test", hashedSeen >= 12 && cleanSeen >= 4, { hashedSeen, cleanSeen });
   ok("the interpreter's projection matches the table on every option", wrong.length === 0, wrong);
 }
 

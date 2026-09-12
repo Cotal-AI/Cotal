@@ -566,6 +566,7 @@ const H = (v: unknown) => digest(v);
     checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
     sleep: (req, ctx) => sim.sleep(req, ctx),
     wait: (req, ctx) => sim.wait(req, ctx),
+    observe: (req, ctx) => sim.observe(req, ctx),
     notify: (req, ctx) => sim.notify(req, ctx),
     monitor: (req, ctx) => sim.monitor(req, ctx),
     openConclave: (req, ctx) => sim.openConclave(req, ctx),
@@ -609,6 +610,7 @@ const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
     return await sim.sleep(req, ctx);
   },
   wait: (req, ctx) => sim.wait(req, ctx),
+  observe: (req, ctx) => sim.observe(req, ctx),
   notify: (req, ctx) => sim.notify(req, ctx),
   monitor: (req, ctx) => sim.monitor(req, ctx),
   openConclave: (req, ctx) => sim.openConclave(req, ctx),
