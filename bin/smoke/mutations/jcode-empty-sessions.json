@@ -31,8 +31,8 @@
       "find": "    if ((error as NodeJS.ErrnoException).code === \"ENOENT\") return { kind: \"absent\", path };",
       "replace": "    if ((error as NodeJS.ErrnoException).code === \"ENOENT\") return { kind: \"empty-directory\", path };",
       "command": "pnpm smoke:jcode-stored-sessions",
-      "expectRed": "a first-launch home is not treated as the empty-directory defect",
-      "cell": "a first-launch home is not treated as the empty-directory defect"
+      "expectRed": "a missing sessions path is absent, not empty",
+      "cell": "a missing sessions path is absent, not empty"
     },
     {
       "name": "M3 classify prose that mentions the assertion as the panic",

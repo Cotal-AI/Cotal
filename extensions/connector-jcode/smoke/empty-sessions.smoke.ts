@@ -150,13 +150,13 @@ try {
   writeFileSync(join(panicHome, "sessions", "placeholder.json"), "{}");
   const panicked = startHost(panicName, { FAKE_JCODE_PANIC_LIST: "1" });
   child = panicked.child;
-  await waitFor("listing-panic create_session", () =>
+  const panicCreate = await waitFor("listing-panic create_session", () =>
     entriesOf(panicked.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
-  );
+  ).catch(() => undefined);
   const panicErr = panicked.stderr();
   check(
     "listing panic still starts a fresh session on a new harness",
-    /started a fresh session/.test(panicErr) && /could not list prior sessions at /.test(panicErr),
+    Boolean(panicCreate) && /started a fresh session/.test(panicErr) && /could not list prior sessions at /.test(panicErr),
     panicErr,
   );
   check("listing panic names chunk size must be non-zero", /chunk size must be non-zero/.test(panicErr), panicErr);
