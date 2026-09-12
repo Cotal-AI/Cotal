@@ -39,6 +39,7 @@ const oidcPayload = Buffer.from(JSON.stringify({
   workflow_ref: "Cotal-AI/Cotal/.github/workflows/changesets.yml@refs/heads/main",
   ref: "refs/heads/main",
   event_name: "push",
+  environment: "npm-publish",
   aud: "npm:registry.npmjs.org",
   jti: "fake-jti",
 })).toString("base64url");
@@ -56,6 +57,7 @@ function githubPublisher(actions: string[], extra: Record<string, unknown> = {})
     type: "github",
     repository: "Cotal-AI/Cotal",
     workflow_filename: "changesets.yml",
+    environment: "npm-publish",
     allowed_actions: actions,
     ...extra,
   };
@@ -67,13 +69,14 @@ function githubClaimsPublisher(permissions: string[], claims: Record<string, unk
     claims: {
       repository: "Cotal-AI/Cotal",
       workflow_ref: { file: "changesets.yml" },
+      environment: "npm-publish",
       ...claims,
     },
     permissions,
   };
 }
 
-const thisRelease = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml" };
+const thisRelease = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml", environment: "npm-publish" };
 
 function isWriteShaped(call: Seen): boolean {
   return call.method === "PUT"
@@ -252,6 +255,23 @@ check(
   classifyDirectPublishPermission([
     githubClaimsPublisher(["createPackage"], { workflow_ref: { file: "release.yml" } }),
   ], thisRelease) === "refused:no-github-publisher",
+);
+check(
+  "classifier refuses a same-repo same-workflow publisher with blank environment",
+  classifyDirectPublishPermission([
+    githubClaimsPublisher(["createPackage", "createStagedPackage"], { environment: "" }),
+  ], thisRelease) === "refused:no-github-publisher",
+);
+check(
+  "classifier refuses a same-repo same-workflow publisher with no environment field",
+  classifyDirectPublishPermission({
+    trustedPublishers: [{
+      type: "github",
+      repository: "Cotal-AI/Cotal",
+      workflow_filename: "changesets.yml",
+      allowed_actions: ["createPackage"],
+    }],
+  }, thisRelease) === "refused:no-github-publisher",
 );
 check(
   "classifier treats an explicit gitlab type as not this GitHub publisher",
@@ -462,6 +482,78 @@ check(
   "a 401 trust census never issues a write-shaped registry call",
   trustDenied.seen.every((call) => !isWriteShaped(call)),
   trustDenied.seen,
+);
+
+const blankEnv = await scenario({
+  trust: {
+    "@cotal-ai/core": [githubClaimsPublisher(["createPackage", "createStagedPackage"], { environment: "" })],
+    "@cotal-ai/seat": [githubClaimsPublisher(["createPackage", "createStagedPackage"], { environment: "" })],
+    "cotal-ai": [githubClaimsPublisher(["createPackage", "createStagedPackage"], { environment: "" })],
+  },
+});
+check(
+  "a publisher with blank environment refuses even with createPackage permission",
+  blankEnv.error instanceof Error && blankEnv.error.message.includes("direct-publish authorization refused"),
+  blankEnv.error,
+);
+check(
+  "blank-environment refusal never issues a write-shaped registry call",
+  blankEnv.seen.every((call) => !isWriteShaped(call)),
+  blankEnv.seen,
+);
+
+const noEnvOidcPayload = Buffer.from(JSON.stringify({
+  repository: "Cotal-AI/Cotal",
+  workflow_ref: "Cotal-AI/Cotal/.github/workflows/changesets.yml@refs/heads/main",
+  ref: "refs/heads/main",
+  event_name: "push",
+  aud: "npm:registry.npmjs.org",
+  jti: "fake-jti-no-env",
+})).toString("base64url");
+const noEnvIdToken = `header.${noEnvOidcPayload}.signature`;
+const noEnvOidc = await (async () => {
+  const seen: Seen[] = [];
+  const logs: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push({ method: req.method ?? "", url: req.url ?? "" });
+    if (req.url?.startsWith("/oidc?")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ value: noEnvIdToken }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const result = await preflightNpmPublish({
+      fixedPackages: fixed,
+      workspacePackages: workspace,
+      registryBase: base,
+      env: { ...env, ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc` },
+      log: (line) => logs.push(line),
+    });
+    return { result, seen, logs, error: undefined };
+  } catch (error) {
+    return { result: undefined, seen, logs, error };
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+})();
+check(
+  "an OIDC token without the environment claim refuses the whole preflight",
+  noEnvOidc.error instanceof Error
+    && noEnvOidc.error.message.includes("OIDC exchange refused")
+    && noEnvOidc.logs.some((line) => typeof line === "string" && line.includes("refused:GitHub OIDC identity did not match the release job: environment")),
+  noEnvOidc.error,
+);
+check(
+  "OIDC environment rejection never issues a write-shaped registry call",
+  noEnvOidc.seen.every((call) => !isWriteShaped(call)),
+  noEnvOidc.seen,
 );
 
 const committedDts = readFileSync(join(ROOT, "scripts/preflight-npm-publish.d.mts"), "utf8");

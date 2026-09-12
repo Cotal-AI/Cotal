@@ -106,6 +106,22 @@
       "replace": "    \"ci:publish\": \"node scripts/preflight-npm-publish.mjs && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks\",\n",
       "expectRed": "Changesets publish builds dependencies before assembly and publication on every retry",
       "cell": "Changesets publish builds dependencies before assembly and publication on every retry"
+    },
+    {
+      "name": "Changesets version job drops the npm-publish Environment",
+      "file": ".github/workflows/changesets.yml",
+      "find": "    environment: npm-publish\n    permissions:\n      contents: write\n",
+      "replace": "    permissions:\n      contents: write\n",
+      "expectRed": "changesets.yml version job is bound to the npm-publish Environment",
+      "cell": "changesets.yml version job is bound to the npm-publish Environment"
+    },
+    {
+      "name": "Changesets snapshot job drops the npm-publish Environment",
+      "file": ".github/workflows/changesets.yml",
+      "find": "    environment: npm-publish\n    permissions:\n      contents: read\n",
+      "replace": "    permissions:\n      contents: read\n",
+      "expectRed": "changesets.yml snapshot job is bound to the npm-publish Environment",
+      "cell": "changesets.yml snapshot job is bound to the npm-publish Environment"
     }
   ]
 }

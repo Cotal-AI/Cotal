@@ -117,6 +117,22 @@
       "replace": "export function trustUrl(registryBase, name, extra = \"\") {\n  void extra;\n",
       "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
       "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)"
+    },
+    {
+      "name": "a publisher with blank environment bypasses the environment check",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (expectedEnvironment && envValue !== expectedEnvironment) return false;\n",
+      "replace": "  if (expectedEnvironment && envValue && envValue !== expectedEnvironment) return false;\n",
+      "expectRed": "a publisher with blank environment refuses even with createPackage permission",
+      "cell": "a publisher with blank environment refuses even with createPackage permission"
+    },
+    {
+      "name": "the OIDC identity assertion ignores the environment claim",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (claims.environment !== REQUIRED_ENVIRONMENT) failures.push(\"environment\");\n",
+      "replace": "",
+      "expectRed": "an OIDC token without the environment claim refuses the whole preflight",
+      "cell": "an OIDC token without the environment claim refuses the whole preflight"
     }
   ]
 }

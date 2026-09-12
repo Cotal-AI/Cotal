@@ -148,6 +148,12 @@ check(
   { versionHasCiPublish: /publish:\s*pnpm ci:publish/.test(version), ciPublish },
 );
 
+check(
+  "changesets.yml version job is bound to the npm-publish Environment",
+  /^\s+environment:\s*npm-publish\s*$/m.test(version),
+  version.match(/environment.*/)?.[0] ?? "no environment line",
+);
+
 console.log("\nC. Changesets snapshot path");
 check("changesets.yml declares job snapshot", snapshot.length > 0);
 hasBoth(needsList(snapshot), "changesets.yml snapshot needs both native linux builders");
@@ -161,6 +167,12 @@ check(
   snapshot.indexOf("preflight-npm-publish.mjs") >= 0
     && snapshot.indexOf("preflight-npm-publish.mjs") < snapshot.indexOf("pnpm publish -r"),
   snapshot,
+);
+
+check(
+  "changesets.yml snapshot job is bound to the npm-publish Environment",
+  /^\s+environment:\s*npm-publish\s*$/m.test(snapshot),
+  snapshot.match(/environment.*/)?.[0] ?? "no environment line",
 );
 
 console.log(`\n${fail === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

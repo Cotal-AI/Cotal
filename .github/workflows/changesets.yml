@@ -71,6 +71,7 @@ jobs:
     needs: [seat-native-linux-x64, seat-native-linux-arm64]
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: write
       pull-requests: write
@@ -176,13 +177,16 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md"
           echo "Created GitHub Release $tag."
 
-  # Snapshot release from any ref — publishes <version>-<tag>-<datetime> under the given npm
-  # dist-tag so a branch can be tried out without merging. No commits, no git tags.
+  # Snapshot release — publishes <version>-<tag>-<datetime> under the given npm dist-tag.
+  # Bound to the npm-publish Environment; the operator's deployment branch policy controls
+  # which refs can request an OIDC token. If the policy allows only main, snapshots from
+  # other branches are refused by the Environment gate before the OIDC exchange.
   snapshot:
     if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''
     needs: [seat-native-linux-x64, seat-native-linux-arm64]
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write
