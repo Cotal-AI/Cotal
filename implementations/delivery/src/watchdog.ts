@@ -247,20 +247,36 @@ export function brokerGoneVerdict(e: BrokerWatchEvidence): BrokerVerdict {
   // Positive evidence inside the window outranks everything: nothing below can be true of a broker
   // that answered us this recently.
   if (e.msSinceLastReachable <= e.windowMs) return { exit: false, reason: "reachable" };
-  // AN OPEN TRANSPORT IS ONGOING POSITIVE EVIDENCE, NOT AN EXCUSE FOR ITS ABSENCE, which is why it
-  // is decided before the backstop rather than after. This daemon's own connection to that same
-  // broker is up; it is serving on it; its lease renews across it. A fresh side-probe that cannot
-  // complete a handshake to an address we are CURRENTLY CONNECTED TO is a statement about this
-  // process's ability to open a new socket, not about the server.
+  // THE BACKSTOP IS ABSOLUTE, AND IT IS DECIDED FIRST because every clause below it is a reason to
+  // keep waiting. This ordering was a review finding, and it is the difference between a bound and
+  // a wish: two reviewers independently observed that an open transport ranked ABOVE the backstop,
+  // which made the backstop conditional on the very signal most likely to be stale.
   //
-  // This cannot become a daemon that outlives its broker, and the reason is structural rather than
-  // a matter of degree: when the broker actually dies, this flag goes false. The client detects the
-  // loss (that is what starts its reconnect loop), the endpoint's status watcher turns that into
-  // `transport: connected=false`, and every clause below is live again from that instant. So the
-  // condition that suspends the exit is the same condition that makes the exit unnecessary.
-  if (e.transportConnected) return { exit: false, reason: "transport-live" };
-  // From here the transport is DOWN, so the absence of evidence is real and is bounded.
+  // `transportConnected` is not an observation of the broker. It is this client's cached socket
+  // state, and it is only refreshed when nats.js decides the peer is gone. Under a SILENT death —
+  // an OOM kill, a hypervisor pause, a firewall that starts dropping rather than refusing, anything
+  // that produces no FIN and no RST — the kernel keeps the connection ESTABLISHED and nats.js does
+  // not notice until its own ping cycle expires. With the shipped defaults that is roughly six
+  // minutes. Ranked above the backstop, a stale `true` suspended the exit for that entire window no
+  // matter how much elapsed time and how many completed refusals had piled up behind it, which is
+  // worse than the pre-fix behaviour in exactly the shape an operator would least expect.
+  //
+  // So the daemon is bounded unconditionally: past the backstop it exits, whatever it believes
+  // about its socket. That is the guarantee the coupling exists for, and a guarantee that any
+  // single stale flag can defer is not one.
   if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: "broker-gone" };
+  // AN OPEN TRANSPORT IS ONGOING POSITIVE EVIDENCE, NOT AN EXCUSE FOR ITS ABSENCE, so inside the
+  // backstop it still outranks the starvation and evidence clauses below. This daemon's own
+  // connection to that same broker is up; it is serving on it; its lease renews across it. A fresh
+  // side-probe that cannot complete a handshake to an address we are CURRENTLY CONNECTED TO is a
+  // statement about this process's ability to open a new socket, not about the server.
+  //
+  // Inside the backstop this is still the strongest thing the daemon knows: when the broker really
+  // dies the flag goes false — the client detects the loss, the endpoint's status watcher turns it
+  // into `transport: connected=false`, and every clause below is live again from that instant. What
+  // the flag CANNOT do any more is defer the exit indefinitely while it is stale, because the bound
+  // above it has already been decided.
+  if (e.transportConnected) return { exit: false, reason: "transport-live" };
   // "I could not ask." Credit the lag this process MEASURED on itself before reading the clock as a
   // statement about the server.
   const unstarvedMs = e.msSinceLastReachable - e.starvedMs;

@@ -172,15 +172,16 @@
       "note": "A REVIEWER FINDING, and the subtlest failure in this PR. Requiring merely attributable < budget means ANY non-zero measurement disqualifies a budget-ended refusal, and ordinary Node timer jitter on a healthy host measures 10-30ms: 10 of 10 blackholed probes read STARVED on an unstarved box. The exit guarantee survives (the backstop still fires) but the EVIDENCE path becomes unreachable in production, so a genuinely dead broker is ended four times slower than the shipped window with the wrong reason in the log. The material-share line is what separates \"the server got almost none of its second\" from \"the server got 984ms of it\"."
     },
     {
-      "name": "M11 CONTROL: every probe is judged against a budget the ws transport never had",
-      "file": "implementations/delivery/src/delivery.ts",
-      "find": "  const probeBudgetMs = defaultProbeTimeoutMs(server);",
-      "replace": "  const probeBudgetMs = 1000;",
+      "name": "M11 CONTROL: the ws transport loses its larger probe budget",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  return wsServers(servers) ? 5000 : 1000;",
+      "replace": "  return 1000;",
       "expectRed": "M6 the probe budget is the transport's own: ws gets 5s, tcp gets 1s",
       "cell": "M6 the probe budget is the transport's own: ws gets 5s, tcp gets 1s",
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-watchdog-evidence",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "A REVIEWER FINDING. isReachable gives a ws(s) broker 5s because it rides an HTTPS edge; judging its honest 2-5s refusals against a hardcoded 1000 files every one as this process starvation, so a dead ws broker can never accumulate a single completed negative. Same shape as M10: the guarantee holds, the evidence path does not."
+      "note": "A REVIEWER FINDING, anchored where the budget is DECIDED rather than where the daemon reads it. isReachable gives a ws(s) broker 5s because it rides an HTTPS edge; judging its honest 2-5s refusals against 1000 files every one as this process starvation, so a dead ws broker can never accumulate a single completed negative and is ended only by the backstop, with the wrong reason in the log. Anchoring on the daemon call site instead was UNGRADEABLE: the pure suite never loads delivery.ts, and the mutation runner said so rather than reporting a false kill.",
+      "completionMarker": "DELIVERY-WATCHDOG-EVIDENCE SMOKE"
     },
     {
       "name": "M12 CONTROL: a departing daemon deletes its replacement lease on the way out",
@@ -193,6 +194,15 @@
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
       "note": "A REVIEWER FINDING, and the merge blocker. Every takeover path ends in shutdown(1), and shutdown released the lease with an UNCONDITIONAL KV delete. By the time a daemon exits because another daemon took the shard, the row belongs to the replacement — so the polite release deleted the new holder lease and left the shard unserved. That is the #1318 outage again, reached through the lease path instead of the broker watch. Only a live cell can see it: leaseAction was always correct, and the damage happened downstream of the decision."
+    },
+    {
+      "name": "M13 CONTROL: a stale cached socket can defer the hard bound again",
+      "file": "implementations/delivery/src/watchdog.ts",
+      "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };\n",
+      "replace": "",
+      "expectRed": "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
+      "cell": "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
+      "note": "A REVIEWER FINDING, and the one that changed the design. transportConnected is not an observation of the broker: it is this client cached socket state, refreshed only when nats.js decides the peer is gone. Under a silent death (OOM kill, hypervisor pause, a firewall that drops instead of refusing) no FIN and no RST arrive, the kernel holds the connection ESTABLISHED, and with shipped defaults nats.js does not notice for about six minutes. Ranked above the backstop, a stale true deferred the exit for that whole window. A bound any single stale flag can defer is not a bound."
     }
   ]
 }
