@@ -28,6 +28,13 @@ import {
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
+  FALLBACK_INITIAL_MS,
+  fallbackStillOwed,
+  nextFallbackAction,
+  nextFallbackDelay,
+  type FallbackState,
+} from "./queue-fallback.js";
+import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
@@ -54,6 +61,24 @@ function readinessTurnTimeoutMs(): number {
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0)
     throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
+  return parsed;
+}
+
+/**
+ * Override for the SDK's per-request reply timeout, which defaults to 30000ms.
+ *
+ * Exists so a fixture can make a soft-interrupt timeout happen in seconds instead of half a minute.
+ * It is NOT a remedy for #1233 and must never be used as one: lengthening this bound only makes the
+ * stall take longer to appear, and shortening it makes it appear sooner. What the fix changes is
+ * what happens AFTER the timeout, which is why this knob is validated the same way as the readiness
+ * bound and otherwise left alone.
+ */
+function requestTimeoutOverrideMs(): number | undefined {
+  const raw = process.env.COTAL_JCODE_REQUEST_TIMEOUT_MS?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0)
+    throw new Error(`jcode connector: COTAL_JCODE_REQUEST_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
   return parsed;
 }
 
@@ -279,6 +304,10 @@ export async function runJcodeHost(): Promise<void> {
   // consumed and never guessed back into the queue.
   let pendingKickoff = bootPrompt;
   const readinessBudgetMs = readinessTurnTimeoutMs();
+  // Read BEFORE the COTAL_ scrub below, for the same reason the readiness bound is: the endpoint is
+  // the sole reader of Cotal material and every COTAL_ key is deleted from the environment before
+  // the private instance is launched, so a value read at launch time would always be absent.
+  const requestTimeoutMs = requestTimeoutOverrideMs();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
@@ -341,6 +370,13 @@ export async function runJcodeHost(): Promise<void> {
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
   let surfacedIds: string[] = [];
   let steering = false;
+  /** A `soft_interrupt` has failed since the last accepted handoff (#1233).
+   *
+   *  The measured failure is the SDK's 30s request timeout, but this is deliberately set for ANY
+   *  rejection: the connector cannot tell a timeout from a refusal it has not seen before, and the
+   *  consequence is identical either way — the live session did not take the message. Cleared on the
+   *  next accepted handoff, so a seat that recovers goes back to the cheap mid-turn path. */
+  let softInterruptFailed = false;
   /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
    *  boundary owns, so a soft_interrupt reply racing turn_done can never be recorded after the ack. */
   let steerSettled: Promise<unknown> = Promise.resolve();
@@ -402,7 +438,10 @@ export async function runJcodeHost(): Promise<void> {
       bridgeStderr += String(chunk);
       if (bridgeStderr.length > 16_384) bridgeStderr = bridgeStderr.slice(-8000);
     });
-    return JcodeClient.connect({ socketPath: instance.socketPath, ...(remaining() !== undefined ? { requestTimeoutMs: remaining() } : {}) });
+    // The recovery deadline still wins when one is set: it bounds the whole replacement window, and
+    // a fixture knob must not be able to extend it past that.
+    const perRequestMs = remaining() ?? requestTimeoutMs;
+    return JcodeClient.connect({ socketPath: instance.socketPath, ...(perRequestMs !== undefined ? { requestTimeoutMs: perRequestMs } : {}) });
   };
 
   const launchTui = (): void => {
@@ -418,6 +457,10 @@ export async function runJcodeHost(): Promise<void> {
   const shutdown = async (code = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    if (fallbackTimer !== undefined) {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = undefined;
+    }
     try {
       tui?.kill("SIGTERM");
     } catch {
@@ -623,6 +666,11 @@ export async function runJcodeHost(): Promise<void> {
           void agent.setStatus("idle").catch(() => {});
           if (hasDriveWork()) void drive();
         }
+        // Both branches, and after both, because a turn that ended with work still owed is the
+        // other way this queue is left unserved: `scheduleErrorRetry` gives up after eight failures
+        // (#790) and `hasDriveWork()` reads false for automatic items the previous turn already
+        // accepted but never committed. The server re-checks the ledger itself.
+        armQueueFallback();
       }
     }
   };
@@ -648,15 +696,135 @@ export async function runJcodeHost(): Promise<void> {
         const request = current.softInterrupt(sessionId, injection, false);
         steerSettled = request.catch(() => {});
         await request;
+        // The live session took it. Whatever made a previous handoff fail is over, so the fallback
+        // tier stands down and the next batch uses the cheap mid-turn path again.
+        softInterruptFailed = false;
         // If the turn closed or the client was replaced while acceptance was in flight, retain the
         // inbox copy. Jcode may also have queued it, so this deliberately chooses at-least-once.
         if (!sessionBusy() || client !== current) return;
         surfacedIds.push(...items.map((item) => item.recvKey));
       }
     } catch (error) {
+      // #1233. This catch used to be the whole story: it logged, `steering` was cleared below, and
+      // nothing ever looked at this queue again unless a NEW message arrived while the session was
+      // still busy, or the session went idle. Neither is guaranteed, and on the measured seat
+      // neither happened for 13.8 hours. Recording the failure and arming the level-triggered
+      // server is what makes the queue served by something other than luck.
+      softInterruptFailed = true;
       writeJcodeDiagnostic(`[cotal-jcode] soft interrupt failed: ${(error as Error).message}\n`);
     } finally {
       steering = false;
+      // In the `finally`, so it also arms after a `return` from the loop's own guards: any exit that
+      // leaves items unserved must leave the server armed, or the guard becomes the new stall.
+      armQueueFallback();
+    }
+  };
+
+  /** Automatic deliveries the live session has not accepted yet. `surfacedIds` is the accepted
+   *  ledger, so subtracting it is what makes "unserved" mean unserved rather than merely queued. */
+  const unservedAutomatic = (): InboxItem[] => {
+    const surfaced = new Set(surfacedIds);
+    return agent.peekInbox("automatic").filter((item) => !surfaced.has(item.recvKey));
+  };
+
+  const fallbackState = (): FallbackState => ({
+    stopping,
+    reconnecting,
+    initialized,
+    hasSession: Boolean(client) && Boolean(sessionId),
+    sessionBusy: sessionBusy(),
+    steering,
+    softInterruptFailed,
+    unserved: unservedAutomatic().length,
+    driveWork: hasDriveWork(),
+    consecutiveFailures,
+    giveUpAfter: ERROR_RETRY_GIVE_UP,
+  });
+
+  /**
+   * The fallback delivery itself: hand the unserved batch to the Harness as an ordinary message.
+   *
+   * This is the path that does not depend on a `soft_interrupt` reply. The Harness accepts a plain
+   * `send_message` while the agent is busy, acknowledges it with `message_accepted`, and runs it as
+   * its own turn when the current one ends — measured against jcode 0.81.5, which is also why the
+   * no-reply (context_message) form is NOT used here: that one is refused outright while busy.
+   *
+   * Acceptance is recorded in the same ledger the soft-interrupt path uses, so the containing turn's
+   * clean boundary remains the sole ack site and a message delivered this way is committed exactly
+   * once. If this send itself fails, nothing is recorded and nothing is dropped: the loop re-arms
+   * and the delivery is attempted again.
+   */
+  const queueTurnFallback = async (): Promise<void> => {
+    const items = unservedAutomatic();
+    if (!items.length) return;
+    const injection = formatInjection(items);
+    if (!injection) return;
+    const current = client;
+    const session = sessionId;
+    if (!current || !session) return;
+    try {
+      writeJcodeDiagnostic(
+        `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
+          `message(s) as a queued Harness turn instead\n`,
+      );
+      await current.sendMessage(session, injection);
+      // The client can be replaced while the send is in flight. A replacement redrives the durable
+      // batch itself, so recording acceptance against it would ack a delivery the new session never
+      // saw — the same at-least-once stance the steer path takes.
+      if (client !== current) return;
+      surfacedIds.push(...items.map((item) => item.recvKey));
+      publishInboundHealth();
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] queued-turn fallback failed: ${(error as Error).message}\n`);
+    }
+  };
+
+  /** Pacing for the level-triggered server. Reset whenever a delivery is accepted, so a seat that
+   *  recovers does not inherit a minute-long delay from the stall it just left. */
+  let fallbackDelayMs = FALLBACK_INITIAL_MS;
+  let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let fallbackRunning = false;
+
+  /**
+   * Arm the level-triggered server for the automatic queue (#1233).
+   *
+   * Every OTHER path that serves this queue is edge-triggered — an arriving message, an idle
+   * transition — and the defect is that both edges can be absent forever while work is owed. This
+   * one is armed by the state of the queue rather than by an event, so the question it answers is
+   * "is anything still owed", which cannot be missed the way an edge can.
+   *
+   * At most one timer, never while stopping, and unref'd so it can never hold the process open.
+   */
+  const armQueueFallback = (): void => {
+    if (stopping || fallbackTimer !== undefined) return;
+    if (!fallbackStillOwed(fallbackState())) return;
+    const delay = fallbackDelayMs;
+    fallbackDelayMs = nextFallbackDelay(fallbackDelayMs);
+    fallbackTimer = setTimeout(() => {
+      fallbackTimer = undefined;
+      void serveQueueFallback();
+    }, delay);
+    fallbackTimer.unref?.();
+  };
+
+  const serveQueueFallback = async (): Promise<void> => {
+    if (fallbackRunning) return;
+    fallbackRunning = true;
+    try {
+      const before = fallbackState();
+      const decision = nextFallbackAction(before);
+      if (decision.action === "stop") return;
+      if (decision.action === "drive") await drive();
+      else if (decision.action === "steer") await steerPending();
+      else if (decision.action === "queue-turn") await queueTurnFallback();
+      // A tick that delivered something resets the pacing; one that could not keeps backing off.
+      // Measured on the ledger, not on the action taken: an attempt that returned without accepting
+      // anything has not served the queue, and treating the call itself as progress is how a
+      // retry loop keeps a fast cadence forever against a session that is taking nothing.
+      if (unservedAutomatic().length < before.unserved) fallbackDelayMs = FALLBACK_INITIAL_MS;
+    } finally {
+      fallbackRunning = false;
+      armQueueFallback();
     }
   };
 
@@ -768,6 +936,10 @@ export async function runJcodeHost(): Promise<void> {
     const directed = item.kind !== "channel" || item.mentionsMe;
     if (sessionBusy()) {
       if (directed) void steerPending();
+      // Ambient that is NOT directed gets no steer, so before #1233 nothing was watching it either:
+      // it waited for an idle transition that a permanently busy seat never makes. Arming here is
+      // what gives every automatic arrival a server, not only the directed ones.
+      else armQueueFallback();
       publishInboundHealth();
       return;
     }
