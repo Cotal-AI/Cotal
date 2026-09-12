@@ -264,6 +264,36 @@ reused.start(0);
 reused.stop(5_000);
 reused.start(0);
 check("L5 a restart clears the previous span's accumulation", reused.stop(25) === 0, reused);
+// L1–L5 drive `stop` directly, which is what makes them deterministic — and it also means the
+// TIMER CALLBACK never runs in any of them. A mutation that made the callback charge the whole gap
+// instead of the excess over its own interval survived all five, so the callback needs a cell that
+// actually lets it fire. These two are the only cells in this suite that pass real time.
+const IDLE_SPAN_MS = 200;
+const idleReal = new DescheduleSampler(25);
+idleReal.start();
+const idleStarted = Date.now();
+await new Promise((r) => setTimeout(r, IDLE_SPAN_MS));
+const idleCharged = idleReal.stop();
+const idleElapsed = Date.now() - idleStarted;
+// REFUSING: an idle span is not starvation. Bounded against the span rather than a fixed number of
+// ms, because the mutation this cell exists to catch charges the FULL gap, so it necessarily
+// reports about the whole elapsed span; anything near half of it is unambiguous. A correct sampler
+// reports only genuine scheduling delay, which on a host healthy enough to be running CI is small.
+check("L6 an idle real-time span charges only the excess, not the whole gap",
+  idleCharged < idleElapsed / 2, { idleCharged, idleElapsed });
+// ACCEPTING, through the same callback: a loop that is genuinely blocked IS the condition, and the
+// sampler must see it. Blocking synchronously is the honest local stand-in for being off the
+// runqueue — from a timer's point of view they are the same event, which is precisely why a late
+// timer can measure descheduling at all.
+const BLOCK_MS = 300;
+const blocked = new DescheduleSampler(25);
+blocked.start();
+const blockUntil = Date.now() + BLOCK_MS;
+while (Date.now() < blockUntil) { /* hold the loop, exactly as a descheduled process does */ }
+await new Promise((r) => setTimeout(r, 50));
+const blockedCharged = blocked.stop();
+check("L7 a genuinely blocked event loop is charged as time this process was not running",
+  blockedCharged >= BLOCK_MS / 2, { blockedCharged, BLOCK_MS });
 
 console.log("\nG. the lease decision — a failed renew is a question, not a verdict");
 const readings: Array<[string, LeaseReading, "keep-serving" | "reacquire" | "exit"]> = [
@@ -329,7 +359,7 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-const EXPECTED_CELLS = 68;
+const EXPECTED_CELLS = 70;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
