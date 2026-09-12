@@ -194,6 +194,49 @@ try {
   );
   await expiringEp.stop();
 
+  // ── An UNCHANGED source past 75% must NOT 1s-churn (issue #1523) ──────────────────────────────
+  // The 75% timer fires; if the renewal owner has not re-signed yet, the source returns the SAME
+  // generation. It is still broker-valid, so a naive adopt recommits it, `credsRenewalDelayMs` is
+  // <= 0 (past the renewal point), `armCredsRefresh` floors the next tick to 1s, and the endpoint
+  // re-reads the store EVERY SECOND for the JWT's remaining 25% of life - with CREDS_RETRY_MS (60s)
+  // bypassed, because a successful fetch of unusable material is not a failed fetch. The fix refuses
+  // the generation, which routes it through the timer's failure posture: one warning, 60s retry, and
+  // the last renewable generation stays live to its expiry. Same rule the membership feed's rw-cred
+  // renewal already applies (`membership-rw-renewal.smoke.ts`, scenario 5).
+  //
+  // Discriminator: source reads inside the churn window. The bug reads ~3x, the fix at most once.
+  const churnTtl = 12;
+  const churnIdentity = newIdentity();
+  const churnCred = await mintCreds(auth, churnIdentity, "supervisor", { expiresInSeconds: churnTtl });
+  let churnReads = 0;
+  const churnWarnings: string[] = [];
+  const churnSource = async (): Promise<string> => { churnReads++; return churnCred; }; // NEVER changes
+  const churnEp = new CotalEndpoint({
+    space, servers: SERVERS,
+    creds: churnSource,
+    card: { id: churnIdentity.id, name: "unchanged-source", kind: "endpoint" },
+    consume: false, lifecycleUid: mintLifecycleUid(),
+    registerPresence: false, watchChannels: false, watchPresence: false,
+  });
+  churnEp.on("error", () => { /* the connection stays alive on the current cred; nothing to rethrow */ });
+  churnEp.on("warning", (e: Error) => { churnWarnings.push(e.message); });
+  await churnEp.start();
+  check("churn endpoint starts (source read once)", churnReads === 1, churnReads);
+  await wait(8_500);   // just past 75% of 12s (9s) minus setup slack - the timer has not fired yet
+  const churnBaseline = churnReads;
+  await wait(2_800);   // ~11.3s: the 1s loop would have ticked ~3x inside the 9-12s window
+  check(
+    "an unchanged source past 75% did NOT busy-loop (<=1 renewal read in the churn window)",
+    churnReads - churnBaseline <= 1,
+    { churnReads, churnBaseline },
+  );
+  check(
+    "the refusal is reported once and names the un-re-signed generation",
+    churnWarnings.filter((m) => /past its renewal point/.test(m)).length === 1,
+    churnWarnings,
+  );
+  await churnEp.stop();
+
   // ── Fail-loud edges.
   const other = newIdentity();
   let threw = "";
