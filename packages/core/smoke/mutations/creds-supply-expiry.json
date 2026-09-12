@@ -16,15 +16,19 @@
     "Each mutation leaves the tree compiling and the other paths correct. A suite that only watched",
     "the endpoint's own dial would stay GREEN under the first two, because that path never regresses",
     "in them: it is the library's reconnect and the adoption preflight that start leaking.",
-    "The empty-supply mutation is here because the getter it replaced was a non-null assertion. Under",
-    "it the tree still compiles and still refuses expired creds; what changes is that a first fetch",
-    "which never returned dials with an empty credential instead of failing loud."
+    "The last mutation earns its place by having SURVIVED first. It was originally written against",
+    "the getter's empty branch and the suite passed with that branch deleted -- because the cell",
+    "aimed at it proves the first FETCH rethrows, which happens before the getter is ever consulted.",
+    "Probing the branch directly showed a static empty credential dialing ANONYMOUSLY and coming",
+    "back `Authorization Violation`, so the survivor was a real coverage gap over a real hole, not a",
+    "mis-written fixture. Both were fixed: the gate is now `!== undefined`, and the mutation below",
+    "targets that gate."
   ],
   "mutations": [
     {
       "name": "the wire getter is unchecked again (the reported defect: internal reconnects read the raw cache)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "creds: this.currentCreds || this.credsSource ? () => this.credsForWire() : undefined",
+      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined",
       "replace": "creds: this.credsSource ? () => this.currentCreds! : this.currentCreds",
       "expectRed": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
       "cell": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
@@ -49,13 +53,13 @@
       "note": "A grace window is the most plausible wrong repair of this defect and the one a reviewer is most likely to wave through, because it still 'checks expiry'. It is wrong because the broker applies none: inside the window the endpoint presents material the broker has already rejected. The named cell mints a cred a few seconds past exp, so it sits inside a 30s grace and goes red on it while the far-past cases stay green."
     },
     {
-      "name": "the empty-supply refusal is replaced by the non-null assertion it removed",
+      "name": "the dial gate tests the cached cred for TRUTHINESS again (an empty credential dials anonymously)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!this.currentCreds)\n      throw new Error(\"this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material\");\n",
-      "replace": "",
-      "expectRed": "REFUSE: a first fetch that never returned fails loud instead of dialing with no credential",
-      "cell": "REFUSE: a first fetch that never returned fails loud instead of dialing with no credential",
-      "note": "Without the check, credsForWire hands `undefined` to presentableCreds and the failure surfaces as a decode error about malformed credential material rather than as the source failure that caused it. The named cell asserts the ORIGINAL source error reaches the caller, so it reds on the substituted message instead of accepting any throw -- an assertion on 'it threw' would have survived this."
+      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined",
+      "replace": "creds: this.currentCreds || this.credsSource ? () => this.credsForWire() : undefined",
+      "expectRed": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
+      "cell": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
+      "note": "A one-character weakening that reads as a harmless falsiness idiom. Under it an empty creds string is indistinguishable from 'no creds configured', so the endpoint dials with no auth material and the broker answers `Authorization Violation` -- a permissions-shaped error for what is a supply mistake. The named cell asserts BOTH that the refusal names the empty credential AND that the broker's violation text is absent, so a red here cannot be satisfied by any failure that merely happened. Its accepting twin (no creds at all still connects) stays green under this mutation, which is what confines the mutation to the empty case rather than to anonymity."
     }
   ]
 }

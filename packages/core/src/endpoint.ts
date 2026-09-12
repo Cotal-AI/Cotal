@@ -843,7 +843,11 @@ export class CotalEndpoint extends EventEmitter {
    *  broker that {@link RETRY_BACKOFF_CAP_MS} exists to prevent. */
   private credsForWire(): string {
     if (!this.currentCreds)
-      throw new Error("this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material");
+      throw new Error(
+        this.credsSource
+          ? "this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material"
+          : "this endpoint was constructed with an empty creds string - not dialing without auth material (an empty credential is not anonymous access)",
+      );
     return CotalEndpoint.presentableCreds(this.currentCreds, { renewable: Boolean(this.credsSource) });
   }
 
@@ -1158,7 +1162,12 @@ export class CotalEndpoint extends EventEmitter {
       // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
       // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
       // just been proven unexpired rather than whatever the cache happens to hold.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
+      // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
+      // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
+      // (an empty credential) was never named. Routing it into the checked getter fails it loud
+      // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();

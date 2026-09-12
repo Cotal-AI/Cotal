@@ -455,6 +455,80 @@ try {
     );
   }
 
+  // E2. A STATIC EMPTY CREDENTIAL. Found by a surviving mutation: the cell above proves the FETCH
+  // rethrows, which happens before the getter is consulted, so it never graded the getter's empty
+  // branch at all. Probing that branch directly showed the endpoint dialing ANONYMOUSLY — the dial
+  // gate tested the cached cred for TRUTHINESS, and an empty string took the same path as "no creds
+  // configured", so the connection went out with no auth material and came back `Authorization
+  // Violation`. The caller's actual mistake (an empty credential) was never named, and the failure
+  // read as a permissions problem on the broker rather than a supply problem here.
+  //
+  // This is the same defect class as the one this change is about: a credential path that routes
+  // AROUND the checkpoint rather than through it. It is included because the guard is "every path
+  // presents something checked", and dialing with nothing is not an exception to that.
+  {
+    const id = newIdentity();
+    let threw = "";
+    try {
+      const ep = new CotalEndpoint({
+        space, servers: SERVERS, creds: "",
+        card: { id: id.id, name: "supply-empty-static", kind: "endpoint" },
+        consume: false, registerPresence: false, watchChannels: false, watchPresence: false,
+      });
+      ep.on("error", () => {});
+      ep.on("warning", () => {});
+      await ep.start();
+      await ep.stop();
+    } catch (e) { threw = (e as Error).message; }
+    check(
+      "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
+      /empty creds string/.test(threw) && !/Authorization Violation/.test(threw),
+      threw,
+    );
+  }
+
+  // THE ACCEPTING TWIN, and the reason the refusal above is a `!== undefined` check rather than a
+  // truthiness one. Passing NO creds at all is a legitimate configuration (a dev broker with no auth
+  // account), and it must still connect. It differs from the cell above ONLY in whether the creds
+  // key is absent or present-but-empty, which is exactly the distinction the fix turns on: a gate
+  // that refused both would have broken anonymous access, and one that allowed both is the defect.
+  {
+    const anonPort = await pickFreePort();
+    const anonServers = `nats://127.0.0.1:${anonPort}`;
+    const anonDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+    const anonConf = join(anonDir, "server.conf");
+    writeFileSync(anonConf, `port: ${anonPort}\njetstream: { store_dir: "${join(anonDir, "js")}" }\n`);
+    const anonSrv = spawn("nats-server", ["-c", anonConf], { stdio: "ignore" });
+    const releaseAnon = teardownOnSignal(anonSrv, anonDir);
+    let connected = false;
+    let detail = "";
+    try {
+      for (let i = 0; i < 60; i++) { if (await isReachable(anonServers)) break; await wait(200); }
+      const ep = new CotalEndpoint({
+        space, servers: anonServers,
+        card: { name: "supply-no-creds", kind: "endpoint" },
+        consume: false, registerPresence: false, watchChannels: false, watchPresence: false,
+      });
+      ep.on("error", () => {});
+      ep.on("warning", () => {});
+      await ep.start();
+      await ep.setActivity("anonymous-ok");
+      connected = true;
+      await ep.stop();
+    } catch (e) { detail = (e as Error).message; }
+    finally {
+      anonSrv.kill("SIGKILL");
+      await awaitExit(anonSrv);
+      rmSync(anonDir, { recursive: true, force: true });
+      releaseAnon();
+    }
+    check(
+      "ACCEPT: NO creds at all still connects (the refusal is about an empty credential, not about anonymity)",
+      connected,
+      detail,
+    );
+  }
+
   const total = pass + fail;
   console.log(fail === 0
     ? `\nCREDS SUPPLY EXPIRY SMOKE OK ✅  (${pass} passed, ${fail} failed, ${total} cells)`
