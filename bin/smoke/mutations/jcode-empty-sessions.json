@@ -30,8 +30,8 @@
     {
       "name": "M2 treat a missing sessions path as the empty-directory defect",
       "file": "extensions/connector-jcode/src/stored-sessions.ts",
-      "find": "    if ((error as NodeJS.ErrnoException).code === \"ENOENT\") return { kind: \"absent\", path };",
-      "replace": "    if ((error as NodeJS.ErrnoException).code === \"ENOENT\") return { kind: \"empty-directory\", path };",
+      "find": "    if (code === \"ENOENT\") return { kind: \"absent\", path };",
+      "replace": "    if (code === \"ENOENT\") return { kind: \"empty-directory\", path };",
       "command": "pnpm smoke:jcode-stored-sessions",
       "expectRed": "a missing sessions path is absent, not empty",
       "cell": "a missing sessions path is absent, not empty"
@@ -57,8 +57,8 @@
     {
       "name": "M5 forward arbitrary child text as the operator-facing cause",
       "file": "extensions/connector-jcode/src/stored-sessions.ts",
-      "find": "  return \"harness connection closed\";",
-      "replace": "  return text;",
+      "find": "  if (/write EPIPE/i.test(text)) return \"write EPIPE\";",
+      "replace": "  if (/write EPIPE/i.test(text)) return \"write EPIPE\";\n  return text;",
       "command": "pnpm smoke:jcode-stored-sessions",
       "expectRed": "unrelated child text is not forwarded",
       "cell": "unrelated child text is not forwarded"

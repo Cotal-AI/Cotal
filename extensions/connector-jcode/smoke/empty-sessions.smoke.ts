@@ -179,11 +179,17 @@ try {
     const locked = startHost(lockedName, {});
     child = locked.child;
     try {
-      await waitFor("unreadable-sessions create_session", () =>
+      // A timeout here is the regression itself, so it must redden a NAMED cell rather than
+      // aborting the suite anonymously: a mutation-proof run needs a cell name to anchor on.
+      const created = await waitFor("unreadable-sessions create_session", () =>
         entriesOf(locked.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
-      );
+      ).catch(() => undefined);
       const lockedErr = locked.stderr();
-      check("an unreadable sessions directory still starts the seat", /started a fresh session/.test(lockedErr), lockedErr);
+      check(
+        "an unreadable sessions directory still starts the seat",
+        Boolean(created) && /started a fresh session/.test(lockedErr),
+        lockedErr,
+      );
       check(
         "the unreadable-directory seat does not die as startup failed (unknown)",
         !/startup failed \(unknown\)/.test(lockedErr),
