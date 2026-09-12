@@ -329,7 +329,7 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-const EXPECTED_CELLS = 69;
+const EXPECTED_CELLS = 68;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
