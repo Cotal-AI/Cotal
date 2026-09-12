@@ -13,7 +13,7 @@
  * Run: pnpm smoke:launch-parity
  */
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "./sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { launchFlags } from "@cotal-ai/workspace";
 import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";

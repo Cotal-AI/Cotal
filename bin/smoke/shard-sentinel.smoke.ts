@@ -12,8 +12,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatSentinel as kitFormat, parseSentinel as kitParse } from "../../packages/smoke-kit/src/sentinel.ts";
-import { createSuite, formatSentinel, parseSentinel } from "./sentinel.mjs";
+import { createSuite, formatSentinel as kitFormat, parseSentinel as kitParse } from "@cotal-ai/smoke-kit";
+import { formatSentinel, parseSentinel } from "./sentinel.mjs";
 
 const SHARD = fileURLToPath(new URL("./shard.mjs", import.meta.url));
 const SENTINEL = formatSentinel({ passed: 3, failed: 0 });
@@ -86,7 +86,12 @@ check(
 );
 check("the green banner names cells, not only suites", /3 cells/.test(green.out), green.out.slice(-300));
 
-const EXPECTED = 11;
+const extraTally = parseSentinel("FROZEN-EXPORTS SMOKE OK ✅  (12 passed, 0 failed; 3 arrays + 4 plain-objects scanned)\n");
+check("a parenthetical tally still counts when extra text follows failed", extraTally?.kind === "legacy" && extraTally.cells === 12 && extraTally.passed === 12);
+const prefixed = parseSentinel("artifact-contract: 5 passed, 0 failed\n");
+check("a prefixed N passed, M failed line is a tally", prefixed?.kind === "legacy" && prefixed.cells === 5 && prefixed.passed === 5);
+
+const EXPECTED = 13;
 check(
   `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
   passed() + failed() === EXPECTED,

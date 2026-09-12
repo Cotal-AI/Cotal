@@ -52,14 +52,16 @@ export function parseSentinel(text: string): ParsedSentinel | null {
       };
       continue;
     }
-    const pair = line.match(/\((\d+) passed, (\d+) failed\)/);
+    // Suites already name counts as `(N passed, M failed)` or `N passed, M failed; extra`.
+    // Require the close-paren / semicolon / end so a no-op cannot mint a tally from prose.
+    const pair = line.match(/\((\d+) passed, (\d+) failed(?:\)|;)/);
     if (pair) {
       const passed = Number(pair[1]);
       const failed = Number(pair[2]);
       last = { cells: passed + failed, passed, failed, kind: "legacy" };
       continue;
     }
-    const suiteComplete = line.match(/^(?:SUITE COMPLETE:\s*)?(\d+) passed, (\d+) failed$/);
+    const suiteComplete = line.match(/^(?:SUITE COMPLETE:\s*)?(?:.*?:\s*)?(\d+) passed, (\d+) failed(?:;.*)?$/);
     if (suiteComplete) {
       const passed = Number(suiteComplete[1]);
       const failed = Number(suiteComplete[2]);

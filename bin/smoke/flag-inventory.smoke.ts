@@ -15,7 +15,7 @@
  * Run: pnpm smoke:flag-inventory
  */
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "./sentinel.mjs";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { registry, type Command } from "@cotal-ai/core";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
