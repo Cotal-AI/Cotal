@@ -38,7 +38,7 @@ import {
   setupSpaceStreams,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -533,6 +533,11 @@ try {
   console.log(fail === 0
     ? `\nCREDS SUPPLY EXPIRY SMOKE OK ✅  (${pass} passed, ${fail} failed, ${total} cells)`
     : `\nCREDS SUPPLY EXPIRY SMOKE FAILED ❌  (${pass} passed, ${fail} failed, ${total} cells)`);
+  // The MACHINE-READABLE line the shard grades on, last so nothing can print after it. The human
+  // banner above is not a substitute: its legacy form carries a third `N cells` clause, which the
+  // parser reads as prose rather than a tally, so it yields NO sentinel at all and the shard treats
+  // this suite as a zero-cell run. Measured against the parser directly rather than assumed.
+  emitSentinel({ passed: pass, failed: fail, cells: total });
   process.exitCode = fail === 0 ? 0 : 1;
 } finally {
   srv.kill("SIGKILL");
