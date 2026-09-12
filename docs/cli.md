@@ -964,10 +964,15 @@ prove the seat is gone before it releases the manager lease or service registrat
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
 an orphan still holds broker rails. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
-records that result in the lifecycle's caller-readable audit detail, and only then retires the
-lifecycle and frees the alias. Missing or unverified broker evidence keeps the slot terminalizing.
-Delivery-admin does not terminate the orphan OS process; safe successor process reaping requires
-durable process start-identity pinning and is tracked separately.
+records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
+process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
+process start identity in its seat record, so a reused pid is never signalled), and only then
+retires the lifecycle and frees the alias. A runtime that custodies its seats reserves that
+reference before it launches one, and the manager records it on the slot's first durable row, so a
+manager that dies part-way through a spawn also leaves a seat its successor can address. A spawn
+that launched its seat and then failed is rolled back by the manager that launched it, and that
+rollback reaps the seat through the same reserved reference before the lifecycle retires. Missing or unverified broker evidence keeps the slot
+terminalizing, and so does a runtime that cannot reap by reference.
 
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
 participant may run `supervise` only when the host advertises the remote manager authority service

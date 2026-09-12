@@ -2,16 +2,28 @@
  * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, reapSeat, seatId, SeatClient } from "../src/index.js";
 
 if (process.platform !== "linux") {
   console.log(`SEAT LIFECYCLE COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
   process.exit(0);
 }
+
+// OS-level socket teardown race: a block closes its handles before the linger cells, but the
+// custodian tears the Unix socket down at the kernel level when it settles. If the FIN for our
+// close() is still in flight when the custodian exits, the kernel delivers RST to this process's
+// fd and Node surfaces it as an uncaught ECONNRESET on the internal Pipe read callback. The socket
+// is already closed on our side, so this is the OS race and not a missing close. Everything else
+// still ends the run.
+process.on("uncaughtException", (err) => {
+  if ((err as NodeJS.ErrnoException).code === "ECONNRESET") return;
+  console.error(err);
+  process.exit(1);
+});
 
 let pass = 0;
 let fail = 0;
@@ -341,6 +353,155 @@ await h.waitForExit();
     } finally {
       rmSync(leakRoot, { recursive: true, force: true });
     }
+  }
+
+  {
+    // Close every handle the blocks above still hold before the unadopted cells run: their
+    // custodians can settle the moment their child has exited, and the settle tears the socket
+    // down under a socket this process has not closed yet.
+    for (const h of handles) { try { h.close?.(); } catch { /* already gone */ } }
+
+    // A custodian whose child has exited is custody of nothing. Before this policy it lived
+    // forever, one idle node process per seat the manager ever ran. Nobody adopts this seat, so it
+    // settles on the custodian's unobserved-handoff path rather than on a client drop, which is the
+    // one arm of that policy the adopted natural-exit cell above does not reach.
+    const rec = launchSeat({
+      root,
+      name: "unadopted",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    check("record pins both start identities", typeof rec.custodianStart === "string" && typeof rec.childStart === "string", rec);
+    check(
+      "unadopted custodian exits after its child exits",
+      await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 20_000),
+      state(rec.custodianPid),
+    );
+    check("its socket and record are gone with it", !existsSync(rec.socket) && !existsSync(join(root, rec.id, "record.json")), rec.socket);
+  }
+
+  {
+    // reapSeat: a live custodied seat nobody adopted is signalled by identity, its process group is
+    // proved empty, and the record is forgotten. A record without start identities refuses.
+    const rec = launchSeat({
+      root,
+      name: "reap-live",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "require('child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' }); setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    await wait(500);
+    const before = readdirSync("/proc").filter((e) => /^\d+$/.test(e)).filter((e) => {
+      try {
+        const stat = readFileSync(`/proc/${e}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2] === String(rec.childPid);
+      } catch {
+        return false;
+      }
+    });
+    check("instrument: the seat child leads a group with a grandchild", before.length >= 2, before);
+    // A refusal is reported as this cell failing, never as a throw out of the suite: a reap that
+    // refuses a record it should have signalled is exactly what these cells exist to catch, and a
+    // throw here ends the run before any of them print.
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check("reapSeat signals a live seat by identity and proves it gone", !(evidence instanceof Error) && evidence.outcome === "reaped" && state(rec.childPid) === "gone" && state(rec.custodianPid) === "gone", evidence instanceof Error ? evidence.message : evidence);
+    const after = before.filter((e) => state(Number(e)) !== "gone");
+    check("the child's whole process group is gone", after.length === 0, after);
+    check("the custody record is forgotten", !existsSync(join(root, rec.id)), rec.id);
+    const second = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check("a second reap of the same id reports absent", !(second instanceof Error) && second.outcome === "absent", second instanceof Error ? second.message : second);
+    // Whatever the cells above found, this seat must not outlive the suite.
+    try { process.kill(-rec.childPid, "SIGKILL"); } catch { /* already gone */ }
+    try { process.kill(rec.custodianPid, "SIGKILL"); } catch { /* already gone */ }
+  }
+
+  {
+    // A reference reaches reapSeat and loadSeat from a durable slot row, so the id is checked
+    // against the shape seatId mints before it is joined to the custody root. An id that walks out
+    // of the root is refused rather than resolved: reporting it as absent would call an
+    // unaddressable seat "already forgotten".
+    const traversal = "../../../etc";
+    let refusedReap = "";
+    try { await reapSeat(root, traversal); } catch (e) { refusedReap = (e as Error).message; }
+    check("a forged custody id that walks out of the root is refused, not resolved", /is not 32 lowercase hex characters/.test(refusedReap), refusedReap);
+    let refusedLaunch = "";
+    try { launchSeat({ root, name: "traversal", spec: { command: process.execPath, args: ["-e", ""], env: { PATH: process.env.PATH ?? "" } }, cwd: process.cwd(), id: traversal }); } catch (e) { refusedLaunch = (e as Error).message; }
+    check("a launch under a forged custody id is refused before any process starts", /is not 32 lowercase hex characters/.test(refusedLaunch), refusedLaunch);
+    const reserved = seatId();
+    const rec = launchSeat({ root, name: "reserved", spec: { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }, cwd: process.cwd(), id: reserved });
+    handles.push(adoptSeatSync(rec));
+    check("a launch under a reserved id custodies the seat under exactly that id", rec.id === reserved && existsSync(join(root, reserved, "record.json")), { reserved, got: rec.id });
+    let reused = "";
+    try { launchSeat({ root, name: "reserved", spec: { command: process.execPath, args: ["-e", ""], env: { PATH: process.env.PATH ?? "" } }, cwd: process.cwd(), id: reserved }); } catch (e) { reused = (e as Error).message; }
+    check("a custody id already holding a record refuses a second launch", /already holds a custody record/.test(reused), reused);
+  }
+
+  {
+    // Identity refusal: a record naming a pid whose start token differs is never signalled.
+    const rec = launchSeat({
+      root,
+      name: "reap-foreign",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    handles.push(adoptSeatSync(rec));
+    const bare = { ...rec };
+    delete (bare as Partial<typeof rec>).custodianStart;
+    writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(bare)}\n`);
+    let refused = "";
+    try {
+      await reapSeat(root, rec.id);
+    } catch (e) {
+      refused = (e as Error).message;
+    }
+    check("a record with no start identity refuses to signal", /no process start identity/.test(refused) && state(rec.childPid) !== "gone", refused);
+    // A forged identity proves the pids are not the recorded processes: nothing is signalled and
+    // the record is forgotten as already-gone custody.
+    const forged = { ...rec, custodianStart: "1", childStart: "1" };
+    writeFileSync(join(root, rec.id, "record.json"), `${JSON.stringify(forged)}\n`);
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check("a pid whose start identity differs from the record is treated as gone, never signalled", !(evidence instanceof Error) && evidence.outcome === "reaped" && state(rec.childPid) !== "gone" && state(rec.custodianPid) !== "gone", { evidence: evidence instanceof Error ? evidence.message : evidence, child: state(rec.childPid) });
+  }
+
+  {
+    // Boot binding: a start token counts ticks SINCE BOOT, so it tells two processes apart only
+    // within one boot, while a custody record outlives a reboot on disk. A record carried across a
+    // reboot names pids that now belong to whatever this boot put at those numbers, so it is
+    // refused rather than signalled - and so is a record written before the boot stamp existed.
+    const rec = launchSeat({
+      root,
+      name: "reap-reboot",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setInterval(()=>{},1000)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    handles.push(adoptSeatSync(rec));
+    const path = join(root, rec.id, "record.json");
+    const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    check("the custodian stamps the boot its pids belong to", onDisk.bootId === readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), onDisk.bootId);
+    writeFileSync(path, `${JSON.stringify({ ...onDisk, bootId: "00000000-0000-0000-0000-000000000000" })}\n`);
+    let foreign = "";
+    try { await reapSeat(root, rec.id); } catch (e) { foreign = (e as Error).message; }
+    check("a record from another boot refuses to signal", /belongs to boot 00000000-0000-0000-0000-000000000000/.test(foreign) && state(rec.childPid) !== "gone", { foreign, child: state(rec.childPid) });
+    const { bootId: _dropped, ...unbound } = onDisk;
+    writeFileSync(path, `${JSON.stringify(unbound)}\n`);
+    let refusedUnbound = "";
+    try { await reapSeat(root, rec.id); } catch (e) { refusedUnbound = (e as Error).message; }
+    check("a record with no boot identity refuses to signal", /carries no boot identity/.test(refusedUnbound) && state(rec.childPid) !== "gone", { refusedUnbound, child: state(rec.childPid) });
   }
 
   {
