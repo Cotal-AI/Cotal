@@ -89,7 +89,13 @@ const lifecycleUid = mintLifecycleUid();
 // the state the defect lives in. It is produced by the fake's measured post-readiness busy shape
 // rather than by a slow turn: a long turn delay also paces the READINESS turn, so the seat would
 // take that long to reach the roster and the fixture would spend its runtime booting.
-const busyHoldMs = 30_000;
+// Generous on purpose. The DISCRIMINATOR is log ordering (delivery before the idle transition),
+// not this number, so the window only has to be long enough that a correct connector on a loaded
+// runner is not cut off mid-drain. At 30s a green depended on host boot plus the soft-interrupt
+// observation plus the drain all fitting in real time, and a busy CI box red the cell while the
+// connector was behaving. Pre-fix the delivery still lands only at the idle boundary, so widening
+// the window does not weaken the control: it moves that late arrival later, not earlier.
+const busyHoldMs = 120_000;
 // The SDK default is 30s. Shortened so the timeout the fixture depends on happens in seconds. The
 // VALUE is not under test — lengthening it is explicitly not the repair — only what follows it.
 const softInterruptTimeoutMs = 3_000;
@@ -124,6 +130,31 @@ const turnsCarrying = (marker: string): Entry[] =>
   turnRequests().filter((entry) => String(entry.frame?.content ?? "").includes(marker));
 const softInterrupts = (): Entry[] =>
   entries().filter((entry) => entry.ev === "request" && entry.frame?.req === "soft_interrupt");
+/**
+ * Did the seat leave the busy window, as recorded by the fake ITSELF?
+ *
+ * The predicate that matters is "the queue was served while the seat was busy", and the honest
+ * witness for it is the fake's own append-only log, not the suite's wall clock. An earlier version
+ * compared `Date.now()` against the busy hold, which made a green depend on the whole probe
+ * (host boot, mesh presence, a 15s soft-interrupt observation, the drain budget) fitting inside
+ * 30s of real time. On a loaded or slower runner that budget is exceeded while the connector
+ * behaves correctly, so the cell reported the host's load as a defect in the fix. Ordering in the
+ * log is what the cell was always trying to say and it holds regardless of how slow the box is.
+ */
+const wentIdle = (): boolean =>
+  entries().some((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "idle");
+/** Index of a log record, so "arrived BEFORE the seat went idle" is a comparison of positions. */
+const idleAt = (): number =>
+  entries().findIndex((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "idle");
+const arrivedWhileBusy = (marker: string): boolean => {
+  const all = entries();
+  const idleIndex = idleAt();
+  const deliveryIndex = all.findIndex((entry) =>
+    entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame.no_reply
+    && String(entry.frame?.content ?? "").includes(marker));
+  if (deliveryIndex < 0) return false;
+  return idleIndex < 0 || deliveryIndex < idleIndex;
+};
 
 try {
   mkdirSync(shimDir, { recursive: true });
@@ -204,7 +235,6 @@ try {
   await waitFor("the recipient session to be busy", () =>
     entries().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "working") ? true : undefined,
   );
-  const busySince = Date.now();
 
   // --- Cell A: the drain ---------------------------------------------------------------------
   const marker = "QUEUED_BEHIND_DEAD_STEER_1233";
@@ -233,27 +263,30 @@ try {
   // the defect — "it arrived eventually" is exactly what a 13.8-hour stall also satisfies.
   // Requiring arrival while the seat is still busy is what makes this cell a statement about
   // DRAINING rather than about the queue outliving the turn.
-  const drainDeadlineMs = 12_000;
+  // Bounded well inside the busy window: a correct tree delivers within a tick or two of the
+  // handoff timing out, and pre-fix nothing arrives until the seat goes idle far beyond this.
+  const drainDeadlineMs = 45_000;
   const delivered = await tryWaitFor(() => turnsCarrying(marker)[0], drainDeadlineMs);
   const elapsed = Date.now() - sentAt;
-  const stillBusy = Date.now() - busySince < busyHoldMs;
+  // Graded on the fake's own record of the transition, not on elapsed real time.
+  const whileBusy = arrivedWhileBusy(marker);
   check(
     "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
-    delivered !== undefined && String(delivered.frame?.content ?? "").includes(marker) && stillBusy,
+    delivered !== undefined && String(delivered.frame?.content ?? "").includes(marker) && whileBusy,
     {
       arrived: delivered !== undefined,
+      arrivedBeforeIdle: whileBusy,
+      seatWentIdle: wentIdle(),
       elapsedMs: elapsed,
-      sinceBusyMs: Date.now() - busySince,
-      busyHoldMs,
       softInterrupts: softInterrupts().length,
     },
   );
-  // The drain must not merely have beaten the clock: the seat has to still be busy, or this is the
-  // old idle-boundary behaviour arriving early rather than a queue that was actually served.
+  // The drain must not merely have produced a delivery: it has to have produced one BEFORE the seat
+  // left the busy window, or this is the old idle-boundary behaviour rather than a queue served.
   check(
     "and the seat had not yet gone idle, so this was a drain and not the idle boundary",
-    stillBusy,
-    { sinceBusyMs: Date.now() - busySince, busyHoldMs },
+    whileBusy && !wentIdle(),
+    { arrivedBeforeIdle: whileBusy, seatWentIdle: wentIdle(), elapsedMs: elapsed },
   );
 
   // --- Cell B: exactly once ------------------------------------------------------------------
@@ -264,8 +297,8 @@ try {
   await sleep(2_000);
   check(
     "the fallback delivers the queued batch exactly once, not once per retry tick",
-    turnsCarrying(marker).length === 1 && Date.now() - busySince < busyHoldMs,
-    { deliveries: turnsCarrying(marker).length, sinceBusyMs: Date.now() - busySince },
+    turnsCarrying(marker).length === 1 && !wentIdle(),
+    { deliveries: turnsCarrying(marker).length, seatWentIdle: wentIdle() },
   );
 
   // --- Cell C: the reported state --------------------------------------------------------------
