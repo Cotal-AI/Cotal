@@ -324,7 +324,11 @@ const SEAMS: Seam[] = [
   // 145/105 -> 146/106: registration-executor-resume.smoke.ts dials the auth broker under a
   // scoped manager credential (one smoke-side call, tls: false) to prove heal and registration
   // use separate executor windows.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 146, untypecheckedSites: 106 },
+  // 146/106 -> 147/107: delivery-starvation.smoke.ts reads the delivery lease STRAIGHT FROM THE
+  // BROKER on a connection of its own (one smoke-side call, tls: false), rather than trusting the
+  // daemon's own report of whether it is still serving. A starved daemon's account of itself is
+  // exactly what that suite exists to doubt.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 147, untypecheckedSites: 107 },
 ];
 
 /**
