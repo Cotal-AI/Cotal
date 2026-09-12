@@ -112,6 +112,12 @@ try {
     const bare = "thread 'tokio-runtime-worker' panicked at translate.rs:1:1:\nchunk size must be non-zero\n";
     check("a bare translate.rs with no crate path is refused", classifyStoredSessionPanic(bare) === undefined, classifyStoredSessionPanic(bare));
   }
+  {
+    // The site is embedded in a pattern, so its dots must be escaped or `.` matches any character.
+    const nearMiss =
+      "thread 'tokio-runtime-worker' panicked at crates/jcode-harness-api-server/src/translateXrs:1707:38:\nchunk size must be non-zero\n";
+    check("a site differing by one character is refused", classifyStoredSessionPanic(nearMiss) === undefined, classifyStoredSessionPanic(nearMiss));
+  }
 
   console.log("\n3. boundStoredSessionCause: allow-listed phrases only");
   check("chunk-size panic text is reduced to the assertion", boundStoredSessionCause("x chunk size must be non-zero y") === "chunk size must be non-zero");

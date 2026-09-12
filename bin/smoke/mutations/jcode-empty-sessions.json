@@ -5,15 +5,16 @@
   ],
   "guard": "an empty sessions/ directory is skipped locally so the seat starts fresh, and a list_sessions panic names the assertion and path instead of startup failed (unknown)",
   "command": "pnpm smoke:jcode-stored-sessions && pnpm smoke:jcode-empty-sessions",
-  "progressPattern": "^  ✓ ",
+  "progressPattern": "^  \u2713 ",
   "minTicks": 8,
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-empty-sessions.json",
   "why": [
     "The jcode binary panics in stored_session_ids when sessions/ exists and is empty. That panic is",
     "out of this repo. The connector used to catch listSessions, reuse the dead client for createSession,",
     "and report startup failed (unknown). Operators then renamed the seat. Each mutation restores one",
-    "of those defects: listing an empty directory, reusing the dead client, or collapsing the named",
-    "failure back to unknown."
+    "of those defects: listing an empty directory, reusing the dead client, collapsing the named failure",
+    "back to unknown, or widening the panic site so an unrelated crate's translate.rs is reported as",
+    "this defect."
   ],
   "mutations": [
     {
@@ -64,20 +65,20 @@
     {
       "name": "M6 match any path ending in translate.rs instead of the owning crate",
       "file": "extensions/connector-jcode/src/stored-sessions.ts",
-      "find": "    /thread '[^']*'[^\\n]* panicked at (crates\\/jcode-harness-api-server\\/src\\/translate\\.rs:\\d+:\\d+):\\s*\\n\\s*(chunk size must be non-zero)/.exec(",
-      "replace": "    /thread '[^']*'[^\\n]* panicked at ([^\\n]*translate\\.rs:\\d+:\\d+):\\s*\\n\\s*(chunk size must be non-zero)/.exec(",
+      "find": "const STORED_SESSION_PANIC_SITE = \"crates/jcode-harness-api-server/src/translate.rs\";",
+      "replace": "const STORED_SESSION_PANIC_SITE = \"[^\\\\n]*translate.rs\";",
       "command": "pnpm smoke:jcode-stored-sessions",
       "expectRed": "the same filename in another crate is refused",
       "cell": "the same filename in another crate is refused"
     },
     {
-      "name": "M7 drop the startsWith site guard behind the anchored pattern",
+      "name": "M7 stop escaping the dots in the panic site",
       "file": "extensions/connector-jcode/src/stored-sessions.ts",
-      "find": "  if (!site.startsWith(`${STORED_SESSION_PANIC_SITE}:`)) return undefined;",
-      "replace": "  /* mutant trusts the pattern alone */",
+      "find": "${STORED_SESSION_PANIC_SITE.replace(/[.]/g, \"\\\\.\")}",
+      "replace": "${STORED_SESSION_PANIC_SITE}",
       "command": "pnpm smoke:jcode-stored-sessions",
-      "expectRed": "the real empty-directory panic is classified",
-      "cell": "the real empty-directory panic is classified"
+      "expectRed": "a site differing by one character is refused",
+      "cell": "a site differing by one character is refused"
     }
   ]
 }
