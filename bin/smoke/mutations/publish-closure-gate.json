@@ -10,7 +10,8 @@
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/publish-closure-gate.json",
   "why": [
     "The release workflow used to check one package of twenty-two and cut a Release on that alone. A sibling that failed to publish was invisible. The closure gate now checks every package and the Release step depends on it.",
-    "A 200 without a body identifying the package at the requested version is no longer treated as presence. Each mutation below breaks one property the smoke is supposed to hold."
+    "A 200 without a body identifying the package at the requested version is no longer treated as presence. Each mutation below breaks one property the smoke is supposed to hold.",
+    "The rc-2 and rc-3 cells used to substring-match the branch comparison, which sees that the branch exists and nothing about what it does: an exit 1 added to either quiet-skip path left the suite green while every no-publish push to main would have failed (#1518). The cells now parse each branch body, and these mutations are what shows they can see into it."
   ],
   "mutations": [
     {
@@ -60,6 +61,38 @@
       "replace": "        if (body && body.version === version) continue;",
       "expectRed": "fake registry: one 200 naming a different package -> does NOT pass as published",
       "cell": "fake registry: one 200 naming a different package -> does NOT pass as published"
+    },
+    {
+      "name": "the UNSETTLED quiet skip starts failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 1\n",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing"
+    },
+    {
+      "name": "the NONE quiet skip starts failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n",
+      "replace": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 1\n",
+      "expectRed": "the closure-gate step handles exit code 3 (NONE) without failing",
+      "cell": "the closure-gate step handles exit code 3 (NONE) without failing"
+    },
+    {
+      "name": "the PARTIAL branch stops failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"PARTIAL PUBLISH — failing the job.\"\n",
+      "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job"
+    },
+    {
+      "name": "an unexpected exit code stops failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs — failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs — failing the job.\"\n",
+      "expectRed": "the closure-gate step fails the job on an unexpected exit code",
+      "cell": "the closure-gate step fails the job on an unexpected exit code"
     }
   ]
 }

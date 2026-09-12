@@ -71,21 +71,70 @@ check(
 
 // The closure-gate step must branch on all four exit codes, not treat any non-zero as failure.
 // Exit 2 (UNSETTLED) and 3 (NONE) are quiet skips, not failures. Only exit 1 (PARTIAL) fails the job.
-const gateRun = closureGateStep?.run ?? "";
+//
+// These assert on each branch's BODY, not on the presence of its comparison (#1518). A substring
+// match on `"$rc" -eq 2` sees that the branch exists and nothing about what it does, so an `exit 1`
+// added to the quiet-skip path left this suite green while every no-publish push to main would have
+// failed. That is the same weak-assertion shape as the `includes("verify-publish-closure.mjs")` hole
+// a diagnostic echo satisfied (#1502).
+const gateRun: string = closureGateStep?.run ?? "";
+
+/**
+ * The body of the gate script's `[ "$rc" -eq <code> ]` branch, or null when there is no such branch.
+ * `else` is addressed as code -1, being the unexpected-rc arm.
+ *
+ * The chain is flat shell in a YAML block scalar, so the branch ends at the next line indented the
+ * same as its own `if`/`elif`/`else` keyword and starting one of them (or `fi`). Anything indented
+ * deeper stays part of the body, so a nested block cannot hide a line from these assertions.
+ */
+function rcBranchBody(run: string, code: number): string | null {
+  const lines = run.split("\n");
+  const opener = code === -1
+    ? /^(\s*)else\s*$/
+    : new RegExp(`^(\\s*)(?:el)?if \\[ "\\$rc" -eq ${code} \\]; then\\s*$`);
+  const start = lines.findIndex((line) => opener.test(line));
+  if (start < 0) return null;
+  const indent = (opener.exec(lines[start]!) ?? [])[1] ?? "";
+  const ends = new RegExp(`^${indent}(?:elif |else\\b|fi\\b)`);
+  const body: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (ends.test(line)) break;
+    body.push(line);
+  }
+  return body.join("\n");
+}
+
+/** Whether a branch body leaves the step with a failing status. */
+function failsTheJob(body: string): boolean {
+  return /^\s*exit\s+(?!0\b)\d+\s*$/m.test(body) || /^\s*(false|exit\s+1)\s*$/m.test(body);
+}
+
+// Vacuity guard FIRST: the two "does not fail" assertions below are only worth anything if this
+// parser can see a failing exit where there is one. The branches that must fail are the proof.
+const partialBody = rcBranchBody(gateRun, 1);
 check(
   "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
-  gateRun.includes('"$rc" -eq 1') && gateRun.includes('exit 1'),
-  gateRun,
+  partialBody !== null && failsTheJob(partialBody),
+  { partialBody, gateRun },
 );
+const unexpectedBody = rcBranchBody(gateRun, -1);
+check(
+  "the closure-gate step fails the job on an unexpected exit code",
+  unexpectedBody !== null && failsTheJob(unexpectedBody),
+  { unexpectedBody, gateRun },
+);
+
+const unsettledBody = rcBranchBody(gateRun, 2);
 check(
   "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
-  gateRun.includes('"$rc" -eq 2'),
-  gateRun,
+  unsettledBody !== null && !failsTheJob(unsettledBody),
+  { unsettledBody, gateRun },
 );
+const noneBody = rcBranchBody(gateRun, 3);
 check(
   "the closure-gate step handles exit code 3 (NONE) without failing",
-  gateRun.includes('"$rc" -eq 3'),
-  gateRun,
+  noneBody !== null && !failsTheJob(noneBody),
+  { noneBody, gateRun },
 );
 
 // The closure-gate step must come BEFORE the release step
@@ -258,7 +307,7 @@ const fastClock = () => { let t = 0; return { now: () => (t += 1000), sleep: asy
   );
 }
 
-const EXPECTED = 17;
+const EXPECTED = 18;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`PUBLISH CLOSURE GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
