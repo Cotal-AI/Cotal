@@ -62,6 +62,31 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 /**
+ * Did a client actually send a CONNECT carrying credential material in this slice?
+ *
+ * NOT the same question as "did anything open a socket", and the difference is load-bearing. The
+ * broker logs `Client connection created` for ANY accepted TCP connection, including one that reads
+ * the INFO banner and closes without ever sending CONNECT. This suite makes exactly such
+ * connections: the `isReachable` liveness poll after each broker restart is a credless probe, and it
+ * runs INSIDE the window the non-vacuity control grades. Measured: five polls produce five
+ * `Client connection created` lines and zero authentications.
+ *
+ * So a control keyed on that line could be satisfied entirely by this suite's own probes, and would
+ * read "the dial loop reached the broker" when the dial loop had not run at all — the precise
+ * vacuity the control exists to rule out, reintroduced by the control itself.
+ *
+ * A JWT-bearing CONNECT is distinguishable because the broker says what it did with the credential:
+ * it either admitted it (`Authenticated JWT`) or refused it by name. Counting those, rather than
+ * sockets, is what makes the control mean "a client presented credential material here".
+ */
+const credentialedConnects = (log: string): string[] =>
+  log.split("\n").filter((l) =>
+    /Authenticated JWT/.test(l)
+    || /User JWT no longer valid/.test(l)
+    || /Authentication Expired/.test(l)
+    || /Authorization Violation/.test(l));
+
+/**
  * Every broker line that means EXPIRED CREDENTIAL MATERIAL WAS PRESENTED, for one client name.
  *
  * Two shapes, both of which this defect has been observed to produce, because which one appears
@@ -141,6 +166,9 @@ try {
     const NAME = "supply-dialloop";
     let reads = 0;
     const warnings: string[] = [];
+    // Timestamped so the control can tell a refusal raised AFTER the broker returned from one raised
+    // while it was down. Both are the same message; only the ordering distinguishes them.
+    const errors: string[] = [];
     const source = () => {
       reads++;
       if (reads === 1) return mintCreds(auth, id, "supervisor", { expiresInSeconds: TTL });
@@ -152,7 +180,7 @@ try {
       consume: false, lifecycleUid: mintLifecycleUid(),
       registerPresence: false, watchChannels: false, watchPresence: false,
     });
-    ep.on("error", () => { /* the drop and the refusal both ride here; the wire is the subject */ });
+    ep.on("error", (e: Error) => { errors.push(`${Date.now()}|${e.message}`); });
     ep.on("warning", (e: Error) => warnings.push(e.message));
     const t0 = Date.now();
     await ep.start();
@@ -175,6 +203,7 @@ try {
     releaseBroker();
     releaseBroker = teardownOnSignal(srv, dir);
     const restartedAfterExp = Date.now() > expAtMs;
+    const restartAtMs = Date.now();
     for (let i = 0; i < 60; i++) { if (await isReachable(SERVERS)) break; await wait(200); }
 
     // The control's own preconditions. Without these the zero below could be vacuous: a drop
@@ -197,10 +226,37 @@ try {
     // AFTER the socket is up, so a refused attempt still shows as `Client connection created` on
     // the broker. Requiring at least one means the loop DID reach the broker and was turned back at
     // the credential, rather than never arriving.
+    // NON-VACUITY, and this cell is what makes the zero below mean anything. A zero is reachable two
+    // ways: the supply refused every attempt (the property), or nothing tried at all (a quiet window,
+    // which proves nothing). This must hold on BOTH a fixed and an unfixed tree, or it is not a
+    // control — it is a second copy of the assertion.
+    //
+    // TWO EARLIER VERSIONS OF THIS CELL WERE WRONG, in opposite directions, and both were caught by
+    // running them rather than by reading them:
+    //
+    //   1. `Client connection created` — satisfied by ANY accepted socket. This suite polls
+    //      `isReachable` after each restart, a credless probe that never sends CONNECT; measured,
+    //      five polls produce five such lines and zero authentications. The control could be
+    //      satisfied entirely by the suite's own probes, i.e. it could not fail.
+    //   2. A credentialed CONNECT on the wire (`Authenticated JWT` / a named refusal). Correct on the
+    //      UNFIXED tree, and impossible on the fixed one: the whole point of the fix is that the
+    //      refusal happens locally and NO CONNECT is ever sent. Measured green pre-fix, red post-fix.
+    //
+    // The invariant both missed is that the DIAL ATTEMPT is client-side, so the evidence must be too.
+    // Each attempt evaluates the authenticator; on an expired cache that raises the refusal, and on a
+    // tree without the checkpoint it instead produces a wire rejection. Accepting either means "the
+    // loop was alive and asked the supply for a credential after the broker returned", which is the
+    // precondition the zero needs, and it is observable on both trees.
+    const refusalsAfterRestart = errors.filter((e) =>
+      Number(e.split("|")[0]) >= restartAtMs && /creds have expired/.test(e)).length;
     check(
-      "CONTROL: the dial loop did reach the broker after it returned (a quiet window would prove nothing)",
-      postRestart.split("\n").some((l) => /Client connection created/.test(l)),
-      postRestart.split("\n").filter((l) => /Client connection/.test(l)).slice(0, 5),
+      "CONTROL: the dial loop was alive and asked the supply after the broker returned (a quiet window would prove nothing)",
+      refusalsAfterRestart > 0 || credentialedConnects(postRestart).length > 0,
+      {
+        localRefusalsAfterRestart: refusalsAfterRestart,
+        credentialedConnectsOnWire: credentialedConnects(postRestart).length,
+        bareSockets: postRestart.split("\n").filter((l) => /Client connection created/.test(l)).length,
+      },
     );
     const presented = expiredPresentations(postRestart, NAME, id.id);
     check(
