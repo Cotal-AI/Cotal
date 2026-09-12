@@ -53,4 +53,6 @@ complete fraction on the marker line still grades when other text shares that li
 records that as a limitation, not as a completion claim. Configs whose suite launches a repository
 entrypoint may declare it in `executes`; the declaration is accepted only when the suite passes
 that entrypoint to a Node, tsx, or node-pty subprocess and the command builds each mutated package
-reached through it.
+reached through it. An `executes`-only config diff is coverage metadata, not a proof-definition
+change: mutation-reproof names it as a metadata-only exclusion instead of re-proving the live
+kill set.

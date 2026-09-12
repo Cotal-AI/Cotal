@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/mutation-reproof.smoke.ts"
   ],
-  "guard": "changed proof definitions, canonical suite arrays, suite sources, or guarded sources re-prove their fixture; legacy non-array to canonical-array metadata-only config diffs are named exclusions; deletions and both rename sides remain selecting",
+  "guard": "changed proof definitions, canonical suite arrays, suite sources, or guarded sources re-prove their fixture; legacy non-array to canonical-array metadata-only config diffs and executes-only coverage declarations are named exclusions; deletions and both rename sides remain selecting",
   "command": "pnpm smoke:mutation-reproof",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
@@ -26,10 +26,26 @@
     {
       "name": "metadata-only exclusion ignores other changed proof fields",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "  return isDeepStrictEqual(baseRest, headRest);",
-      "replace": "  return true;",
+      "find": "  const { suite: _headSuite, ...headRest } = fixture.config;\n  return isDeepStrictEqual(baseRest, headRest);",
+      "replace": "  const { suite: _headSuite, ...headRest } = fixture.config;\n  return true;",
       "expectRed": "a non-suite config change remains selecting during legacy suite canonicalization",
       "cell": "a non-suite config change remains selecting during legacy suite canonicalization"
+    },
+    {
+      "name": "executes-only coverage metadata stops being excluded",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    && (isMetadataOnlySuiteCanonicalization(root, a.base, fixture)\n      || isExecutesOnlyConfigChange(root, a.base, fixture)))",
+      "replace": "    && isMetadataOnlySuiteCanonicalization(root, a.base, fixture))",
+      "expectRed": "adding executes is excluded as metadata-only instead of selecting by config path",
+      "cell": "adding executes is excluded as metadata-only instead of selecting by config path"
+    },
+    {
+      "name": "executes-only exclusion ignores other changed proof fields",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  const { executes: _baseExecutes, ...baseRest } = baseConfig ?? {};\n  const { executes: _headExecutes, ...headRest } = fixture.config;\n  return isDeepStrictEqual(baseRest, headRest);",
+      "replace": "  const { executes: _baseExecutes, ...baseRest } = baseConfig ?? {};\n  const { executes: _headExecutes, ...headRest } = fixture.config;\n  return true;",
+      "expectRed": "an executes declaration plus a proof-field change remains selecting",
+      "cell": "an executes declaration plus a proof-field change remains selecting"
     },
     {
       "name": "the diff excludes deletions again (the original ACMR bug)",

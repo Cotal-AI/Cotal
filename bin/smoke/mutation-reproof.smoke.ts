@@ -837,6 +837,51 @@ try {
         && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
       `status=${status}\n${out}`);
   }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { writeFileSync } from 'node:fs';\nwriteFileSync('executed', 'yes');\nconsole.log('✓ a is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a is one" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.executes = ["bin/cotal.ts"];
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check("adding executes is excluded as metadata-only instead of selecting by config path",
+      status === 0 && selectedPaths(out).length === 0
+        && eq(metadataOnlyPaths(out), ["smoke/mutations/a.mutations.json"])
+        && !existsSync(join(root, "executed"))
+        && out.includes("the only intersections were metadata-only config-path exclusions"),
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))} excluded=${JSON.stringify(metadataOnlyPaths(out))} executed=${existsSync(join(root, "executed"))}\n${out}`);
+  }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "executed\n");
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "import { writeFileSync } from 'node:fs';\nwriteFileSync('executed', 'yes');\nconsole.log('✓ suite green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({ suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs", mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "a" }] }, null, 2));
+      },
+      (r) => {
+        const path = join(r, "smoke", "mutations", "a.mutations.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.executes = ["bin/cotal.ts"];
+        config.command = "node suites/a.suite.mjs --changed";
+        writeFileSync(path, JSON.stringify(config, null, 2));
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check("an executes declaration plus a proof-field change remains selecting",
+      eq(selectedPaths(out), ["smoke/mutations/a.mutations.json"])
+        && metadataOnlyPaths(out).length === 0 && existsSync(join(root, "executed")),
+      `status=${status} selected=${JSON.stringify(selectedPaths(out))} excluded=${JSON.stringify(metadataOnlyPaths(out))}\n${out}`);
+  }
 
   // 2. Deleted guarded source: a.mjs is removed. The blocked head excluded `D` from the diff and
   //    exited 0. The gate must now see the deletion, treat a's fixture as dangling, and FAIL naming
