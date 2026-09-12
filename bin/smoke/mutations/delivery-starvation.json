@@ -60,23 +60,23 @@
     {
       "name": "M1 the defect restored: elapsed wall-clock time alone decides the broker is gone",
       "file": "implementations/delivery/src/watchdog.ts",
-      "find": "  if (e.transportConnected) return { exit: false, reason: \"transport-live\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.\n  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };",
-      "replace": "  return { exit: true, reason: \"broker-gone\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.",
+      "find": "  const unstarvedMs = e.msSinceLastReachable - e.starvedMs;\n  if (unstarvedMs <= e.windowMs) return { exit: false, reason: \"starved\" };",
+      "replace": "  return { exit: true, reason: \"broker-gone\" };",
       "expectRed": "C1 does NOT exit: 20s elapsed with zero completed probes",
       "cell": "C1 does NOT exit: 20s elapsed with zero completed probes",
-      "note": "Past the window with no evidence gathered at all, the daemon declares the broker gone. This is exactly what `Date.now() - lastReachable > BROKER_GONE_MS` did, and what ended Plane-3 twice on 2026-09-05 while nats-server had been up for 7.3 days."
+      "note": "The shipped predicate restored in the place it actually lived: past the window with the transport down, exit on elapsed time alone — no starvation credit, no requirement that any probe completed. Anchored on two contiguous CODE lines rather than on the nearest comment, so a docs commit cannot quietly disarm it."
     },
     {
       "name": "M1-live the same defect, graded end to end against a real daemon and a real broker",
       "file": "implementations/delivery/src/watchdog.ts",
-      "find": "  if (e.transportConnected) return { exit: false, reason: \"transport-live\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.\n  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };",
-      "replace": "  return { exit: true, reason: \"broker-gone\" };\n  // From here the transport is DOWN, so the absence of evidence is real and is bounded.",
+      "find": "  const unstarvedMs = e.msSinceLastReachable - e.starvedMs;\n  if (unstarvedMs <= e.windowMs) return { exit: false, reason: \"starved\" };",
+      "replace": "  return { exit: true, reason: \"broker-gone\" };",
       "expectRed": "C6 the daemon did NOT exit while it could not complete a fresh handshake",
       "cell": "C6 the daemon did NOT exit while it could not complete a fresh handshake",
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "The daemon is spawned through bin/cotal.ts, which resolves @cotal-ai/delivery to dist/, so this mutation MUST build or it would grade the previous build and come back SURVIVED while the source was broken. The broker-killed cells stay green in the same run, which is the asymmetry the issue describes."
+      "note": "The shipped predicate restored in the place it actually lived: past the window with the transport down, exit on elapsed time alone — no starvation credit, no requirement that any probe completed. Anchored on two contiguous CODE lines rather than on the nearest comment, so a docs commit cannot quietly disarm it."
     },
     {
       "name": "M2 a probe answer that arrived long past its own deadline counts against the broker again",

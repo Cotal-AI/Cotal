@@ -770,7 +770,6 @@ const FROZEN: readonly string[] = [
   "implementations/delivery/smoke/adoption-doctor-e2e.smoke.ts",
   "implementations/delivery/smoke/adoption-false-green.smoke.ts",
   "implementations/delivery/smoke/adoption-passive-preflight.smoke.ts",
-  "implementations/delivery/smoke/delivery-broker-coupling.smoke.ts",
   "implementations/delivery/smoke/delivery-cred-renewal.smoke.ts",
   "implementations/manager/smoke/attach-reconnect.smoke.ts",
   "implementations/manager/smoke/cli-on-instance-live.smoke.ts",
