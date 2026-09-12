@@ -1,0 +1,3 @@
+# #1297: shard.mjs grades coverage from a cell-count sentinel, not exit status alone.
+# Mutation-proofed - bin/smoke/mutations/shard-sentinel.json.
+smoke:shard-sentinel

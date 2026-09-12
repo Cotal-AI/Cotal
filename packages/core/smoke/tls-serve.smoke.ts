@@ -1,4 +1,5 @@
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import net from "node:net";
 import tlsMod from "node:tls";
 import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const { assert, cells } = countedAssert(nodeAssert);
 
 // The broker-TLS fence, proved by EXECUTION rather than by inspecting the rendered config.
 //
@@ -326,3 +328,4 @@ console.log("tls-serve smoke: OK - cleartext refused by TLS-required listeners i
   // every green run: the brokers were reaped and the tree they wrote was not.
   rmSync(dir, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

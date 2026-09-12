@@ -1,9 +1,11 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+const { assert, cells } = countedAssert(nodeAssert);
 
 type Classification = "honest-text" | "presence-only-glyph/count" | "command-ack" | "non-render/control";
 type CandidateKind = "status-token" | "derived-output" | "indexed-map" | "renderer-call";
@@ -262,6 +264,7 @@ if (selectedProbe) {
     rmSync(path, { force: true });
   }
   console.log(`presence-render probe case passed: ${selectedProbe}`);
+  emitSentinel({ passed: cells(), failed: 0 });
   process.exit(0);
 }
 
@@ -356,3 +359,4 @@ if (process.env.COTAL_PRESENCE_RENDER_PROBE_CHILD !== "1") {
   }
 }
 console.log("PRESENCE-RENDER-CENSUS: 17 checks passed");
+emitSentinel({ passed: cells(), failed: 0 });

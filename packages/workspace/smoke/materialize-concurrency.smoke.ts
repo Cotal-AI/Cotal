@@ -12,7 +12,8 @@
  * the repo, so each package's `import "@cotal-ai/core"` resolves to the same core singleton this smoke
  * and materialize.ts use.
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
@@ -22,6 +23,7 @@ import {
   importInstalledExtension,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
+const { assert, cells } = countedAssert(nodeAssert);
 
 // Temp config home under the repo so the fixture packages resolve @cotal-ai/core to the repo copy
 // (node walks up to packages/workspace/node_modules), sharing this process's registry singleton.
@@ -101,3 +103,4 @@ try {
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

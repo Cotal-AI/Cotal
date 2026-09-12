@@ -1,10 +1,12 @@
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   brokerPolicyPath, writeBrokerPolicy, readBrokerPolicy, BrokerPolicyError,
 } from "../src/broker-policy.js";
+const { assert, cells } = countedAssert(nodeAssert);
 
 // The broker launch policy is what makes a TLS decision survive `cotal down`. `MeshEntry` does not
 // survive it, so without this record a bare down/up would forget that a broker serves TLS and
@@ -115,3 +117,4 @@ function refuses(fn: () => unknown, match: RegExp, what: string): void {
 }
 
 console.log("broker-policy smoke: OK - plaintext and TLS round-trip, .cotal is 0700, and every unusable policy REFUSES rather than degrading to plaintext (missing cert, missing key, corrupt JSON, unknown transport, future version, half pair)");
+emitSentinel({ passed: cells(), failed: 0 });

@@ -1,4 +1,5 @@
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import {
   principalKey, DEV_OWNER, mintLifecycleUid,
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
+const { assert, cells } = countedAssert(nodeAssert);
 
 // Auth-mode end-to-end test of the broker-enforced read-ACL path: proves the SCOPED agent creds
 // carry exactly the grants the bind-only mechanism needs and nothing more —
@@ -157,4 +159,5 @@ await mgr.stop();
 await killAndAwaitExit(child, "SIGTERM");
 rmSync(dir, { recursive: true, force: true });
 releaseBroker(); // last: ownership is held until this teardown has actually finished
+emitSentinel({ passed: cells(), failed: 0 });
 process.exit(0);

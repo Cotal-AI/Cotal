@@ -1,5 +1,7 @@
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { endpointAuth, type Connection } from "../src/connect.js";
+const { assert, cells } = countedAssert(nodeAssert);
 
 // TLS-required CLIENT INTENT must survive the trip from the mesh record to the wire.
 //
@@ -55,3 +57,4 @@ const base = { server: "nats://127.0.0.1:4222", space: "s" };
 }
 
 console.log("tls-intent smoke: OK - TLS-required client intent survives endpointAuth on static, user-mode and credential-less connections, and is never invented when absent");
+emitSentinel({ passed: cells(), failed: 0 });

@@ -1,5 +1,7 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { webProbeTarget } from "../src/commands/status.js";
+const { assert, cells } = countedAssert(nodeAssert);
 
 const remote = webProbeTarget("node cotal web --host 192.0.2.10 --port 8123 --no-open");
 assert.ok(!("refused" in remote) && remote.url.href === "http://192.0.2.10:8123/api/meta",
@@ -21,3 +23,4 @@ for (const host of ["0.0.0.0", "0", "::", "::ffff:0.0.0.0", "::ffff:0:0", "0:0:0
 }
 
 console.log("web probe target smoke: explicit host, defaults, IPv6, and wildcard refusal passed");
+emitSentinel({ passed: cells(), failed: 0 });

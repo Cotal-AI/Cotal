@@ -22,3 +22,11 @@ export {
   type SmokeSandboxAnchor,
 } from "./sandbox-guard.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
+export {
+  SENTINEL_PREFIX,
+  countedAssert,
+  createSuite,
+  emitSentinel,
+  formatSentinel,
+  parseSentinel,
+} from "./sentinel.js";

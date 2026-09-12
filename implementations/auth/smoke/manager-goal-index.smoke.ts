@@ -1,8 +1,10 @@
 /** Closed host-owned remote manager goal-index scan policy. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { mintLifecycleUid, newIdentity, remoteManagerActors, type RemoteManagerGoalIndexScanRequest } from "@cotal-ai/core";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan, parseRemoteManagerGoalIndexScanRequest } from "../src/manager-goal-index.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
+const { assert, cells } = countedAssert(nodeAssert);
 
 const owner = `u_${"a".repeat(26)}`;
 const otherOwner = `u_${"b".repeat(26)}`;
@@ -37,3 +39,4 @@ const entry = { v: 1 as const, endpoint: "manager", owner, actor: "cli", uid: mi
 assert.deepEqual(completeRemoteManagerGoalIndexScan(authorized, owner, [entry]).entries, [entry]);
 assert.throws(() => completeRemoteManagerGoalIndexScan(authorized, owner, [{ ...entry, owner: otherOwner }]), /foreign endpoint or owner/);
 console.log("manager goal-index scan: 8 passed, 0 failed");
+emitSentinel({ passed: cells(), failed: 0 });

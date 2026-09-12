@@ -1,5 +1,6 @@
 /** Hermetic CLI backup artifact and maintenance-grammar smoke. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, rotateSystemAccount, taskStream } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
+const { assert, cells } = countedAssert(nodeAssert);
 
 const root = mkdtempSync(join(tmpdir(), "cotal-backup-cli-"));
 try {
@@ -266,3 +268,4 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

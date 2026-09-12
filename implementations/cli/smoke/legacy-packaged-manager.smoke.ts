@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -6,6 +7,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
+const { assert, cells } = countedAssert(nodeAssert);
 
 const originalHome = process.env.HOME ?? homedir();
 const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");
@@ -270,3 +272,4 @@ setInterval(() => {}, 1000);
   assert.deepEqual(existsSync(operatorStamp) ? readFileSync(operatorStamp) : undefined, stampBefore, "fixture did not change the operator seed stamp");
   rmSync(base, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

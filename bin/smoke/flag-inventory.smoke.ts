@@ -14,7 +14,8 @@
  *
  * Run: pnpm smoke:flag-inventory
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { registry, type Command } from "@cotal-ai/core";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
@@ -24,6 +25,7 @@ import "@cotal-ai/runtime"; // registers run
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
+const { assert, cells } = countedAssert(nodeAssert);
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
   // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.
@@ -253,3 +255,4 @@ for (const cmd of commands) {
 }
 
 console.log(`✓ flag-inventory smoke passed (${commands.length} commands)`);
+emitSentinel({ passed: cells(), failed: 0 });
