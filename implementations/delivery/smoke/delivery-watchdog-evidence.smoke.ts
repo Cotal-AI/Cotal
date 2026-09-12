@@ -141,13 +141,26 @@ check(
   "E2b inside the window the reading is still reachable, not transport-live",
   brokerGoneVerdict(evidence({ msSinceLastReachable: 1_000, transportConnected: true })).reason === "reachable",
 );
-// REFUSING case for the credit's scope: the transport credit is NOT bounded by the backstop, and
-// that is deliberate rather than an oversight — an open connection to the broker is ongoing
-// positive evidence, and the moment the broker dies the flag goes false and every bound applies
-// again. The refusing half is E2 above: same evidence, transport closed, exits.
+// THE BACKSTOP OUTRANKS THE TRANSPORT, AND THIS CELL USED TO ASSERT THE OPPOSITE. Two reviewers
+// independently found it: `transportConnected` is not an observation of the broker, it is this
+// client's cached socket state, refreshed only when nats.js decides the peer is gone. Under a
+// SILENT death — OOM kill, hypervisor pause, a firewall that starts dropping instead of refusing —
+// no FIN and no RST arrive, the kernel holds the connection ESTABLISHED, and with shipped defaults
+// nats.js does not notice for roughly six minutes (ping every 120s, two outstanding allowed). While
+// that flag was ranked above the backstop, a stale `true` suspended the exit for the whole of that
+// window no matter how much time had passed or how many refusals had piled up behind it.
+//
+// A bound that any single stale flag can defer is not a bound. Past the backstop the daemon exits,
+// whatever it believes about its socket.
 check(
-  "E3 a live transport survives even past the backstop — an open socket is evidence, not an excuse",
-  brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, completedNegatives: 99, transportConnected: true })).exit === false,
+  "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
+  brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, completedNegatives: 99, transportConnected: true })).exit === true,
+);
+// ACCEPTING, one millisecond earlier: inside the backstop the open transport still carries, because
+// there the flag being stale costs bounded time rather than unbounded time.
+check(
+  "E3b but INSIDE the backstop a live transport still holds the daemon open",
+  brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP, completedNegatives: 99, transportConnected: true })).reason === "transport-live",
 );
 check(
   "E4 and with the transport closed that same past-backstop evidence exits",
@@ -408,7 +421,7 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-const EXPECTED_CELLS = 79;
+const EXPECTED_CELLS = 81;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
