@@ -43,8 +43,7 @@ Library composition roots can call `Manager.preserveState({ attemptId, persistIn
 `Manager.resumePreserved()` on a fresh active manager. The complete inventory is preflighted before
 the first child launches. Static and open entries reuse and validate the exact retained principal.
 User-auth entries are validated internally through `resolveAuthProvider().validateRetainedAgent()`;
-the manager never calls `grantAgent` or provisions a replacement identity. Ordinary
-`Manager.stop()` remains destructive while the manager is active.
+the manager never calls `grantAgent` or provisions a replacement identity.
 
 After restore, start the manager with `supervise --resume-attempt <id>`, wait for normal manager
 readiness, then send the admin control request:
@@ -64,6 +63,9 @@ before echoing its token in the separate admin request:
 ```json
 {"op":"finalizeResume","args":{"attemptId":"<id>","durableCommitToken":"<64 lowercase hex chars>"}}
 ```
+
+Active-mode `Manager.stop()` releases detachable manager-local custody and leaves agents running by
+default; `stop({ withAgents: true })` is the explicit destructive teardown.
 
 Only token-bound finalization releases ordinary destructive lifecycle semantics. Both operations are
 same-attempt idempotent. A manager signal or lease loss after commit but before finalization remains

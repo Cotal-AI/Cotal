@@ -358,7 +358,7 @@ try {
     }
   }
 } finally {
-  await mgr.stop().catch(() => {});
+  await mgr.stop({ withAgents: true }).catch(() => {});
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
 }

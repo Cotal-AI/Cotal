@@ -269,7 +269,7 @@ try {
   const user = await userMgr.startAgent({ name: "user", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1_000 } });
   c("user-mode refuses supervise at accept",
     user.ok === false && (user.error ?? "").includes("a user-mode seat has no static slot"), user);
-  await userMgr.stop().catch(() => {});
+  await userMgr.stop({ withAgents: true }).catch(() => {});
   userMgr = undefined;
   removeMesh(space);
 
@@ -285,8 +285,8 @@ try {
 } finally {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
-  await userMgr?.stop().catch(() => {});
-  await manager?.stop().catch(() => {});
+  await userMgr?.stop({ withAgents: true }).catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME;

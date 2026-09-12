@@ -192,7 +192,7 @@ try {
 
   console.log(`\nsecret-store-seam smoke: ${pass} passed, ${fail} failed`);
 } finally {
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   await delivery?.stop();
   for (const k of kids) { k.kill("SIGKILL"); }
   await wait(200);

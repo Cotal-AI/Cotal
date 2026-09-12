@@ -121,8 +121,19 @@ if (process.platform !== "linux") {
   check("spawned handle exposes a durable reference", h.reference !== undefined && h.reference.kind === "pty", h.reference);
   const adopted = requireRuntimeAdopt(rt, h.reference!);
   check("production adopt returns a live proxy", typeof adopted.attach === "function" && adopted.pid === h.pid);
-  h.stop({ graceful: false });
-  await h.waitForExit?.();
+  check("custodial pty declares release-safe manager custody", rt.supportsRelease === true);
+  h.release?.();
+  adopted.release?.();
+  let survivedRelease = false;
+  try {
+    process.kill(h.pid!, 0);
+    survivedRelease = true;
+  } catch { /* failed below */ }
+  check("releasing every manager proxy leaves the detached custodian child alive", survivedRelease, { pid: h.pid });
+  const cleanup = requireRuntimeAdopt(rt, h.reference!);
+  cleanup.stop({ graceful: false });
+  await cleanup.waitForExit?.();
+  drop(cleanup);
   drop(adopted);
   drop(h);
 

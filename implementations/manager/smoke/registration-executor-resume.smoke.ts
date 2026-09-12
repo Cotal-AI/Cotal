@@ -151,7 +151,7 @@ const attempt = async (label: string, iid: string) => {
   const next = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot, endpointServeExecutorExpiresInSeconds: 6 });
   let error: Error | undefined;
   try { await next.start(); mgr = next; }
-  catch (e) { error = e as Error; await next.stop().catch(() => {}); }
+  catch (e) { error = e as Error; await next.stop({ withAgents: true }).catch(() => {}); }
   const { kv, nc } = await execKv(iid);
   const after = await gate(kv, iid);
   await nc.drain().catch(() => nc.close());
@@ -170,7 +170,7 @@ try {
   await mgr.start();
   const persisted = loadManagerInstanceIdentity(workspaceRoot, SPACE)!;
   const iid = persisted.instanceId;
-  await mgr.stop(); mgr = undefined;
+  await mgr.stop({ withAgents: true }); mgr = undefined;
 
   const ek = await execKv(iid);
   check("family expanded to eight distinct holders", (await expandToEightHolders(ek.kv, iid)) === FAMILY);
@@ -195,7 +195,7 @@ try {
   console.error((e as Error).stack ?? String(e));
   process.exitCode = 1;
 } finally {
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   await daemon?.stop().catch(() => {});
   srv.kill("SIGTERM");
   await wait(200);

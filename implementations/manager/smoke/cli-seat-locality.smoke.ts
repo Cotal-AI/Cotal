@@ -227,8 +227,8 @@ try {
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {
-  await m1?.stop().catch(() => {});
-  await m2?.stop().catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

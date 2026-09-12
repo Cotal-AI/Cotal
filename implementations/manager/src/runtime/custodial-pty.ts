@@ -16,6 +16,7 @@ function defaultCustodyRoot(): string {
  */
 export class CustodialPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
+  readonly supportsRelease = true;
 
   constructor(private readonly root: string = process.env.COTAL_SEAT_ROOT ?? defaultCustodyRoot()) {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -29,13 +30,15 @@ export class CustodialPtyRuntime implements Runtime {
       spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm },
       cwd,
     });
-    return adoptSeatSync(rec) as unknown as AgentHandle;
+    const seat = adoptSeatSync(rec);
+    return { ...seat, release: () => seat.close() } as AgentHandle;
   }
 
   adopt(reference: RuntimeReference): AgentHandle {
     if (process.platform !== "linux") throw unsupportedTransport();
     if (reference.kind !== "pty") throw new Error(`cannot adopt runtime kind "${reference.kind}" with pty`);
-    return adoptSeatSync(loadSeat(this.root, reference.id)) as unknown as AgentHandle;
+    const seat = adoptSeatSync(loadSeat(this.root, reference.id));
+    return { ...seat, release: () => seat.close() } as AgentHandle;
   }
 }
 

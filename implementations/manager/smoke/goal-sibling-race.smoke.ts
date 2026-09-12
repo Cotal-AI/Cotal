@@ -172,8 +172,8 @@ try {
   console.log(`\ngoal sibling-instance race smoke: ${pass} passed, ${fail} failed`);
 } finally {
   for (const c of conns) await c.drain().catch(() => c.close());
-  await mgrB?.stop().catch(() => {});
-  await mgrA?.stop().catch(() => {});
+  await mgrB?.stop({ withAgents: true }).catch(() => {});
+  await mgrA?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
   await wait(200);
 }

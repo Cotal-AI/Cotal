@@ -29,6 +29,7 @@ function check(label: string, condition: boolean, extra?: unknown): void {
 
 interface FakeHandle extends AgentHandle {
   stops: number;
+  releases: number;
 }
 
 function fakeHandle(name: string, opts: { throwOnStop?: boolean } = {}): FakeHandle {
@@ -47,6 +48,7 @@ function fakeHandle(name: string, opts: { throwOnStop?: boolean } = {}): FakeHan
     name,
     kind: "fake",
     stops: 0,
+    releases: 0,
     status: () => state,
     stop: () => {
       handle.stops++;
@@ -60,6 +62,7 @@ function fakeHandle(name: string, opts: { throwOnStop?: boolean } = {}): FakeHan
           const done = (): void => { exits.delete(done); resolve(); };
           exits.add(done);
         }),
+    release: () => { handle.releases++; },
     interrupt: () => {},
     attach: () => session,
   };
@@ -1120,17 +1123,32 @@ let openInventory: ManagerResumeAgent;
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["general"] };
 }
 
-// Regression: active-mode stop remains the existing destructive shutdown path.
+// #964: active-mode stop spares by default; explicit withAgents retains the old teardown.
 {
   const manager = managerWith((name) => fakeHandle(name));
-  const handle = fakeHandle("normal");
+  const handle = fakeHandle("spared");
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
-  map.set("normal", managed("normal", "normal_id", handle, "persona"));
+  map.set("spared", managed("spared", "spared_id", handle, "persona"));
   let deprovisions = 0;
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
   await manager.stop();
-  check("normal stop still hard-stops managed agents", handle.stops === 1, handle.stops);
-  check("normal stop still deprovisions managed agents", deprovisions === 1, deprovisions);
+  check("normal stop leaves managed agents running", handle.stops === 0, handle.stops);
+  check("normal stop releases detachable local custody", handle.releases === 1, handle.releases);
+  check("normal stop preserves managed-agent footprint", deprovisions === 0, deprovisions);
+  check("normal stop drops the old manager's table", map.size === 0, map.size);
+}
+
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const handle = fakeHandle("reaped");
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("reaped", managed("reaped", "reaped_id", handle, "persona"));
+  let deprovisions = 0;
+  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  await manager.stop({ withAgents: true });
+  check("stop withAgents hard-stops managed agents", handle.stops === 1, handle.stops);
+  check("stop withAgents deprovisions managed agents", deprovisions === 1, deprovisions);
+  check("stop withAgents does not use the release-only path", handle.releases === 0, handle.releases);
 }
 
 // Regression: an accepted control stop frees the slot AT ONCE — `stop` replying ✓ has to mean `ps`

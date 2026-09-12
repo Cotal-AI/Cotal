@@ -87,8 +87,8 @@ try {
   check("--on <unknown instance> deadlines (no fallback to another instance)", unknownErr);
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }
 

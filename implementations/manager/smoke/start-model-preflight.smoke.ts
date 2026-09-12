@@ -465,7 +465,7 @@ registry.register(recNoResumeCon);
   await mgr.startAgent({ name: "shut1", agent: "smoke-rec" });
   await mgr.startAgent({ name: "shut2", agent: "smoke-rec" });
   check("shutdown: two managed agents present before stop", agentCount() >= 2, agentCount());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   check("shutdown: stop() hard-stops every managed child", stopped.includes("shut1") && stopped.includes("shut2"), stopped);
   check("shutdown: stop() proves every managed child exited before releasing manager authority", exitProofs.has("shut1") && exitProofs.has("shut2"), [...exitProofs]);
   check("shutdown: stop() empties the managed-agents map (no orphaned footprint)", agentCount() === 0, agentCount());

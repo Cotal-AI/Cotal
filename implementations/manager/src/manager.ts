@@ -406,6 +406,11 @@ export interface ManagerOptions {
   };
 }
 
+export interface ManagerStopOptions {
+  /** Stop and deprovision managed agents. The default only releases detachable local custody. */
+  withAgents?: boolean;
+}
+
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
 
@@ -1192,6 +1197,11 @@ export class Manager {
 
   get runtimeKind(): string {
     return this.runtime.kind;
+  }
+
+  /** Whether a default process stop can drop manager-local custody without taking agents with it. */
+  get canSpareAgents(): boolean {
+    return this.runtime.kind !== "pty" || this.runtime.supportsRelease === true;
   }
 
   /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
@@ -2024,7 +2034,7 @@ export class Manager {
     };
   }
 
-  /** Tear down every managed agent's footprint on a graceful {@link stop} (#159 B2). A manager exit is
+  /** Tear down every managed agent's footprint on an explicit destructive {@link stop}. A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
@@ -2061,6 +2071,29 @@ export class Manager {
       throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
+  /** Drop only this manager's local custody handles. Validate the complete snapshot before releasing
+   * any handle so a non-detachable runtime cannot leave a partially detached manager behind. */
+  private releaseManagedAgents(): string[] {
+    const managed = [...this.agents.values()];
+    const blocked = managed.filter((a) => a.handle.kind === "pty" && typeof a.handle.release !== "function");
+    if (blocked.length) {
+      return [
+        `manager shutdown cannot detach ${blocked.map((a) => `${a.name} (${a.handle.kind})`).join(", ")}: runtime handle does not support release`,
+      ];
+    }
+    const failures: string[] = [];
+    for (const a of managed) {
+      try {
+        a.handle.release?.();
+        a.suppressCleanup = true;
+        this.agents.delete(a.name);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
+      }
+    }
+    return failures;
+  }
+
   private async stopRetainedAgentsOnExit(): Promise<void> {
     const managed = [...this.agents.values()];
     for (const a of managed) a.suppressCleanup = true;
@@ -2082,7 +2115,7 @@ export class Manager {
       throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
   }
 
-  async stop(): Promise<void> {
+  async stop(options: ManagerStopOptions = {}): Promise<void> {
     this.staticReconcileStopping = true;
     const starting = this.startTask;
     for (const item of this.staticReconcileItems.values()) {
@@ -2095,8 +2128,10 @@ export class Manager {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
+    let releaseFailures: string[] = [];
     if (this.maintenanceState === "active" && !this.resumeRequired) {
-      await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)
+      if (options.withAgents) await this.teardownManagedAgents();
+      else releaseFailures = this.releaseManagedAgents();
     } else {
       // A signal after a partial preservation must never fall back into destructive teardown.
       await this.stopRetainedAgentsOnExit();
@@ -2117,6 +2152,8 @@ export class Manager {
     await this.stopSessionPlane();
     await this.ep.stop();
     await this.attach.stop();
+    if (releaseFailures.length)
+      throw new Error(`manager shutdown could not release every detachable seat: ${releaseFailures.join("; ")}`);
   }
 
   /**

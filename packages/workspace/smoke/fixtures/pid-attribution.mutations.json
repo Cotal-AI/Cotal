@@ -23,14 +23,14 @@
       "expectRed": "a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager"
     },
     {
-      "name": "PREDICTED KILLED (>=1 red) - the real process-argv read is replaced by an unreadable answer, so nothing is ever attributed and every live pid stays trusted: the cell that names a stranger has to be executing the actual reader on this platform to notice",
+      "name": "PREDICTED KILLED (>=1 red) - the Linux process-argv read is replaced by an unreadable answer, so nothing is ever attributed and every live pid stays trusted",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  if (r.status === 0 && out !== \"\") return { kind: \"command\", command: out };",
-      "replace": "  if (r.status === 0 && out !== \"\") return { kind: \"unreadable\", why: \"mutant\" };",
+      "find": "      return { kind: \"command\", command: readFileSync(`/proc/${pid}/cmdline`, \"utf8\").replace(/\\0/g, \" \").trim() };",
+      "replace": "      return { kind: \"unreadable\", why: \"mutant\" };",
       "expectRed": "this very process is readable and is NOT a manager"
     }
   ],
-  "_note": "The suite imports `../src/pid.js` and `../../../implementations/cli/src/lib/manager-proc.js` RELATIVELY, so both mutated files are the modules under test and no build step belongs here. Mutation 4 targets the POSIX `ps` branch, which is the one this machine executes; the linux `/proc` branch and the win32 branch are not covered by these four and neither is claimed to be.",
+  "_note": "The suite imports `../src/pid.js` and `../../../implementations/cli/src/lib/manager-proc.js` RELATIVELY, so both mutated files are the modules under test and no build step belongs here. Mutation 4 targets the Linux `/proc` branch used by Tenki. The POSIX `ps` fallback and win32 unreadable branch are platform-specific and are not claimed by this fixture.",
   "suite": [
     "packages/workspace/smoke/pid.smoke.ts"
   ]

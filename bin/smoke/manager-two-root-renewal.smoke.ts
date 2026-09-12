@@ -205,7 +205,7 @@ try {
   ok("#773: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
   ok("daemon B outlives the refused start (refusal is a manager construction error, not a daemon death)", !sinkB.exited);
 
-  await mgrA.stop();
+  await mgrA.stop({ withAgents: true });
   mgrA = undefined;
   if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL");
   await killAndAwaitExit(broker1.srv, "SIGKILL");
@@ -264,8 +264,8 @@ try {
   console.error("  -- daemon C tail:\n", sinkC.out.slice(-1500));
   process.exitCode = 1;
 } finally {
-  try { await mgrA?.stop(); } catch { /* already stopped or never started */ }
-  try { await mgrC?.stop(); } catch { /* already stopped or never started */ }
+  try { await mgrA?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
+  try { await mgrC?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
   try { if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL"); } catch { /* gone */ }
   try { if (daemonC && !sinkC.exited) daemonC.kill("SIGKILL"); } catch { /* gone */ }
   if (broker1) await killAndAwaitExit(broker1.srv, "SIGKILL");

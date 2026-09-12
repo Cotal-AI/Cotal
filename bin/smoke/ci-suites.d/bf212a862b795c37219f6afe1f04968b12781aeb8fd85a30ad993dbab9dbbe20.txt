@@ -1,0 +1,1 @@
+smoke:manager-stop-spare-guard

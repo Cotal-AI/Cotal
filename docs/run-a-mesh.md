@@ -9,7 +9,13 @@ operator-only maintenance verbs. Every command's full flag set is in the
 
 ## The stack
 
-`cotal up` brings up the whole local stack and bare `cotal down` stops it:
+`cotal up` brings up the whole local stack and bare `cotal down` stops it. Managed
+agents stay running as unmanaged OS processes; pass `--with-agents` to take them
+with the stack. A current manager proves that it can detach local PTY custody before
+bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
+warning and is signalled according to the documented upgrade contract. Its running binary
+may still carry the older destructive SIGTERM handler, so the CLI does not claim its
+pre-signal agent inventory was spared; those agents may have been reaped.
 
 - **Broker**: a local `nats-server` (logs to `.cotal/nats.log`).
 - **Delivery daemon**: the durable backstop, auth mode only
@@ -200,7 +206,9 @@ nothing about the other host.
 
 Stop one part without tearing down the mesh by naming its registered component: `cotal down
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
-join the same surface; `cotal down` with no names retains whole-stack behavior.
+join the same surface; `cotal down` with no names retains whole-stack behavior and
+leaves managed agents running as unmanaged OS processes. `cotal down --with-agents`
+is the previous reap.
 
 ## Remote supervised agents
 

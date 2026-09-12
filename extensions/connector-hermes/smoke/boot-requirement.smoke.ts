@@ -96,7 +96,7 @@ try {
   else process.env.PATH = oldPath;
   if (oldConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = oldConfigHome;
-  for (const manager of managers.reverse()) await manager.stop().catch(() => {});
+  for (const manager of managers.reverse()) await manager.stop({ withAgents: true }).catch(() => {});
   broker.kill("SIGKILL");
   for (let i = 0; i < 100 && broker.exitCode === null && broker.signalCode === null; i++) await wait(20);
   rmSync(root, { recursive: true, force: true });

@@ -335,7 +335,7 @@ export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: Proc
 /** What {@link verifyIdentityPin} found for one pidfile. */
 export type PinVerdict =
   | { kind: "legacy" }        // no sibling: a pre-identity record. Windows launches write a sibling (#1437)
-  | { kind: "match" }         // pinned, and the live process carries the recorded start
+  | { kind: "match"; record: ProcessIdentityRecord } // pinned, and the live process carries the recorded start
   | { kind: "gone" }          // pinned, and the pid is ESRCH-dead: the recorded process is gone
   | { kind: "mismatch"; record: ProcessIdentityRecord; liveToken: string } // PID REUSE: refuse
   | { kind: "torn-pin"; raw: string }        // sibling exists but is not a record
@@ -380,7 +380,7 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
   if (parsed.kind !== "record") return dead ? { kind: "gone" } : { kind: "torn-pin", raw: parsed.kind === "unattributable" ? parsed.raw : "" };
   if (parsed.record.pid !== pidRead) return dead ? { kind: "gone" } : { kind: "torn-pairing", pinPid: parsed.record.pid };
   const verdict = assertRecordIdentity(parsed.record, tokenAt);
-  if (verdict.kind === "match") return { kind: "match" };
+  if (verdict.kind === "match") return { kind: "match", record: parsed.record };
   if (verdict.kind === "gone") return { kind: "gone" };
   if (verdict.kind === "mismatch") return { kind: "mismatch", record: parsed.record, liveToken: verdict.liveToken };
   return { kind: "unpinned" };

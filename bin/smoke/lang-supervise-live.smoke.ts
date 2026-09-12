@@ -267,7 +267,7 @@ try {
   }
   rc = fail === 0 ? 0 : 1;
 } finally {
-  try { await mgr?.stop(); } catch { /* teardown */ }
+  try { await mgr?.stop({ withAgents: true }); } catch { /* teardown */ }
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
   rmSync(workspaceRoot, { recursive: true, force: true });

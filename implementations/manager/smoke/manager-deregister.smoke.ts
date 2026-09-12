@@ -138,7 +138,7 @@ try {
   const IID_FIRST = (first as unknown as MgrPriv).managerInstanceId;
   ({ nc } = await openObserver([]));
   check("the started manager is a live class member", (await frozenIds()).includes(IID_FIRST), IID_FIRST);
-  await first.stop();
+  await first.stop({ withAgents: true });
   first = undefined;
   check("after a clean stop its registration is GONE, so no later scatter can freeze it in",
     !(await frozenIds().catch(() => [] as string[])).includes(IID_FIRST), IID_FIRST);
@@ -173,7 +173,7 @@ try {
   let openMgr: InstanceType<typeof Manager> | undefined = new Manager({ space: openSpace, servers: OPEN_SERVERS, runtime: "pty", workspaceRoot: openRoot });
   await openMgr.start();
   const IID_OPEN = (openMgr as unknown as MgrPriv).managerInstanceId;
-  await openMgr.stop();
+  await openMgr.stop({ withAgents: true });
   const goneOpen = await openFrozen().then((ids) => ids.includes(IID_OPEN)).catch(() => false);
   check("an open-mesh manager deregisters on its clean stop too (the same route, no credential system)", !goneOpen, IID_OPEN);
   openMgr = new Manager({ space: openSpace, servers: OPEN_SERVERS, runtime: "pty", workspaceRoot: openRoot });
@@ -182,7 +182,7 @@ try {
   check("the restart reuses the SAME persisted instance id (this is a restart, not a new identity)", IID_AGAIN === IID_OPEN, { IID_OPEN, IID_AGAIN });
   check("THE RECOVERY: it is a live class member again, which needs the STATUS write to survive its tombstone too",
     (await openFrozen()).includes(IID_OPEN), IID_OPEN);
-  await openMgr.stop().catch(() => {});
+  await openMgr.stop({ withAgents: true }).catch(() => {});
   await openNc.drain().catch(() => openNc.close());
 
   console.log("3. the corpse: a manager whose host died, fabricated rather than found");
@@ -386,7 +386,7 @@ try {
   const stillFrozen = await hungFrozen().then((ids) => ids.includes(IID_HUNG)).catch(() => false);
   check("with the subscription gone, the SAME command on the SAME record removes it",
     nowGone.probe.state === "gone" && nowGone.removedSpecRevision > 0 && !stillFrozen, { probe: nowGone.probe, stillFrozen });
-  await hung.stop().catch(() => {});
+  await hung.stop({ withAgents: true }).catch(() => {});
   hung = undefined;
   await hungNc.drain().catch(() => hungNc.close());
 

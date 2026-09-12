@@ -134,7 +134,7 @@ try {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
   else process.env.PATH = oldPath;
-  await manager.stop().catch(() => {});
+  await manager.stop({ withAgents: true }).catch(() => {});
   broker.kill("SIGKILL");
   for (let i = 0; i < 100 && broker.exitCode === null && broker.signalCode === null; i++) await wait(20);
   releaseBroker();

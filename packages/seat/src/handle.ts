@@ -20,6 +20,7 @@ export interface SeatHandle {
   status(): "running" | "exited";
   exitInfo(): { code?: number; signal?: number } | undefined;
   stop(opts?: { graceful?: boolean }): void;
+  release(): void;
   waitForExit(): Promise<void>;
   interrupt(): void;
   write(data: string): Promise<number>;
@@ -62,6 +63,12 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     });
   });
 
+  const close = (): void => {
+    for (const u of liveUnsubs) u();
+    liveUnsubs.clear();
+    client.close();
+  };
+
   return {
     name: record.name,
     kind: "pty",
@@ -73,6 +80,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     stop: (opts) => {
       later((c) => c.stop(opts?.graceful === false ? "hard" : "graceful"));
     },
+    release: close,
     waitForExit: async () => {
       try {
         const c = await whenReady();
@@ -167,11 +175,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
         },
       };
     },
-    close: () => {
-      for (const u of liveUnsubs) u();
-      liveUnsubs.clear();
-      client.close();
-    },
+    close,
   };
 }
 

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 312,
+    "total": 314,
     "honest-text": 32,
     "presence-only-glyph/count": 41,
     "command-ack": 10,
-    "non-render/control": 229
+    "non-render/control": 231
   },
   "renderers": [
     {
@@ -2332,6 +2332,20 @@
       "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
       "class": "non-render/control",
       "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"}); agents will still be spared`",
+      "class": "non-render/control",
+      "rationale": "Manager control-path failure while gathering the best-effort pre-stop inventory, not a rendered agent presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`  ${facts.join(\"  ·  \")}`",
+      "class": "non-render/control",
+      "rationale": "Spared-agent inventory row containing lifecycle metadata and optional manager-reported process state, not an observed work-progress claim."
     }
   ]
 }

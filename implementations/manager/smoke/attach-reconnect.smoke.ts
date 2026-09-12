@@ -48,7 +48,8 @@
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
  * depends on those functions. The reachability it does not prove is proven beside it: cell E
- * drives `attachRefusal("not-found")` through the real `cotal attach` binary end to end, cells
+ * drives the durable static-slot `failed-precondition` detail through `attachRefusal` and the real
+ * `cotal attach` binary end to end, while cell F separately pins plain `not-found`; cells
  * A to D drive `isTransportEnd` the same way, cell A drives `reconnectNotice`'s SILENT branch
  * end to end (the mesh preflight refuses at the reconnect step for several attempts there, and the
  * cell asserts its remedy line never reaches the terminal), and cell B drives `heldSessionNotice`'s
@@ -655,7 +656,7 @@ try {
 } finally {
   for (const a of started) a.kill();
   await sever();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
