@@ -148,7 +148,9 @@ signer. Provide the cred either through the injected store (under
 `deliveryCredsKey(space, { injected: true })`) or with a
 `--creds` file; the two are mutually exclusive. The daemon re-fetches the cred from the store at 75%
 of its JWT lifetime and fails loud rather than riding to expiry, so **something must re-sign a fresh
-cred into that same store**.
+cred into that same store**. When that read finds the previous generation still there, the daemon
+reports the missed remint and retries in 60 seconds. The current cred stays live until its expiry,
+and the store is read once per retry rather than once per second.
 
 ```ts
 import { runDelivery } from "@cotal-ai/delivery";

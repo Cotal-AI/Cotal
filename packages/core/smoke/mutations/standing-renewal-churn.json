@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "packages/core/smoke/standing-renewal-auth.smoke.ts"
+  ],
+  "guard": "a creds source that keeps serving the same generation past its renewal point is refused, so the 60s failure posture applies instead of a 1s re-read loop",
+  "command": "pnpm smoke:standing-renewal",
+  "completionMarker": "STANDING RENEWAL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/standing-renewal-churn.json",
+  "why": [
+    "Adopting an un-re-signed generation re-arms the renewal timer from a non-positive delay, which",
+    "armCredsRefresh floors to 1s. The next read returns the same generation, so the loop runs at 1s",
+    "for the JWT's remaining life while the 60s CREDS_RETRY_MS backoff is bypassed: the fetch did not",
+    "fail, it succeeded and returned nothing new.",
+    "The named cell counts source reads inside a fixed window, so it grades the loop itself rather",
+    "than the message. The sibling cell asserting the refusal text cannot grade this alone: a future",
+    "change could emit that message and still adopt."
+  ],
+  "mutations": [
+    {
+      "name": "the un-re-signed generation is adopted instead of refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (candidate === current && delayMs <= 0)",
+      "replace": "    if (candidate === current && delayMs <= Number.NEGATIVE_INFINITY)",
+      "expectRed": "an unchanged source past 75% did NOT busy-loop",
+      "cell": "an unchanged source past 75% did NOT busy-loop (<=1 renewal read in the churn window)",
+      "note": "A finite delay is never <= -Infinity, so the same-generation arm of the guard can never fire: the issue's pre-fix behavior, with the tree compiling and the already-expired arm above it untouched. Under the mutation the cell reported 4 reads against a baseline of 2."
+    }
+  ]
+}

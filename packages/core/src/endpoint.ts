@@ -851,6 +851,31 @@ export class CotalEndpoint extends EventEmitter {
     return CotalEndpoint.presentableCreds(this.currentCreds, { renewable: Boolean(this.credsSource) });
   }
 
+  /** Refuses a fetched generation there is nothing to renew FROM, so the caller's failure posture
+   *  ({@link CREDS_RETRY_MS}) applies instead of the renewal schedule (issue #1523).
+   *
+   *  A source that hands back the SAME generation past its own renewal point has not re-signed yet:
+   *  that is a missed remint, not a candidate. Adopting it re-arms from a non-positive delay, which
+   *  {@link armCredsRefresh} floors to 1s, which fetches again, which is the same generation — a 1s
+   *  read loop against a store that is already having a bad day, for the JWT's remaining 25% of life,
+   *  with the 60s backoff that exists for exactly this bypassed because the fetch did not FAIL.
+   *
+   *  The membership feed's rw-cred renewal already refuses it this way (`membership-feed.ts`,
+   *  `adoptRwCreds`: "the rw source still holds the previous generation past its renewal point");
+   *  this is the same rule on the endpoint's `delivery.creds` seam, so the two renewal paths answer
+   *  a dead source identically.
+   *
+   *  An ALREADY-EXPIRED generation is refused whatever it is: the delay is non-positive for it too,
+   *  but it is dead rather than merely due, so it is named separately and refused even when the
+   *  source keeps returning a different one. */
+  private static assertRenewableGeneration(candidate: string, current: string | undefined, delayMs: number): void {
+    const { exp } = credsClaims(candidate);
+    if (typeof exp === "number" && exp * 1000 <= Date.now())
+      throw new Error("the creds source returned an already-expired credential (its `exp` is in the past) - nothing adopted; the renewal owner has not re-signed it, or the store is serving a stale generation");
+    if (candidate === current && delayMs <= 0)
+      throw new Error("the creds source still holds the previous generation past its renewal point (the renewal owner has not re-signed it) - nothing adopted");
+  }
+
   /** The disposable-preflight connect bound for the EXPLICIT reload proof (D5 class-2 adoption). A
    *  rogue or unreachable candidate must resolve well UNDER the manager's delivery-admin request
    *  bound, so this stays a few seconds and never blocks the responder. */
@@ -879,8 +904,12 @@ export class CotalEndpoint extends EventEmitter {
     const id = idFromCreds(creds);
     if (id !== this.connId)
       throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+    // Before the commit, so a refusal leaves the cache holding the last generation that was renewable
+    // from (and, on the initial fetch, fails loud rather than dialling with dead material).
+    const delay = credsRenewalDelayMs(creds);
+    CotalEndpoint.assertRenewableGeneration(creds, this.currentCreds, delay);
     this.currentCreds = creds;
-    this.armCredsRefresh(credsRenewalDelayMs(creds));
+    this.armCredsRefresh(delay);
     const { iat, exp } = credsClaims(creds);
     return { iat, exp };
   }
@@ -1022,6 +1051,7 @@ export class CotalEndpoint extends EventEmitter {
     // lacking a numeric `exp`, and that throw must not leave currentCreds flipped to a candidate the
     // authenticator would present on the next reconnect (a post-preflight validation failure is a no-op).
     const delay = credsRenewalDelayMs(candidate);
+    CotalEndpoint.assertRenewableGeneration(candidate, this.currentCreds, delay);
     this.currentCreds = candidate;
     this.armCredsRefresh(delay);
     return credsClaims(candidate);
