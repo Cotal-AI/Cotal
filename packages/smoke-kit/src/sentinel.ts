@@ -149,6 +149,19 @@ export function parseSentinel(text: string): ParsedSentinel | null {
       last = { cells, passed: cells, failed: 0, kind: "legacy" };
       continue;
     }
+    const cellsDash = line.match(/(\d+) cells - /);
+    if (cellsDash) {
+      const cells = Number(cellsDash[1]);
+      last = { cells, passed: cells, failed: 0, kind: "legacy" };
+      continue;
+    }
+    const okFailed = line.match(/(\d+) ok, (\d+) failed/);
+    if (okFailed) {
+      const passed = Number(okFailed[1]);
+      const failed = Number(okFailed[2]);
+      last = { cells: passed + failed, passed, failed, kind: "legacy" };
+      continue;
+    }
   }
   if (last) return last;
   const passed =

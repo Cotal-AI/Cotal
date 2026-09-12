@@ -104,8 +104,12 @@ const cellsPassed = parseSentinel("transform.smoke: 40 cells passed\n");
 check("an N cells passed banner is a tally", cellsPassed?.kind === "legacy" && cellsPassed.cells === 40 && cellsPassed.passed === 40);
 const tapOk = parseSentinel("  ok the transform emits\n  ok and reaches no seam member\n");
 check("indented TAP ok lines are per-cell tallies", tapOk?.kind === "legacy" && tapOk.cells === 2 && tapOk.passed === 2);
+const cellsDash = parseSentinel("spawn-env-config smoke: 6 cells - layering, replace-not-union\n");
+check("an N cells - banner is a tally", cellsDash?.kind === "legacy" && cellsDash.cells === 6 && cellsDash.passed === 6);
+const okFailed = parseSentinel("run-command: 12 ok, 0 failed\n");
+check("an N ok, M failed banner is a tally", okFailed?.kind === "legacy" && okFailed.cells === 12 && okFailed.passed === 12 && okFailed.failed === 0);
 
-const EXPECTED = 17;
+const EXPECTED = 19;
 check(
   `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
   passed() + failed() === EXPECTED,
