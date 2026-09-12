@@ -37,10 +37,11 @@
     {
       "name": "M3 do not publish queue growth during a busy session",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (sessionBusy()) {\n      if (directed) void steerPending();\n      publishInboundHealth();\n      return;\n    }",
-      "replace": "    if (sessionBusy()) {\n      if (directed) void steerPending();\n      return;\n    }",
+      "find": "      publishInboundHealth();\n      return;\n    }\n    if (directed || agent.attention === \"open\") void drive();",
+      "replace": "      return;\n    }\n    if (directed || agent.attention === \"open\") void drive();",
       "expectRed": "presence activity names the growing automatic inbound queue (#1075)",
-      "cell": "presence activity names the growing automatic inbound queue (#1075)"
+      "cell": "presence activity names the growing automatic inbound queue (#1075)",
+      "note": "Re-anchored when #1233 added an else-branch to the busy guard: the anchor is now the publish plus the tail that follows the branch, which is unique and still removes exactly the publish."
     },
     {
       "name": "M4 do not publish the initial drive batch",
