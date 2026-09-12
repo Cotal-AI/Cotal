@@ -94,6 +94,24 @@ try {
       "thread 'tokio-runtime-worker' panicked at crates/jcode-harness-api-server/src/translate.rs:1707:38:\nsomething else\n";
     check("a different assertion at translate.rs is refused", classifyStoredSessionPanic(otherMsg) === undefined);
   }
+  {
+    // Same filename, different crate. The old pattern matched any path ending in translate.rs, so
+    // an unrelated crate's panic was reported to the operator as the stored-sessions defect.
+    const foreignCrate =
+      "thread 'tokio-runtime-worker' panicked at crates/unrelated/src/translate.rs:12:1:\nchunk size must be non-zero\n";
+    check("the same filename in another crate is refused", classifyStoredSessionPanic(foreignCrate) === undefined, classifyStoredSessionPanic(foreignCrate));
+  }
+  {
+    // Same basename reached by a suffix rather than a path boundary.
+    const suffixed =
+      "thread 'tokio-runtime-worker' panicked at crates/jcode-harness-api-server/src/my-translate.rs:9:9:\nchunk size must be non-zero\n";
+    check("a filename merely ending in translate.rs is refused", classifyStoredSessionPanic(suffixed) === undefined, classifyStoredSessionPanic(suffixed));
+  }
+  {
+    // No path at all: a bare filename is not the owning site either.
+    const bare = "thread 'tokio-runtime-worker' panicked at translate.rs:1:1:\nchunk size must be non-zero\n";
+    check("a bare translate.rs with no crate path is refused", classifyStoredSessionPanic(bare) === undefined, classifyStoredSessionPanic(bare));
+  }
 
   console.log("\n3. boundStoredSessionCause: allow-listed phrases only");
   check("chunk-size panic text is reduced to the assertion", boundStoredSessionCause("x chunk size must be non-zero y") === "chunk size must be non-zero");

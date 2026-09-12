@@ -41,13 +41,17 @@ export function isEmptyStoredSessionsDirectory(inspection: StoredSessionsInspect
 
 /**
  * Accept only the rust panic the empty-directory listing currently throws. Prose that happens
- * to mention the assertion, or a panic at a different site, is not this failure.
+ * to mention the assertion, a panic at a different site, or a same-named file in another crate
+ * is not this failure. The site is anchored on the whole owning path, not the basename: a bare
+ * `translate.rs` suffix match would accept any crate that happens to carry that filename.
  */
+const STORED_SESSION_PANIC_SITE = "crates/jcode-harness-api-server/src/translate.rs";
+const STORED_SESSION_PANIC = new RegExp(
+  `thread '[^']*'[^\\n]* panicked at (${STORED_SESSION_PANIC_SITE.replace(/[.]/g, "\\.")}:\\d+:\\d+):\\s*\\n\\s*(chunk size must be non-zero)`,
+);
+
 export function classifyStoredSessionPanic(stderr: string): string | undefined {
-  const match =
-    /thread '[^']*'[^\n]* panicked at ([^\n]*translate\.rs:\d+:\d+):\s*\n\s*(chunk size must be non-zero)/.exec(
-      stderr,
-    );
+  const match = STORED_SESSION_PANIC.exec(stderr);
   return match ? `${match[2]} at ${match[1]}` : undefined;
 }
 

@@ -60,6 +60,24 @@
       "command": "pnpm smoke:jcode-stored-sessions",
       "expectRed": "unrelated child text is not forwarded",
       "cell": "unrelated child text is not forwarded"
+    },
+    {
+      "name": "M6 match any path ending in translate.rs instead of the owning crate",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "    /thread '[^']*'[^\\n]* panicked at (crates\\/jcode-harness-api-server\\/src\\/translate\\.rs:\\d+:\\d+):\\s*\\n\\s*(chunk size must be non-zero)/.exec(",
+      "replace": "    /thread '[^']*'[^\\n]* panicked at ([^\\n]*translate\\.rs:\\d+:\\d+):\\s*\\n\\s*(chunk size must be non-zero)/.exec(",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "the same filename in another crate is refused",
+      "cell": "the same filename in another crate is refused"
+    },
+    {
+      "name": "M7 drop the startsWith site guard behind the anchored pattern",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "  if (!site.startsWith(`${STORED_SESSION_PANIC_SITE}:`)) return undefined;",
+      "replace": "  /* mutant trusts the pattern alone */",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "the real empty-directory panic is classified",
+      "cell": "the real empty-directory panic is classified"
     }
   ]
 }
