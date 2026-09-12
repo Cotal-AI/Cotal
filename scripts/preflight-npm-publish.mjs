@@ -36,6 +36,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const OIDC_AUDIENCE = "npm:registry.npmjs.org";
 const WORKFLOW_FILE = ".github/workflows/changesets.yml";
+const REQUIRED_ENVIRONMENT = "npm-publish";
 
 function decodeJwtPayload(token) {
   const parts = token.split(".");
@@ -54,6 +55,7 @@ export function assertGithubIdentity(claims, env) {
   if (typeof claims.workflow_ref !== "string" || !claims.workflow_ref.startsWith(expectedWorkflow)) failures.push("workflow_ref");
   if (!env.GITHUB_REF || claims.ref !== env.GITHUB_REF) failures.push("ref");
   if (!env.GITHUB_EVENT_NAME || claims.event_name !== env.GITHUB_EVENT_NAME) failures.push("event_name");
+  if (claims.environment !== REQUIRED_ENVIRONMENT) failures.push("environment");
   if (claims.aud !== OIDC_AUDIENCE) failures.push("aud");
   if (typeof claims.jti !== "string" || claims.jti.length === 0) failures.push("jti");
   if (failures.length) throw new Error(`GitHub OIDC identity did not match the release job: ${failures.join(", ")}`);
@@ -153,12 +155,22 @@ function isGithubPublisher(entry) {
   return type.includes("github") || view.workflow.length > 0 || view.repository.length > 0;
 }
 
+function publisherEnvironment(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const nested = entry.publisher && typeof entry.publisher === "object" ? entry.publisher : {};
+  const claims = entry.claims && typeof entry.claims === "object" ? entry.claims : {};
+  return String(entry.environment ?? nested.environment ?? claims.environment ?? "");
+}
+
 function isThisReleasePublisher(entry, identity) {
   if (!isGithubPublisher(entry)) return false;
   const view = publisherView(entry);
   const expectedRepo = normalizeRepo(identity?.repository ?? "");
   const expectedWorkflow = workflowBasename(identity?.workflowFilename ?? "changesets.yml");
+  const expectedEnvironment = identity?.environment ?? REQUIRED_ENVIRONMENT;
   if (!expectedRepo || !expectedWorkflow) return false;
+  const envValue = publisherEnvironment(entry);
+  if (expectedEnvironment && envValue !== expectedEnvironment) return false;
   return normalizeRepo(view.repository) === expectedRepo
     && workflowBasename(view.workflow) === expectedWorkflow;
 }
@@ -188,7 +200,7 @@ function actionList(entry) {
  * publisher are stage-only: npm's post-2026-09-03 default. HTTP 201 from the
  * OIDC exchange is not an input here.
  */
-export function classifyDirectPublishPermission(body, identity = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml" }) {
+export function classifyDirectPublishPermission(body, identity = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml", environment: REQUIRED_ENVIRONMENT }) {
   const entries = publisherEntries(body);
   if (!entries) return "refused:malformed-trust";
   if (entries.length === 0) return "refused:no-trusted-publisher";
@@ -259,6 +271,7 @@ async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImp
     return classifyDirectPublishPermission(body, {
       repository: env.GITHUB_REPOSITORY ?? "",
       workflowFilename: "changesets.yml",
+      environment: REQUIRED_ENVIRONMENT,
     });
   } catch (error) {
     return `refused:${error instanceof Error ? error.message : String(error)}`;

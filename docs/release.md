@@ -22,6 +22,28 @@ The `fixed` group in [`.changeset/config.json`](../.changeset/config.json) is th
 gets versioned and published. Derive the package list from it instead of
 maintaining it by hand. It had drifted by six packages before this was last reconciled.
 
+### Deployment Environment setup
+
+Both publishing jobs (`version` and `snapshot`) reference a GitHub Environment named
+`npm-publish`. The OIDC assertion rejects tokens that do not carry this environment claim,
+so the Environment must exist and must protect the release ref before the first publish.
+
+1. Go to **Settings > Environments** in the repository.
+2. Create a new Environment named **`npm-publish`**.
+3. Under **Deployment branches and tags**, select **Selected branches and tags** and add
+   `main` as the only allowed branch. This restricts OIDC token issuance to runs on `main`.
+4. Optionally add required reviewers if your team wants a manual gate before each release.
+
+The Environment name is embedded in the workflow, in the OIDC identity assertion, and in
+every npm trusted-publisher record. All three must use the exact string `npm-publish`.
+
+> **Snapshot releases:** the snapshot job is also bound to the `npm-publish` Environment.
+> If the deployment branch policy allows only `main`, snapshot releases from other branches
+> are refused by the Environment gate before the OIDC exchange. To allow snapshots from
+> additional branches, add those branches to the Environment's deployment policy.
+
+### Per-package trusted publisher configuration
+
 For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 `@cotal-ai/workspace`, `@cotal-ai/cli`, `@cotal-ai/manager`, `@cotal-ai/delivery`,
 `@cotal-ai/web`, `@cotal-ai/cmux`, `@cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/herdr`,
@@ -30,17 +52,22 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 
 1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.
    `https://www.npmjs.com/package/@cotal-ai/core/access`).
-2. Scroll to **Trusted publishing** → **Add a trusted publisher**.
+2. Scroll to **Trusted publishing** > **Add a trusted publisher**.
 3. Pick **GitHub Actions**.
 4. Fill in:
    - **Organization or user:** the GitHub owner (your org or user).
    - **Repository:** `Cotal`.
    - **Workflow filename:** `changesets.yml`.
-   - **Environment name:** leave blank.
+   - **Environment name:** `npm-publish`.
 5. Save. Repeat for every package.
 
 > The first time, you may need to publish a version manually (with a classic token) so the
 > package exists on npm. After that, OIDC takes over.
+
+> **Migration from blank Environment:** if packages were previously configured with a blank
+> Environment name, each must be updated to `npm-publish`. Delete the old trusted publisher
+> record and re-create it with the Environment name filled in. The preflight will refuse any
+> package whose trusted-publisher record does not carry the `npm-publish` environment.
 
 ## Day-to-day flow
 
@@ -91,7 +118,9 @@ HTTP 201 from the OIDC exchange is identity only. npm's trusted-publisher Allowe
 permit `npm stage publish`; configurations created after 2026-09-03 default to stage and may omit
 direct `npm publish`. Both paths use the same successful exchange, so the preflight never treats
 that 201 as proof that sequential `pnpm publish -r` can write. Binding those Allowed actions to a
-GitHub Environment is #1381 and is out of scope here.
+GitHub Environment is done: the `version` and `snapshot` jobs reference `environment:
+npm-publish`, and the OIDC identity assertion rejects tokens without the matching
+environment claim.
 
 pnpm's `--batch` option was evaluated. It exists from pnpm 11.7 and is all-or-nothing only on a
 registry implementing `PUT /-/pnpm/v1/publish` (pnpr does). npm's registry returns 404 for read-only

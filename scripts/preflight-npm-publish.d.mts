@@ -20,6 +20,7 @@ export function trustUrl(registryBase: any, name: any): string;
 export function classifyDirectPublishPermission(body: any, identity?: {
     repository: string;
     workflowFilename: string;
+    environment: string;
 }): "refused:malformed-trust" | "refused:no-trusted-publisher" | "refused:no-github-publisher" | "createPackage" | "stage-only";
 export function printPublishCensus(rows: any, log?: {
     (...data: any[]): void;
