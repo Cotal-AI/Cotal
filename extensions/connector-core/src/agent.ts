@@ -1600,6 +1600,11 @@ export class MeshAgent extends EventEmitter {
     name: string;
     prompt: string;
     model?: string;
+    role?: string;
+    agent?: string;
+    subscribe?: string[];
+    allowSubscribe?: string[];
+    allowPublish?: string[];
     announce?: string;
   }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
@@ -1628,8 +1633,18 @@ export class MeshAgent extends EventEmitter {
       if (!isConcreteChannel(def.announce))
         throw new Error(`announce: "${def.announce}" is a wildcard — announce to one concrete channel`);
     }
-    // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
-    const args = { name: def.name, model: def.model, persona: def.prompt };
+    // Explicit role / agent / grants ride with the prompt. A leading frontmatter block in `prompt`
+    // is merged by the manager (this layer forwards the fields; it does not wrap).
+    const args = {
+      name: def.name,
+      model: def.model,
+      persona: def.prompt,
+      role: def.role,
+      agent: def.agent,
+      subscribe: def.subscribe,
+      allowSubscribe: def.allowSubscribe,
+      allowPublish: def.allowPublish,
+    };
     const reply = await this.managerInvoke("define-persona", args);
     if (!reply.ok || !def.announce) return reply;
     // The persona IS saved by this point (the manager only replies ok after it writes the file), so

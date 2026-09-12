@@ -330,7 +330,7 @@ Write a cotal-lang program and run it durably on the mesh's manager. `start` tak
 
 *define a persona*
 
-Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
+Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped.
 
 - **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
@@ -339,8 +339,13 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
-| `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. |
-| `model` | string | no | Optional model override (e.g. opus, sonnet). |
+| `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped. |
+| `model` | string | no | Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter. |
+| `role` | string | no | Optional role written into the persona file (e.g. reviewer). Wins over a role: in the prompt's frontmatter. |
+| `agent` | string | no | Optional harness pin written into the persona file (e.g. jcode). Wins over an agent: in the prompt's frontmatter. |
+| `subscribe` | string[] | no | Optional active read set written into the persona file. Wins over subscribe: in the prompt's frontmatter. |
+| `allowSubscribe` | string[] | no | Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter. |
+| `allowPublish` | string[] | no | Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter. |
 | `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit it to keep the definition private to the manager's persona catalog. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal gives peers no reason to trust the request. Your post ACL applies as it does to any other message. |
 
 ## `cotal_personas`

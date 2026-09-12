@@ -541,6 +541,31 @@ try {
     check("a wire-defined persona reads no channels", JSON.stringify(defined.subscribe) === "[]", defined.subscribe);
     check("and records that the caller could not choose", defined.meta?.scope_source === "wire-default", defined.meta);
 
+    const frontPrompt = [
+      "---",
+      "role: reviewer",
+      "agent: jcode",
+      "model: from-prompt",
+      "subscribe: [ops]",
+      "allowSubscribe: [ops]",
+      "allowPublish: [ops]",
+      "---",
+      "Reviewer body.",
+    ].join("\n");
+    const rFm = await A.call("define-persona", { name: "epfront", persona: frontPrompt });
+    const fmPath = join(workspaceRoot, ".cotal", "agents", "epfront.md");
+    const fmLoaded = existsSync(fmPath) ? loadAgentFile(fmPath) : undefined;
+    const fmRaw = existsSync(fmPath) ? readFileSync(fmPath, "utf8") : "";
+    check("definePersona merges a frontmattered prompt (one fence pair, authored grants)",
+      rFm.reply.ok === true && fmLoaded?.role === "reviewer" && fmLoaded?.agent === "jcode"
+      && JSON.stringify(fmLoaded?.subscribe) === JSON.stringify(["ops"])
+      && fmLoaded?.persona === "Reviewer body."
+      && [...fmRaw.matchAll(/^---$/gm)].length === 2, { reply: rFm.reply, loaded: fmLoaded, fences: [...fmRaw.matchAll(/^---$/gm)].length });
+    const rBad = await A.call("define-persona", { name: "epbadfm", persona: "---\nsubscribe: [ops]\nno closing fence\n" });
+    check("a malformed leading frontmatter block is refused by name",
+      rBad.reply.ok === false && String(rBad.reply.error?.message ?? rBad.reply.error ?? "").includes("prompt-frontmatter")
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epbadfm.md")), rBad.reply);
+
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",
       rDefB.reply.ok === false && String(rDefB.reply.error?.message ?? "").includes("not authorized to redefine"), rDefB.reply);
