@@ -143,8 +143,9 @@ the whole id, because `--on` takes nothing else.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a
-manager you then stop with `cotal down manager` after `✓ running in the background:` lists
-`manager`, and `cotal supervise
+manager you then stop with `cotal down manager` after `✓ manager up` in
+`.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
+teardown boundary), and `cotal supervise
 --server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)). Extra live managers
 are addressable, not an error.
 

@@ -81,17 +81,16 @@ check(
     control.includes("cotal supervise"),
 );
 check(
-  "claim 2: wait signal is detach stdout, not supervise's manager-up line",
-  runAMesh.includes("Wait for `✓ running in the background:` with `manager` listed") &&
+  "claim 2: wait signal is supervise post-start, not detach stdout",
+  runAMesh.includes("Wait for `✓ manager up`") &&
     runAMesh.includes("manager pidfile is live") &&
-    runAMesh.includes("is not `✓ manager up`") &&
+    runAMesh.includes("is not a safe teardown boundary") &&
     runAMesh.includes("`.cotal/manager.<spaceKey>.log`") &&
-    !runAMesh.includes("Wait for `✓ manager up`") &&
+    !runAMesh.includes("Wait for `✓ running in the background:` with `manager` listed") &&
     !runAMesh.includes("`cotal status --components` to report `manager serving`") &&
-    cli.includes("wait for `cotal up --detach` to") &&
-    cli.includes("print `✓ running in the background:` with `manager` listed") &&
-    cli.includes("pidfile liveness, not `✓ manager up`") &&
-    control.includes("after `✓ running in the background:` lists"),
+    cli.includes("wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`") &&
+    cli.includes("pidfile liveness, not a teardown boundary") &&
+    control.includes("after `✓ manager up` in"),
 );
 check(
   "claim 2: detach summary and ensureManager are pidfile-live; supervise prints manager up after start",
