@@ -695,6 +695,37 @@ await section(async () => {
     world.looks - before === 1 && saw === "completed",
     { reObservations: world.looks - before, saw },
   );
+
+  // THE PAIRED CONTROL, over the SAME externally-flipped world, so the two arms differ in ONE
+  // thing: whether the poll is an ordinary effect or a `waitUntil`. Raised in review, and the
+  // objection was right. Without this, the subject above uses `externalResource` with a flip while
+  // the only zero-re-observation control in this file uses the counter-driven `resource(2)` and a
+  // different program, so the pair differed in durable shape AND in how the world behaves AND in
+  // what happens between activations. Three variables is not a control.
+  const ctlWorld = externalResource();
+  const CH = handlerOver(ctlWorld);
+  const CONTROL_SRC = `
+const a = await spawn("prober", { name: "p" });
+const r = await ask(a, { name: "look", schema: { state: "string" } });
+log("state", r.state);
+`;
+  const ctlFirst = await run(CONTROL_SRC, { runId: "extctl", handler: new CH({}), onLog: () => {} });
+  const ctlBefore = ctlWorld.looks;
+  ctlWorld.complete(); // the SAME external flip the subject got, with no look involved
+  let ctlSaw: unknown;
+  await resume(CONTROL_SRC, new Journal({ run: "extctl", entries: ctlFirst.journal.entries() }), {
+    runId: "extctl",
+    handler: new CH({}),
+    pins: ctlFirst.pins,
+    onLog: (l) => {
+      ctlSaw = l.values[1];
+    },
+  });
+  ok(
+    "EXTERNAL CONTROL: the same world, flipped the same way, polled by an ORDINARY effect: the resume re-observes NOTHING and replays the recorded \"pending\"",
+    ctlWorld.looks - ctlBefore === 0 && ctlSaw === "pending",
+    { reObservations: ctlWorld.looks - ctlBefore, saw: ctlSaw },
+  );
 });
 
 // The shard runner grades a suite on this line, not on its exit status, so a suite that exits 0
