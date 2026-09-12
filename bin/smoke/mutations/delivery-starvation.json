@@ -71,12 +71,12 @@
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "  const unstarvedMs = e.msSinceLastReachable - e.starvedMs;\n  if (unstarvedMs <= e.windowMs) return { exit: false, reason: \"starved\" };",
       "replace": "  return { exit: true, reason: \"broker-gone\" };",
-      "expectRed": "C6 the daemon did NOT exit while it could not complete a fresh handshake",
-      "cell": "C6 the daemon did NOT exit while it could not complete a fresh handshake",
+      "expectRed": "E5 the daemon did NOT exit on answers its own scheduling delay produced",
+      "cell": "E5 the daemon did NOT exit on answers its own scheduling delay produced",
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "The shipped predicate restored in the place it actually lived: past the window with the transport down, exit on elapsed time alone — no starvation credit, no requirement that any probe completed. Anchored on two contiguous CODE lines rather than on the nearest comment, so a docs commit cannot quietly disarm it."
+      "note": "The shipped predicate restored, graded against a real daemon on a ~10% CPU duty cycle with a live broker: it exits saying \"0 completed probes refused within their deadline\" — it gathered no evidence at all and ended anyway, which is the incident. It reds cell E rather than cell C because C keeps its standing socket and the transport signal carries the verdict there; M1 removes the starvation credit and the evidence requirement, not the transport clause. The broker-killed cells stay green in the same run, which is the asymmetry the issue is about."
     },
     {
       "name": "M2 a probe answer that arrived long past its own deadline counts against the broker again",
