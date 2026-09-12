@@ -1,16 +1,19 @@
 {
   "suite": [
-    "bin/smoke/ci-suites-freeze.smoke.ts"
+    "bin/smoke/ci-suites-freeze.smoke.ts",
+    "bin/smoke/ci-suites-freeze-drop.smoke.ts"
   ],
-  "guard": "a new suite line on ci-suites.txt is named as an offender; comment edits and deletions are not",
-  "command": "pnpm smoke:ci-suites-freeze",
+  "guard": "a new suite line on ci-suites.txt is named as an offender; comment edits and deletions are not; dropping the committed-list cell under unset BASE/HEAD reds that cell by name",
+  "command": "BASE=$(git rev-parse HEAD~1) HEAD=$(git rev-parse HEAD) pnpm smoke:ci-suites-freeze",
   "completionMarker": "CI SUITES FREEZE SMOKE",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/ci-suites-freeze.json",
   "grades": "tool",
   "why": [
     "Issue #1237: the freeze on ci-suites.txt is a comment. A tail append is shard-stable and inventory-green, then conflicts the next PR on a line neither cares about. GitHub will not build a CONFLICTING PR, so that branch also gets zero CI.",
     "",
-    "The scan is addedLegacySuites in ci-suites.mjs. The suite calls that function on a real file plus an appended line and asserts the SET of names it returns. Blinding the scan must redden the append cell; re-applying the rule in the test would stay green."
+    "The scan is addedLegacySuites in ci-suites.mjs. The suite calls that function on a real file plus an appended line and asserts the SET of names it returns. Blinding the scan must redden the append cell; re-applying the rule in the test would stay green.",
+    "",
+    "Issue #1422: the committed-list cell used to exist only inside if (base && head), and EXPECTED was derived from that same predicate, so a local run without BASE/HEAD printed every-cell-ran and exited 0. Restoring that omission must redden the drop control. Passing the unset-env cell without comparing two revisions must do the same."
   ],
   "mutations": [
     {
@@ -20,6 +23,26 @@
       "replace": "    if (!base.has(suite) && !added.includes(suite)) void suite;",
       "expectRed": "an appended suite is named as the set of offenders",
       "cell": "an appended suite is named as the set of offenders"
+    },
+    {
+      "name": "the committed-list cell is omitted when BASE and HEAD are unset and the inventory shrinks to match",
+      "file": "bin/smoke/ci-suites-freeze.smoke.ts",
+      "find": "if (!base || !head || base === zero || head === zero) {\n  check(\n    COMMITTED_LIST_CELL,\n    false,\n    \"BASE and HEAD were unset, so the committed frozen list was not compared\",\n  );\n} else {\n  const show = (sha: string): string =>\n    execFileSync(\"git\", [\"--no-replace-objects\", \"show\", `${sha}:bin/smoke/ci-suites.txt`], {\n      encoding: \"utf8\",\n      stdio: [\"ignore\", \"pipe\", \"pipe\"],\n    });\n  let live: string[] | string;\n  try {\n    live = addedLegacySuites(show(base), show(head), `ci-suites.txt@${base}`, `ci-suites.txt@${head}`);\n  } catch (error) {\n    live = `THREW: ${(error as Error).message}`;\n  }\n  const offenders = Array.isArray(live) ? live : [];\n  check(\n    COMMITTED_LIST_CELL,\n    Array.isArray(live) && offenders.length === 0,\n    Array.isArray(live)\n      ? offenders.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(\", \")\n      : live,\n  );\n}\n\nconst EXPECTED = 9;",
+      "replace": "if (base && head) {\n  const show = (sha: string): string =>\n    execFileSync(\"git\", [\"--no-replace-objects\", \"show\", `${sha}:bin/smoke/ci-suites.txt`], {\n      encoding: \"utf8\",\n      stdio: [\"ignore\", \"pipe\", \"pipe\"],\n    });\n  let live: string[] | string;\n  try {\n    live = addedLegacySuites(show(base), show(head), `ci-suites.txt@${base}`, `ci-suites.txt@${head}`);\n  } catch (error) {\n    live = `THREW: ${(error as Error).message}`;\n  }\n  const offenders = Array.isArray(live) ? live : [];\n  check(\n    COMMITTED_LIST_CELL,\n    Array.isArray(live) && offenders.length === 0,\n    Array.isArray(live)\n      ? offenders.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(\", \")\n      : live,\n  );\n}\n\nconst EXPECTED = base && head ? 9 : 8;",
+      "command": "pnpm smoke:ci-suites-freeze-drop",
+      "completionMarker": "CI SUITES FREEZE DROP SMOKE",
+      "expectRed": "ci-suites-freeze is red when BASE and HEAD are unset",
+      "cell": "ci-suites-freeze is red when BASE and HEAD are unset"
+    },
+    {
+      "name": "the committed-list cell passes when BASE and HEAD are unset",
+      "file": "bin/smoke/ci-suites-freeze.smoke.ts",
+      "find": "    COMMITTED_LIST_CELL,\n    false,\n    \"BASE and HEAD were unset, so the committed frozen list was not compared\",",
+      "replace": "    COMMITTED_LIST_CELL,\n    true,\n    \"BASE and HEAD were unset, so the committed frozen list was not compared\",",
+      "command": "pnpm smoke:ci-suites-freeze-drop",
+      "completionMarker": "CI SUITES FREEZE DROP SMOKE",
+      "expectRed": "ci-suites-freeze is red when BASE and HEAD are unset",
+      "cell": "ci-suites-freeze is red when BASE and HEAD are unset"
     }
   ]
 }
