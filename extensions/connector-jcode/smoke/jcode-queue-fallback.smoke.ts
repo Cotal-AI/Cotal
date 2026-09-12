@@ -213,8 +213,13 @@ try {
 
   // The handoff must be attempted first, and must fail. Without this the cell could pass on a tree
   // where soft_interrupt simply worked, which would grade nothing about the fallback.
-  await waitFor("the host to attempt the mid-turn handoff", () => (softInterrupts().length > 0 ? true : undefined), 15_000);
-  check("the mid-turn soft interrupt is attempted and black-holed", softInterrupts().length > 0, {
+  //
+  // Reported as a CELL rather than a fatal wait. A throw here aborts the run before the decisive
+  // cell below ever prints, so a mutation that suppresses the handoff reds the suite with a stack
+  // trace instead of a named assertion, and mutation-proof correctly grades that WRONG-RED: "it
+  // exited 1" and "it failed for my reason" are the same exit code until the suite says which.
+  const attempted = await tryWaitFor(() => (softInterrupts().length > 0 ? true : undefined), 15_000);
+  check("the mid-turn soft interrupt is attempted and black-holed", attempted === true, {
     softInterrupts: softInterrupts().length,
   });
 
