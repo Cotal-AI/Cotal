@@ -376,6 +376,14 @@ const server = createServer((socket) => {
           }
           break;
         case "soft_interrupt": {
+          // #1233: the measured failure is SILENCE, not a refusal and not a close. The bridge takes
+          // the frame and never answers it, so the client's request timeout is what ends the wait.
+          // A fixture that replied with an error instead would exercise a different code path and
+          // would leave the actual production shape ungraded.
+          if (process.env.FAKE_JCODE_STEER_BLACKHOLE === "1") {
+            log({ ev: "steer_blackholed", session_id: frame.session_id });
+            break;
+          }
           const releaseFile = process.env.FAKE_JCODE_STEER_RELEASE_FILE;
           const idleFile = process.env.FAKE_JCODE_STEER_IDLE_FILE;
           if (!heldSteer && releaseFile && idleFile) {

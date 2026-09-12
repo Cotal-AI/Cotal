@@ -227,7 +227,18 @@ function ingestDedupKey(id: string): string | undefined {
  * NOT the same as `disconnected`, and it is not a stopped session either. `stopped` is terminal and
  * is not a fault at all.
  */
-export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnected" | "stopped";
+export type ConnectionState = "ready" | "stalled" | "degraded" | "connecting" | "disconnected" | "stopped";
+
+/**
+ * How long a non-empty automatic queue may make no progress before this session stops calling
+ * itself `ready` (#1233).
+ *
+ * Generous on purpose. A healthy seat commits automatic deliveries within seconds of the turn that
+ * carries them, and the incident this bound exists for ran for HOURS: 27 deliveries held 13.8h
+ * behind timed-out soft interrupts, reported `ready` throughout. Ten minutes is far outside normal
+ * turn length and far inside the window in which an operator still has a healthy seat to save.
+ */
+export const AUTOMATIC_QUEUE_STALL_MS = 600_000;
 
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
  *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
@@ -300,6 +311,14 @@ export class MeshAgent extends EventEmitter {
    *  This is measured only after the backing acknowledgements succeed, never inferred from a read
    *  attempt or from an empty inbox. */
   private _lastInboxDrainedAt?: number;
+  /** Wall-clock time of the latest drain that committed at least one AUTOMATIC delivery.
+   *
+   *  Deliberately separate from {@link _lastInboxDrainedAt}, and #1233 is why: on a host-mode
+   *  connector the tool inbox and the connector-managed automatic queue are different queues, and
+   *  the measured seat was draining the first every few minutes while the second had not moved in
+   *  13.8 hours. A progress mark that counts a pull-only drain as progress would have reported that
+   *  seat as making progress, which is the exact lie this field exists to refuse. */
+  private _lastAutomaticDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
@@ -451,6 +470,32 @@ export class MeshAgent extends EventEmitter {
     return this._lastInboxDrainedAt;
   }
 
+  /** The latest drain that committed at least one AUTOMATIC (connector-managed) delivery. */
+  get lastAutomaticDrainedAt(): number | undefined {
+    return this._lastAutomaticDrainedAt;
+  }
+
+  /**
+   * How long a non-empty automatic queue has been making no progress, or `undefined`.
+   *
+   * PROGRESS, not depth. The queue is not stalled because it is deep; it is stalled because nothing
+   * has come off it. The clock therefore starts at the later of the last automatic commit and the
+   * arrival of the oldest still-queued delivery, so a seat that is steadily committing keeps
+   * resetting it however busy it is, and a seat that has committed nothing since its queue formed
+   * accrues from the moment that queue formed.
+   *
+   * Measured from the oldest ARRIVAL rather than from session start so a session that never drained
+   * anything is still measurable — that is precisely the shape of a seat whose first soft interrupt
+   * timed out.
+   */
+  automaticQueueStalledForMs(now = Date.now()): number | undefined {
+    const oldest = this.oldestAutomaticReceivedAt();
+    if (oldest === undefined) return undefined;
+    const since = Math.max(oldest, this._lastAutomaticDrainedAt ?? 0);
+    const held = now - since;
+    return held > 0 ? held : 0;
+  }
+
   /** Whether {@link stop} has been called. Terminal, and never cleared: a stopped session does not
    *  serve again. This is the ONLY way to tell a deliberate shutdown from a lost connection, because
    *  `stop()` clears readiness and transport together, so those two read identically in both cases. */
@@ -460,10 +505,23 @@ export class MeshAgent extends EventEmitter {
 
   /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
    *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
-   *  read {@link connected}, {@link transportConnected} and {@link stopping} directly. */
+   *  read {@link connected}, {@link transportConnected} and {@link stopping} directly.
+   *
+   *  `stalled` is the fourth fact and it is not about the connection at all — see
+   *  {@link automaticQueueStalledForMs}. It is reported HERE, ahead of `ready`, because #1233 was
+   *  not a caller misreading the facts: a seat holding 27 undeliverable messages for 13.8 hours
+   *  answered this question with `ready`, and every operator who asked it was told the seat was
+   *  fine. A status that reads healthy while the thing it describes is not happening is the defect,
+   *  so the one word a caller acts on has to move. It is ordered below `degraded` deliberately: a
+   *  dead socket is the more specific and more actionable fault, and reporting the queue symptom
+   *  over its own cause would hide it. */
   get connectionState(): ConnectionState {
     if (this._stopping) return "stopped";
-    if (this._connected) return this._transportConnected ? "ready" : "degraded";
+    if (this._connected) {
+      if (!this._transportConnected) return "degraded";
+      const held = this.automaticQueueStalledForMs();
+      return held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS ? "stalled" : "ready";
+    }
     return this._transportConnected ? "connecting" : "disconnected";
   }
 
@@ -582,7 +640,20 @@ export class MeshAgent extends EventEmitter {
     try {
       await this.ep.reconnect();
       // _connected is set by the endpoint's "connection" event on the successful rebind, not here.
-      return { ok: true, message: `Reconnected ✓ (${this.config.name}@${this.config.space})` };
+      //
+      // #1233: a rebuilt connection is NOT a served queue. The measured seat's transport was up the
+      // whole time, so this call rebound a connection that was never broken and answered
+      // "Reconnected ✓" over 27 deliveries it had not touched — a recovery path reporting success
+      // while doing nothing, which sent the operator looking for a different remedy. The rebind is
+      // still reported honestly as a success, because it succeeded; what is added is the fact that
+      // makes the reply actionable, from the same measurement the state uses.
+      const held = this.automaticQueueStalledForMs();
+      const queued = this.inboxCount("automatic");
+      const stalled =
+        held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS && queued > 0
+          ? ` Note: this session's ${queued} queued automatic ${queued === 1 ? "delivery has" : "deliveries have"} made no progress for ${Math.round(held / 60_000)} minutes. Reconnecting did not deliver ${queued === 1 ? "it" : "them"}: the connection was not what was holding ${queued === 1 ? "it" : "them"} up.`
+          : "";
+      return { ok: true, message: `Reconnected ✓ (${this.config.name}@${this.config.space})${stalled}` };
     } catch (e) {
       return { ok: false, message: `Reconnect failed: ${(e as Error).message}. Still retrying automatically — or run /reconnect to retry now.` };
     }
@@ -891,8 +962,13 @@ export class MeshAgent extends EventEmitter {
     // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
     const taken = new Set(selected);
     this.inbox = this.inbox.filter((p) => !taken.has(p));
+    const automatic = selected.some((p) => !p.pullOnly);
     const items = this.commitPending(selected);
     if (items.length) this._lastInboxDrainedAt = Date.now();
+    // Automatic progress is recorded from the SELECTED entries' own classification, not from the
+    // returned items: `commitPending` returns `InboxItem`s, which do not carry `pullOnly`, and
+    // counting a pull-only drain as automatic progress is the #1233 lie in miniature.
+    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();
     return items;
   }
 
@@ -914,8 +990,10 @@ export class MeshAgent extends EventEmitter {
       if (!pullOnly.has(id) && remembered) pullOnly.set(id, remembered.pullOnly);
     }
     this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
+    const automatic = selected.some((p) => !p.pullOnly);
     const items = this.commitPending(selected);
     if (items.length) this._lastInboxDrainedAt = Date.now();
+    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();
     for (const id of requested) {
       // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
       // markHandled already refuses, so skipping it here is the same at-least-once stance rather

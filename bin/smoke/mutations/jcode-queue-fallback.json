@@ -1,0 +1,69 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-queue-fallback.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-queue-fallback-policy.smoke.ts"
+  ],
+  "guard": "a soft-interrupt timeout never leaves the automatic delivery queue unserved, and a seat holding a queue that has made no progress does not report itself ready",
+  "command": "pnpm smoke:jcode-queue-fallback && pnpm smoke:jcode-queue-fallback-policy",
+  "progressPattern": "  ✓ ",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-queue-fallback.json",
+  "why": [
+    "The defect presents as health everywhere upstream. The publish succeeds, presence says working, the transport is up, and cotal_connection_status said `ready` over a 13.8-hour stall. So the fixture grades RECIPIENT OBSERVATION and nothing else: the decisive cell searches the fake Harness request log for a send_message frame carrying the message text, which is the message arriving at the seat rather than a drain function reporting that it ran.",
+    "The drain cell's DEADLINE is load-bearing and is therefore mutated in its own right (M2). Measured against the pre-fix tree, the message does eventually arrive, because the pre-existing idle-boundary path delivers it once the seat goes idle. A cell that merely waited for arrival was GREEN on the defect. Requiring arrival while the seat is still busy is what makes it a statement about draining.",
+    "M1 severs the delivery itself: the level-triggered server is never armed, which is exactly the shipped behaviour. M2 severs the fallback tier in the policy table, so a timed-out handoff resolves to a path that cannot deliver while busy. M3 restores the shipped `connectionState` derivation, under which a bound seat with a live transport is `ready` whatever its queue is doing. M4 counts any inbox drain as automatic progress, which is the specific lie the measured seat would have told: it drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. M5 makes the fallback record acceptance for a batch it did not send, which is the at-most-once failure that would turn a late delivery into a lost one.",
+    "M1 and M2 are separate on purpose. M2 alone leaves the server armed and it would still drive at the next idle transition, and M1 alone leaves the policy table correct while nothing consults it. One mutation standing in for both would leave whichever ran second ungraded.",
+    "The suites import connector-jcode and connector-core source relatively or through the workspace, and the end-to-end arm spawns the host through tsx against src/host-main.ts, so mutation-proof executes the changed source directly. `@cotal-ai/connector-core` is consumed as a workspace package by the end-to-end arm, so its two mutations carry a build command and an afterRestore rebuild; without them the arm would audit the last dist/ rather than the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the level-triggered server is never armed, as in the shipped tree",
+      "file": "extensions/connector-jcode/src/queue-fallback.ts",
+      "find": "export function fallbackStillOwed(s: FallbackState): boolean {\n  if (s.stopping) return false;\n  return s.unserved > 0 || s.driveWork;\n}",
+      "replace": "export function fallbackStillOwed(s: FallbackState): boolean {\n  return false && !s.stopping && (s.unserved > 0 || s.driveWork);\n}",
+      "expectRed": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
+      "cell": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
+      "note": "This is the pre-fix behaviour exactly: the soft-interrupt catch logs and returns, no timer is ever armed, and the queue waits for an edge that a permanently busy seat never produces. The red is attributable to the shipped host because the assertion reads the fake Harness request log, not connector memory."
+    },
+    {
+      "name": "M2 a timed-out handoff loses its fallback tier",
+      "file": "extensions/connector-jcode/src/queue-fallback.ts",
+      "find": "  if (s.softInterruptFailed) return { action: \"queue-turn\", reason: \"soft-interrupt-timed-out\" };",
+      "replace": "",
+      "expectRed": "a timed-out handoff with work unserved delivers by queued turn instead",
+      "cell": "a timed-out handoff with work unserved delivers by queued turn instead",
+      "note": "Without the tier the decision falls through to `steer`, which is the path that just timed out. The policy arm names the branch; the end-to-end arm reds too, because the server then re-attempts a handoff nothing will answer."
+    },
+    {
+      "name": "M3 a bound seat with a live transport is ready whatever its queue is doing",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!this._transportConnected) return \"degraded\";\n      const held = this.automaticQueueStalledForMs();\n      return held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS ? \"stalled\" : \"ready\";",
+      "replace": "      return this._transportConnected ? \"ready\" : \"degraded\";",
+      "expectRed": "a non-empty automatic queue with no progress over the window does NOT report ready",
+      "cell": "a non-empty automatic queue with no progress over the window does NOT report ready",
+      "command": "pnpm --filter \"@cotal-ai/connector-jcode...\" build && pnpm smoke:jcode-queue-fallback",
+      "afterRestore": "pnpm --filter \"@cotal-ai/connector-jcode...\" build",
+      "note": "The shipped derivation. This is the second defect in #1233: the status read healthy while the thing it described was not happening, which is what sent an operator toward restarting a working seat. The refusing sibling (a deep but moving queue is still ready) survives this mutant by construction, which is why both are cells."
+    },
+    {
+      "name": "M4 any inbox drain counts as automatic progress",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const automatic = selected.some((p) => !p.pullOnly);\n    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
+      "replace": "    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
+      "expectRed": "draining pull-only traffic is not automatic progress, so the stall stands",
+      "cell": "draining pull-only traffic is not automatic progress, so the stall stands",
+      "command": "pnpm --filter \"@cotal-ai/connector-jcode...\" build && pnpm smoke:jcode-queue-fallback",
+      "afterRestore": "pnpm --filter \"@cotal-ai/connector-jcode...\" build",
+      "note": "The measured seat drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. Under this mutant that pull-only activity resets the progress mark and the seat reports ready throughout — the exact lie, reachable through a one-line conflation of two different queues."
+    },
+    {
+      "name": "M5 the fallback records acceptance for a batch it never sent",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      await current.sendMessage(session, injection);\n      // The client can be replaced while the send is in flight. A replacement redrives the durable\n      // batch itself, so recording acceptance against it would ack a delivery the new session never\n      // saw — the same at-least-once stance the steer path takes.\n      if (client !== current) return;",
+      "replace": "      surfacedIds.push(...items.map((item) => item.recvKey));\n      await current.sendMessage(session, injection);\n      if (client !== current) return;",
+      "expectRed": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
+      "cell": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
+      "note": "Recording acceptance BEFORE the send makes a failed send look delivered: the ids leave the unserved ledger, the server stands down, and the message is never sent again. That is at-most-once, and losing a peer's message is the outcome this whole change refuses. The fake bridge is told to black-hole soft_interrupt only, so the send itself succeeds and the visible red is the ordering, not a refused write."
+    }
+  ]
+}
