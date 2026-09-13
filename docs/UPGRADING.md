@@ -278,6 +278,11 @@ cotal down
 
 # 3. broker host: install 0.49.0 and start it again
 npm install -g cotal-ai@0.49.0
+#    Record the manager log's size BEFORE starting, so step 3a can tell THIS
+#    boot's output from every earlier one. It must be captured here, ahead of
+#    the start: taken afterwards it sits past the new line and the wait hangs.
+LOG=.cotal/manager.<spaceKey>.log
+OFF=$( [ -f "$LOG" ] && wc -c < "$LOG" || echo 0 )
 cotal up --detach --host 0.0.0.0 --space <space>
 
 # 3a. SPLIT TOPOLOGY ONLY, and do not skip it: there is no broker-only mode,
@@ -287,10 +292,15 @@ cotal up --detach --host 0.0.0.0 --space <space>
 #     nobody is watching.
 #     A bare `grep -q` does NOT wait: it reads once and exits 1 immediately
 #     if the line has not been written yet. Bound the wait instead, so a
-#     manager that never comes up fails loudly rather than reading as ready:
+#     manager that never comes up fails loudly rather than reading as ready.
+#     The log is opened APPEND-ONLY, so on any host that has run a manager
+#     before, this file ALREADY carries a `manager up` line from an earlier
+#     boot. Grepping the whole file therefore matches instantly and waits for
+#     nothing. Read only what THIS boot appended, using the $OFF captured in
+#     step 3 above (before the start, which is the only point it is correct):
 timeout 60 bash -c \
-  "until grep -q '. manager up' .cotal/manager.<spaceKey>.log; do sleep 1; done"
-#     exit 0 = the line arrived; exit 124 = it never did, so STOP and look.
+  "until tail -c +$((OFF+1)) \"$LOG\" | grep -q '. manager up'; do sleep 1; done"
+#     exit 0 = THIS boot logged it; exit 124 = it never did, so STOP and look.
 #     This manager is 0.49.0 and publishes its own spare-capability file, so
 #     the bare stop below is NOT the refusal case from step 1.
 cotal down manager                                      # broker + delivery remain
