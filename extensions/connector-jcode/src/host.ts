@@ -54,6 +54,14 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+/** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
+ *
+ *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
+ *  stops waiting anyway (jcode-sdk client.js:317), so a longer value here could only hold the gate
+ *  after the thing it is waiting for has already given up. It is a CEILING, not a delay: the gate is
+ *  released the moment the acknowledgement arrives, which is single-digit milliseconds on a healthy
+ *  seat. A Harness that never acknowledges therefore costs one bounded wait, not a wedged gate. */
+const RUN_ACCEPT_WINDOW_MS = 10_000;
 
 function readinessTurnTimeoutMs(): number {
   const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
@@ -369,6 +377,59 @@ export async function runJcodeHost(): Promise<void> {
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
   let surfacedIds: string[] = [];
+  /**
+   * Serialises everything that can make this session emit `message_accepted`.
+   *
+   * Found in review at 0a0bf255a, and the root cause is in the PROTOCOL, not in our bookkeeping:
+   * `message_accepted` carries a `session_id` and nothing else. There is no request id, no sequence
+   * number, no echo of the content. So an acceptance event is attributable to a specific send ONLY
+   * if exactly one send for that session is outstanding when it arrives. A reviewer measured the
+   * consequence end to end: the fallback's A is swallowed and left waiting; an unrelated B is later
+   * dispatched on the same client and session; B's perfectly ordinary acknowledgement flipped A's
+   * listener, so A was promoted, acked out of the durable inbox, never run and never retried. That
+   * is silent loss caused by a NORMAL event rather than by a missing one, which makes it worse than
+   * the no-ack case it was meant to fix.
+   *
+   * The SDK has the same session-only predicate, so one event resolves both its promises too. It
+   * cannot be fixed by reading the event more carefully: the information is not in it.
+   *
+   * So the invariant is established rather than inferred. Every dispatch that can produce an
+   * acceptance for this session runs inside this gate, one at a time, and the acceptance window
+   * closes before the next dispatch may open. Then "an acceptance arrived while my send was the
+   * only one outstanding" is a fact about the system, not a guess about interleaving.
+   *
+   * This serialises HANDOVERS, not the seat. Nothing here holds the provider or delays the model.
+   */
+  let sessionDispatch: Promise<unknown> = Promise.resolve();
+  const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = sessionDispatch;
+    let release!: () => void;
+    sessionDispatch = new Promise<void>((resolve) => { release = resolve; });
+    // Never inherit a prior failure: this is a mutual-exclusion gate, not an error channel.
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  /** Resolve when this session acknowledges a send, or when the window lapses. Never rejects: the
+   *  caller uses it only to bound how long the dispatch gate is held, and a lapse is a legitimate
+   *  outcome (a Harness that never acknowledges must not be able to hold the gate open). */
+  const onceAccepted = (on: JcodeClient, session: string, withinMs: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        on.off("message_accepted", listener);
+        resolve();
+      };
+      const listener = (event: ApiEvent): void => {
+        if ("session_id" in event && event.session_id === session) done();
+      };
+      const timer = setTimeout(done, withinMs);
+      timer.unref?.();
+      on.on("message_accepted", listener);
+    });
   /**
    * Deliveries a handover is CURRENTLY writing to the session, which are not accepted yet (#1233).
    *
@@ -700,7 +761,33 @@ export async function runJcodeHost(): Promise<void> {
       // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
       // run() is invoked, a close or timeout cannot prove the model rejected it, so never retry it.
       pendingKickoff = undefined;
-      await turnClient.run(sessionId, parts.join("\n\n"), { autoApprove: true });
+      // The RUN's own acceptance window is gated, but not the run itself, and the distinction is
+      // load-bearing in both directions.
+      //
+      // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
+      // very same session-scoped `message_accepted` (jcode-sdk client.js:317). I checked rather than
+      // assumed: a run dispatched while a handover is awaiting its acknowledgement is exactly the
+      // second listener that makes one event ambiguous, and it is the path a reviewer measured.
+      //
+      // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
+      // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
+      // #910 delivery this connector exists to provide. So the gate is released as soon as the send
+      // has been acknowledged, while the turn keeps streaming outside it.
+      const runTurn = await withExclusiveDispatch(async () => {
+        const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
+        // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
+        // raced below; the handle returned from this gate is what actually reports it.
+        dispatched.catch(() => {});
+        // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
+        // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
+        // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
+        await Promise.race([
+          dispatched.then(() => undefined, () => undefined),
+          onceAccepted(turnClient!, sessionId!, RUN_ACCEPT_WINDOW_MS),
+        ]);
+        return dispatched;
+      });
+      await runTurn;
       // The SDK's event iterator returns normally when its socket closes. That is not a successful
       // turn: the model may never have received the injection, so preserving the inbox batch is the
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
@@ -784,7 +871,7 @@ export async function runJcodeHost(): Promise<void> {
         // the batch unselectable by any concurrent path without claiming it was accepted.
         const keys = items.map((item) => item.recvKey);
         const release = reserveForHandover(keys);
-        const request = current.softInterrupt(sessionId, injection, false);
+        const request = withExclusiveDispatch(() => current.softInterrupt(sessionId!, injection, false));
         steerSettled = request.catch(() => {});
         try {
           await request;
@@ -896,17 +983,31 @@ export async function runJcodeHost(): Promise<void> {
     // So acceptance is proved by the acknowledgement, not by the resolve. Without it the reservation
     // is released and the batch stays un-acked, which keeps it owed: the level-triggered loop will
     // re-attempt, and late delivery beats loss.
+    // ...AND the acknowledgement is only attributable while this send is the ONLY one outstanding
+    // for the session, which is what the dispatch gate below establishes. `message_accepted` carries
+    // a session id and nothing more, so without exclusivity an unrelated send's ordinary
+    // acknowledgement flips this flag and a swallowed delivery is recorded as accepted. A reviewer
+    // measured exactly that: swallowedSends 1, aRuns 0, unrelatedRuns 1, A acked and never retried.
+    //
+    // The listener is attached and removed INSIDE the gate, so the window in which an acceptance can
+    // be attributed to this send is exactly the window in which no other send can produce one.
     let acknowledged = false;
-    const onAccepted = (event: ApiEvent): void => {
-      if ("session_id" in event && event.session_id === session) acknowledged = true;
-    };
-    current.on("message_accepted", onAccepted);
     try {
-      writeJcodeDiagnostic(
-        `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
-          `message(s) as a queued Harness turn instead\n`,
-      );
-      await current.sendMessage(session, injection);
+      await withExclusiveDispatch(async () => {
+        const onAccepted = (event: ApiEvent): void => {
+          if ("session_id" in event && event.session_id === session) acknowledged = true;
+        };
+        current.on("message_accepted", onAccepted);
+        try {
+          writeJcodeDiagnostic(
+            `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
+              `message(s) as a queued Harness turn instead\n`,
+          );
+          await current.sendMessage(session, injection);
+        } finally {
+          current.off("message_accepted", onAccepted);
+        }
+      });
       // The client can be replaced while the send is in flight. A replacement redrives the durable
       // batch itself, so holding ownership would suppress a delivery the new session never saw —
       // release and let the redrive own it, the same at-least-once stance the steer path takes.
@@ -930,8 +1031,6 @@ export async function runJcodeHost(): Promise<void> {
     } catch (error) {
       release();
       writeJcodeDiagnostic(`[cotal-jcode] queued-turn fallback failed: ${(error as Error).message}\n`);
-    } finally {
-      current.off("message_accepted", onAccepted);
     }
   };
 

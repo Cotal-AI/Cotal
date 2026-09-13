@@ -87,6 +87,16 @@
       "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback",
       "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct. NOTE ON WHAT IS AND IS NOT GRADED HERE. The duplicate needs BOTH guards to fail: drive must select the reserved item AND the wholesale wipe must drop the reservation. Severing only the wipe leaves this cell GREEN, because this filter alone still refuses the item; I measured that by hand rather than inferring it. So a separate mutation for the wipe SURVIVES by construction, and I removed it instead of keeping a survivor or inventing a cell to justify it. The redundancy is deliberate defence in depth, and this mutation grades the guard that is load-bearing on its own."
+    },
+    {
+      "name": "M9 acceptance is attributed without exclusivity, so another send's ack settles this one",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const previous = sessionDispatch;\n    let release!: () => void;\n    sessionDispatch = new Promise<void>((resolve) => { release = resolve; });\n    // Never inherit a prior failure: this is a mutual-exclusion gate, not an error channel.\n    await previous.catch(() => {});\n    try {\n      return await operation();\n    } finally {\n      release();\n    }",
+      "replace": "    return await operation();",
+      "expectRed": "an unrelated send's acknowledgement does not acknowledge a swallowed handover (#1233)",
+      "cell": "an unrelated send's acknowledgement does not acknowledge a swallowed handover (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback-loss",
+      "note": "Severs ONLY the mutual exclusion, keeping the helper, its callers and every other mechanism. `message_accepted` carries a session id and nothing else, so without exclusivity an unrelated send's ordinary acknowledgement settles a swallowed handover: measured lost=true, aRuns=0, attempts unchanged at 2. Reproduced by review end to end and independently against the SDK's own public transport."
     }
   ]
 }
