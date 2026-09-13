@@ -107,8 +107,15 @@ function loadCorpus(root, paths) {
       errors.push(`${path}: ${err.message}`);
       continue;
     }
+    // Length matters, not just shape. A fixture with `"mutations": []` is well-formed JSON that
+    // grades nothing: mutation-proof reports `All 0 mutation(s) killed` and exits 0. Admitting it
+    // to the corpus lets a member that can never discriminate be counted as one that does.
     if (!Array.isArray(config.mutations)) {
       errors.push(`${path}: no top-level "mutations" array`);
+      continue;
+    }
+    if (config.mutations.length === 0) {
+      errors.push(`${path}: "mutations" array is empty, and a fixture that grades nothing cannot stand as coverage`);
       continue;
     }
     let suites;
@@ -345,8 +352,14 @@ if (prove.length === 0) {
 //                                       is no base comparison, so these remain absolute findings.
 //               INCONCLUSIVE (only)   — a timeout or a teardown hang left no evidence either way.
 //                                       Collapsing it into SURVIVED is a false blocker and into
-//                                       KILLED a false clearance, so it is its own reported state
-//                                       and does not fail the gate.
+//                                       KILLED a false clearance, so it is its own reported state.
+//                                       A run whose proven fixtures are all INCONCLUSIVE still
+//                                       fails the discrimination floor: that is vacuity, not a
+//                                       kill. A mixed KILLED+INCONCLUSIVE fixture counts as
+//                                       discriminated because a kill was observed.
+// A proven set that discriminated zero fixtures is not an all-clear. The floor is 1 when any
+// fixture was proven, and 0 when none were (the "nothing applicable" path already printed above).
+// That required count follows from the selected configs, not from a corpus-size constant.
 // The classification reads mutation-proof's own verdict lines rather than re-deriving them, so the
 // two tools cannot drift on what a verdict means. mutation-proof colours each verdict, so a line is
 // `\x1b[32mKILLED      \x1b[0m <label>`: strip ANSI before matching, or every verdict reads as
@@ -572,6 +585,8 @@ const preRed = [];      // exit 4 + base RED, or any exit 4 under --all — inhe
 const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head RED
 const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base comparison — loud failure
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
+const discriminated = []; // fixtures that produced at least one KILLED (including mixed)
+const zeroGraded = []; // exit 0 with no KILLED parsed: graded nothing, never counts as discrimination
 for (const { path, command, mutations } of prove) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
@@ -581,7 +596,16 @@ for (const { path, command, mutations } of prove) {
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");
   process.stderr.write(run.stderr ?? "");
-  if (run.status === 0) continue; // every mutation KILLED
+  // Exit 0 means "no mutation failed to produce a clean named red", which is NOT the same as
+  // "a kill was observed": mutation-proof prints `All 0 mutation(s) killed` and exits 0 for a
+  // fixture whose `mutations` array is empty. Crediting discrimination on the status alone would
+  // let a fixture that graded nothing hold the floor up for a corpus that killed nothing, which is
+  // the very vacuity this floor exists to refuse, one layer down. Credit the observed verdict.
+  if (run.status === 0) {
+    if (verdictsIn(output).includes("KILLED")) discriminated.push(path);
+    else zeroGraded.push(path);
+    continue;
+  }
   // Pre-red is keyed on exit 4 ALONE, the code mutation-proof sets only in its pre-mutation baseline
   // refusal and nowhere a mutation actually ran. Attribute it by the SAME command's base-to-head
   // transition, never by a declared suite path that may name a different command.
@@ -637,11 +661,13 @@ for (const { path, command, mutations } of prove) {
   }
   const verdicts = verdictsIn(output);
   // A single adverse verdict anywhere in the fixture is a finding: SURVIVED does not become benign
-  // because another mutation in the same file was INCONCLUSIVE. INCONCLUSIVE is non-fatal ONLY when
-  // no verdict is adverse and at least one is INCONCLUSIVE, i.e. the run produced no evidence against
-  // the guard. Anything else — an empty parse, an exit-1 with only KILLED lines, a token this gate
-  // does not know — is an unexplained non-zero and is treated as a finding, never as a pass.
+  // because another mutation in the same file was INCONCLUSIVE. INCONCLUSIVE is its own reported
+  // state ONLY when every parsed verdict is INCONCLUSIVE and at least one was parsed. An empty
+  // parse (`[].every` is true) is unexplained, not INCONCLUSIVE. Mixed KILLED+INCONCLUSIVE
+  // counts as discriminated: a kill was observed. Anything else is a finding and never a pass,
+  // including an empty parse, an exit-1 with only KILLED lines, or a token this gate cannot name.
   if (verdicts.some((v) => FATAL_VERDICTS.has(v))) {
+    if (verdicts.includes("KILLED")) discriminated.push(path);
     if (a.all) { fatal.push(path); continue; }
     ensureSnapshotPrepared(snapshots.head, "head");
     ensureSnapshotPrepared(snapshots.base, "base");
@@ -679,7 +705,10 @@ for (const { path, command, mutations } of prove) {
     else fatal.push(path);
     continue;
   }
-  else if (verdicts.includes("INCONCLUSIVE") && verdicts.every((v) => v === "KILLED" || v === "INCONCLUSIVE")) inconclusive.push(path);
+  else if (verdicts.length > 0 && verdicts.every((v) => v === "INCONCLUSIVE")) inconclusive.push(path);
+  else if (verdicts.includes("INCONCLUSIVE") && verdicts.every((v) => v === "KILLED" || v === "INCONCLUSIVE")) {
+    discriminated.push(path);
+  }
   else fatal.push(path);
 }
 
@@ -725,6 +754,45 @@ if (fatal.length) {
 if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length || unmeasuredFatal.length) {
   process.exit(1);
 }
+function discriminationFloor(provenCount, discriminatedCount) {
+  // Required kills follow the configs actually proven: none if the selector had nothing
+  // to prove, otherwise at least one. A constant such as "50" would pass today's corpus
+  // by accident and would fail a legitimate one-fixture synthetic.
+  if (provenCount === 0) return { pass: true, required: 0 };
+  return { pass: discriminatedCount > 0, required: 1 };
+}
+// A fixture that exited 0 without a single parsed KILLED graded nothing. It is not a finding
+// against the guard and not a pass for it, so it is named rather than folded into either: a
+// reader who sees the corpus shrink this way should see WHICH member stopped grading.
+if (zeroGraded.length) {
+  console.log(`\nZERO GRADED (${zeroGraded.length} fixture(s)): exited 0 with no KILLED verdict parsed, so they graded nothing and cannot count toward the floor:\n${zeroGraded.map((path) => `  ${path}`).join("\n")}`);
+}
+const floor = discriminationFloor(prove.length, discriminated.length);
+if (!floor.pass) {
+  // The floor's question is corpus-shaped but its scope is the unit it runs in, and under a
+  // sharded fan-out that unit is one shard. A shard can therefore draw only work that CANNOT
+  // discriminate, every fixture pre-red before any mutation or graded nothing, while the
+  // corpus as a whole kills. That still reds, deliberately: a unit that obtained no verdict has
+  // not earned an all-clear, and exempting an all-PRE-RED set is precisely the vacuity this
+  // floor exists to refuse. But the two cases need different human responses, so they are named
+  // differently. COULD NOT means re-shard or fix the already-red commands, and blaming a
+  // specific fixture for failing to produce a kill it was never in a position to produce is
+  // what a single banner would do.
+  const unableSet = new Set([
+    ...preRed.map(({ path }) => path),
+    ...unmeasuredPreRed.map(({ path }) => path),
+    ...inconclusive,
+    ...zeroGraded,
+  ]);
+  const expected = prove.map(({ path }) => path).filter((path) => !unableSet.has(path));
+  const unable = prove.map(({ path }) => path).filter((path) => unableSet.has(path));
+  if (expected.length === 0) {
+    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: ${unable.join(", ")}`);
+  } else {
+    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED (${discriminated.length} of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs), expected a kill from: ${expected.join(", ")}${unable.length ? `; not attributable to (could not discriminate): ${unable.join(", ")}` : ""}`);
+  }
+  process.exit(1);
+}
 console.log(a.all
-  ? `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${prove.length - preRed.length - inconclusive.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive; base not compared under --all)`
-  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${prove.length - fixtureCount(preRed) - fixtureCount(inheritedFatal) - inconclusive.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);
+  ? `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${discriminated.length} discriminated, ${preRed.length} pre-red, ${inconclusive.length} inconclusive; base not compared under --all)`
+  : `\nMUTATION REPROOF OK (${selected.length} fixture(s) selected; ${discriminated.length} discriminated, ${fixtureCount(preRed)} inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, ${inconclusive.length} inconclusive)`);
