@@ -61,11 +61,11 @@
     {
       "name": "M5 the fallback delivers without recording what it delivered",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      surfacedIds.push(...keys);\n      release();\n      publishInboundHealth();",
+      "find": "      promoteToSurfaced(keys);\n      release();\n      publishInboundHealth();",
       "replace": "      release();\n      publishInboundHealth();",
       "expectRed": "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
       "cell": "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
-      "note": "The acceptance ledger is what makes the level-triggered server terminate for a given batch. Without the record the items stay `unserved` forever, every tick re-delivers the same messages, and the recipient session receives the same peer message over and over. This is the failure mode a retry loop has when its progress is measured by the attempt rather than by the ledger, and it is why the loop resets its pacing on the ledger. Its red is on a DIFFERENT cell from M1's, so the two are not interchangeable: M1 proves delivery happens at all, M5 proves it happens once. Re-anchored when the handover reservation was added (the ledger write moved below the release); the claim and the cell are unchanged. NOTE it deletes only the LEDGER write and keeps the release, so it is not a disguised copy of M6: M5 removes the record of acceptance, M6 removes the exclusion that makes an in-flight batch unselectable. Runs the drain suite ALONE rather than inheriting the paired policy+drain command: its cell lives in the drain suite, and pairing let the policy suite's own red satisfy the exit code while the named cell stayed green, which mutation-proof correctly graded WRONG-RED.",
+      "note": "The acceptance ledger is what makes the level-triggered server terminate for a given batch. Without the record the items stay `unserved` forever, every tick re-delivers the same messages, and the recipient session receives the same peer message over and over. This is the failure mode a retry loop has when its progress is measured by the attempt rather than by the ledger, and it is why the loop resets its pacing on the ledger. Its red is on a DIFFERENT cell from M1's, so the two are not interchangeable: M1 proves delivery happens at all, M5 proves it happens once. Re-anchored when the handover reservation was added (the ledger write moved below the release); the claim and the cell are unchanged. NOTE it deletes only the LEDGER write and keeps the release, so it is not a disguised copy of M6: M5 removes the record of acceptance, M6 removes the exclusion that makes an in-flight batch unselectable. Runs the drain suite ALONE rather than inheriting the paired policy+drain command: its cell lives in the drain suite, and pairing let the policy suite's own red satisfy the exit code while the named cell stayed green, which mutation-proof correctly graded WRONG-RED. Re-anchored when the duplicate-ack guard replaced the bare surfacedIds.push with promoteToSurfaced. Same severing: the delivery still happens and is still not recorded.",
       "command": "pnpm smoke:jcode-queue-fallback"
     },
     {
@@ -79,24 +79,14 @@
       "note": "The second reviewer finding, restored. The SDK's acceptance wait RESOLVES on its own timeout rather than rejecting, so `await sendMessage(...)` returning proves only that the frame was written. Infer acceptance from it and a Harness that takes the frame and never acknowledges it is recorded as having taken the batch; the next clean boundary then ACKS a message the session never ran, so the peer's message is lost rather than late. Runs the loss fixture, whose fake takes the queued send and stays silent, and whose witness is a turn_run record: arrival is logged for every frame, so only an execution record can distinguish delivered from dropped. Its cell is distinct from M5's and M6's: M5 removes the record of acceptance, M6 removes the exclusion during the window, M7 accepts something that was never acknowledged."
     },
     {
-      "name": "M8 a new turn steals a handover that is still being accepted",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    releaseUnheldReservations();",
-      "replace": "    reservedIds = new Set();",
-      "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
-      "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
-      "command": "pnpm smoke:jcode-queue-fallback",
-      "note": "The shipped assumption, restored verbatim: clear every reservation at the new-turn boundary because any in-flight handover must have belonged to the turn that just ended. False when the old turn goes idle inside the acceptance await, and the queued message is then EXECUTED twice. Reproduced by review at c40624cb7 before the fix; the graded cell is the only one that reads turn_run rather than frames."
-    },
-    {
-      "name": "M9 the new-turn selection reads items another handover is already delivering",
+      "name": "M8 a new turn takes over items another handover is still delivering",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !reservedIds.has(item.recvKey));",
       "replace": "      const inbox = agent.peekInbox(\"automatic\");",
       "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback",
-      "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct."
+      "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct. NOTE ON WHAT IS AND IS NOT GRADED HERE. The duplicate needs BOTH guards to fail: drive must select the reserved item AND the wholesale wipe must drop the reservation. Severing only the wipe leaves this cell GREEN, because this filter alone still refuses the item; I measured that by hand rather than inferring it. So a separate mutation for the wipe SURVIVES by construction, and I removed it instead of keeping a survivor or inventing a cell to justify it. The redundancy is deliberate defence in depth, and this mutation grades the guard that is load-bearing on its own."
     }
   ]
 }
