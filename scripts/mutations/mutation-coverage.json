@@ -38,7 +38,7 @@
     {
       "name": "a suite launching the exact mutated repo script is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;\n    // A suite that launches a repo entrypoint under a TS runner executes that entrypoint's own\n    // source tree. The mutated file is covered when the entrypoint's relative imports reach it.\n    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;\n",
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;\n    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;\n",
       "replace": "    if (resolve(mutation.file) === resolve(suite)) return;\n",
       "expectRed": "a suite is gradable when it launches the exact mutated script path",
       "cell": "a suite is gradable when it launches the exact mutated script path"
