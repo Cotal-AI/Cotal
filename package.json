@@ -655,6 +655,7 @@
     "smoke:hermes-hooks-control": "tsx extensions/connector-hermes/smoke/hooks-control.smoke.ts",
     "smoke:hermes-launch-env": "tsx extensions/connector-hermes/smoke/launch-env.smoke.ts",
     "smoke:hermes-adapter-contract": "tsx extensions/connector-hermes/smoke/adapter-contract.smoke.ts",
+    "smoke:hermes-reconnect-effect": "tsx extensions/connector-hermes/smoke/reconnect-effect.smoke.ts",
     "smoke:hermes-boot-requirement": "pnpm --filter @cotal-ai/connector-hermes... build && tsx extensions/connector-hermes/smoke/boot-requirement.smoke.ts",
     "smoke:hermes-empty-id": "tsx extensions/connector-hermes/smoke/empty-id-bridge.smoke.ts",
     "smoke:hermes-lifecycle-idle": "tsx extensions/connector-hermes/smoke/lifecycle-idle.smoke.ts",
