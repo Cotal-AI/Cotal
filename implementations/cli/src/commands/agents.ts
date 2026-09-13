@@ -1,4 +1,4 @@
-import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
@@ -459,7 +459,7 @@ const SESSION_WORKED_MS = 5_000;
  *  it rather than by prose. `gone`/`denied` stop the loop; `fatal` is a refusal that retrying can
  *  never fix; everything else is worth another attempt. */
 type Established =
-  | { ok: true; nc: NatsConnection; grant: SessionGrant; creds: string; inbox: string; server: string }
+  | { ok: true; nc: NatsConnection; grant: SessionGrant; link: RedeemLink; inbox: string; server: string }
   | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true };
 
 /** What a caller should DO about a manager refusal. `denied` will not change by asking again;
@@ -561,9 +561,10 @@ async function establishAttachSession(
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
-  // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
-  // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
-  // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
+  // mesh. A static-auth mesh mints a per-session, rails-only caller cred from the resolved root's
+  // seed. A registered open mesh has no seed: the same bare connection `askManagerEp` already used
+  // for the control round trip opens the caller rail. USER mesh (bearer, no local seed): refuse LOUD
+  // — the 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
   const { grant } = reply.data as { grant: SessionGrant };
   // The trust material the TARGET resolved, not a second answer walked up from the cwd. This used
   // to be `loadSpaceAuth(authDir(findCotalRoot()), t.space)`, which is the defect behind issue #722:
@@ -587,17 +588,27 @@ async function establishAttachSession(
       `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space "${t.space}".\n` +
       `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,
     );
-  const auth = t.spaceAuth;
-  if (!auth)
-    return {
-      ok: false, kind: "fatal",
-      message: attachNoSeedMessage(t),
-    };
+  const tls = t.auth.tls === true;
   const id = newIdentity();
-  const creds = await mintCreds(auth, id, "session-caller", {
-    sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
-    expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
-  });
+  // WHICH CONTRACT redeems this grant is decided ONCE, by the recorded mesh mode, and the answer is
+  // a value this function then carries. It is never re-derived from the absence of a seed: that
+  // inference is issue #1205 itself, where an open mesh (which holds no seed BY DESIGN) was read as
+  // a static mesh whose seed had gone missing, and every open attach was refused.
+  const material = attachSessionMaterial(t);
+  if (material.kind === "fatal") return { ok: false, kind: "fatal", message: material.message };
+  const link: RedeemLink =
+    material.kind === "bare"
+      // An open mesh has no credential system: the same bare connection the control round trip
+      // already used opens the caller rail. Nothing is minted and nothing is invented.
+      ? { mode: "bare", tls }
+      : {
+          mode: "session-caller",
+          tls,
+          creds: await mintCreds(material.auth, id, "session-caller", {
+            sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+            expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+          }),
+        };
   // maxReconnectAttempts is the whole difference between the two modes, and it is deliberate.
   // ONE-SHOT keeps the old -1: the NATS layer redials forever under a single session.
   // RECONNECTING uses 0, because that redial is what breaks the attach rather than saving it — the
@@ -608,7 +619,7 @@ async function establishAttachSession(
   // real repaint, instead of a restored socket over a session that ended without us.
   const nc = await dialerFor(t.server)({
     servers: t.server,
-    ...standaloneConnectOpts({ creds, tls: false }),
+    ...redeemConnectOpts(link),
     inboxPrefix: `_INBOX_${id.id}`,
     maxReconnectAttempts: reconnect ? 0 : -1,
     // Detection latency is part of the defect, not a detail of it. A laptop waking from sleep does
@@ -622,7 +633,7 @@ async function establishAttachSession(
     // half-opens a link is what would grade this line, and it does not exist here yet.
     ...(reconnect ? { pingInterval: 10_000 } : {}),
   });
-  return { ok: true, nc, grant, creds, inbox: id.id, server: t.server };
+  return { ok: true, nc, grant, link, inbox: id.id, server: t.server };
 }
 
 /** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
@@ -638,7 +649,77 @@ async function establishAttachSession(
  *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
  *  rather than assumes. So that arm says what its own existence would mean instead of offering a
  *  remedy for a situation that cannot currently arise. */
-function attachNoSeedMessage(t: { space: string; server: string; root?: string; auth: { bearer?: unknown } }): string {
+/** The mesh contract that decides how attach redeems a session grant. The mode is the REGISTERED
+ *  one (`MeshTarget.mode`), carried forward from the resolve. It is the only input to the decision:
+ *  `spaceAuth` says whether a SEALED mesh's seed is present, and is never consulted to decide which
+ *  kind of mesh this is. */
+export type AttachSessionTarget = {
+  space: string;
+  server: string;
+  root?: string;
+  spaceAuth?: SpaceAuth;
+  mode?: "auth" | "open" | "user";
+  auth: { bearer?: unknown };
+};
+
+/**
+ * HOW this mesh's session grant is redeemed, as a closed union with no optional credential.
+ *
+ * `bare` and `session-caller` are structurally distinct rather than "session-caller, but the creds
+ * may be missing". That distinction is the whole fix for #1205. An optional `creds?: string` on the
+ * redeem path invites exactly one question at every call site — "is the seed there?" — and answering
+ * it with `!creds` is the defect: an OPEN mesh has no seed BY DESIGN, so absence means "bare",
+ * while on a SEALED mesh the same absence means "refuse". One field cannot carry both meanings, so
+ * the mode is named and the compiler makes every consumer read the name.
+ */
+export type RedeemLink =
+  | { mode: "bare"; tls: boolean }
+  | { mode: "session-caller"; tls: boolean; creds: string };
+
+/** The ONE place a {@link RedeemLink} becomes NATS connect options. Both connections on the redeem
+ *  path (the session link and the abandoned-session hand-back) go through here, so neither can
+ *  invent a credential for an open mesh or drop one on a sealed mesh, and a third caller gets the
+ *  same two arms for free. */
+export function redeemConnectOpts(link: RedeemLink): ReturnType<typeof standaloneConnectOpts> {
+  return link.mode === "bare"
+    ? standaloneConnectOpts({ tls: link.tls })
+    : standaloneConnectOpts({ creds: link.creds, tls: link.tls });
+}
+
+/**
+ * Which redeem contract this target gets: a bare open-mesh connection, a seed-backed mint, or a
+ * loud refusal. Graded by `smoke:attach-open-mode`, whose mutations flip each arm in turn.
+ *
+ * EXHAUSTIVE over the three recorded modes on purpose, with `user` named rather than reached by
+ * fallthrough. A `user` entry holds no local seed by design and its two-step redemption is not
+ * wired, so it must refuse even on the day a user-mode root happens to carry static material on
+ * disk; letting it fall through to the seed test would silently mint on the wrong identity plane.
+ * An UNRECORDED mode (a raw off-registry connection) is the conservative arm: it is not known to be
+ * open, so it takes the sealed test and refuses without a seed.
+ */
+export function attachSessionMaterial(t: AttachSessionTarget):
+  | { kind: "bare" }
+  | { kind: "mint"; auth: SpaceAuth }
+  | { kind: "fatal"; message: string } {
+  switch (t.mode) {
+    // An OPEN mesh: no credential system at all, so there is no seed to be missing and nothing to
+    // mint. This is the arm issue #1205 did not have.
+    case "open":
+      return { kind: "bare" };
+    // A USER mesh: refused by name, and refused EVEN IF a seed is present, because the bearer plane
+    // is the control surface there and static material would be the wrong identity.
+    case "user":
+      return { kind: "fatal", message: attachNoSeedMessage(t) };
+    // SEALED (`auth`) and unrecorded: the seed is required, and its absence is a refusal. A sealed
+    // mesh must never be rescued by the open arm — that is the failure a fix for #1205 is most
+    // likely to introduce, and `smoke:attach-open-mode` asserts the refusal by name against a live
+    // sealed broker.
+    default:
+      return t.spaceAuth ? { kind: "mint", auth: t.spaceAuth } : { kind: "fatal", message: attachNoSeedMessage(t) };
+  }
+}
+
+function attachNoSeedMessage(t: AttachSessionTarget): string {
   const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
   const shadowLine = shadow
     ? `\n  NOTE this directory resolves to ${shadow.cwdRoot}, which holds a DIFFERENT trust chain for "${t.space}"; it was NOT used.`
@@ -648,11 +729,13 @@ function attachNoSeedMessage(t: { space: string; server: string; root?: string; 
     return `${head}\n  broker ${t.server}\n  This is a USER-AUTH mesh, which holds no local seed by design; two-step user-mode redemption is not wired yet, so attach is unavailable on it from every directory, not just this one.${shadowLine}`;
   if (t.root === undefined)
     return `${head}\n  broker ${t.server}\n  This connection resolved NO checkout root, and no supported route reaches redemption in that state: an off-registry \`--server\` on an unregistered space is refused for missing credentials, and \`--creds\` is refused at the control surface, both before a session grant is asked for. Reaching this sentence means a route now exists that skips both refusals.${shadowLine}`;
-  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  A static-auth mesh keeps this space's seed under <root>/.cotal/auth. That root is what this command resolved and connected with, so if it is not the checkout holding this space's auth, re-register the mesh with \`cotal meshes add ${t.space} --server ${t.server} --root <dir>\`.${shadowLine}`;
+  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  This is a static-auth mesh. Attach still needs this space's seed under ${t.root}/.cotal/auth. Restore the seed at that checkout. This mesh is not open, so attach will not connect without the seed.${shadowLine}`;
 }
 
-/** A session this side can no longer reach, plus the one credential that can still speak for it. */
-type Abandoned = { grant: SessionGrant; creds: string; inbox: string; server: string };
+/** A session this side can no longer reach, plus the caller material that can still speak for it.
+ *  It carries the SAME {@link RedeemLink} the session came up on, so the hand-back cannot re-decide
+ *  the mesh contract from what it happens to hold. */
+type Abandoned = { grant: SessionGrant; link: RedeemLink; inbox: string; server: string };
 
 /**
  * Tell the manager a session is over, so it gets its slot back.
@@ -664,15 +747,16 @@ type Abandoned = { grant: SessionGrant; creds: string; inbox: string; server: st
  * to 2 — one slot per outage, held until the seat or the manager ends it, against a ceiling of 64.
  *
  * The mechanism is the advisory close frame the rail already defines; the manager's bridge ends on
- * it. It has to be published with THIS session's caller credential, the only one scoped to this
- * session's subjects, so a re-establishment cannot send it on the abandoned session's behalf — a
- * fresh session's credential covers a fresh session's subjects. Hence a short-lived connection
- * minted from the credential the abandoned session already had.
+ * it. On a static-auth mesh it has to be published with THIS session's caller credential, the only
+ * one scoped to this session's subjects, so a re-establishment cannot send it on the abandoned
+ * session's behalf. On a registered open mesh there is no session-caller seed: the same bare
+ * connection the session used hands the slot back. Hence a short-lived connection minted from the
+ * abandoned session's own material, never an invented seed.
  */
 async function releaseAbandonedSession(s: Abandoned): Promise<void> {
   const nc = await dialerFor(s.server)({
     servers: s.server,
-    ...standaloneConnectOpts({ creds: s.creds, tls: false }),
+    ...redeemConnectOpts(s.link),
     inboxPrefix: `_INBOX_${s.inbox}`,
     maxReconnectAttempts: 0,
     timeout: LINK_DEADLINE_MS,
@@ -869,7 +953,7 @@ async function runAttachLoop(
         releaseStdin();
         const late = await attempting.catch(() => undefined);
         if (late?.ok) {
-          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });
+          abandoned.push({ grant: late.grant, link: late.link, inbox: late.inbox, server: late.server });
           // And CLOSE the link that session came up on. Nothing here will ever read it, and an open
           // NATS connection is a ref'd handle: measured, the attach printed `detached from` and then
           // sat there forever, because the hand-back mints its own short-lived connection from the
@@ -937,7 +1021,7 @@ async function runAttachLoop(
         handedBack = await flushed(est.nc);
       }
       if (!handedBack && reconnect) {
-        abandoned.push({ grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server });
+        abandoned.push({ grant: est.grant, link: est.link, inbox: est.inbox, server: est.server });
       }
       await closeLink(est.nc);
     }

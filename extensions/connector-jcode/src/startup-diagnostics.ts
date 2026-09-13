@@ -8,12 +8,25 @@ export type JcodeConnectorFailureCode =
   | "model_refused"
   | "model_mismatch"
   | "private_state"
-  | "readiness_timeout";
+  | "readiness_timeout"
+  | "sessions_enumeration_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
   constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
     super(message, options);
+  }
+}
+
+/** Listing stored sessions killed the harness. Cause and path are connector-owned, not child stderr. */
+export class JcodeSessionsEnumerationFailure extends Error {
+  readonly code = "sessions_enumeration_failed" as const;
+
+  constructor(
+    readonly sessionsPath: string,
+    readonly causeText: string,
+  ) {
+    super(`could not enumerate stored sessions at ${sessionsPath}: ${causeText}`);
   }
 }
 

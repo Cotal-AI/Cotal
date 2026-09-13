@@ -474,14 +474,29 @@ check(
 
 const trustDenied = await scenario({ trustStatus: 401 });
 check(
-  "a 401 trust census refuses before any publish call",
-  trustDenied.error instanceof Error && trustDenied.error.message.includes("direct-publish authorization refused"),
-  trustDenied.error,
+  "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
+  trustDenied.error === undefined
+    && trustDenied.result !== undefined
+    && trustDenied.result.rows.length > 0
+    && trustDenied.result.rows.every((row) => row.oidc === "exchanged" && row.direct === "unverifiable:trust-endpoint-needs-npm-token"),
+  trustDenied.error ?? trustDenied.result,
 );
 check(
-  "a 401 trust census never issues a write-shaped registry call",
+  "a 401 trust read never issues a write-shaped registry call",
   trustDenied.seen.every((call) => !isWriteShaped(call)),
   trustDenied.seen,
+);
+
+const trustForbidden = await scenario({ trustStatus: 403 });
+check(
+  "a non-401 trust read failure still refuses before any publish call",
+  trustForbidden.error instanceof Error && trustForbidden.error.message.includes("direct-publish authorization refused"),
+  trustForbidden.error,
+);
+check(
+  "a non-401 trust read failure never issues a write-shaped registry call",
+  trustForbidden.seen.every((call) => !isWriteShaped(call)),
+  trustForbidden.seen,
 );
 
 const blankEnv = await scenario({

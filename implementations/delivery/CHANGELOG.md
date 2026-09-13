@@ -1,5 +1,37 @@
 # @cotal-ai/delivery
 
+## 0.49.0
+
+### Minor Changes
+
+- b00f3c1: Refuse a two-root daemon-credential composition at construction. The manager challenges the delivery daemon's reload-store identity before the first remint, and the refusal names both stores. Fingerprint-only reloadCreds stays once both sides read one SecretStore. A store declares its authority identity, or an injected adapter names its coordinate in COTAL_SECRET_STORE on both processes.
+
+### Patch Changes
+
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/workspace@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

@@ -480,6 +480,32 @@ const SCATTER_PROFILE: Profile = "control-caller-privileged";
  *  well inside the gather. */
 const PROBE_DEADLINE_MS = 5_000;
 
+/**
+ * Whether the scatter's liveness probe rides a BARE connection, a freshly minted pinned instrument,
+ * or nothing at all. The sixth seed reach on the attach path, made explicit.
+ *
+ * Named and exported so it is GRADABLE, because it is the one site on this path that still answers
+ * "is this an open mesh?" from the absence of a credential. That inference is issue #1205 itself,
+ * and it is only tolerable here because of what this answer is allowed to DO: it selects whether a
+ * frozen instance's liveness is probed, so a wrong answer downgrades a row to `not-probed` and
+ * never refuses an attach. A caller that ever turns this into a refusal must change this function,
+ * which is the point of it having a name.
+ *
+ *   bare   — no credential and no bearer: an open mesh, whose connection can already publish.
+ *   mint   — a sealed mesh that holds its seed AND arrived on a credential: re-mint pinned.
+ *   as-is  — everything else (a user bearer, a raw off-registry cred, a sealed mesh with no seed):
+ *            keep the credential it arrived with and probe nothing, which is the pre-existing
+ *            behaviour and prints `not-probed` rather than degrading silently.
+ */
+export function scatterProbeMaterial(
+  auth: ControlAuth,
+  spaceAuth: SpaceAuth | undefined,
+): { kind: "bare" } | { kind: "mint"; auth: SpaceAuth } | { kind: "as-is" } {
+  if (!auth.creds && !auth.bearer) return { kind: "bare" };
+  if (spaceAuth && auth.creds) return { kind: "mint", auth: spaceAuth };
+  return { kind: "as-is" };
+}
+
 /** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default).
  *
  * TWO connections, because a connection's permissions are fixed at authentication and this command
@@ -533,19 +559,24 @@ async function askManagerScatterEp(
     return { ok: false, error: error ?? "error" };
   }
 
-  // ---- the LOCAL pinned re-mint. An OPEN mesh has no credential system, so its bare connection can
-  // already publish anywhere and needs no mint to probe; an auth mesh with the space seed re-mints;
-  // anything else keeps the credential it arrived with and does not probe.
-  const openMesh = !auth.creds && !auth.bearer;
+  // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.
+  // This is the SIXTH place the attach path reaches for a seed (attach → pinForTarget → locateSeat
+  // → scatterManager → here), and it is named as such because its answer is still derived from the
+  // ABSENCE of a credential, which is the inference issue #1205 was about. It is safe here and it
+  // is NOT safe by accident: this site only decides whether to PROBE LIVENESS, so its worst outcome
+  // is a `not-probed` row, never a refusal to attach. It is extracted anyway so a future caller
+  // that starts making a REFUSAL out of this answer has to pass through a named decision that says
+  // so, instead of re-deriving openness from a nullable field for the second time in one path.
+  const material = scatterProbeMaterial(auth, spaceAuth);
   let probeAuth = auth;
   let caller = auth.epCaller!;
-  let probed: ReadonlySet<string> = openMesh ? new Set(pinnedIds) : new Set();
-  if (spaceAuth && auth.creds) {
+  let probed: ReadonlySet<string> = material.kind === "bare" ? new Set(pinnedIds) : new Set();
+  if (material.kind === "mint") {
     const identity = newIdentity();
     const uid = mintLifecycleUid();
     probeAuth = {
       ...auth,
-      creds: await mintCreds(spaceAuth, identity, SCATTER_PROFILE, {
+      creds: await mintCreds(material.auth, identity, SCATTER_PROFILE, {
         lifecycleUid: uid,
         endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", pinnedIds),
       }),

@@ -1,0 +1,114 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/empty-sessions.smoke.ts",
+    "extensions/connector-jcode/smoke/stored-sessions.smoke.ts"
+  ],
+  "guard": "an empty sessions/ directory is skipped locally so the seat starts fresh, and a list_sessions panic names the assertion and path instead of startup failed (unknown)",
+  "command": "pnpm smoke:jcode-stored-sessions && pnpm smoke:jcode-empty-sessions",
+  "progressPattern": "^  \u2713 ",
+  "minTicks": 8,
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-empty-sessions.json",
+  "why": [
+    "The jcode binary panics in stored_session_ids when sessions/ exists and is empty. That panic is",
+    "out of this repo. The connector used to catch listSessions, reuse the dead client for createSession,",
+    "and report startup failed (unknown). Operators then renamed the seat. Each mutation restores one",
+    "of those defects: listing an empty directory, reusing the dead client, collapsing the named failure",
+    "back to unknown, widening the panic site so an unrelated crate's translate.rs is reported as this",
+    "defect, letting the local inspection throw and kill a seat that would otherwise start, or naming a",
+    "specific wrong cause for a failure the connector does not recognise."
+  ],
+  "mutations": [
+    {
+      "name": "M1 list an empty sessions directory instead of skipping it",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "  return inspection.kind === \"empty-directory\";",
+      "replace": "  return false;",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "list_sessions is not sent when sessions is an empty directory",
+      "cell": "list_sessions is not sent when sessions is an empty directory"
+    },
+    {
+      "name": "M2 treat a missing sessions path as the empty-directory defect",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "    if (code === \"ENOENT\") return { kind: \"absent\", path };",
+      "replace": "    if (code === \"ENOENT\") return { kind: \"empty-directory\", path };",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "a missing sessions path is absent, not empty",
+      "cell": "a missing sessions path is absent, not empty"
+    },
+    {
+      "name": "M3 classify prose that mentions the assertion as the panic",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "  return match ? `${match[2]} at ${match[1]}` : undefined;",
+      "replace": "  return /chunk size must be non-zero/.test(stderr) ? \"chunk size must be non-zero at crates/jcode-harness-api-server/src/translate.rs:1707:38\" : undefined;",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "prose that mentions the assertion is refused",
+      "cell": "prose that mentions the assertion is refused"
+    },
+    {
+      "name": "M4 reuse the dead listing client instead of redialing",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        await stopPrivateJcode();\n        client = await launchPrivateJcode();",
+      "replace": "        /* mutant keeps the closed client */",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "listing panic still starts a fresh session on a new harness",
+      "cell": "listing panic still starts a fresh session on a new harness"
+    },
+    {
+      "name": "M5 forward arbitrary child text as the operator-facing cause",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "  if (/write EPIPE/i.test(text)) return \"write EPIPE\";",
+      "replace": "  if (/write EPIPE/i.test(text)) return \"write EPIPE\";\n  return text;",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "unrelated child text is not forwarded",
+      "cell": "unrelated child text is not forwarded"
+    },
+    {
+      "name": "M6 match any path ending in translate.rs instead of the owning crate",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "const STORED_SESSION_PANIC_SITE = \"crates/jcode-harness-api-server/src/translate.rs\";",
+      "replace": "const STORED_SESSION_PANIC_SITE = \"[^\\\\n]*translate.rs\";",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "the same filename in another crate is refused",
+      "cell": "the same filename in another crate is refused"
+    },
+    {
+      "name": "M7 stop escaping the dots in the panic site",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "${STORED_SESSION_PANIC_SITE.replace(/[.]/g, \"\\\\.\")}",
+      "replace": "${STORED_SESSION_PANIC_SITE}",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "a site differing by one character is refused",
+      "cell": "a site differing by one character is refused"
+    },
+    {
+      "name": "M8 rethrow an unreadable sessions directory instead of naming it",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "    return { kind: \"unreadable\", path, code: code ?? \"unknown\" };",
+      "replace": "    throw error;",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "the unreadable sessions directory is named to the operator",
+      "cell": "the unreadable sessions directory is named to the operator",
+      "note": "POSIX-only proof. The win32 arm of this block declares the cell unreachable and passes unconditionally, so on Windows this mutant is a correct SURVIVOR and the mark count matches a POSIX kill. Read the verdict, not the marks."
+    },
+    {
+      "name": "M9 report an unrecognised harness failure as a closed connection",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "export const UNRECOGNISED_STORED_SESSION_CAUSE = \"unrecognised harness failure\";",
+      "replace": "export const UNRECOGNISED_STORED_SESSION_CAUSE = \"harness connection closed\";",
+      "command": "pnpm smoke:jcode-stored-sessions",
+      "expectRed": "unrelated child text is not forwarded",
+      "cell": "unrelated child text is not forwarded"
+    },
+    {
+      "name": "M10 stay silent about a sessions directory the connector cannot read",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (stored.kind === \"unreadable\")",
+      "replace": "      if (false)",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "the unreadable sessions directory is named to the operator",
+      "cell": "the unreadable sessions directory is named to the operator",
+      "note": "POSIX-only proof. The win32 arm of this block declares the cell unreachable and passes unconditionally, so on Windows this mutant is a correct SURVIVOR and the mark count matches a POSIX kill. Read the verdict, not the marks."
+    }
+  ]
+}

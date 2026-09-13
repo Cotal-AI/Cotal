@@ -65,8 +65,8 @@
     {
       "name": "the defect restored: redemption walks up from the cwd for the seed instead of using the one the mesh resolved",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  const auth = t.spaceAuth;",
-      "replace": "  const { authDir: mAuthDir, findCotalRoot: mFind, loadSpaceAuth: mLoad } = await import(\"@cotal-ai/workspace\");\n  const auth = mLoad(mAuthDir(mFind()), t.space);",
+      "find": "  const material = attachSessionMaterial(t);",
+      "replace": "  const { authDir: mAuthDir, findCotalRoot: mFind, loadSpaceAuth: mLoad } = await import(\"@cotal-ai/workspace\");\n  const material = attachSessionMaterial({ ...t, spaceAuth: mLoad(mAuthDir(mFind()), t.space) });",
       "expectRed": "attach from a fossil-anchored directory redeems and opens the session",
       "cell": "attach from a fossil-anchored directory redeems and opens the session",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
