@@ -142,6 +142,13 @@ try {
   write("bin/smoke/unused-root.smoke.ts",
     'import { x } from "@cotal-ai/seat";\n' +
     'const unused = join(ROOT, "packages", "seat");\n');
+  write("bin/smoke/dead-read.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'function never() { readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8"); }\n' +
+    'console.log("never is never called");\n');
+  write("bin/smoke/dead-launch.smoke.ts",
+    'function never() { spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]); }\n' +
+    'console.log("never is never called");\n');
   write("bin/smoke/copy-into-root.smoke.ts",
     'import { x } from "@cotal-ai/seat";\n' +
     'cpSync(scratch, join(ROOT, "packages", "seat"), { recursive: true });\n');
@@ -272,6 +279,14 @@ try {
   check("a name bound to the target but never passed to a launcher is still refused", result.status !== 0 && /REFUSED bound-entry-unused/.test(result.stderr), report(result));
 
   // --- witnesses added for #1434: each real route is PAIRED with the near-miss it must refuse. ---
+
+  config("dead-read", { suite: ["bin/smoke/dead-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("dead-read");
+  check("a read inside a function nobody calls never happens", result.status !== 0 && /REFUSED dead-read/.test(result.stderr), report(result));
+
+  config("dead-launch", { suite: ["bin/smoke/dead-launch.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("dead-launch");
+  check("a launch inside a function nobody calls never runs", result.status !== 0 && /REFUSED dead-launch/.test(result.stderr), report(result));
 
   config("reads-data-file", { suite: ["bin/smoke/reads-data.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
   result = run("reads-data-file");
