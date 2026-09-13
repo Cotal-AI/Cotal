@@ -16,7 +16,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, relative, resolve } from "node:path";
 import ts from "typescript";
 import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
@@ -57,7 +57,6 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
 const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
 const COPIERS = ["cpSync", "copyFileSync"];
 const JOINERS = ["join", "resolve", "dirname", "fileURLToPath"];
-const RELATIVE_SRC = /(?:^|\/)(?:\.\.\/)+src\//;
 /** A loader CLI that occupies the first positional and executes the NEXT one (tsx's own cli.mjs). */
 const RUNNER_CLI = /(?:^|\/)(?:tsx|ts-node|tsimp)(?:\/dist)?\/(?:cli|esm)\.(?:m?js|cjs)$/i;
 
@@ -86,20 +85,20 @@ const namedAliases = (source, fromSpec, originals) => {
   return names;
 };
 
-const pathEval = (suite, source) => {
+const pathEval = (suite, source, env = new Map()) => {
   const sf = ast(suite, source);
   const joiners = namedAliases(source, "path", JOINERS);
   const variables = new Map();
+  // The repository root, and ONLY where the program actually computes it. An identifier's spelling
+  // is not evidence of its value: `const root = mkdtempSync(...)` is a temp directory, and reading
+  // it as the repo root invents a data-flow fact that does not exist. A name-shaped root was the
+  // exact class #1434 is about, so nothing here looks at identifier text. A binding reaches this
+  // value only by evaluating to it, through the `variables` map.
   const rootish = (node) => {
-    if (ts.isIdentifier(node)) {
-      const n = node.text;
-      return n === "ROOT" || n === "root" || n === "repo" || n === "repoRoot" || n === "pkgRoot"
-        || n === "here" || n === "base" || n.endsWith("Root") || n.endsWith("Clone");
-    }
     if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === "process.cwd") return true;
     if (ts.isPropertyAccessExpression(node)) {
       const t = node.getText();
-      return t === "import.meta.dirname" || t === "import.meta.url" || t === "process.cwd";
+      return t === "import.meta.dirname" || t === "process.cwd";
     }
     return false;
   };
@@ -108,16 +107,19 @@ const pathEval = (suite, source) => {
     if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
     const literal = stringValue(node);
     if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) {
-      if (variables.has(node.text)) return variables.get(node.text);
-      if (rootish(node)) return process.cwd();
-      return undefined;
-    }
+    if (ts.isIdentifier(node)) return variables.get(node.text);
     if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
       if (node.name.text === "dirname") return dirname(resolve(suite));
       if (node.name.text === "url") return resolve(suite);
     }
     if (rootish(node)) return process.cwd();
+    // A variable the COMMAND assigned is a known string inside the process it starts.
+    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "process.env") {
+      return env.get(node.name.text);
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      return evalPath(node.left) ?? evalPath(node.right);
+    }
     // `new URL(spec, import.meta.url)` is how a suite names a sibling file without `path`. It is
     // the same resolution `join` performs, spelled through the URL constructor, so it is evaluated
     // here rather than left undefined — otherwise every suite using it loses its launch witness.
@@ -225,30 +227,205 @@ const launchedScriptArg = (evalPath, argvNode) => {
  * own flag rules inside it. Refusing these would reject real launches for their spelling, which is
  * the mirror of the mention-shaped accepts this witness exists to close.
  */
-const argvCandidates = (node, arrays, depth = 0) => {
+const argvCandidates = (node, arrays, depth = 0, use = node) => {
   if (!node || depth > 4) return [];
-  if (ts.isParenthesizedExpression(node)) return argvCandidates(node.expression, arrays, depth + 1);
+  if (ts.isParenthesizedExpression(node)) return argvCandidates(node.expression, arrays, depth + 1, use);
   if (ts.isArrayLiteralExpression(node)) return [node];
   if (ts.isConditionalExpression(node)) {
-    return [...argvCandidates(node.whenTrue, arrays, depth + 1), ...argvCandidates(node.whenFalse, arrays, depth + 1)];
+    return [...argvCandidates(node.whenTrue, arrays, depth + 1, use),
+      ...argvCandidates(node.whenFalse, arrays, depth + 1, use)];
   }
-  if (ts.isIdentifier(node)) return (arrays.get(node.text) ?? []);
+  if (ts.isIdentifier(node)) return (arrays.get(node.text, use) ?? []);
   return [];
+};
+
+/**
+ * Paths a `-e`/`--eval` program itself LOADS, by parsing the evaluated source as a module.
+ *
+ * `node -e "import { f } from '<abs path>'; f()"` runs that file as surely as naming it in the
+ * script slot. This is not the mention case the eval rule exists to refuse: the path is not merely
+ * near the call, it is a module specifier inside the program being executed, and it is read by
+ * parsing that program rather than by matching text around it.
+ */
+const evaluatedProgramLoads = (evalPath, argvNode) => {
+  const tokens = argvElements(argvNode);
+  const found = [];
+  // A template literal is how a suite injects a computed path into the program it evaluates. Each
+  // interpolated span is resolved with the same path evaluator used everywhere else, so the program
+  // text is reconstructed before it is parsed; a span that cannot be resolved leaves a placeholder,
+  // which simply fails to be an absolute specifier and witnesses nothing.
+  const programText = (node) => {
+    if (!node) return undefined;
+    const literal = stringValue(node);
+    if (literal !== undefined) return literal;
+    if (ts.isTemplateExpression(node)) {
+      let out = node.head.text;
+      for (const span of node.templateSpans) {
+        // `JSON.stringify(p)` is the ordinary way to quote a path safely inside generated source.
+        // Its argument is the path, and the quotes it adds are exactly the quotes the specifier
+        // needs, so the resolved value is emitted already quoted.
+        const inner = ts.isCallExpression(span.expression)
+          && span.expression.expression.getText() === "JSON.stringify"
+          ? span.expression.arguments[0] : undefined;
+        const quotedValue = inner ? evalPath(inner) : undefined;
+        const value = quotedValue !== undefined ? JSON.stringify(quotedValue) : evalPath(span.expression);
+        out += (typeof value === "string" ? value : "\u0000") + span.literal.text;
+      }
+      return out;
+    }
+    return evalPath(node);
+  };
+  for (let i = 0; i < tokens.length; i++) {
+    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);
+    const text = typeof raw === "string" ? raw : "";
+    const flag = flagName(text);
+    let program;
+    if (NODE_EVAL_FLAGS.has(flag) && text.includes("=")) program = text.slice(text.indexOf("=") + 1);
+    else if (NODE_EVAL_FLAGS.has(flag)) program = programText(tokens[i + 1]);
+    if (typeof program !== "string") continue;
+    for (const specifier of relativeImports("eval.mts", program)) {
+      if (specifier.startsWith("/") || /^[A-Za-z]:[\\/]/.test(specifier)) found.push(specifier);
+    }
+  }
+  return found;
+};
+
+/**
+ * Does this suite READ the mutated file's bytes? Only the path argument of a reader counts.
+ *
+ * Not every mutated file is a module. A manifest or a fixture reaches the suite through
+ * `readFileSync(path)`, and mutating it changes what the suite asserts on just as surely as
+ * mutating imported source. This is the same shape as the launcher and copier rules: the path must
+ * be the argument the call actually reads, not a value sitting near it.
+ */
+/**
+ * Environment variables the command itself assigns, as `NAME=value` prefixes on a run step.
+ *
+ * `COTAL_AGUI_SESSION=<path> tsx suite.ts` is how a workflow points a suite at a fixture. The path
+ * is data the command supplies to the process it starts, so a `readFileSync(process.env.NAME)` in
+ * that suite really does read that file. Reading it here keeps the witness a data-flow fact: the
+ * value comes from the command, not from the variable's spelling.
+ */
+const commandEnv = (command) => {
+  const env = new Map();
+  for (const segment of expandScripts(command).split(/&&|;|\|/)) {
+    for (const token of segment.trim().split(/\s+/)) {
+      const eq = token.indexOf("=");
+      if (eq <= 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(token.slice(0, eq))) break;
+      env.set(token.slice(0, eq), token.slice(eq + 1).replace(/^["']|["']$/g, ""));
+    }
+  }
+  return env;
+};
+
+/**
+ * Are the entries this listing produces actually READ?
+ *
+ * A directory listing by itself observes names, not bytes: mutating a file's contents cannot change
+ * it. The listing therefore witnesses a read only when its entries flow into a reader, which is the
+ * `for (const f of readdirSync(...)) readFileSync(<f>)` shape. The binding is followed by identity,
+ * so a loop that reads some other path does not count.
+ */
+const listingIsRead = (call, readers) => {
+  for (let cur = call.parent; cur !== undefined; cur = cur.parent) {
+    if (!ts.isForOfStatement(cur)) continue;
+    const decl = cur.initializer;
+    const name = ts.isVariableDeclarationList(decl) && decl.declarations[0]
+      && ts.isIdentifier(decl.declarations[0].name) ? decl.declarations[0].name.text : undefined;
+    if (name === undefined) return false;
+    let read = false;
+    const scan = (n) => {
+      if (read) return;
+      if (ts.isCallExpression(n) && readers.has(calleeText(n.expression))) {
+        const arg = n.arguments[0];
+        const mentions = (e) => {
+          if (!e) return false;
+          if (ts.isIdentifier(e)) return e.text === name;
+          let found = false;
+          ts.forEachChild(e, (c) => { if (mentions(c)) found = true; });
+          return found;
+        };
+        if (mentions(arg)) read = true;
+      }
+      ts.forEachChild(n, scan);
+    };
+    scan(cur.statement);
+    return read;
+  }
+  return false;
+};
+
+const READERS = ["readFileSync", "readFile", "openSync", "createReadStream"];
+/**
+ * A recursive directory read is a read of every file under that directory.
+ *
+ * `readdirSync(dir, { recursive: true })` followed by a read of each entry is how a suite grades a
+ * whole tree, and mutating any file in the tree changes its result. The witness is the RECURSIVE
+ * flag in the call the suite makes, not a path spelling: a non-recursive listing covers only its
+ * own directory, and is treated that way.
+ */
+const READDIRS = ["readdirSync", "readdir", "globSync", "glob"];
+const readsFile = (suite, source, file, env = new Map()) => {
+  const { sf, evalPath } = pathEval(suite, source, env);
+  const readers = namedAliases(source, "fs", READERS);
+  let hit = false;
+  const listers = namedAliases(source, "fs", READDIRS);
+  const want = resolve(file);
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression))) {
+      const target = node.arguments[0];
+      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)) hit = true;
+    }
+    if (ts.isCallExpression(node) && listers.has(calleeText(node.expression))) {
+      const dir = evalPath(node.arguments[0]);
+      const options = node.arguments[1];
+      const recursive = options !== undefined && ts.isObjectLiteralExpression(options)
+        && options.properties.some((prop) => ts.isPropertyAssignment(prop)
+          && prop.name.getText() === "recursive"
+          && prop.initializer.kind === ts.SyntaxKind.TrueKeyword);
+      if (typeof dir === "string") {
+        const base = resolve(dir);
+        const under = want === base || want.startsWith(base.endsWith("/") ? base : base + "/");
+        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers)) hit = true;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hit;
 };
 
 /** Every repo path this suite hands to a launcher in the slot that actually gets executed. */
 const launchedPaths = (suite, source) => {
   const { sf, evalPath } = pathEval(suite, source);
   const launchers = namedAliases(source, "child_process", LAUNCHERS);
-  const arrays = new Map();
-  const bind = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const candidates = argvCandidates(node.initializer, arrays);
-      if (candidates.length > 0) arrays.set(node.name.text, candidates);
-    }
-    ts.forEachChild(node, bind);
+  // Resolve an argv identifier the way the language does: to the declaration that is actually in
+  // scope at the use site. A flat name->value map is not a binding, it is a name collision waiting
+  // to happen: a same-named `args` in an unrelated function would stand in for the launcher's own,
+  // which asserts a data-flow fact the program does not have. Lookup therefore walks outward from
+  // the use and stops at the nearest enclosing scope that declares the name.
+  const declaresIn = (scope, name) => {
+    let found;
+    const scan = (node) => {
+      if (found !== undefined) return;
+      if (node !== scope && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+        || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isClassDeclaration(node))) return;
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name
+        && node.initializer) found = node.initializer;
+      ts.forEachChild(node, scan);
+    };
+    scan(scope);
+    return found;
   };
-  bind(sf);
+  const arrays = {
+    get: (name, use) => {
+      for (let scope = use?.parent; scope !== undefined; scope = scope.parent) {
+        const initializer = declaresIn(scope, name);
+        if (initializer !== undefined) return argvCandidates(initializer, arrays, 0, initializer);
+      }
+      return undefined;
+    },
+  };
   const found = [];
   const visit = (node) => {
     if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {
@@ -258,10 +435,11 @@ const launchedPaths = (suite, source) => {
       const direct = command ? evalPath(command) : undefined;
       if (typeof direct === "string") found.push(direct);
       if (command && isNodeExecutable(evalPath, command) && argv) {
-        for (const candidate of argvCandidates(argv, arrays)) {
+        for (const candidate of argvCandidates(argv, arrays, 0, argv)) {
           const script = launchedScriptArg(evalPath, candidate);
           const value = script ? evalPath(script) : undefined;
           if (typeof value === "string") found.push(value);
+          for (const loaded of evaluatedProgramLoads(evalPath, candidate)) found.push(loaded);
         }
       }
     }
@@ -286,15 +464,22 @@ const stringsCover = (suite, source, want) => {
 };
 
 
+/**
+ * Does this suite COPY the declared root? Only the source argument counts.
+ *
+ * `cpSync(src, dest, options)` copies `src`. Scanning every argument let an options object carry
+ * the root — `{ note: join(ROOT, "packages", "seat") }` or a `filter` mentioning it — and that is a
+ * mention again, one argument to the right of the one that does the work.
+ */
 const copiesRoot = (suite, source, root) => {
   const { sf, evalPath } = pathEval(suite, source);
   const copiers = namedAliases(source, "fs", COPIERS);
   let hit = false;
   const visit = (node) => {
     if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {
-      for (const arg of node.arguments) {
-        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;
-      }
+      const from = node.arguments[0];
+      if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)
+        && exprCovers(evalPath, from, root)) hit = true;
     }
     ts.forEachChild(node, visit);
   };
@@ -302,27 +487,99 @@ const copiesRoot = (suite, source, root) => {
   return hit;
 };
 
-const importsSource = (path, source) => {
-  let hit = false;
+/**
+ * Does this suite VALUE-import the mutated file, resolving the specifier to a real path?
+ *
+ * The predicate this replaced asked only whether some `../src/` specifier existed anywhere in the
+ * suite, which is the same mention-shaped accept one layer up: any same-package suite importing any
+ * source file admitted every other file in that package. So the specifier is resolved with the same
+ * candidate-extension rule the rest of the tool uses, and the walk continues through the imported
+ * file's own relative imports, because a suite that imports a barrel does reach what the barrel
+ * re-exports. A type-only import is erased before anything runs and is therefore never a load.
+ */
+/**
+ * Does control reach this node when the module is loaded?
+ *
+ * Top-level code runs on load. Code inside a function runs only if something calls that function,
+ * so a deferred site is admitted only when its enclosing function is actually reachable: a callback
+ * passed straight to a call, or a binding whose name is used somewhere other than its declaration.
+ */
+const evaluated = (node, sf) => {
+  for (let cur = node.parent; cur !== undefined; cur = cur.parent) {
+    const isFn = ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur)
+      || ts.isArrowFunction(cur) || ts.isMethodDeclaration(cur);
+    if (!isFn) continue;
+    const parent = cur.parent;
+    // Passed directly to a call (a callback) or immediately invoked: it runs.
+    if (parent && (ts.isCallExpression(parent) || ts.isNewExpression(parent))
+      && parent.expression !== cur) return true;
+    if (parent && ts.isParenthesizedExpression(parent) && parent.parent
+      && ts.isCallExpression(parent.parent)) return true;
+    const name = ts.isFunctionDeclaration(cur) || ts.isMethodDeclaration(cur)
+      ? (cur.name && ts.isIdentifier(cur.name) ? cur.name.text : undefined)
+      : (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) ? parent.name.text : undefined);
+    if (name === undefined) return false;
+    let used = false;
+    const scan = (n) => {
+      if (used) return;
+      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !(n.parent && ts.isVariableDeclaration(n.parent) && n.parent.name === n)) used = true;
+      ts.forEachChild(n, scan);
+    };
+    scan(sf);
+    if (!used) return false;
+    // The enclosing function is reached; keep walking outward for further nesting.
+    node = cur;
+  }
+  return true;
+};
+
+const importsSource = (path, source, target) => {
+  const want = resolve(target);
+  const seen = new Set();
+  const queue = [];
   const specOk = (value) => {
     if (typeof value !== "string") return false;
-    const v = value.replaceAll("\\", "/");
-    return RELATIVE_SRC.test(v) || v.startsWith("./src/");
+    return value.startsWith(".");
   };
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {
-      if (specOk(stringValue(node.moduleSpecifier))) hit = true;
-    }
-    if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier) {
-      if (specOk(stringValue(node.moduleSpecifier))) hit = true;
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      if (specOk(stringValue(node.arguments[0]))) hit = true;
-    }
-    ts.forEachChild(node, visit);
+  const collect = (from, src) => {
+    const visit = (node) => {
+      if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {
+        // `import { type X }` puts the modifier on each specifier; a clause whose bindings are ALL
+        // type-only is erased exactly like `import type`, so it is not a load either.
+        const named = node.importClause?.namedBindings;
+        const allTypeOnly = named !== undefined && ts.isNamedImports(named) && named.elements.length > 0
+          && named.elements.every((el) => el.isTypeOnly === true)
+          && node.importClause?.name === undefined;
+        if (!allTypeOnly && specOk(stringValue(node.moduleSpecifier))) queue.push([from, stringValue(node.moduleSpecifier)]);
+      }
+      if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier) {
+        if (specOk(stringValue(node.moduleSpecifier))) queue.push([from, stringValue(node.moduleSpecifier)]);
+      }
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        // A dynamic import loads when it is EVALUATED. One parked inside a function nobody calls
+        // never runs, so the module never loads and a mutation in it cannot change this suite's
+        // result. Appearing in the file is not evaluation.
+        if (specOk(stringValue(node.arguments[0])) && evaluated(node, sf)) {
+          queue.push([from, stringValue(node.arguments[0])]);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    const sf = ast(from, src);
+    visit(sf);
   };
-  visit(ast(path, source));
-  return hit;
+  collect(path, source);
+  while (queue.length > 0 && seen.size < SOURCE_REACH_LIMIT) {
+    const [from, specifier] = queue.shift();
+    const next = candidateFiles(resolve(dirname(from), specifier));
+    if (next === undefined || seen.has(next)) continue;
+    seen.add(next);
+    if (next === want) return true;
+    let nextSource;
+    try { nextSource = readFileSync(next, "utf8"); } catch { continue; }
+    collect(next, nextSource);
+  }
+  return false;
 };
 
 /**
@@ -333,15 +590,36 @@ const importsSource = (path, source) => {
  * package, so `buildsPackage` remains the other half of the pair. Without the build it is a stale
  * artifact and proves nothing, which is exactly why this is not a witness on its own.
  */
+/**
+ * Map a built artifact back to the ONE source file the compiler emits it from.
+ *
+ * `dist/index.js` is produced by `src/index.ts` under the package's own `rootDir`/`outDir`, so the
+ * mapping is a fact the build config states, not a guess. Reducing the import to the package root
+ * instead would make every file under the package look loaded, including smoke helpers that are
+ * never compiled into dist at all.
+ */
+const sourceOfBuilt = (absolute) => {
+  const root = packageRoot(relative(process.cwd(), absolute));
+  if (!root) return undefined;
+  let out = "dist", src = "src";
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(root, "tsconfig.json"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+    out = (cfg.compilerOptions?.outDir ?? out).replace(/^\.\//, "").replace(/\/$/, "");
+    src = (cfg.compilerOptions?.rootDir ?? src).replace(/^\.\//, "").replace(/\/$/, "");
+  } catch { /* defaults above are this repo's convention */ }
+  const rel = relative(resolve(root, out), absolute).replaceAll("\\", "/");
+  if (rel.startsWith("..")) return undefined;
+  return candidateFiles(resolve(root, src, rel));
+};
+
 const importsBuiltOutput = (path, source) => {
   const roots = [];
   const record = (value) => {
     if (typeof value !== "string") return;
     const v = value.replaceAll("\\", "/");
     if (!/(?:^|\/)dist\//.test(v) && !/(?:^|\/)dist$/.test(v)) return;
-    const absolute = resolve(dirname(path), v);
-    const cut = absolute.replaceAll("\\", "/").indexOf("/dist/");
-    roots.push(cut >= 0 ? absolute.slice(0, cut) : dirname(absolute));
+    const entry = sourceOfBuilt(resolve(dirname(path), v));
+    if (entry !== undefined) roots.push(entry);
   };
   const visit = (node) => {
     if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {
@@ -375,10 +653,27 @@ const candidateFiles = (path) => {
 
 const ast = (path, source) => ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
 const stringValue = (node) => ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+/**
+ * Specifiers this file LOADS at run time. Type-only imports are erased by the compiler and never
+ * load anything, so they cannot carry a mutation to the running program.
+ */
 const relativeImports = (path, source) => {
   const found = [];
+  const valueImport = (node) => {
+    if (node.importClause?.isTypeOnly === true) return false;
+    const named = node.importClause?.namedBindings;
+    if (named !== undefined && ts.isNamedImports(named) && named.elements.length > 0
+      && named.elements.every((el) => el.isTypeOnly === true)
+      && node.importClause?.name === undefined) return false;
+    return true;
+  };
   const visit = (node) => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+    if (ts.isImportDeclaration(node) && node.moduleSpecifier) {
+      if (valueImport(node)) {
+        const value = stringValue(node.moduleSpecifier);
+        if (value !== undefined) found.push(value);
+      }
+    } else if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier) {
       const value = stringValue(node.moduleSpecifier);
       if (value !== undefined) found.push(value);
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
@@ -577,17 +872,127 @@ const buildsPackage = (command, name) => {
   return false;
 };
 
+/**
+ * Repo directories this suite packs into a tarball whose BUILT contents it then inspects.
+ *
+ * `npm pack <dir>` publishes that package's compiled output, and a suite that reads
+ * `package/dist/<file>` out of the tarball is observing the artifact the build produced from that
+ * package's source. Paired with a build of the same package (as every dist witness here is), a
+ * mutation in the source it compiles from really does change what the suite reads. The directory
+ * comes from the pack call's own argument, not from text near it.
+ */
+/**
+ * Values a parameter can actually hold, read from the call sites of its enclosing function.
+ *
+ * This substitutes arguments for parameters, which is what the program does at run time. It is
+ * bounded to the function's own declared parameter position, so an unrelated call cannot supply it.
+ */
+const paramBindings = (sf, expr, evalPath) => {
+  const names = [];
+  const collect = (n) => {
+    if (ts.isIdentifier(n)) names.push(n.text);
+    ts.forEachChild(n, collect);
+  };
+  collect(expr);
+  if (names.length === 0) return [];
+  let fn;
+  for (let cur = expr.parent; cur !== undefined; cur = cur.parent) {
+    if (ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur) || ts.isArrowFunction(cur)) { fn = cur; break; }
+  }
+  if (fn === undefined) return [];
+  const fnName = ts.isFunctionDeclaration(fn) && fn.name ? fn.name.text
+    : (fn.parent && ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name) ? fn.parent.name.text : undefined);
+  if (fnName === undefined) return [];
+  const slots = new Map();
+  fn.parameters.forEach((param, index) => {
+    if (ts.isIdentifier(param.name) && names.includes(param.name.text)) slots.set(param.name.text, index);
+  });
+  if (slots.size === 0) return [];
+  const out = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === fnName) {
+      const bound = new Map();
+      for (const [name, index] of slots) {
+        const arg = node.arguments[index];
+        const value = arg ? evalPath(arg) : undefined;
+        if (value === undefined) return;
+        bound.set(name, value);
+      }
+      const substituted = substitutePath(expr, bound, evalPath);
+      if (substituted !== undefined) out.push(substituted);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
+};
+
+/** Evaluate `expr` with the given identifier bindings substituted in. */
+const substitutePath = (expr, bound, evalPath) => {
+  const local = (node) => {
+    if (!node) return undefined;
+    if (ts.isIdentifier(node) && bound.has(node.text)) return bound.get(node.text);
+    const direct = evalPath(node);
+    if (direct !== undefined) return direct;
+    if (ts.isCallExpression(node)) {
+      const name = calleeText(node.expression);
+      if (name === "join" || name === "resolve") {
+        const parts = node.arguments.map(local);
+        if (parts.every((part) => part !== undefined)) return resolve(...parts);
+      }
+    }
+    return undefined;
+  };
+  return local(expr);
+};
+
+const packedRoots = (suite, source) => {
+  const { sf, evalPath } = pathEval(suite, source);
+  const roots = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = calleeText(node.expression);
+      if (callee === "execFileSync" || callee === "execFile" || callee === "spawnSync") {
+        const program = evalPath(node.arguments[0]);
+        const argv = node.arguments[1];
+        if (program !== undefined && /(?:^|\/)npm$/.test(String(program).replaceAll("\\", "/"))
+          && argv && ts.isArrayLiteralExpression(argv)
+          && argv.elements.some((el) => stringValue(el) === "pack")) {
+          for (const el of argv.elements) {
+            if (stringValue(el) !== undefined) continue;
+            const value = evalPath(el);
+            if (typeof value === "string") { roots.push(value); continue; }
+            // The packed directory is often a parameter of a small helper (`pack(dir)`). Resolve it
+            // the way the program does: through the arguments its own call sites actually pass.
+            for (const bound of paramBindings(sf, el, evalPath)) roots.push(bound);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return roots;
+};
+
 const executedWitness = (suite, source, command, mutation, executes) => {
+  const name = packageName(mutation.file);
   for (const entry of executes) {
     if (!spawnsEntrypoint(suite, entry, source)) continue;
     if (resolve(entry) === resolve(mutation.file)) return true;
-    const name = packageName(mutation.file);
     if (name && buildsPackage(command, name) && entryPackages(entry).has(name)) return true;
   }
-  return false;
+  // The same rule, but sourced from a launch this suite demonstrably performs rather than from a
+  // declaration. An entrypoint reaches a workspace package by BARE specifier, which resolves to
+  // that package's dist, so the mutated source is loaded only when the command rebuilds it.
+  if (!name || !buildsPackage(command, name)) return false;
+  return launchedPaths(suite, source).some((entry) => entryPackages(entry).has(name));
 };
 
 const assertGradable = (configPath, cfg, suites, mutation) => {
+  // A mutation may override the config's command with its own; that override is what actually runs
+  // for this mutation, so it is the command every build/env witness below must be read from.
+  const command = typeof mutation.command === "string" && mutation.command !== "" ? mutation.command : cfg.command;
   // A suite that launches a repo entrypoint under a TS runner executes that entrypoint's own
   // source tree, so the mutated file is covered when the entrypoint's relative imports reach it.
   // A value-import of a package's dist reaches the mutated source only through a build the command
@@ -596,12 +1001,18 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
     const source = readFileSync(suite, "utf8");
     if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
-    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source)) return;
+    if (readsFile(suite, source, mutation.file, commandEnv(command))) return;
+    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
     if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;
-    if (buildsPackage(cfg.command, packageName(mutation.file))
-      && importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;
-    if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;
+    // A dist import reaches the mutated file only when the source behind that artifact really
+    // loads it, and only when the command builds the package so the artifact is not stale.
+    if (buildsPackage(command, packageName(mutation.file))
+      && importsBuiltOutput(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
+    // Same pairing, sourced from a tarball the suite packs out of the package and then reads.
+    if (buildsPackage(command, packageName(mutation.file))
+      && packedRoots(suite, source).some((root) => coversPath(resolve(mutation.file), resolve(root)))) return;
+    if (executedWitness(suite, source, command, mutation, cfg.executes ?? [])) return;
   }
   throw new Error(
     `mutation "${mutation.name}" targets ${mutation.file}, which none of [${suites.join(", ")}] imports by source path, ` +

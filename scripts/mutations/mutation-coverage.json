@@ -22,8 +22,8 @@
     {
       "name": "declared subprocess entrypoints are ignored",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;",
-      "replace": "    void executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? []);",
+      "find": "    if (executedWitness(suite, source, command, mutation, cfg.executes ?? [])) return;",
+      "replace": "    void executedWitness(suite, source, command, mutation, cfg.executes ?? []);",
       "expectRed": "a spawned repo entrypoint plus target-package build is gradable",
       "cell": "a spawned repo entrypoint plus target-package build is gradable"
     },
@@ -70,16 +70,16 @@
     {
       "name": "a bound entry anywhere after a launcher is treated as its argument",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        for (const candidate of argvCandidates(argv, arrays)) {\n          const script = launchedScriptArg(evalPath, candidate);\n          const value = script ? evalPath(script) : undefined;\n          if (typeof value === \"string\") found.push(value);\n        }\n      }\n    }\n    ts.forEachChild(node, visit);",
-      "replace": "        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(sf);\n      }\n    }\n    ts.forEachChild(node, visit);",
+      "find": "        for (const candidate of argvCandidates(argv, arrays, 0, argv)) {\n          const script = launchedScriptArg(evalPath, candidate);\n          const value = script ? evalPath(script) : undefined;\n          if (typeof value === \"string\") found.push(value);\n          for (const loaded of evaluatedProgramLoads(evalPath, candidate)) found.push(loaded);\n        }",
+      "replace": "        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(sf);",
       "expectRed": "a name bound to the target but never passed to a launcher is still refused",
       "cell": "a name bound to the target but never passed to a launcher is still refused"
     },
     {
       "name": "any spawn-arg subtree is treated as the launched script",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      if (command && isNodeExecutable(evalPath, command) && argv) {\n        for (const candidate of argvCandidates(argv, arrays)) {\n          const script = launchedScriptArg(evalPath, candidate);\n          const value = script ? evalPath(script) : undefined;\n          if (typeof value === \"string\") found.push(value);\n        }\n      }",
-      "replace": "      for (const arg of node.arguments) {\n        if (ts.isSpreadElement(arg)) continue;\n        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(arg);\n      }",
+      "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);",
+      "replace": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      for (const arg of node.arguments) {\n        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(arg);\n      }",
       "expectRed": "a path after -e is not a launched script",
       "cell": "a path after -e is not a launched script"
     },
@@ -94,7 +94,7 @@
     {
       "name": "a string mentioning ../src is treated as a source import",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source)) return;",
+      "find": "    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;",
       "replace": "    if (packageRoot(mutation.file) === packageRoot(suite) && readFileSync(suite, \"utf8\").includes(\"../src/\")) return;",
       "expectRed": "a string mentioning ../src is not a source import",
       "cell": "a string mentioning ../src is not a source import"
@@ -102,8 +102,8 @@
     {
       "name": "an unused join of a declared root is treated as a copy",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {\n      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;\n      }\n    }",
-      "replace": "    if (ts.isCallExpression(node) && (copiers.has(calleeText(node.expression)) || calleeText(node.expression) === \"join\")) {\n      if (coversPath(evalPath(node), root)) hit = true;\n      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;\n      }\n    }",
+      "find": "      const from = node.arguments[0];\n      if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)\n        && exprCovers(evalPath, from, root)) hit = true;",
+      "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;\n      }",
       "expectRed": "an unused root spelling beside a by-name import is refused",
       "cell": "an unused root spelling beside a by-name import is refused"
     },
@@ -270,8 +270,8 @@
     {
       "name": "a dist import is a witness without the build that produces it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (buildsPackage(cfg.command, packageName(mutation.file))\n      && importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;\n",
-      "replace": "    if (importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;\n",
+      "find": "    if (buildsPackage(command, packageName(mutation.file))\n      && importsBuiltOutput(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;",
+      "replace": "    if (importsBuiltOutput(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;",
       "expectRed": "a value import of built output without the build is refused",
       "cell": "a value import of built output without the build is refused"
     },
@@ -294,10 +294,58 @@
     {
       "name": "a bound argument list is not resolved, so a real launch is missed",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  if (ts.isIdentifier(node)) return (arrays.get(node.text) ?? []);\n",
+      "find": "  if (ts.isIdentifier(node)) return (arrays.get(node.text, use) ?? []);\n",
       "replace": "",
       "expectRed": "a launch whose argument list is bound first still witnesses the script",
       "cell": "a launch whose argument list is bound first still witnesses the script"
+    },
+    {
+      "name": "a read of any file is treated as a read of the mutated one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)) hit = true;",
+      "replace": "      if (target && !ts.isSpreadElement(target)) hit = true;",
+      "expectRed": "reading some OTHER file is not a witness for the mutated one",
+      "cell": "reading some OTHER file is not a witness for the mutated one"
+    },
+    {
+      "name": "an env assignment is a witness without anything reading it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers)) hit = true;",
+      "replace": "        if (under && (recursive || dirname(want) === base)) hit = true;",
+      "expectRed": "a listing that only observes names is refused",
+      "cell": "a listing that only observes names is refused"
+    },
+    {
+      "name": "a dynamic import counts even when nothing evaluates it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (specOk(stringValue(node.arguments[0])) && evaluated(node, sf)) {",
+      "replace": "        if (specOk(stringValue(node.arguments[0]))) {",
+      "expectRed": "a dynamic import in a function nobody calls never loads",
+      "cell": "a dynamic import in a function nobody calls never loads"
+    },
+    {
+      "name": "a dist import covers the whole package again",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    const entry = sourceOfBuilt(resolve(dirname(path), v));\n    if (entry !== undefined) roots.push(entry);",
+      "replace": "    const abs = resolve(dirname(path), v);\n    const cut = abs.replaceAll(\"\\\\\\\\\", \"/\").indexOf(\"/dist/\");\n    roots.push(cut >= 0 ? abs.slice(0, cut) : dirname(abs));",
+      "expectRed": "a value import of built output plus the build that produces it is gradable",
+      "cell": "a value import of built output plus the build that produces it is gradable"
+    },
+    {
+      "name": "an identifier spelled like a root is treated as the repo root",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const rootish = (node) => {\n    if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === \"process.cwd\") return true;",
+      "replace": "  const rootish = (node) => {\n    if (ts.isIdentifier(node) && (node.text === \"root\" || node.text.endsWith(\"Root\"))) return true;\n    if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === \"process.cwd\") return true;",
+      "expectRed": "an identifier merely SPELLED like a root is not the repo root",
+      "cell": "an identifier merely SPELLED like a root is not the repo root"
+    },
+    {
+      "name": "an argv binding is resolved without regard to scope",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (node !== scope && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)\n        || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isClassDeclaration(node))) return;",
+      "replace": "      if (false) return;",
+      "expectRed": "a same-named argv array in another scope cannot stand in for the launcher's",
+      "cell": "a same-named argv array in another scope cannot stand in for the launcher's"
     }
   ]
 }
