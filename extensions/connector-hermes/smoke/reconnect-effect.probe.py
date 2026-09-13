@@ -722,40 +722,54 @@ def _last_subscriber_rows() -> list[tuple[str, bool]]:
                 _got.append(msg.get("id") or "")
                 _seen.set()
 
+            # BOTH PARKING PATHS, ALTERNATING BY REP, BECAUSE THEY ARE DIFFERENT DEFECTS AND EACH
+            # SHAPE IS BLIND TO THE OTHER. Measured, not assumed:
+            #   parked in `recv`     -> covers the reopen socket close (M9), blind to the re-check
+            #                           (deleting the re-check still delivered 8 of 8)
+            #   parked in `_connect` -> covers the post-dial re-check (M8), blind to the close
+            #                           (deleting the close still delivered 8 of 8)
+            # Running only one shape buys one kill and silently drops the other, which is how the
+            # first version of this cell passed against the very defect it was named for.
+            park_in_dial = rep % 2 == 1
             client = BridgeClient(ls_path)
-            # PARK THE FIRST READER INSIDE `_connect`, NOT INSIDE `recv`. This is the reshape that
-            # makes the cell cover the post-dial re-check. Driven the obvious way -- let the reader
-            # install and sit in recv, then reopen() -- the retired reader is freed by reopen()'s
-            # socket close and exits at the TOP of the loop, so it never reaches the post-dial
-            # fall-through at all and the cell passes with the re-check deleted. MEASURED: the
-            # fence-only leg delivered 8 of 8, i.e. the cell was not covering what it claimed.
-            # Parking inside the dial is the state only the re-check guards: `_connect` returns
-            # under the fence having installed nothing, and the retired reader is then one line
-            # away from recv()ing the LIVE generation's socket and eating a chunk of this frame.
             entered = threading.Event()
             released = threading.Event()
             real_connect = client._connect
 
-            def _park(gen=None, _e=entered, _r=released, _rc=real_connect):
-                if not _e.is_set():
-                    _e.set()
-                    _r.wait(5.0)
-                    return  # fenced: retired mid-dial, nothing installed
-                return _rc(gen)
+            if park_in_dial:
+                # The state only the post-dial re-check guards: `_connect` returns under the fence
+                # having installed nothing, and the retired reader is then one line away from
+                # recv()ing the LIVE generation's socket and eating a chunk of this frame.
+                def _park(gen=None, _e=entered, _r=released, _rc=real_connect):
+                    if not _e.is_set():
+                        _e.set()
+                        _r.wait(5.0)
+                        return  # fenced: retired mid-dial, nothing installed
+                    return _rc(gen)
 
-            client._connect = _park
-            client.start(_on_incoming)
-            entered.wait(5.0)
-            # Retire that generation and bring a fresh reader up, which is the reopen sequence the
-            # gateway actually drives. The parked reader is still inside the dial.
-            client.reopen()
-            client._connect = real_connect
-            client.start(_on_incoming)
-            deadline = time.time() + 5.0
-            while not side["subs"] and time.time() < deadline:
-                time.sleep(0.02)
-            released.set()  # let the retired dialer return, post-fence, into the fall-through
-            time.sleep(0.2)
+                client._connect = _park
+                client.start(_on_incoming)
+                entered.wait(5.0)
+                client.reopen()
+                client._connect = real_connect
+                client.start(_on_incoming)
+                deadline = time.time() + 5.0
+                while not side["subs"] and time.time() < deadline:
+                    time.sleep(0.02)
+                released.set()  # let the retired dialer return into the fall-through
+                time.sleep(0.2)
+            else:
+                # The state only the reopen socket close reaches: the retired reader is blocked in
+                # `recv` on the installed socket, where a generation check cannot reach it.
+                client.start(_on_incoming)
+                deadline = time.time() + 5.0
+                while not side["subs"] and time.time() < deadline:
+                    time.sleep(0.02)
+                client.reopen()
+                client.start(_on_incoming)
+                deadline = time.time() + 5.0
+                while len(side["subs"]) < 2 and time.time() < deadline:
+                    time.sleep(0.02)
 
             # Write ONE large frame to the LAST subscriber the broker registered.
             target = side["subs"][-1]
