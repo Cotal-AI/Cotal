@@ -7,7 +7,7 @@
  * world-readable (e.g. a `.cotal/auth` under a project on a permissive path). The fix is to harden
  * the NTFS ACL explicitly with the built-in `icacls` (no new dependency). See {@link hardenPrivate}.
  */
-import { chmodSync, linkSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -127,8 +127,29 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
  * Same fail-closed hardening contract as {@link writeSecretFile} — a win32 ACL failure propagates
  * and the just-written file is best-effort removed, so a caller never proceeds as if the secret
  * were private. EEXIST propagates to the caller, which is the point: the name was already taken.
+ *
+ * `O_EXCL` alone does not carry that contract everywhere. On POSIX it refuses a final symlink
+ * without following it, so a DANGLING link is EEXIST. On Windows the reparse point resolves, the
+ * missing target is created, and the bytes land at a name this caller did NOT create — which is
+ * precisely what the contract above forbids. `lstatSync` closes that: it reports the LINK rather
+ * than its target, so a name that exists in any form is refused before anything is written.
+ *
+ * This is a refusal, never a fallback: it only ever converts a would-be silent write-through into
+ * the EEXIST the caller already handles. The race that `O_EXCL` closes stays closed, because
+ * `O_EXCL` still runs and is still what decides a concurrent create; the `lstat` only adds names
+ * that `O_EXCL` would have followed rather than refused.
  */
 function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {
+  try {
+    lstatSync(path); // the NAME exists (file, dir, or dangling link) — never write through it
+    const taken: NodeJS.ErrnoException = new Error(`EEXIST: file already exists, open '${path}'`);
+    taken.code = "EEXIST";
+    throw taken;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") throw e;
+    // ENOENT is the expected case: the name is free, so O_EXCL below decides the race.
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
   writeFileSync(path, data, { flag: "wx", mode: 0o600 });
   if (!isWin) return; // POSIX mode set at create — nothing more to do
   try {
@@ -141,6 +162,22 @@ function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void
     }
     throw e;
   }
+}
+
+/**
+ * Publish a completed temp inode at its final name. Separated from {@link writeSecretFileCreateOnly}
+ * because the hard-link primitive is the one part of exclusive create whose AVAILABILITY is
+ * platform-dependent: some Windows volumes and some network filesystems reject `link` outright, and
+ * the caller must then fall back to `O_EXCL` on the destination. Naming that seam also makes the
+ * fallback branch reachable from a suite, so the Windows-side primitive can carry a refusing case
+ * instead of being the one accepting branch nothing grades.
+ */
+let publishLink: (from: string, to: string) => void = linkSync;
+
+/** Test-only: drive the `link`-unavailable fallback, which no POSIX CI host can reach naturally.
+ *  Pass `undefined` to restore. Not exported from the package index. */
+export function __setPublishLinkForTest(fn: ((from: string, to: string) => void) | undefined): void {
+  publishLink = fn ?? linkSync;
 }
 
 /**
@@ -171,7 +208,7 @@ export function writeSecretFileCreateOnly(path: string, data: string | Buffer): 
   writeSecretFileCreateOnlyRaw(tmp, data);
   try {
     try {
-      linkSync(tmp, path);
+      publishLink(tmp, path);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === "ENOTSUP" || code === "EPERM" || code === "ENOSYS") {

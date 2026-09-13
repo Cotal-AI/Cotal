@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
+import { __setPublishLinkForTest, hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
 
 const isWin = process.platform === "win32";
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
@@ -99,52 +99,97 @@ check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8")
 // actually grades it.
 const tmpVictim = join(dir, "tmp-symlink-victim");
 const danglingDest = join(dir, "dangling.secret");
-// This cell rests on a POSIX guarantee: O_EXCL does not follow a final symlink, so a DANGLING link
-// is EEXIST. Windows resolves the reparse point instead and reports the missing target, so the
-// same call is not EEXIST there and the discriminator does not exist on that platform.
-//
-// Gate on the BEHAVIOUR, measured here, not on `process.platform` and not on whether a symlink can
-// be created. Creating one succeeded on the Windows runner; it was the O_EXCL semantics that
-// differed, which is exactly the assumption a platform check would have hidden.
-let danglingIsExclusive = false;
-try {
-  const probeTarget = join(dir, "probe-target-missing");
-  const probeLink = join(dir, "probe-link");
-  symlinkSync(probeTarget, probeLink);
-  try {
-    // Exactly the primitive the cell depends on: O_EXCL against a dangling link. Not the whole
-    // helper, whose publish step answers for a different reason and would mispredict this.
-    writeFileSync(probeLink, "probe\n", { flag: "wx", mode: 0o600 });
-  } catch (e) {
-    danglingIsExclusive = (e as NodeJS.ErrnoException).code === "EEXIST";
-  }
-  rmSync(probeLink, { force: true });
-  rmSync(probeTarget, { force: true });
-} catch {
-  danglingIsExclusive = false; // no symlink privilege at all
-}
-if (danglingIsExclusive) {
+{
+  // No platform gate on the ASSERTION: `lstatSync` makes the refusal portable, so EEXIST must hold
+  // on every platform. Only the SETUP can be unavailable — creating a symlink needs a privilege on
+  // Windows — and that is reported as a named skip rather than a pass, so it can never read as a
+  // green that proves something it did not test.
+  let linkPlanted = true;
   const realRandom2 = Math.random;
   const realNow2 = Date.now;
   Math.random = () => 0.5;
   Date.now = () => 1;
   const danglingTmp = `${danglingDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
-  symlinkSync(tmpVictim, danglingTmp);
-  let danglingCode: string | undefined;
   try {
-    writeSecretFileCreateOnly(danglingDest, "attacker\n");
-  } catch (e) {
-    danglingCode = (e as NodeJS.ErrnoException).code;
-  } finally {
-    Math.random = realRandom2;
-    Date.now = realNow2;
+    symlinkSync(tmpVictim, danglingTmp);
+  } catch {
+    linkPlanted = false;
   }
-  check("REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
-    danglingCode === "EEXIST");
-  check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
-} else {
-  console.log("· dangling-symlink atomicity cell needs POSIX O_EXCL-on-symlink semantics — skipped (POSIX CI is the oracle)");
+  let danglingCode: string | undefined;
+  if (linkPlanted) {
+    try {
+      writeSecretFileCreateOnly(danglingDest, "attacker\n");
+    } catch (e) {
+      danglingCode = (e as NodeJS.ErrnoException).code;
+    }
+  }
+  Math.random = realRandom2;
+  Date.now = realNow2;
+  if (linkPlanted) {
+    check("REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
+      danglingCode === "EEXIST");
+    check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
+  } else {
+    console.log("· dangling-symlink atomicity cell could not PLANT a symlink (no privilege) — skipped, setup only");
+  }
 }
+
+// THE FALLBACK BRANCH, raised in review as the last accepting branch with no refusing case.
+// When `link` is unavailable (ENOTSUP/EPERM/ENOSYS on some Windows volumes and network mounts)
+// the helper writes O_EXCL directly to the destination. No POSIX CI host reaches that branch
+// naturally, so it is driven through the named platform seam. It is the WINDOWS primitive: if it
+// is not exclusive, every guarantee above is POSIX-only.
+for (const code of ["ENOTSUP", "EPERM", "ENOSYS"] as const) {
+  const fbDir = join(dir, `fallback-${code}`);
+  mkSecretDir(fbDir);
+  __setPublishLinkForTest(() => {
+    const e: NodeJS.ErrnoException = new Error(`${code}: link unavailable`);
+    e.code = code;
+    throw e;
+  });
+  try {
+    const fresh = join(fbDir, "fresh.secret");
+    writeSecretFileCreateOnly(fresh, "first\n");
+    check(`ACCEPT: the ${code} fallback still creates a missing path`,
+      readFileSync(fresh, "utf8") === "first\n");
+    let fbCode: string | undefined;
+    try {
+      writeSecretFileCreateOnly(fresh, "second\n");
+    } catch (e) {
+      fbCode = (e as NodeJS.ErrnoException).code;
+    }
+    check(`REFUSE: the ${code} fallback is EEXIST on an existing path, never an overwrite`,
+      fbCode === "EEXIST");
+    check(`...and the ${code} fallback did not replace the first writer's bytes`,
+      readFileSync(fresh, "utf8") === "first\n");
+    check(`...and the ${code} fallback left no .tmp litter`,
+      readdirSync(fbDir).filter((n) => n.endsWith(".tmp")).length === 0);
+  } finally {
+    __setPublishLinkForTest(undefined);
+  }
+}
+
+// A non-fallback link error must PROPAGATE, not silently take the fallback path. One refusing
+// case per accepting branch: EACCES is not in the allowed set and must surface as itself.
+const propagateDir = join(dir, "fallback-propagate");
+mkSecretDir(propagateDir);
+__setPublishLinkForTest(() => {
+  const e: NodeJS.ErrnoException = new Error("EACCES: permission denied");
+  e.code = "EACCES";
+  throw e;
+});
+let propagated: string | undefined;
+try {
+  writeSecretFileCreateOnly(join(propagateDir, "nope.secret"), "x\n");
+} catch (e) {
+  propagated = (e as NodeJS.ErrnoException).code;
+} finally {
+  __setPublishLinkForTest(undefined);
+}
+check("REFUSE: a link error outside ENOTSUP/EPERM/ENOSYS propagates instead of falling back",
+  propagated === "EACCES");
+check("...and that failure left no .tmp litter",
+  readdirSync(propagateDir).filter((n) => n.endsWith(".tmp")).length === 0);
 
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");

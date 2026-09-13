@@ -79,6 +79,17 @@
       "note": "Raised by review: refusing an existing file is not the same property as being atomic about it. A check-then-write passes every other refusing cell and is still the defect, because the check and the write are two syscalls.",
       "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "M6 the link-unavailable fallback is a plain overwrite (the Windows primitive)",
+      "file": "packages/core/src/secret-fs.ts",
+      "find": "      if (code === \"ENOTSUP\" || code === \"EPERM\" || code === \"ENOSYS\") {\n        writeSecretFileCreateOnlyRaw(path, data);",
+      "replace": "      if (code === \"ENOTSUP\" || code === \"EPERM\" || code === \"ENOSYS\") {\n        writeSecretFile(path, data);",
+      "expectRed": "REFUSE: the ENOTSUP fallback is EEXIST on an existing path, never an overwrite",
+      "cell": "REFUSE: the ENOTSUP fallback is EEXIST on an existing path, never an overwrite",
+      "note": "Raised by review as the last accepting branch with no refusing case. Where link is unavailable this IS the exclusive-create primitive; a plain write there makes every guarantee POSIX-only.",
+      "command": "pnpm smoke:secret-fs",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }
