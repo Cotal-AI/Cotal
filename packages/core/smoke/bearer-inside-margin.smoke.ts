@@ -41,7 +41,12 @@ const mintBearer = (expiresInMs: number): string => {
 // stuck auth service re-serves.
 const HEALTHY = mintBearer(10 * 60_000);
 let reads = 0;
-const source = async (): Promise<string> => { reads++; return reads === 1 ? HEALTHY : mintBearer(30_000); };
+// The SAME near-dead token on every read after the first. A freshly minted 30s token would be a
+// short LIFETIME, which is legitimate — `expiry-renewal` runs on 5s bearers — and refusing it makes
+// renewal impossible for that deployment. The defect is a source that re-serves what is already
+// held: the token does not advance, so nothing can carry the next cycle.
+const STALE = mintBearer(30_000);
+const source = async (): Promise<string> => { reads++; return reads === 1 ? HEALTHY : STALE; };
 
 type Internals = { refreshBearer: (initial?: boolean) => Promise<void>; currentBearer?: string };
 
@@ -67,10 +72,10 @@ c("the initial fetch is adopted", internals.currentBearer === HEALTHY, reads);
 
 // The refresh: a token inside its own margin.
 await internals.refreshBearer();
-c("a token inside its refresh margin is NOT adopted", internals.currentBearer === HEALTHY, internals.currentBearer?.slice(0, 24));
+c("a token that does not advance the expiry is NOT adopted", internals.currentBearer === HEALTHY, internals.currentBearer?.slice(0, 24));
 c(
   "the refusal is reported as a recoverable retry",
-  warnings.some((e) => /already inside its refresh margin/.test(e.message) && /retrying/.test(e.message)),
+  warnings.some((e) => /expires no later than the one already held/.test(e.message) && /retrying/.test(e.message)),
   warnings.map((e) => e.message),
 );
 

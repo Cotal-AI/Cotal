@@ -783,17 +783,25 @@ export class CotalEndpoint extends EventEmitter {
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
-      // A token already inside its own refresh margin cannot carry the next cycle: the delay it arms
-      // is non-positive, `armBearerRefresh` floors that to 5s, and the next read returns the same
-      // near-dead token - a 5s loop against the auth service for its remaining life, with
-      // BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned material
-      // that is not usable. Same rule the creds path applies to an un-re-signed generation; it needs
-      // no identity test, because "inside its own margin" is a property of the fetched token alone.
+      // A source that keeps handing back the SAME near-dead token cannot carry the next cycle: the
+      // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
+      // returns that same token again - a 5s loop against the auth service for its remaining life,
+      // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
+      // material that is not usable. Same rule the creds path applies to an un-re-signed generation.
+      //
+      // The test is "did NOT advance", not "is inside the margin". A short lifetime is not by itself
+      // a defect: an auth service may legitimately issue tokens whose whole TTL sits inside the
+      // margin (`expiry-renewal` mints 5s bearers against a 60s margin), and refusing those makes
+      // renewal impossible for that deployment. What is never usable is a token that expires no
+      // later than the one already held - the source did not re-issue anything.
+      //
       // Not on the initial fetch: there is no previous token to keep, and `start()` must be able to
       // come up on whatever the source has.
-      const nextRefreshMs = bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
-      if (!initial && nextRefreshMs <= 0)
-        throw new Error("the bearer source returned a token already inside its refresh margin (the auth service has not issued a fresh one) - nothing adopted");
+      const expiryMs = bearerExpiryMs(bearer);
+      const nextRefreshMs = expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
+      const advanced = this.currentBearer === undefined || expiryMs > bearerExpiryMs(this.currentBearer);
+      if (!initial && nextRefreshMs <= 0 && !advanced)
+        throw new Error("the bearer source returned a token that expires no later than the one already held (the auth service has not issued a fresh one) - nothing adopted");
       this.currentBearer = bearer;
       this.armBearerRefresh(nextRefreshMs);
     } catch (e) {
