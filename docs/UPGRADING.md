@@ -21,6 +21,14 @@ commitments make that survivable for someone with a fleet:
 - **A break that cannot be made automatic says so.** Where credentials or state must be recreated by
   hand, the section says which ones and when, rather than leaving you to discover it at the moment
   the first one stops working.
+- **A change to the shape of a credential, or to who may renew one, is breaking whatever the commit
+  marker says.** This rule is stated because the marker is a judgement made while writing the code
+  and the consequence is felt by someone running it a day later. A fleet that keeps authenticating
+  looks compatible and is not, if nothing in it can renew. The check below reads markers, so a break
+  recorded as a feature is the one case the check cannot see. **Measured, so the rule is not
+  theoretical: the 0.49.0 change that caused all of this, `36d177951 feat(core)!`, did carry its
+  `!`, and replaying the check over that range refuses.** The rule exists for the next one that
+  does not.
 
 What this page does not promise is a rolling upgrade. Nothing in the current line dual-serves two
 authority versions, so where broker and manager run separately there is a window in which the mesh
@@ -43,13 +51,14 @@ at renewal time.
 - **`cotal deliver` is still a standalone command.** Running the delivery daemon as its own process
   remains supported; it is not restricted to being a child of `cotal up`.
 - **`cotal join` keeps its flags.** In particular `--lifecycle-uid` is not new in 0.49.0. It has
-  been required alongside `--creds` since 0.45.0, and the pairing rule did not change in this
-  release. A scripted external join that worked under 0.48.2 works unchanged.
+  been required alongside `--creds` since well before this release, and the pairing rule did not
+  change here. A scripted external join that worked under 0.48.2 works unchanged.
 
-### The one thing that does not migrate
+### What does not migrate
 
 **A credential minted before 0.49.0 cannot be renewed.** Managed agent credentials carry a
-24-hour lifetime and the manager re-signs them at half life. When the manager reaches a credential
+24-hour lifetime and the manager re-signs one once it passes **75%** of its life, ticking every
+quarter of the TTL so a tick always lands inside that window. When the manager reaches a credential
 that carries no issuance, it refuses to renew it and logs the agent by name:
 
 ```
@@ -64,20 +73,42 @@ expiry, within roughly a day of the upgrade, one at a time rather than together.
 deliberate: the renewal would otherwise have to invent a generation nobody issued, which is the
 state the release exists to remove.
 
-**Respawn the managed agents deliberately, as the last step of the upgrade.** A respawn mints a
-fresh credential as an issuance and the agent renews normally from then on. Doing it as a planned
-step takes one pass over the fleet; not doing it means meeting the same work spread over the
-following day, discovered one agent at a time.
+**Respawn the managed agents as the last step of the upgrade.** For this particular upgrade the
+respawn is not optional: stopping a 0.48.2 manager ends its agent processes whichever CLI you use,
+for the reason given under the outage window below. The respawn is how they come back, and it is
+also what mints each credential as an issuance so it renews from then on. One planned pass over the
+fleet is the whole job. Skipping it leaves agents stopped and, for any credential that survived
+into 0.49.0 unminted, brings the renewal cliff above a day later, one agent at a time.
 
-An external peer holding a static credential is the same case. Re-mint it at a time you choose.
+### Credentials you minted yourself
+
+**A credential you minted with `cotal mint` is a different case, and it very likely needs
+nothing.** The distinction that matters is not the word "static", which covers both. It is **what
+minted the credential and who owns its renewal**. A credential the **manager** minted for an agent
+it spawned carries a lifetime and is renewed by the manager, so it is the subject of everything
+above. A credential **you** minted with `cotal mint` and handed to an external peer is issued with
+**no expiry at all**, and no manager renews it: it is not in the sweep, so there is no renewal to
+fail. It keeps working after the upgrade, and re-minting it would mean coordinating with a third
+party for no gain.
+
+The manager says which one it is holding. Where a credential has no expiry to reach, the sweep
+names it and moves on rather than refusing:
+
+```
+! managed cred renewal <agent>: credential is unbounded - not renewed
+  (a pre-TTL credential stays as minted until respawn)
+```
+
+Re-mint an external peer's credential only if you want it to carry a lifetime, and at a time you
+choose.
 
 ### How to read the boot log
 
 A 0.49.0 manager starting over an existing space may print lines like:
 
 ```
-verified evicted: local.U…
-already verified (durable): local.U…
+  verified evicted: <holder-key> (3/12)
+  already verified (durable): <holder-key>
 ✓ boot self-heal: manager/<id> registration gate reopened at generation <n>
 ```
 
@@ -102,7 +133,9 @@ Being honest about the evidence behind each direction, because they are not equa
 - **Broker-first was measured on a live 30-agent deployment** (issue #1578). Upgrading the broker
   first locks the old manager out immediately: `cotal up` re-renders the broker's generated config
   from the trust record, and after the restart the still-0.48.2 manager is refused on every
-  connection with `authentication error - Nkey`, continuously. `cotal ps` reports zero agents while
+  connection with an `authentication error` naming the Nkey, continuously. That text comes from the
+  broker process, not from a Cotal command, so match on its shape rather than on an exact string.
+  `cotal ps` reports zero agents while
   the agent processes are still alive, because the manager has lost its view of them, not because
   they died. Upgrading the manager clears it immediately.
 - **Manager-first is reasoned from where the new stores are provisioned**, not from a measured
@@ -117,7 +150,32 @@ schedule it as an outage window.
 
 ### What the window looks like
 
-- Agent **processes keep running** across the whole window. They are not killed by either step.
+- **The managed agent processes do not survive step 1, in either order.** This is the one place
+  where the obvious reordering does not rescue you, so it is worth understanding rather than
+  working around. Sparing agents on a bare manager stop is a **handshake**: a 0.49.0 manager
+  publishes a capability file proving it can release its agents, and a 0.49.0 `cotal down` refuses
+  the stop unless it finds one. **A 0.48.2 manager never publishes that file**, because the
+  mechanism ships in the release you are installing. So the old CLI against the old manager sends a
+  plain stop and takes every seat with it, and the new CLI against the old manager either refuses
+  (leaving `--with-agents`, which reaps deliberately) or falls to the legacy path, warns that it
+  cannot verify the manager can spare its agents, and signals it anyway.
+- **You can confirm which side you are on in one command, without stopping anything.** The flag that
+  marks the newer behaviour is absent from the older CLI, and its summary line makes the difference
+  plain:
+
+  ```
+  $ cotal down --help          # on 0.48.2
+  cotal down - stop the whole local stack, or name only the components to stop
+
+  $ cotal down --help          # on 0.49.0
+  cotal down - stop the whole local stack (managed agents stay running unless --with-agents), ...
+  ```
+
+  If your `cotal down --help` does not mention `--with-agents`, stopping the manager stops the
+  agents with it.
+- **Therefore the respawn in step 5 is mandatory recovery for this upgrade, not an optional pass.**
+  It is also the step that re-mints credentials as issuances, so it is the same action either way.
+  Plan the window to include it rather than treating it as cleanup.
 - The **manager's view** of them is lost while the two sides disagree, so `cotal ps` reports zero
   and control commands do not reach seats.
 - **Messages are not delivered** while the mesh is down.
@@ -127,52 +185,123 @@ schedule it as an outage window.
 
 ### Snapshot this before you start
 
-Take these while the deployment is still on 0.48.2:
+Take these while the deployment is still on 0.48.2. The two `cotal` reads are live reads and must
+happen before anything stops.
 
 - **A filesystem or volume snapshot of both containers**, if your platform offers one. This is the
   only rollback that covers every case, and it is what the reporting deployment used.
-- **`cotal backup`**, for the durable space state.
+- **`cotal backup create <dir>`**, for the durable space state, **but read the next paragraph before
+  you rely on it**: on a split broker and manager topology it is very likely unavailable to you, and
+  the volume snapshot above is your actual rollback.
 - **The trust records and credential directory** under `.cotal/auth` on the manager host, including
   the per-space material directory. These are what a re-mint would otherwise have to replace.
 - **A copy of the channel registry**, so you can verify it came back rather than assuming it did:
-  `cotal channels` before and after.
+  `cotal channels list` before and after.
 - **The output of `cotal ps`**, so you know how many seats you expect to see afterwards and can tell
   a lost view from a lost agent.
+
+#### `cotal backup` on a split topology
+
+**`cotal backup create` cannot read a running stack.** It requires a completed cut, and only
+`cotal down --preserve-state` publishes one:
+
+```
+$ cotal backup create ./backup.0482
+✗ backup requires a completed cut; run `cotal down --preserve-state` first
+```
+
+**And `cotal down --preserve-state` requires a manager alive on the host you run it from.** It uses
+that manager to attest that every retained child stopped, and the check is deliberately fail-closed:
+a manager that is dead or merely uncertain refuses rather than preserving an unproven cut. The check
+reads a local pidfile, so a **remote** manager does not satisfy it. On a split topology the broker
+host has no local manager, which means the documented durable-backup path is not available there.
+
+**Measured rather than assumed, at 0.48.2**: the backup refusal above is executed output. The
+preservation requirement is read from `down.ts` at the same tag, where the preserve path asks a
+manager to prepare an inventory and then requires that manager to be locally alive before it
+commits. The part not executed end to end is a genuine two-host split, which needs two real hosts.
+
+**What to do instead.** Use the filesystem or volume snapshot of both containers. That is the
+rollback the reporting deployment actually used, it covers the broker's durable state and the
+manager's credential material together, and it does not depend on either component being able to
+attest for the other. If you want `cotal backup` as well, take it from a host that does have a live
+local manager, and understand it is a second copy rather than the primary rollback.
+
+**This looks like a product limitation rather than a documentation gap**, and it is written here as
+one so an operator is not left thinking they mis-typed a command. The upgrade path for the exact
+topology this page is addressed to cannot use the documented backup command.
 
 ### The upgrade end to end
 
 ```bash
-# 0. on 0.48.2, still running: snapshot, and record what you expect to see afterwards
-cotal backup
-cotal channels > channels.before
+# 0. on 0.48.2, STILL RUNNING: record what you expect to see afterwards.
+#    These two are live reads, so they must happen before anything stops.
+cotal channels list > channels.before
 cotal ps > ps.before
 
-# 1. manager host: stop the supervisor, install 0.49.0, start it again
+# 1. manager host. READ THE NOTE BELOW THE BLOCK FIRST: this step ends the
+#    managed agent processes whichever order you choose, and the respawn in
+#    step 5 is how they come back. It is recovery, not tidying.
+npm install -g cotal-ai@0.49.0            # install first: see the note
+# A 0.49.0 `down manager` REFUSES to stop a 0.48.2 manager, because that
+# manager published no proof it can release its agents:
+#   refusing bare manager stop: ... does not prove this manager can detach
+#   its agents; use --with-agents or stop the agents explicitly
+# `--with-agents` is whole-stack only and CANNOT be combined with a
+# component name, so `down manager --with-agents` is itself refused. Stop
+# the agents explicitly first, then the manager stops without the refusal:
+cotal stop <agent> ...                    # or `cotal down --with-agents` if
+                                          # this host runs the whole stack
 cotal down manager
-npm install -g cotal-ai@0.49.0
 cotal supervise --space <space> --server nats://<broker>:4222
 
-# 2. broker host: stop the stack, install 0.49.0, start it again
+# 2. broker host: stop the stack.
+#    NOT `--preserve-state` on a split topology: it needs a manager alive on
+#    THIS host to attest its children stopped, and yours is on the other one.
+#    Your rollback is the volume snapshot from step 0, not `cotal backup`.
+#    See "cotal backup on a split topology" above.
 cotal down
+
+# 3. broker host: install 0.49.0 and start it again
 npm install -g cotal-ai@0.49.0
 cotal up --detach --host 0.0.0.0 --space <space>
 
-# 3. verify the mesh is whole again before touching the fleet
-cotal ps            # compare against ps.before
-cotal channels      # compare against channels.before
+# 3a. SPLIT TOPOLOGY ONLY, and do not skip it: there is no broker-only mode,
+#     so the line above ALSO starts a local manager on the broker host. Wait
+#     for the log to show the manager is up, then stop it, or you finish the
+#     upgrade with two managers and the one you did not intend is the one
+#     nobody is watching.
+grep -q '✓ manager up' .cotal/manager.<spaceKey>.log   # wait for this first
+cotal down manager                                      # broker + delivery remain
 
-# 4. the step that is easy to skip: respawn the managed agents so their
+# 4. verify the mesh is whole again before touching the fleet
+cotal ps            # compare against ps.before
+cotal channels list # compare against channels.before
+
+# 5. the step that is easy to skip: respawn the managed agents so their
 #    credentials are re-minted as issuances and can renew
 ```
 
-Between steps 1 and 2 the mesh is down. That is the window.
+The mesh is down from step 2 until step 3 finishes. That is the window, and the preserved cut and
+backup sit inside it, so budget for the backup's duration when you schedule.
 
 ## Adding a section for a future release
 
 **Every changeset marked breaking adds a section to this page.** A release that changes what an
 operator must do, in what order, or what stops working, is not finished until the section exists.
-This is enforced: a repository check reds when a breaking change lands with no matching section
-here, so the rule cannot decay into a convention nobody remembers.
+This is enforced: a repository check reds when a range carries a breaking change and **adds no new
+release section to this page in that same range**, so the rule cannot decay into a convention nobody
+remembers. Be precise about what that proves, because a check trusted past its evidence is worse
+than none. It proves a section for this release **was written here**. It cannot prove the section is
+**correct**, or that it describes the break that actually landed. Reviewing the words remains a
+person's job, and the section's accuracy is the reviewer's to check.
+
+**The heading is a `##` and names the release**, like `## From 0.48.2 to 0.49.0`. The check requires
+both, and neither is a style preference. Coverage is claimed by a heading, so a heading that names
+no release claims every release and distinguishes none: `## Notes` with a sentence under it would
+otherwise satisfy the rule. Naming the release also makes the section the one an operator upgrading
+that release will search for. Use `###` freely for detail inside a section. Subsections belong to
+their release rather than counting as separate coverage.
 
 A section is written for the operator, not for the reviewer. It answers, in this order:
 

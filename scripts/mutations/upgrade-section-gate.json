@@ -11,23 +11,24 @@
     "A gate like this has two ways to be useless and each needs its own mutation. It can stop DETECTING, in which case the breaking change sails through and the operator is back where the issue started. Or it can start firing on EVERYTHING, in which case it is turned off within a week and the first failure mode returns by another route. M1 and M2 are those two directions.",
     "M3 and M4 attack the two readers rather than the verdict. A marker reader that never fires and a section reader that always finds coverage both leave the verdict logic perfectly correct and grading nothing, which is the shape this repository has been catching all week: the gate is armed, and its accept control returns zero.",
     "M5 is the cheapest way to satisfy a gate that only checked whether the file was touched. If an empty heading counted, the rule would decay into adding a heading at release time, and the document would stop being the thing the reporter actually needed.",
-    "The self-test drives the real exported functions in the mutated file, so the code under test is the gate itself and not a copy of its logic."
+    "The self-test drives the real exported functions in the mutated file, so the code under test is the gate itself and not a copy of its logic.",
+    "M1 and the too-wide case were separate mutations until the predicate tightened and collapsed them onto one line. They are merged rather than both kept: two names over one mutation is one claim counted twice. The too-wide behaviour is still graded, by the cell M1 reddens and by the dedicated TOO WIDE cell beside it."
   ],
   "mutations": [
     {
-      "name": "M1 the gate stops detecting: a breaking change with no section passes",
+      "name": "M1 the coverage predicate stops refusing: a breaking change with no new section passes",
       "file": "scripts/upgrade-section-gate.mjs",
-      "find": "  if (!upgradingChanged)\n    return { ok: false, reason: `${breaking.length} breaking change(s) and no ${UPGRADING_PATH} edit in the same range` };",
-      "replace": "  if (!upgradingChanged)\n    return { ok: true, reason: `${breaking.length} breaking change(s) and no ${UPGRADING_PATH} edit in the same range` };",
-      "expectRed": "ACCEPT CONTROL: a breaking change with no UPGRADING.md edit is REFUSED",
-      "cell": "ACCEPT CONTROL: a breaking change with no UPGRADING.md edit is REFUSED",
-      "note": "The tree exactly as it stood when #1578 was filed: 0.49.0's two breaking commits land, no upgrade page exists, and nothing objects. This is a revert-check rather than a contrived edit."
+      "find": "  if (addedSections.length === 0)\n    return { ok: false, reason: `${breaking.length} breaking change(s) and no new ${UPGRADING_PATH} section in the same range` };",
+      "replace": "  if (addedSections.length === 0)\n    return { ok: true, reason: `${breaking.length} breaking change(s) and no new ${UPGRADING_PATH} section in the same range` };",
+      "expectRed": "ACCEPT CONTROL: a breaking change with no new UPGRADING.md section is REFUSED",
+      "cell": "ACCEPT CONTROL: a breaking change with no new UPGRADING.md section is REFUSED",
+      "note": "THE DEFECT THIS GATE SHIPPED WITH AT ITS FIRST HEAD, so this is a revert-check and not a contrived edit. Two separate mutations used to live here, one for 'no edit at all' and one for 'an edit that added no section'. Tightening the predicate from `upgradingChanged` to `addedSections` COLLAPSED THEM ONTO ONE LINE, and keeping both would have been one claim counted twice, which is the defect this repository has been naming all day. They are merged, and the too-wide case is graded by its own CELL rather than by a duplicate mutant. Measured through the real CLI before the fix: a `feat(core)!` commit beside a ONE-LINE TYPO FIX on the page passed as 'covered by 8 section(s)', every one of them written for an earlier release; and it decays, because each section the page accumulates becomes permanent pre-coverage for every future break."
     },
     {
       "name": "M2 the gate fires on everything: a non-breaking change is refused too",
       "file": "scripts/upgrade-section-gate.mjs",
       "find": "  if (breaking.length === 0) return { ok: true, reason: \"no breaking commits in range\" };",
-      "replace": "  if (breaking.length === 0 && upgradingChanged) return { ok: true, reason: \"no breaking commits in range\" };",
+      "replace": "  if (breaking.length === 0 && addedSections.length > 0) return { ok: true, reason: \"no breaking commits in range\" };",
       "expectRed": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
       "cell": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
       "note": "The other failure direction, and the one that kills the gate socially rather than technically. Both accept cells stay GREEN under this mutation, so only the third leg catches it: without that leg, 'detects breaking changes' and 'reds on every changeset' are the same measurement."
@@ -53,11 +54,47 @@
     {
       "name": "M5 an empty heading counts as an upgrade section",
       "file": "scripts/upgrade-section-gate.mjs",
-      "find": "  return sectionsOf(markdown).filter((s) => s.body.trim().length > 0).map((s) => s.title);",
-      "replace": "  return sectionsOf(markdown).map((s) => s.title);",
+      "find": "    .filter((s) => s.body.trim().length > 0 && namesARelease(s.title))\n    .map((s) => s.title);",
+      "replace": "    .filter((s) => namesARelease(s.title))\n    .map((s) => s.title);",
       "expectRed": "REFUSE CONTROL: an empty section is not coverage",
       "cell": "REFUSE CONTROL: an empty section is not coverage",
       "note": "The cheapest possible way to satisfy the rule without doing the work. A heading with nothing under it tells an operator nothing, and a gate that accepts one teaches the release process to add headings rather than write upgrade notes."
+    },
+    {
+      "name": "M6 the section difference becomes a head-only read",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  const before = new Set(coveringSections(basePage));\n  return coveringSections(headPage).filter((s) => !before.has(s));",
+      "replace": "  return coveringSections(headPage);",
+      "expectRed": "REFUSE CONTROL: rewording an EXISTING section adds no new section",
+      "cell": "REFUSE CONTROL: rewording an EXISTING section adds no new section",
+      "note": "The same defect as M1 one layer down: a head-only read answers \"does the page have sections\", which every page does forever after its first release, instead of \"did THIS range write one\". It also silently breaks the historical replay, since reading only the head of an old range is how a gate reports a green that belongs to today. THIS MUTANT SURVIVED THE WHOLE SUITE on its first run, with the tool's positive control proving the suite reached the file and simply did not test that line, because the difference was computed INLINE IN THE CLI where no cell could call it. That is why it is now the exported addedSectionsBetween: a predicate the suite cannot call is a predicate nothing grades."
+    },
+    {
+      "name": "M7 a section that names no release counts as coverage",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    .filter((s) => s.body.trim().length > 0 && namesARelease(s.title))",
+      "replace": "    .filter((s) => s.body.trim().length > 0)",
+      "expectRed": "REFUSE CONTROL: an unnamed section on a real page is not counted",
+      "cell": "REFUSE CONTROL: an unnamed section on a real page is not counted",
+      "note": "The residue of M5 after empty headings were excluded. If a heading need not name its release, the cheapest way to satisfy the gate becomes a section called `Notes` with one sentence under it, or an unrelated heading that happened to arrive in the same range. Coverage is CLAIMED BY A HEADING, so a heading that names no release claims everything and distinguishes nothing. Requiring a version token also makes the section the one an operator upgrading that release will actually search for."
+    },
+    {
+      "name": "M8 a crash is reported as a refusal: misuse exits 1",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    console.error(\"This is a MISUSE exit (2), not a refusal: nothing was graded. Check the --base/--range refs exist.\");\n    process.exit(2);",
+      "replace": "    console.error(\"This is a MISUSE exit (2), not a refusal: nothing was graded. Check the --base/--range refs exist.\");\n    process.exit(1);",
+      "expectRed": "EXIT 2 on an unresolvable ref: misuse is never reported as a refusal",
+      "cell": "EXIT 2 on an unresolvable ref: misuse is never reported as a refusal",
+      "note": "ALSO A REVERT-CHECK RATHER THAN A CONTRIVED EDIT: the first head of this gate threw out of the top level on a mistyped ref and exited 1, the refusal code, so a CI job with a bad base ref would have reported 'a breaking change is missing its UPGRADING.md section' while having graded NOTHING. That is worse than a crash, because it is a false verdict in the accusing direction and the fix a reader would attempt is to write a section that was never missing. The exit codes are now graded by cells that run the real CLI in a subprocess, with both directions controlled: a genuine refusal must still be 1 and a clean range still 0, so a mutation cannot satisfy the misuse cells by making every exit 2."
+    },
+    {
+      "name": "M9 a section whose body is only subsection headings counts as coverage",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    if (/^ {0,3}#{1,6}\\s/.test(line)) continue;",
+      "replace": "    if (/^ {0,3}#{7,9}\\s/.test(line)) continue;",
+      "expectRed": "REFUSE CONTROL: a section whose body is only SUBSECTION HEADINGS is not coverage",
+      "cell": "REFUSE CONTROL: a section whose body is only SUBSECTION HEADINGS is not coverage",
+      "note": "THE DEFECT THIS GATE SHIPPED AT ITS SECOND HEAD, found by reviewers and not by me, so it is a revert-check. `##` opened a section and every OTHER heading fell through to the body accumulator, so `## From 0.49.0 to 0.50.0` followed by nothing but `### What changed` satisfied `body.trim().length > 0` and was ACCEPTED. It is M5 one nesting level down, and none of the 33 cells walked it because M5's fixture page has no subsections: the suite graded the rule I was thinking about when I wrote M5. The mutation keeps a syntactically valid guard that can never match a real heading, so it restores the defect without disabling the line, which a reader would spot. Note the replacement must not simply delete the guard: the accompanying ACCEPT CONTROL cell (real prose under a subsection is still coverage) is what proves the fix did not over-correct into refusing every section that uses subsections."
     }
   ]
 }
