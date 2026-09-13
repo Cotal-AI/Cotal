@@ -668,13 +668,29 @@ try {
   // The two readers must agree on WHICH cells exist, compared as sets in both directions. They are
   // independent (marker comments versus the SELFTEST_CELLS array parsed from the AST), so any
   // disagreement means one of them is wrong and the denominator is unsafe to quantify over.
+  const compareCellSets = (markerIds, parsedCellIds) => ({
+    onlyInMarkers: markerIds.filter((id) => !parsedCellIds.includes(id)),
+    onlyInParsed: parsedCellIds.filter((id) => !markerIds.includes(id)),
+  });
   const parsedIds = [...inventory.byFactory.values()].flat().concat(inventory.inline);
-  const onlyInMarkers = declaredCells.filter((id) => !parsedIds.includes(id));
-  const onlyInParsed = parsedIds.filter((id) => !declaredCells.includes(id));
+  const { onlyInMarkers, onlyInParsed } = compareCellSets(declaredCells, parsedIds);
   check(
     "census: the marker reader and the parsed cell array name the same cells, not merely as many",
     declaredCells.length > 0 && onlyInMarkers.length === 0 && onlyInParsed.length === 0,
     `markers=${declaredCells.length} parsed=${parsedIds.length} (factory=${parsedIds.length - inventory.inline.length} inline=${inventory.inline.length})${onlyInMarkers.length ? ` MARKER ONLY [${onlyInMarkers.join(", ")}]` : ""}${onlyInParsed.length ? ` PARSED ONLY [${onlyInParsed.join(", ")}]` : ""}`,
+  );
+
+  // The comparison's own planted positive, and it must plant a SWAP rather than an absence: two
+  // lists of equal length naming different cells. An extra or missing entry would also be caught by
+  // a mere count, so only a swap can tell an identity comparison from a count. Without this,
+  // mutation-proof reported a SURVIVOR for weakening this very check back to counts, which is the
+  // third time in this lane that an unexercised reader read as working.
+  const plantedSwap = compareCellSets(["alpha", "beta"], ["alpha", "gamma"]);
+  check(
+    "census control: two equal-length sets naming different cells are reported, so the comparison is by identity",
+    plantedSwap.onlyInMarkers.length === 1 && plantedSwap.onlyInMarkers[0] === "beta"
+      && plantedSwap.onlyInParsed.length === 1 && plantedSwap.onlyInParsed[0] === "gamma",
+    `planted_marker_only=${plantedSwap.onlyInMarkers.length}/1 [${plantedSwap.onlyInMarkers.join(", ")}] planted_parsed_only=${plantedSwap.onlyInParsed.length}/1 [${plantedSwap.onlyInParsed.join(", ")}] (equal counts, different identities)`,
   );
 
   // The integrity reader's planted positive, fed the REVIEWER'S EXACT ATTACK in miniature rather

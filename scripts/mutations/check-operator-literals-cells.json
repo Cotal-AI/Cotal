@@ -155,10 +155,10 @@
     {
       "name": "the census accepts equal COUNTS of markers and parsed cells rather than equal identities",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  const onlyInMarkers = declaredCells.filter((id) => !parsedIds.includes(id));\n  const onlyInParsed = parsedIds.filter((id) => !declaredCells.includes(id));",
-      "replace": "  const onlyInMarkers = declaredCells.length === parsedIds.length ? [] : declaredCells;\n  const onlyInParsed = [];",
-      "expectRed": "census: the marker reader and the parsed cell array name the same cells, not merely as many",
-      "cell": "census: the marker reader and the parsed cell array name the same cells, not merely as many"
+      "find": "  const compareCellSets = (markerIds, parsedCellIds) => ({\n    onlyInMarkers: markerIds.filter((id) => !parsedCellIds.includes(id)),\n    onlyInParsed: parsedCellIds.filter((id) => !markerIds.includes(id)),\n  });",
+      "replace": "  const compareCellSets = (markerIds, parsedCellIds) => ({\n    onlyInMarkers: markerIds.length === parsedCellIds.length ? [] : markerIds,\n    onlyInParsed: [],\n  });",
+      "expectRed": "census control: two equal-length sets naming different cells are reported, so the comparison is by identity",
+      "cell": "census control: two equal-length sets naming different cells are reported, so the comparison is by identity"
     },
     {
       "name": "the census stops reporting duplicated marker ids and unpaired START/END markers",
