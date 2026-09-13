@@ -65,7 +65,15 @@ class CotalAdapter(BasePlatformAdapter):
         self._loop = asyncio.get_running_loop()
         if is_reconnect:
             # Clear the latched stop and drop the dead reader, so start() below really starts one.
-            self._client.reopen()
+            #
+            # OFF-LOOP, and that is not incidental. `reopen` joins the closed reader with a bounded
+            # wait so a thread still unwinding is not mistaken for a live one, and a reader wedged
+            # in a blocking recv makes that wait run to its full timeout. Calling it inline here
+            # would stall the gateway's event loop for that whole period, freezing every other
+            # platform in the process to repair this one. Measured at 2.00s against a wedged
+            # reader, which is exactly the kind of pause an operator would report as the gateway
+            # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
+            await asyncio.to_thread(self._client.reopen)
         self._client.start(self._on_incoming)  # reader thread → _on_incoming
         self._mark_connected()
         hooks.relay("gateway_startup")  # present + free
