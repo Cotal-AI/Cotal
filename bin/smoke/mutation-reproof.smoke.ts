@@ -16,7 +16,7 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -369,10 +369,18 @@ try {
       if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = previousNodeOptions;
     }
-    const scannerObserved = readFileSync(join(root, "scanner.env"), "utf8");
+    // The probe files exist only if the scan actually reached the scanner and the fixture child.
+    // Reading them unguarded turns "the scan selected nothing" into an uncaught ENOENT that aborts
+    // the whole suite at this line, so a later cell's failure is never reported and the run reds
+    // for a reason that names nothing. Report the absence as this cell's own failure instead.
+    const readProbe = (name: string): string => {
+      try { return readFileSync(join(root, name), "utf8"); }
+      catch { return `ABSENT: ${name} was never written, so the scan did not reach that child`; }
+    };
+    const scannerObserved = readProbe("scanner.env");
     check("scanner children do not inherit Cotal session credentials",
       scannerObserved === "CLEAN", scannerObserved);
-    const observed = readFileSync(join(root, "probe.env"), "utf8");
+    const observed = readProbe("probe.env");
     check("fixture children do not inherit Cotal session credentials",
       observed === "CLEAN" && probe.status === 0 && okCounts(probe.out)?.discriminated === 1,
       JSON.stringify({ observed, status: probe.status, counts: okCounts(probe.out) }));
@@ -1649,6 +1657,67 @@ try {
       `status=${status}\n${out}`,
     );
   }
+  // 23d-ii. The corpus guard and the kill-credit guard are independent, and until now only the
+  //     corpus guard was driven from a cell: an external probe proved the second one, so replacing
+  //     the credit test with a bare `discriminated.push(path)` left every cell green. That is this
+  //     PR's own defect one layer in, a guard whose proof lives outside the suite that claims it.
+  //     Reaching the credit needs a proof child that exits 0 having printed no KILLED verdict,
+  //     which is what `All 0 mutation(s) killed` does in the wild. The real child cannot be talked
+  //     into that from a fixture, since anything it cannot grade exits 1 as UNGRADABLE, so the
+  //     scan under test is copied beside a stub child that reproduces exactly that transcript.
+  //     The scan resolves its child next to ITSELF, and its sibling helper modules must come too:
+  //     without them it dies on ERR_MODULE_NOT_FOUND and exits 1 for a reason that has nothing to
+  //     do with the floor, which would read as a pass whether the guard was present or not.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        mkdirSync(join(r, "scripts"), { recursive: true });
+        writeFileSync(join(r, "scripts", "mutation-proof.mjs"),
+          "console.log('All 0 mutation(s) killed. The suite discriminates.');\nprocess.exit(0);\n");
+        for (const entry of readdirSync(join(ROOT, "scripts"))) {
+          if (!entry.startsWith("mutation-") || !entry.endsWith(".mjs")) continue;
+          if (entry === "mutation-proof.mjs") continue;
+          copyFileSync(join(ROOT, "scripts", entry), join(r, "scripts", entry));
+        }
+        writeFileSync(join(r, "z.mjs"), "export const z = () => 1;\n");
+        writeFileSync(join(r, "suites", "z.suite.mjs"), "import { z } from '../z.mjs';\nif (z() !== 1) { console.error('x FAIL: z is one'); process.exit(1); }\nconsole.log('+ z is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "z.mutations.json"), JSON.stringify({
+          suite: ["suites/z.suite.mjs"], command: "node suites/z.suite.mjs", mutations: [{
+            name: "z stops returning one", file: "z.mjs", find: "export const z = () => 1;",
+            replace: "export const z = () => 2;", expectRed: "z is one",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const localScan = join(root, "scripts", "mutation-reproof.mjs");
+    copyFileSync(SCAN, localScan);
+    const run = spawnSync(process.execPath, [localScan, "--all", "--root", root], { encoding: "utf8", env: childEnv() });
+    const out = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+    check(
+      "a fixture the corpus admits whose proof exits 0 without a KILLED is named ZERO GRADED and cannot hold the floor up",
+      run.status === 1
+        && out.includes("ZERO GRADED (1 fixture(s))")
+        && out.includes("smoke/mutations/z.mutations.json")
+        && !out.includes("MUTATION REPROOF OK")
+        && !out.includes("ERR_MODULE_NOT_FOUND"),
+      `status=${run.status}\n${out}`,
+    );
+    // REFUSING twin, differing ONLY in what the stub child prints: the identical corpus, scan copy
+    // and helper set, with a transcript that carries a real KILLED line, reaches OK. So the red
+    // above is the absent kill and not the stub, the copied tree, or the module resolution.
+    writeFileSync(join(root, "scripts", "mutation-proof.mjs"),
+      "console.log('KILLED       z stops returning one');\nconsole.log('All 1 mutation(s) killed. The suite discriminates.');\nprocess.exit(0);\n");
+    const killRun = spawnSync(process.execPath, [localScan, "--all", "--root", root], { encoding: "utf8", env: childEnv() });
+    const killOut = `${killRun.stdout ?? ""}${killRun.stderr ?? ""}`;
+    check(
+      "the same run whose child prints a KILLED is credited and prints no ZERO GRADED",
+      killRun.status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(killOut)
+        && !killOut.includes("ZERO GRADED"),
+      `status=${killRun.status}\n${killOut}`,
+    );
+  }
   // 23e. The floor's question is corpus-shaped but its scope is the unit it runs in. Under the
   //     sharded fan-out a shard can draw ONLY work that cannot discriminate, while the corpus as a
   //     whole kills. That still reds, because a unit with no verdict has not earned an all-clear
@@ -1695,6 +1764,52 @@ try {
         && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(killShard.out)
         && !killShard.out.includes("ZERO DISCRIMINATED"),
       `status=${killShard.status}\n${killShard.out}`,
+    );
+  }
+  // 23e-ii. The two arms of the floor banner were split so a shard that COULD NOT kill is not
+  //     blamed, but every end-to-end cell above reaches the COULD NOT arm: the ordinary
+  //     `expected a kill from` arm was asserted only by unit-level parser cells fed hand-written
+  //     strings. So routing EVERY floor red through COULD NOT left the suite green, and a real
+  //     unit that should have killed would have been excused as unable. Reaching the ordinary arm
+  //     needs a proven fixture that is neither pre-red, inconclusive, nor zero-graded and that
+  //     still produced no kill. An INHERITED fatal is exactly that: its survivor is nonfatal
+  //     because it predates the diff, so the run continues to the floor with a fixture that was in
+  //     a position to kill and did not, alongside a pre-red that was not.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "e.mjs"), "export const e = () => 1;\n");
+        writeFileSync(join(r, "suites", "e.suite.mjs"), "import { e } from '../e.mjs';\nif (e() !== 1) { console.error('x FAIL: e is one'); process.exit(1); }\nconsole.log('+ e is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "e.mutations.json"), JSON.stringify({
+          suite: ["suites/e.suite.mjs"], command: "node suites/e.suite.mjs", mutations: [{
+            name: "equivalent survivor", file: "e.mjs", find: "export const e = () => 1;",
+            replace: "export const e = () => 1 + 0;", expectRed: "e is one",
+          }],
+        }, null, 2));
+        writeFileSync(join(r, "q.mjs"), "export const q = () => 1;\n");
+        writeFileSync(join(r, "suites", "q.suite.mjs"), "console.error('x FAIL: pre-red before any mutation'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "q.mutations.json"), JSON.stringify({
+          suite: ["suites/q.suite.mjs"], command: "node suites/q.suite.mjs", mutations: [{
+            name: "q", file: "q.mjs", find: "export const q = () => 1;",
+            replace: "export const q = () => 2;", expectRed: "pre-red",
+          }],
+        }, null, 2));
+      },
+      (r) => {
+        writeFileSync(join(r, "e.mjs"), "// select without moving the survivor\nexport const e = () => 1;\n");
+        writeFileSync(join(r, "q.mjs"), "// select without moving the pre-red\nexport const q = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a floor red naming a fixture that could have killed uses the ordinary arm, not COULD NOT",
+      status === 1
+        && /MUTATION REPROOF ZERO DISCRIMINATED \(/.test(out)
+        && !out.includes("ZERO DISCRIMINATED, COULD NOT")
+        && zeroDiscExpected(out).includes("smoke/mutations/e.mutations.json")
+        && zeroDiscUnable(out).length === 0
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status} expected=${JSON.stringify(zeroDiscExpected(out))} unable=${JSON.stringify(zeroDiscUnable(out))}\n${out}`,
     );
   }
   {
