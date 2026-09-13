@@ -335,6 +335,8 @@
     "smoke:delivery-old-manager": "tsx implementations/cli/smoke/delivery-old-manager-preflight.smoke.ts",
     "smoke:delivery-reconnect:auth": "tsx packages/core/smoke/delivery-reconnect.smoke.ts",
     "smoke:delivery-broker-coupling": "tsx implementations/delivery/smoke/delivery-broker-coupling.smoke.ts",
+    "smoke:delivery-starvation": "tsx implementations/delivery/smoke/delivery-starvation.smoke.ts",
+    "smoke:delivery-watchdog-evidence": "tsx implementations/delivery/smoke/delivery-watchdog-evidence.smoke.ts",
     "smoke:delivery-timer-writer": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-timer-writer.smoke.ts",
     "smoke:delivery-renewal": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-cred-renewal.smoke.ts",
     "smoke:principal-key": "tsx packages/core/smoke/principal-key.smoke.ts",

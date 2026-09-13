@@ -62,7 +62,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BROKEN = "BROKEN:";
 
 type UngatedExemption = { reason: string; recheckBy: string };
-const EXPECTED_EXEMPTIONS = 26;
+// 26 → 25: `smoke:delivery-broker-coupling` left the untriaged set by being gated, not by being
+// re-explained. It had been exempt as debt while silently grading nothing — the daemon it spawned
+// refused at startup, and the refusal satisfied its own "exits when the broker is gone" assertion.
+const EXPECTED_EXEMPTIONS = 25;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 
@@ -97,7 +100,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:attention": untriagedExemption("UNTRIAGED"),
   "smoke:attention:auth": untriagedExemption("UNTRIAGED"),
  "smoke:delivery-boot-retry:auth": untriagedExemption("UNTRIAGED"),
-  "smoke:delivery-broker-coupling": untriagedExemption("UNTRIAGED"), "smoke:delivery-old-manager": untriagedExemption("UNTRIAGED"),
+  "smoke:delivery-old-manager": untriagedExemption("UNTRIAGED"),
   "smoke:feedback": untriagedExemption("UNTRIAGED"),
   "smoke:lifecycle-files": untriagedExemption("UNTRIAGED"), "smoke:manager-console": untriagedExemption("UNTRIAGED"),
   "smoke:plane3-activation:auth": untriagedExemption("UNTRIAGED"),

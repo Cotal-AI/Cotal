@@ -324,7 +324,26 @@ const SEAMS: Seam[] = [
   // 145/105 -> 146/106: registration-executor-resume.smoke.ts dials the auth broker under a
   // scoped manager credential (one smoke-side call, tls: false) to prove heal and registration
   // use separate executor windows.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 146, untypecheckedSites: 106 },
+  // 146/106 -> 147/107: delivery-starvation.smoke.ts reads the delivery lease STRAIGHT FROM THE
+  // BROKER on a connection of its own (one smoke-side call, tls: false), rather than trusting the
+  // daemon's own report of whether it is still serving. A starved daemon's account of itself is
+  // exactly what that suite exists to doubt.
+  // 147/107 -> 150/110: delivery-starvation.smoke.ts grows three more smoke-side connections
+  // (tls: false), all for the same reason as the one above — the suite refuses to take the daemon's
+  // word for what it is doing. One deletes the lease row to stage a handover, one asks the broker
+  // how many pull requests each Plane-3 durable has parked, and one is a $SYS observer that counts
+  // ctl.delivery subscribers PER CONNECTION, which is what makes "two daemons were bound at once"
+  // a count of processes rather than a self-report.
+  // 150/110 -> 151/111: delivery-lease.smoke.ts grows one more smoke-side connection (tls: false),
+  // a `delivery`-role JetStream manager that REPLACES the fan-out durable with an incompatible
+  // config so a rearm fails at the real broker. The Q cells then read the durable back off that
+  // same connection, so "the endpoint recovered" is broker state rather than the endpoint's own flag.
+  // 151/111 -> 153/113: delivery-starvation.smoke.ts grows two more smoke-side connections for cells
+  // R1-R9, which stage a lease row the daemon must prove is its own: one writes the row's own bytes
+  // back (moving the revision while the holder stays byte-identical), one writes a successor's row
+  // (same holder, another incarnation). Both read and write the lease KV directly, which is the
+  // point - the evidence comes off the broker rather than from the daemon's own log.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 153, untypecheckedSites: 113 },
 ];
 
 /**

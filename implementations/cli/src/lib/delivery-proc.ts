@@ -6,6 +6,7 @@ import {
   mintCreds,
   newIdentity,
   waitForDeliveryLease,
+  deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
@@ -202,11 +203,17 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   // responder for their boot self-join. Non-fatal on timeout: the boot self-join reconciles with backoff,
   // which is the real safety net for a slow start or a later outage.
   //
-  // WHOSE readiness matters. A fresh launch waits for THE DAEMON IT JUST STARTED: its lease holder is
-  // the endpoint id of the cred written above (the daemon adopts `idFromCreds` of that file), so the
-  // wait cannot be answered by some other daemon's — or a dead one's — leftover `ready:true` record.
-  // A reuse adopts a daemon that was already running and cannot know its id, so it waits for any.
-  const ready = await waitForDeliveryLease({ servers: server, space, creds, id: id.id, holder: launched !== undefined ? id.id : undefined });
+  // WHOSE readiness matters. A fresh launch waits for THE DAEMON IT JUST STARTED, so the wait cannot
+  // be answered by some other daemon's - or a dead one's - leftover `ready:true` record. A reuse
+  // adopts a daemon that was already running and cannot know its id, so it waits for any.
+  //
+  // THROUGH `deliveryLeaseHolderFor`, NOT `id.id`. This asked for the bare nkey, while the daemon's
+  // endpoint stamps the PRINCIPAL dot-form into the row, so the comparison could never be true: every
+  // fresh launch ran the full 8s timeout and then reported a ready daemon as not-ready. It failed in
+  // the safe direction, which is why it went unnoticed, but the #837 guarantee this argument exists
+  // to enforce was not actually in force - it was defeated by always-false rather than by accepting
+  // anything. Found in review (#1318), where the same two namespaces were confused a third time.
+  const ready = await waitForDeliveryLease({ servers: server, space, creds, id: id.id, holder: launched !== undefined ? deliveryLeaseHolderFor(creds) : undefined });
   // A launch we performed whose process is GONE is not a slow start, and reporting it as one is the
   // #837 false-green: the daemon lost the single-flight CAS to a live-or-stale lease and exited (it
   // says so in `.cotal/delivery.log`), while this returned `running: true` over a pidfile fronting a

@@ -8,6 +8,7 @@ import {
   credsClaims,
   dialerFor,
   idFromCreds,
+  defaultProbeTimeoutMs,
   isReachable,
   mintCreds,
   newIdentity,
@@ -24,6 +25,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
+import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
@@ -351,6 +353,11 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
+  // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
+  // what `card.id` must carry at construction (a creds SOURCE has no cred to derive it from yet).
+  // It is NOT what the lease record carries as `holder` — see readOwnLease, which compares against
+  // `ep.card.id`, the value the endpoint actually stamps.
+  const ownId = idFromCreds(creds.initial);
 
   const ep = new CotalEndpoint({
     space,
@@ -364,7 +371,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     consume: false, // it pulls the Plane-3 consumers itself; no agent live-tail
     watchPresence: true, // read the roster for @mention resolution …
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
-    card: { id: idFromCreds(creds.initial), name: "delivery", role: "delivery", kind: "endpoint" },
+    card: { id: ownId, name: "delivery", role: "delivery", kind: "endpoint" },
   });
   // Both channels: raw connection errors ride `error`, while every condition the endpoint is
   // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
@@ -378,7 +385,12 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
   // frees a crashed holder's lease so a fresh daemon re-acquires.
-  let revision: number;
+  // THE REVISION THIS PROCESS OWNS, or `undefined` once it knows it does not own the row any more.
+  // `releaseDeliveryLease` takes it as a compare-and-swap, so a shutdown that no longer holds the
+  // shard releases NOTHING rather than deleting whatever row is there. The exits where that matters
+  // are exactly the takeover exits below: without it, the departing daemon removes the REPLACEMENT's
+  // lease on its way out and leaves the shard with no holder at all.
+  let revision: number | undefined;
   try {
     revision = await ep.acquireDeliveryLease(shard);
   } catch {
@@ -507,30 +519,287 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
-      try { await ep.releaseDeliveryLease(shard); } catch { /* broker may be gone */ }
+      try { await ep.releaseDeliveryLease(shard, revision); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();
   };
-  // Renew the lease at ~half the TTL so a healthy holder never self-evicts; losing the CAS means
-  // another daemon took over (we exit rather than double-deliver).
+  /** What the broker says about THIS shard's lease key right now — the verdict a failed renew does
+   *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
+   *  looking and finding nothing (#1318).
+   *
+   *  The ownership test is `ep.ownsDeliveryLease`, which compares the row against BOTH this
+   *  endpoint's wire identity and its per-run incarnation. Neither half is optional, and the two
+   *  failures they rule out are different:
+   *
+   *  1. Comparing against `ownId` (the bare connection nkey `U…`) is comparing across NAMESPACES:
+   *     the endpoint rewrites `card.id` in its constructor to the wire PRINCIPAL dot-form
+   *     `${owner}.${actor}` (`local.U…`), and that is what `encodeLease` stamps. That mismatch made
+   *     `held` UNREACHABLE — the daemon read its own row, failed to recognise itself, took the
+   *     `taken` branch and exited naming ITSELF as the thief, leaving a not-ready row and no
+   *     process. `held` is the one survivable reading ("your renew failed but the shard is still
+   *     yours"), so making it unreachable turned every recoverable renew failure into a permanent
+   *     withdrawal: #1318's own outage re-entering through the path built to prevent it.
+   *
+   *  2. Comparing on the principal ALONE is not sufficient either, and this is the one that looks
+   *     correct: the daemon's cred is a FILE that every restart re-reads, so a REPLACEMENT daemon
+   *     authenticates as the same nkey and writes the same `holder`. A displaced daemon would then
+   *     read its successor's row, conclude the shard was still its own, carry on serving a shard it
+   *     had lost (two daemons on one durable, which is the split this lease exists to prevent) and
+   *     CAS-release the live holder's row on the way out. Cells F and G stage exactly that, with two
+   *     daemons sharing one creds file, because that is what the product does. */
+  const readOwnLease = async (): Promise<LeaseReading> => {
+    let current: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
+    try { current = await ep.readDeliveryLeaseEntry(shard); }
+    catch (e) { return { kind: "unknown", why: (e as Error).message }; }
+    if (current === undefined) return { kind: "gone" };
+    if (!ep.ownsDeliveryLease(current.info)) return { kind: "taken", by: current.info.holder };
+    // Held by us, AND at the broker's own revision rather than the one this process last cached.
+    // That distinction is load-bearing: the renew that just failed may have been applied before its
+    // reply was lost, in which case the cached revision is permanently one behind and every later
+    // CAS is refused over a sequence this daemon moved itself. Adopting the read revision is what
+    // lets a survivable renew failure actually be survived. (An earlier comment here claimed the
+    // record carries no revision; it does — the KV entry's own `revision` — and that claim was
+    // wrong, which is why the stale token went unnoticed.)
+    return { kind: "held", revision: current.revision };
+  };
+
+  /** Print a lease state only when it CHANGES. The renew ticks every few seconds, so a broker
+   *  outage would otherwise write the same line thousands of times into the daemon's log; an
+   *  operator needs the line going in and the line coming out. */
+  let leaseState = "held";
+  const noteLease = (state: string, what: string): void => {
+    if (state === leaseState) return;
+    leaseState = state;
+    console.error(`${state === "held" ? "✓" : "!"} delivery: ${what} (space ${space}, shard ${shard})`);
+  };
+
+  /** Announce going quiet, once per quiesced episode. Same rule as {@link noteLease}: the renew ticks
+   *  forever, and an operator needs the edge, not a log line per tick. */
+  let quiesced = false;
+  const noteQuiesce = (): void => {
+    if (quiesced) return;
+    quiesced = true;
+    console.error(`! delivery: stopped serving shard ${shard} (fan-out, reader and control unbound) while it re-checks who owns the lease (space ${space})`);
+  };
+
+  /** Resume serving, and CLOSE the quiesced episode so a later one announces itself again. Every
+   *  caller has just proven ownership; `why` is what proved it, since "it started serving again" is
+   *  only auditable next to the evidence that permitted it. */
+  const resumeServing = async (why: string): Promise<void> => {
+    try { await ep.rearmPlane3(); }
+    catch (e) { console.error(`! delivery: ${why} but could not resume Plane-3 (${(e as Error).message})`); return; }
+    // `ready` MEANS "THE RESPONDER IS UP", and it is what `ensureDelivery` waits on and what the
+    // `cotal_channels` health surface reports. Startup flips it only after binding, for exactly that
+    // reason — and a re-acquire creates the row afresh, which `acquireDeliveryLease` deliberately
+    // makes NOT-ready. Without this flip a daemon that recovered would serve correctly while every
+    // readiness waiter in the space timed out against a permanently not-ready lease: the outage
+    // #1318 is about, surviving the repair by hiding in the readiness flag instead of the exit path.
+    // Ordered AFTER the re-arm so the flag never claims more than has actually been bound.
+    if (revision !== undefined) {
+      try { revision = await ep.markDeliveryLeaseReady(shard, revision); }
+      catch (e) { console.error(`! delivery: resumed serving but could not mark the lease ready (${(e as Error).message}); the next renew re-synchronises`); }
+    }
+    if (!quiesced) return;
+    quiesced = false;
+    console.error(`\u2713 delivery: serving shard ${shard} again \u2014 ${why} (space ${space})`);
+  };
+
+  // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
+  //
+  // A FAILED RENEW IS A QUESTION, NOT A VERDICT (#1318). The shipped code exited on ANY renew
+  // error, so a key that had EXPIRED under local CPU starvation — with nobody else holding it,
+  // reported as `wrong last sequence: 0` — was indistinguishable from a genuine takeover, and the
+  // only holder there was ended itself. The verdict comes from RE-READING the key: `taken` exits so
+  // the holder stays single, `gone` is repaired by an ATOMIC create (which arbitrates: if a
+  // replacement got there first the create fails and THAT is the genuine loss), and `held`/`unknown`
+  // keep serving. Overlap-guarded: two CAS attempts against the same cached revision would have the
+  // second refused over a sequence the first legitimately moved, a conflict this daemon manufactures
+  // itself and then reads as someone else's takeover.
+  let renewInFlight = false;
   const renew = setInterval(() => {
-    ep.renewDeliveryLease(shard, revision)
-      .then((r) => (revision = r))
-      .catch((e: Error) => {
-        console.error(`✗ delivery: lost the lease (${e.message}) — exiting so the holder is single`);
-        shutdown(1);
-      });
+    if (stopping || renewInFlight) return;
+    renewInFlight = true;
+    void (async () => {
+      try {
+        // A renew with no owned revision is not a renew: this process already established that the
+        // shard is someone else's and is on its way out. Attempting one would either fail noisily or,
+        // worse, be graded as a lease question when ownership is already settled.
+        if (revision === undefined) return;
+        revision = await ep.renewDeliveryLease(shard, revision);
+        // A SUCCESSFUL CAS RENEW IS PROOF OF OWNERSHIP, so it is also a re-arm point. Without this a
+        // daemon that quiesced on `unknown` (the broker could not answer who owns the shard) would
+        // stay silent forever once the broker came back: the `held` re-arm below only runs on the
+        // failure path, and the failure path stops running as soon as renews succeed again. Quiesce
+        // must be recoverable by the same evidence that makes it unnecessary.
+        await resumeServing("it renewed its lease");
+        noteLease("held", "renews its delivery lease again");
+        return;
+      } catch (renewError) {
+        const why = (renewError as Error).message;
+        // GO QUIET BEFORE ASKING. From here this process does not know whether the shard is still
+        // its own, and a CAS on the lease row keeps one ROW, not one SERVER: across the re-read and
+        // the re-acquire below, an un-quiesced daemon would still be consuming the fan-out durable,
+        // still running the reader, and still answering ctl.delivery, so a replacement that won the
+        // shard in that window would SPLIT the durable with it. A review finding, and the pre-fix
+        // code did not have this window because it simply exited on the first renew failure.
+        try {
+          await ep.quiescePlane3();
+          // WITHDRAW THE READINESS CLAIM TOO. `ready` asserts the responder is up; it is now down, so
+          // leaving it set would tell every `ensureDelivery` waiter in the space to keep waiting on a
+          // daemon that is deliberately not answering. Best-effort: the renew that just failed means
+          // the CAS may fail too, and staying quiet matters more than the flag being tidy. The row
+          // itself is kept — the shard is still claimed, only the answering claim is withdrawn.
+          if (revision !== undefined) {
+            try { revision = await ep.markDeliveryLeaseNotReady(shard, revision); }
+            catch { /* the row may have moved on; the ownership read below is what decides */ }
+          }
+          // ANNOUNCED, because an operator watching a stall needs to know the daemon stopped serving
+          // on purpose rather than silently wedged — and because the live cell anchors on this line
+          // to know when to start demanding that this process holds no Plane-3 bindings.
+          noteQuiesce();
+        }
+        catch (e) { console.error(`! delivery: could not quiesce Plane-3 while checking the lease (${(e as Error).message})`); }
+        const reading = await readOwnLease();
+        switch (leaseAction(reading)) {
+          case "keep-serving":
+            // Still ours, or unanswerable. Only a PROVEN `held` re-arms: `unknown` stays quiet,
+            // because not being able to ask is not permission to keep acting on the shard.
+            if (mayServeOn(reading)) {
+              // ADOPT THE BROKER'S REVISION before serving again. The failed renew may have landed
+              // with its reply lost, so the cached token can be stale; re-arming on it would leave
+              // every later CAS refused over this daemon's own write and manufacture the takeover
+              // it is trying to rule out. The read just told us the sequence — use it.
+              // Narrowed by the guard above: `mayServeOn` admits only `held`, which is the one
+              // reading that carries a revision. Stated as an assert rather than a cast so a future
+              // widening of `mayServeOn` fails here loudly instead of serving without a CAS token.
+              if (reading.kind !== "held") throw new Error(`delivery: mayServeOn admitted a "${reading.kind}" reading, which carries no revision to serve on`);
+              revision = reading.revision;
+              await resumeServing("re-reading the key showed the lease is still its own");
+            }
+            noteLease(
+              reading.kind === "held" ? "held-unrenewed" : "unknown",
+              reading.kind === "held"
+                ? `could not renew its lease (${why}) but the key is still its own; serving, retrying`
+                // NOT "serving": the quiesce above is still in force on this branch, and `mayServeOn`
+                // refuses `unknown`, so nothing re-armed. Saying "serving" here would describe the
+                // pre-fix behaviour and hide the very state this repair introduced.
+                : `could not renew its lease (${why}) or re-read it (${reading.kind === "unknown" ? reading.why : ""}); staying quiet, retrying until the broker answers`,
+            );
+            return;
+          case "reacquire":
+            try {
+              revision = await ep.acquireDeliveryLease(shard);
+              // Won the atomic create, so the shard is provably ours again: resume serving.
+              await resumeServing(`it won the atomic create at revision ${revision}`);
+              noteLease("held", `found its lease key gone (renew: ${why}) and re-acquired it at revision ${revision}`);
+            } catch (e) {
+              // Refused: a live lease exists that is not ours, so a replacement daemon holds this
+              // shard. THIS is the genuine loss, and it exits — WITHOUT a revision to release, or
+              // the exit would delete the replacement's row.
+              revision = undefined;
+              console.error(
+                `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}) — exiting so the holder is single`,
+              );
+              shutdown(1);
+            }
+            return;
+          case "exit":
+            // Another daemon's row. Forget our revision first: releasing on the way out would delete
+            // the holder's lease and turn a clean handover into an unheld shard.
+            revision = undefined;
+            console.error(
+              `✗ delivery: the lease for shard ${shard} is held by ${reading.kind === "taken" ? reading.by : "another daemon"}, not by this process (renew: ${why}) — exiting so the holder is single`,
+            );
+            shutdown(1);
+            return;
+        }
+      } finally {
+        renewInFlight = false;
+      }
+    })();
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
   // Coupled to the broker: POLL its reachability. Survive brief blips (the endpoint reconnects on its
-  // own), but EXIT if the broker has been gone for BROKER_GONE_MS — the endpoint would otherwise retry
-  // reconnect forever (its terminal-close never fires), so this is what stops the daemon outliving the
-  // server it serves. (`cotal up`/`down` teardown stops it too.) The window is env-overridable for tests.
+  // own), but EXIT if the broker is GONE — the endpoint would otherwise retry reconnect forever (its
+  // terminal-close never fires), so this is what stops the daemon outliving the server it serves.
+  // (`cotal up`/`down` teardown stops it too.) The window is env-overridable for tests.
+  //
+  // WHAT "GONE" MEANS IS NOW DECIDED FROM EVIDENCE, NOT FROM A CLOCK (#1318). Three conditions used
+  // to produce one signal and only one of them was a dead server: the broker being down, this
+  // process being descheduled so the interval never fired, and a probe that could not complete a
+  // handshake because the local process could not get scheduled to finish it. A wall-clock
+  // `Date.now() - lastReachable` cannot tell them apart, and widening it only moves the threshold.
+  // Three signals separate them, and all three are things this process can actually observe:
+  //
+  //   • MEASURED LOOP LAG. The gap between consecutive firings of a timer we own, minus its nominal
+  //     period, is local starvation by direct measurement. It is credited back, so time this process
+  //     spent off the runqueue is never counted against the broker.
+  //   • COMPLETED NEGATIVE PROBES. Only a probe that RAN TO COMPLETION and returned false is
+  //     evidence about the server. A probe that never ran contributes nothing (that was the whole
+  //     defect: the window aged with no probe having failed), and one that REJECTED is an
+  //     unanswered question — it now resets the counter and logs, where it used to be swallowed by
+  //     `.catch(() => {})` and silently age the window.
+  //   • TRANSPORT-LEVEL LIVENESS. A `transport: connected` edge from the endpoint's own connection
+  //     cannot happen without a server on the other end, so it is positive evidence obtained for
+  //     free, on a path that does not need this process to schedule a probe at all.
+  //
+  // A starvation diagnosis therefore reports DEGRADED and keeps serving; a genuinely dead broker
+  // still exits, on the same window, as fast as completed probes can say so.
   const BROKER_GONE_MS = Number(process.env.COTAL_DELIVERY_BROKER_GONE_MS) || 15_000;
+  // How many completed negatives make elapsed time believable. Two is the floor: one completed
+  // negative is a single refused connect, which a loopback under momentary pressure can produce.
+  // The default scales with the window so a test that shortens the window does not thereby demand
+  // more evidence than the window has room for.
+  const BROKER_GONE_PROBES = Math.max(
+    2,
+    Number(process.env.COTAL_DELIVERY_BROKER_GONE_PROBES) || Math.ceil(BROKER_GONE_MS / PROBE_INTERVAL_MS / 2),
+  );
+  // The hard backstop: past this, no amount of measured lag or transport optimism keeps the daemon
+  // alive. A daemon that OUTLIVES a dead broker is worse than one that restarts unnecessarily, so
+  // the repair is bounded and fails toward exiting.
+  const BROKER_GONE_BACKSTOP_MS = Math.max(
+    BROKER_GONE_MS,
+    Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
+  );
   let lastReachable = Date.now();
+  let completedNegatives = 0;
+  let degraded = false;
+  // What the endpoint's OWN connection reports about its socket to this same broker. Seeded true
+  // because `ep.start()` above completed, which it cannot do without a server having answered.
+  let transportConnected = true;
+  const lag = new LoopLagMeter(PROBE_INTERVAL_MS);
+  /** Positive evidence, from wherever it came: restart the window and its lag budget together. */
+  const sawBroker = (): void => {
+    lastReachable = Date.now();
+    completedNegatives = 0;
+    lag.reset();
+    if (degraded) {
+      degraded = false;
+      console.error(`✓ delivery: the broker is answering again — Plane-3 is serving normally (space ${space})`);
+    }
+  };
+  // The endpoint's OWN transport edge. This is evidence the daemon gets without being scheduled to
+  // probe for it, and it is the signal that distinguishes "the connection object reports a
+  // transport-level close" from "silence": a live connection to that address proves a server, while
+  // a disconnect is the endpoint's own business (nats.js reconnects through blips of its own
+  // accord) and merely stops excusing a probe that will not complete.
+  ep.on("transport", (t: { connected: boolean }) => {
+    transportConnected = t.connected;
+    if (t.connected) sawBroker();
+  });
+  // THE BUDGET THE PROBE IS ACTUALLY GIVEN, asked of the one function that decides it. A ws(s)
+  // broker rides an HTTPS edge and gets 5s, not the 1s a loopback TCP broker gets; judging a ws
+  // probe against 1000 would read every honest refusal on such a broker as this process's own
+  // starvation, so the completed-negative count could never rise and a genuinely dead ws broker
+  // would be ended only by the backstop, with the wrong reason in its log. The budget and the
+  // judgment have to come from the same place.
+  const probeBudgetMs = defaultProbeTimeoutMs(server);
   const brokerWatch = setInterval(() => {
     if (stopping) return;
+    // Measure FIRST, before any await: this is the gap since the previous firing, and it is the
+    // only place the daemon can learn that it was not scheduled.
+    lag.tick(Date.now());
     // THE SAME TRANSPORT AS EVERY OTHER DIAL IN THIS PROCESS. This poll carries `latestCreds` — a
     // standing credential — and `isReachable` performs a real authenticated connect whenever creds
     // are supplied, every 2 seconds, for the life of the daemon. It is the most repeated credential
@@ -540,16 +809,80 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // least consistent. What is new is the ASYMMETRY: with the two dials above upgraded, an operator
     // who enables TLS would get a protected main path and an unprotected watchdog. An inconsistent
     // guarantee is worse than a uniformly absent one, because the operator now believes something.
+    const probeStarted = Date.now();
+    // Watch this process's own scheduling FOR THE DURATION OF THE PROBE. A refusal is only evidence
+    // about the server if the server was actually given the time the deadline promised it, and
+    // under short CPU slices most of a probe's wall-clock can be time this process was not running.
+    const sampler = new DescheduleSampler();
+    sampler.start(probeStarted);
     void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
-      .then((ok) => {
-        if (ok) { lastReachable = Date.now(); return; }
-        if (Date.now() - lastReachable > BROKER_GONE_MS) {
-          console.error(`✗ delivery: broker unreachable for >${BROKER_GONE_MS / 1000}s — exiting (coupled to the broker)`);
+      .then(
+        (ok) => classifyProbe(ok, Date.now() - probeStarted, probeBudgetMs, PROBE_LATE_FACTOR, sampler.stop()),
+        // A REJECTED probe is an unanswered question, not a negative answer. It used to be swallowed
+        // whole by `.catch(() => {})`, so it neither refreshed the window nor evaluated anything and
+        // silently aged the daemon toward an exit it had gathered no evidence for.
+        (e: Error) => {
+          sampler.stop();
+          console.error(`! delivery: the broker probe did not complete (${e.message}) — no verdict from it; serving, retrying`);
+          return classifyProbe(undefined, Date.now() - probeStarted);
+        },
+      )
+      .then((probe) => {
+        if (stopping) return;
+        if (probe.counts === "positive") { sawBroker(); return; }
+        if (probe.counts === "incomplete") {
+          // The run of credible refusals is broken by a probe that did not complete.
+          completedNegatives = 0;
+          return;
+        }
+        if (probe.counts === "starved") {
+          // The probe RAN and said no, but its answer arrived so far past its own deadline that the
+          // deadline was enforced against this process rather than against the server. That is the
+          // starved-client case, and it is the one an elapsed-time predicate cannot see at all: the
+          // timer is firing, the probes are completing, and every one of them is `false`.
+          lag.credit(probe.lateBy);
+          completedNegatives = 0;
+        } else {
+          // A refusal that arrived on time. This is the only thing that may accrue against the broker.
+          completedNegatives += 1;
+        }
+        const verdict = brokerGoneVerdict({
+          msSinceLastReachable: Date.now() - lastReachable,
+          starvedMs: lag.starvedMs,
+          completedNegatives,
+          transportConnected,
+          windowMs: BROKER_GONE_MS,
+          requiredNegatives: BROKER_GONE_PROBES,
+          backstopMs: BROKER_GONE_BACKSTOP_MS,
+        });
+        if (verdict.exit) {
+          console.error(
+            `✗ delivery: broker unreachable — ${completedNegatives} completed probes refused within their deadline over ` +
+              `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMs / 1000)}s of local scheduler lag credited) — exiting (coupled to the broker)`,
+          );
           shutdown(1);
+          return;
+        }
+        // NOT an exit. Say so once per episode, naming WHICH condition it is, so an operator reading
+        // the log during a load incident sees "this host starved me" rather than a daemon that
+        // silently vanished.
+        if (!degraded && verdict.reason !== "reachable") {
+          degraded = true;
+          console.error(
+            verdict.reason === "starved"
+              ? `! delivery: DEGRADED — cannot reach the broker, but ${Math.round(lag.starvedMs / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
+              : verdict.reason === "transport-live"
+                ? `! delivery: DEGRADED — a fresh probe cannot complete, but this daemon's own connection to ${server} is still open, so the broker is there and this process cannot ask; serving, retrying`
+                : `! delivery: DEGRADED — the broker has not answered for >${BROKER_GONE_MS / 1000}s but only ${completedNegatives} of ${BROKER_GONE_PROBES} probes have refused within their deadline; serving, retrying`,
+          );
         }
       })
-      .catch(() => {});
-  }, 2000);
+      .catch((e: Error) => {
+        // The verdict path itself faulted. Never silent, and never an exit: a bug in the detector
+        // must not end the daemon it is meant to keep alive.
+        console.error(`! delivery: the broker watch tick faulted (${e.message}); serving, retrying`);
+      });
+  }, PROBE_INTERVAL_MS);
 
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));

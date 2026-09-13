@@ -435,6 +435,9 @@ export class CotalEndpoint extends EventEmitter {
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
+  /** True once {@link quiescePlane3} has stopped serving this shard pending an ownership answer.
+   *  Guards {@link armPlane3} so a RECONNECT cannot silently resume serving mid-question. */
+  private plane3Quiesced = false;
   private plane3?: {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>;
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
@@ -3506,8 +3509,27 @@ export class CotalEndpoint extends EventEmitter {
     return this.deliveryKv;
   }
 
+  /** This endpoint instance's LEASE INCARNATION: which run of this principal a lease row was written
+   *  by. Minted per construction and never re-derived, because the credential cannot supply it — the
+   *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
+   *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
+  private readonly leaseIncarnation = randomUUID();
+
   private encodeLease(ready: boolean): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+  }
+
+  /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
+   *  just failed has to answer before it decides whether it still owns the shard.
+   *
+   *  Both halves are required. `holder` alone is not sufficient (a successor daemon re-reading the
+   *  same creds file presents the same principal, so its row would read as ours), and `incarnation`
+   *  alone is not sufficient either — it is a bare uuid with no claim to the principal, so a row
+   *  bearing ours but a foreign holder is not something we should ever adopt. A row with NO
+   *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
+   *  to the takeover path rather than to serving on someone else's claim. */
+  ownsDeliveryLease(info: DeliveryLeaseInfo): boolean {
+    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
   }
 
   /** Acquire the single-flight delivery lease for a shard via an ATOMIC CAS create, marked NOT-ready.
@@ -3526,6 +3548,19 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(true), revision);
   }
 
+  /** Flip the held lease back to NOT-ready — the counterpart to {@link markDeliveryLeaseReady}, for a
+   *  holder that has UNBOUND its loops and control responder but has not given up the shard.
+   *
+   *  `ready` is a claim about the RESPONDER, not about the row's existence: `ensureDelivery` waits on
+   *  it and the channel-health surface reports it. A daemon that goes quiet to re-check its ownership
+   *  still holds the key, so without this the space would be told a responder is up while nothing is
+   *  bound — a readiness lie of exactly the kind #1318 is about, just pointed the other way. Keeping
+   *  the row (rather than deleting it) is deliberate: the shard is still claimed, so no third daemon
+   *  should be invited in; what is being withdrawn is only the claim to be answering. */
+  async markDeliveryLeaseNotReady(shardIndex: number, revision: number): Promise<number> {
+    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(false), revision);
+  }
+
   /** Renew the held lease (CAS `kv.update` against `revision`, keeping `ready:true`) to refresh it before
    *  the bucket TTL expires it. Returns the new revision. Throws if the revision moved (lost the lease —
    *  the daemon should exit). */
@@ -3534,12 +3569,31 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort — a crash just lets the bucket TTL expire it). */
-  async releaseDeliveryLease(shardIndex: number): Promise<void> {
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }
+   *  effort — a crash just lets the bucket TTL expire it).
+   *
+   *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
+   *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
+   *  paths that matter most are precisely the ones where another daemon has taken the shard, so the
+   *  departing process would delete the REPLACEMENT's lease on its way out and leave the shard with
+   *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
+   *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
+   *  on is left alone.
+   *
+   *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
+   *  process no longer holds a revision it can argue for", which is the takeover paths' honest
+   *  answer and correctly releases nothing — the bucket TTL is the crash-safe authority and expires
+   *  a genuinely stale row. But if that were the DEFAULT, every existing `releaseDeliveryLease(0)`
+   *  call site would keep compiling and silently stop releasing: the same omission hole
+   *  `standaloneConnectOpts` closed by deleting its `= {}`. Measured, not theorised — this landed as
+   *  a red in `smoke:delivery-lease`, where a caller that genuinely held the lease released nothing
+   *  and the next acquire was refused. A caller must now say which it means. */
+  async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
+    if (revision === undefined) return;
+    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
     catch {
       // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
-      // and clean shutdown must continue even when the broker is already gone or draining.
+      // and clean shutdown must continue even when the broker is already gone or draining. A refused
+      // CAS lands here too, which is the correct outcome — someone else owns the row.
     }
   }
 
@@ -3547,9 +3601,19 @@ export class CotalEndpoint extends EventEmitter {
    *  READ-ONLY surface — drives Component 6's `cotal_channels` delivery-health field (an agent reads it
    *  under its own cred, which holds lease-bucket read but no write). */
   async readDeliveryLease(shardIndex: number): Promise<DeliveryLeaseInfo | undefined> {
+    return (await this.readDeliveryLeaseEntry(shardIndex))?.info;
+  }
+
+  /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
+   *  CAS release are argued against, so a caller re-establishing ownership after a failed renew
+   *  needs the BROKER's sequence, not the one it last cached: a renew can fail with its write
+   *  already applied (a lost reply, a reconnect mid-request), which leaves the cached revision one
+   *  behind forever and every subsequent CAS refused over a sequence this process itself moved —
+   *  read as somebody else's takeover, which is the #1318 misreading in a second costume. */
+  async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
     const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
     if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-    try { return e.json<DeliveryLeaseInfo>(); } catch { return undefined; }
+    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }
   }
 
   /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):
@@ -4077,6 +4141,77 @@ export class CotalEndpoint extends EventEmitter {
     return Math.max(1, Math.floor(max * 0.9));
   }
 
+  /** Stop serving Plane-3 WITHOUT tearing down the connection, so a daemon that has just learned its
+   *  lease may no longer be its own can stop acting on the shard while it finds out for certain.
+   *
+   *  A COMPARE-AND-SWAP KEEPS ONE LEASE ROW; IT DOES NOT KEEP ONE SERVER. That distinction is the
+   *  reason this exists, and it was a review finding. When a renew fails, the daemon re-reads the
+   *  key and may then re-acquire it — and across that read-then-create it was still consuming the
+   *  fan-out durable, still running the inbox reader, and still answering ctl.delivery. If a
+   *  replacement acquired the shard in that window, both processes served the same durables until
+   *  the loser's create was refused and its teardown finished. The old code did not have this
+   *  window, because it began shutting down on the first renew failure; treating that failure as a
+   *  question instead of a verdict is right, but asking the question while still serving is not.
+   *
+   *  So the daemon goes quiet FIRST and re-arms only once it has proof: `held` on a re-read, or a
+   *  won atomic create. `unknown` stays quiet — the whole point is that not being able to ask is not
+   *  permission to keep acting. Quiescing costs delivery latency for a few seconds; the alternative
+   *  costs a SPLIT durable, which is a correctness failure rather than an availability one.
+   *
+   *  Deliberately not `stop()`: the connection, the lease KV handles and the control rails must stay
+   *  up, because the daemon still has to ask the broker who owns the shard. */
+  async quiescePlane3(): Promise<void> {
+    this.plane3Quiesced = true;
+    if (this.deliveryServeSub) {
+      try { this.deliveryServeSub.unsubscribe(); } catch { /* already dead */ }
+      this.deliveryServeSub = undefined;
+    }
+    if (this.deliveryAdminServeSub) {
+      try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* already dead */ }
+      this.deliveryAdminServeSub = undefined;
+    }
+    // Stopping the consumers ends the `for await` loops that drive fan-out and the reader. In-flight
+    // messages are NOT acked by a stopped consumer, so they redeliver to whoever holds the shard
+    // next: quiescing loses no message, it only stops this process from claiming them.
+    for (const msgs of this.streamMsgs.splice(0)) {
+      try { msgs.stop(); } catch { /* already draining */ }
+    }
+  }
+
+  /** Whether Plane-3 is currently quiesced: unbound, and refusing to re-bind until ownership is proven.
+   *  Read-only. The flag is the daemon's own answer to "am I serving this shard", so a cell that asserts
+   *  a recovery worked can check the endpoint's state rather than inferring it from a log line. */
+  plane3IsQuiesced(): boolean {
+    return this.plane3Quiesced;
+  }
+
+  /** Resume serving Plane-3 after {@link quiescePlane3}, once ownership has been re-established.
+   *  Idempotent, and a no-op when the daemon was never quiesced.
+   *
+   *  The flag is cleared ONLY after every binding is up, and restored if any of them throws. Clearing
+   *  it first looks equivalent and is not: `armPlane3` binds in four stages (`manager`, the two control
+   *  responders, the fan-out consumer, the reader), so a failure at any one leaves the endpoint recorded
+   *  as un-quiesced while some of those are missing. From there every later `rearmPlane3` returns at the
+   *  `!plane3Quiesced` guard WITHOUT attempting to bind, and the caller goes on to flip the lease READY.
+   *  That is a readiness lie surviving a transient broker error — the daemon claims a responder it does
+   *  not have, which is the #1318 outage wearing the readiness flag instead of the exit path. */
+  async rearmPlane3(): Promise<void> {
+    if (!this.plane3Quiesced) return;
+    // `armPlane3` refuses while quiesced (a reconnect must not resume mid-question), so the flag is
+    // lowered for the attempt and RAISED AGAIN on failure. A partial bind leaves the endpoint quiesced,
+    // which is the honest state: not serving, and a later retry will attempt the whole sequence again.
+    this.plane3Quiesced = false;
+    try {
+      await this.armPlane3();
+    } catch (e) {
+      this.plane3Quiesced = true;
+      // Drop whatever DID bind. Leaving half-bound responders up would answer control requests for a
+      // shard this process has just declared itself not to be serving.
+      this.quiescePlane3();
+      throw e;
+    }
+  }
+
   /** (Re)bind the Plane-3 fan-out writer + trusted reader. Idempotent — the durables resume from their
    *  cursor. Called by {@link startPlane3} once AND by {@link connectAndBind} on every (re)connect, so
    *  the delivery daemon's reconnect RE-ARMS the backstop + the ctl.delivery responder. Without this, a broker blip would silently kill
@@ -4084,6 +4219,10 @@ export class CotalEndpoint extends EventEmitter {
    *  unless this endpoint hosts Plane-3 (`this.plane3` set). */
   private async armPlane3(): Promise<void> {
     if (!this.plane3 || !this.js) return;
+    // A quiesced endpoint must not be re-armed by a RECONNECT: the reconnect path calls this too,
+    // and silently resuming there would restore exactly the double-serving this guards against
+    // while the ownership question is still open.
+    if (this.plane3Quiesced) return;
     await this.manager(); // the manager runs consume:false, so this.jsm is lazy — ensure it
     this.armDeliveryControl();
     await this.runFanout();
@@ -5757,8 +5896,14 @@ export function wsServers(servers: string): boolean {
  *  probe dials; a ws(s) broker is by definition published through an HTTPS edge (CDN tunnel,
  *  reverse proxy), where TLS + upgrade + INFO + the auth round-trip routinely exceeds 1s cold —
  *  measured ~60% spurious "not reachable" against a Cloudflare-fronted broker. Callers passing an
- *  explicit `timeoutMs` are untouched. */
-function defaultProbeTimeoutMs(servers: string): number {
+ *  explicit `timeoutMs` are untouched.
+ *
+ *  EXPORTED because a caller that judges a probe by WHEN it answered has to compare against the
+ *  deadline this function actually handed the probe. The delivery watchdog does exactly that, and
+ *  hardcoding 1000 there silently misread every ws broker: honest refusals arrive at 2-5s, past a
+ *  budget that was never theirs, and would be classified as this process's starvation rather than
+ *  the server's refusal. The budget and the judgment must come from one place. */
+export function defaultProbeTimeoutMs(servers: string): number {
   return wsServers(servers) ? 5000 : 1000;
 }
 

@@ -13,7 +13,21 @@
  */
 import { Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { deliveryBucket, leaseKey } from "./subjects.js";
+import { deliveryBucket, leaseKey, principalKey, DEV_OWNER } from "./subjects.js";
+import { idFromCreds } from "./identity.js";
+
+/** The `holder` string a delivery daemon holding THIS credential will write into its lease row.
+ *
+ *  EXISTS BECAUSE THE OBVIOUS ANSWER IS WRONG, and was wrong at three separate call sites. A caller
+ *  that launches a daemon knows the cred it handed over, so `idFromCreds` looks like the daemon's
+ *  identity - and it is, at the connection layer. But the endpoint rewrites `card.id` in its
+ *  constructor to the wire PRINCIPAL dot-form `${owner}.${actor}` (`local.U...` in the static mode
+ *  the daemon runs in), and THAT is what lands in the row. Comparing a bare nkey against the row can
+ *  only ever be false, which is a comparison that silently never fires rather than one that fails
+ *  loudly. Derived here, once, so no caller has to re-derive a rule that lives in the endpoint. */
+export function deliveryLeaseHolderFor(creds: string): string {
+  return principalKey(DEV_OWNER, idFromCreds(creds)).key;
+}
 
 /** A delivery lease record: who holds the shard and since when (epoch ms; diagnostics + health surface),
  *  plus `ready` — set true only AFTER the daemon has bound `ctl.delivery` + the fan-out/reader loops, so
@@ -22,6 +36,18 @@ import { deliveryBucket, leaseKey } from "./subjects.js";
  *  to `ready:true` after `startPlane3` — and renews keep it true. */
 export interface DeliveryLeaseInfo {
   holder: string;
+  /** WHICH RUN of that holder, not merely which principal. `holder` is the endpoint's wire identity,
+   *  and it is NOT unique per process: the daemon's cred is a FILE on disk that every restart re-reads
+   *  (`delivery-proc.ts` mints it once and re-launches against it), so a replacement daemon in the same
+   *  space authenticates as the same nkey and presents the same principal as the process it replaced.
+   *  A daemon asking "is this row still mine?" therefore cannot get a truthful answer from `holder`
+   *  alone — it would recognise its own SUCCESSOR's row as its own, keep serving a shard it had lost,
+   *  and CAS-release the row out from under the live holder. Minted per endpoint instance, so it
+   *  changes on every restart even when the credential does not.
+   *
+   *  Optional because rows written by daemons from before this field exist in live buckets; a row
+   *  without one cannot be proven ours (some other process wrote it), which is the safe reading. */
+  incarnation?: string;
   since: number;
   ready: boolean;
 }
