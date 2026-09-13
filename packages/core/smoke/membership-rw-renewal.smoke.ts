@@ -13,7 +13,8 @@
  *     source read — the authenticator never re-reads the source (case 6 / blocker 2 core);
  *   - the 75% timer SELF-HEALS across the initial cred's renewal point and stop() clears it (case 1);
  *   - the whole prove-then-adopt transaction is bounded by an ABSOLUTE deadline < the manager's request
- *     bound, including the single-flight queue wait (case 5 / mirrors the endpoint's reload-deadline-queue).
+ *     bound, including the single-flight queue wait (case 5 / mirrors the endpoint's reload-deadline-queue);
+ *   - a startup that REJECTS after conn A is open leaves no observer connection behind (#1557).
  *
  * Run: pnpm smoke:membership-rw-renewal   (needs `nats-server` on PATH; auth/JetStream, local-only; ~20s)
  */
@@ -36,10 +37,10 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const until = async (cond: () => boolean, budgetMs: number, stepMs: number): Promise<boolean> => {
+const until = async (cond: () => boolean | Promise<boolean>, budgetMs: number, stepMs: number): Promise<boolean> => {
   const deadline = Date.now() + budgetMs;
-  while (Date.now() < deadline) { if (cond()) return true; await wait(stepMs); }
-  return cond();
+  while (Date.now() < deadline) { if (await cond()) return true; await wait(stepMs); }
+  return await cond();
 };
 const MANAGER_BOUND_MS = 15_000; // manager's requestDeliveryAdmin("reloadCreds") timeout
 let pass = 0, fail = 0;
@@ -73,6 +74,40 @@ let srv = startBroker();
 
 const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
 const accountId = auth.account.pub;
+// Conn A lives in the SYSTEM account, and the observer cred can only ask for the DATA account's CONNZ
+// (`membershipObserverPermissions` scopes it to exactly that one subject) - so counting conn A needs a
+// probe that can ask the SERVER for every connection. Minted from the same in-memory $SYS signing seed
+// the observer itself is minted from, with `$SYS.REQ.SERVER.PING.CONNZ` and nothing else.
+const probeId = newIdentity();
+const probeJwt = await encodeUser(
+  "membership-connz-probe",
+  fromPublic(probeId.id),
+  fromPublic(auth.sys.pub),
+  { pub: { allow: ["$SYS.REQ.SERVER.PING.CONNZ"] }, sub: { allow: [`_INBOX_${probeId.id}.>`] } },
+  { signer: fromSeed(enc(auth.sys.signingSeed as string)) },
+);
+const probeCreds = `-----BEGIN NATS USER JWT-----\n${probeJwt}\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${probeId.seed}\n------END USER NKEY SEED------\n`;
+// The broker's own connection table. Scenario 8 grades a leak by what the BROKER still holds, not by
+// anything the feed reports about itself.
+const countObserverConns = async (): Promise<number> => {
+  const probe = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(enc(probeCreds)),
+    name: "smoke-connz-probe",
+    inboxPrefix: `_INBOX_${probeId.id}`,
+  });
+  try {
+    const reply = await probe.request(
+      "$SYS.REQ.SERVER.PING.CONNZ",
+      enc(JSON.stringify({ auth: true, offset: 0, limit: 1024 })),
+      { timeout: 3_000 },
+    );
+    const body = reply.json<{ data?: { connections?: Array<{ name?: string }> } }>();
+    return (body.data?.connections ?? []).filter((c) => c.name === "cotal-membership-observer").length;
+  } finally {
+    await probe.drain();
+  }
+};
 const feedId = newIdentity(); // conn B's stable nkey — every rw cred below re-signs THIS id
 let feed: MembershipFeedHandle | undefined;
 
@@ -322,6 +357,45 @@ try {
   );
   await expiringFeed.stop();
   feed = undefined;
+
+  // ---- Scenario 8: a startup that rejects after conn A leaves no observer connection behind (#1557) ----
+  // Conn A opens first and the rw source is read next, so a source that throws rejects the function with
+  // conn A already open. The only `drain()` lives in the handle's `stop()`, which a caller never receives
+  // on a reject - so the observer connection stayed open for the life of the process. Graded on the
+  // BROKER's own connection table, not on anything the feed reports about itself.
+  // ACCEPT CONTROL first: a probe that cannot see a LIVE observer would make the leak assertion below
+  // vacuous — "zero before, zero after" passes whether or not the connection was drained.
+  const controlFeed = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
+    rwCreds: await mintCreds(auth, newIdentity(), "membership-rw", { expiresInSeconds: 600 }),
+  });
+  feed = controlFeed;
+  const observersWithFeed = await countObserverConns();
+  check("the CONNZ probe sees a LIVE observer connection (accept control)", observersWithFeed >= 1, { observersWithFeed });
+  await controlFeed.stop();
+  feed = undefined;
+
+  const observersBefore = await countObserverConns();
+  const startupFailure = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
+    rwCreds: async () => { throw new Error("fixture rw source offline at startup"); },
+  }).then(() => ({ ok: true, e: "" }), (e: Error) => ({ ok: false, e: e.message }));
+  check(
+    "startup rejects when the rw source throws between the two connects",
+    !startupFailure.ok && /fixture rw source offline at startup/.test(startupFailure.e),
+    startupFailure,
+  );
+  // The drain is awaited before the rejection propagates, but the broker deregisters asynchronously.
+  let observersAfter = observersBefore;
+  const drained = await until(async () => {
+    observersAfter = await countObserverConns();
+    return observersAfter === observersBefore;
+  }, 5_000, 100);
+  check(
+    "conn A is drained when startup rejects - no orphaned observer connection on the broker",
+    drained,
+    { observersBefore, observersAfter },
+  );
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-RW RENEWAL ${pass}/${pass + fail}`);
   process.exitCode = fail ? 1 : 0;
