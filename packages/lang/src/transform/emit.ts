@@ -931,6 +931,13 @@ class Emitter {
    * WHICH primitives defer comes from the table (a scope-opener whose options sit at 2) rather
    * than from a list of names spelled here, so a fifth combinator cannot arrive with its body
    * silently eager.
+   *
+   * A PROBE IS NOT DEFERRED, and the difference is worth stating because the two look alike. A
+   * scope's body is deferred so that the EFFECTS INSIDE IT journal in the right place. A probe is
+   * an ordinary function VALUE in argument position: evaluating `() => f(x)` allocates a closure
+   * and performs nothing, exactly as the walker's evaluation of the same node does, and the
+   * interpreter then calls it once per observation. Deferring it would wrap a thunk in a thunk and
+   * the seam would call the wrapper, observing a function instead of the world.
    */
   private effectArgs(name: string, node: AnyNode): string {
     const spec = PRIMITIVES[name];

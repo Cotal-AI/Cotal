@@ -14,9 +14,17 @@ import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
+  JcodeSessionsEnumerationFailure,
   jcodeEffortRefusal,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
+import {
+  boundStoredSessionCause,
+  classifyStoredSessionPanic,
+  inspectStoredSessions,
+  isEmptyStoredSessionsDirectory,
+  storedSessionsPath,
+} from "./stored-sessions.js";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
@@ -316,6 +324,7 @@ export async function runJcodeHost(): Promise<void> {
   let launchIdentity: ProcessIdentity | undefined;
   let launchIdentityValue: string | undefined;
   let client: JcodeClient | undefined;
+  let bridgeStderr = "";
   let tui: ChildProcess | undefined;
   let stopping = false;
   let reconnecting = false;
@@ -388,6 +397,11 @@ export async function runJcodeHost(): Promise<void> {
     if (sdkExitListeners.length !== 1)
       throw new Error(`jcode connector: expected one SDK instance exit hook, found ${sdkExitListeners.length} — refusing unsafe lifecycle ownership`);
     launchIdentity = captureProcessIdentity(instance.process.pid!);
+    bridgeStderr = "";
+    instance.process.stderr?.on("data", (chunk: Buffer | string) => {
+      bridgeStderr += String(chunk);
+      if (bridgeStderr.length > 16_384) bridgeStderr = bridgeStderr.slice(-8000);
+    });
     return JcodeClient.connect({ socketPath: instance.socketPath, ...(remaining() !== undefined ? { requestTimeoutMs: remaining() } : {}) });
   };
 
@@ -781,22 +795,61 @@ export async function runJcodeHost(): Promise<void> {
     // very history the agent could not recall (#789). listSessions failing is not fatal: a seat that
     // cannot enumerate still deserves to start, it just starts fresh and says so.
     let prior: ResumeCandidate | undefined;
-    try {
-      prior = chooseSessionToResume(await client.listSessions(), cwd);
-    } catch (error) {
+    const sessionsPath = storedSessionsPath(socketHome.jcodeHome);
+    const stored = inspectStoredSessions(socketHome.jcodeHome);
+    let listingFailed = false;
+    if (isEmptyStoredSessionsDirectory(stored)) {
       writeJcodeDiagnostic(
-        `[cotal-jcode] could not list prior sessions, starting fresh: ${(error as Error).message}\n`,
-      );
-    }
-    let session;
-    if (prior) {
-      session = await client.attachSession(prior.session_id);
-      writeJcodeDiagnostic(
-        `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
+        `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
       );
     } else {
-      session = await client.createSession(cwd);
-      writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
+      // A directory the connector cannot read is not fatal by itself, but it is a fact worth
+      // naming: the harness reads and WRITES the same path, so if startup fails afterwards this
+      // is very likely why, and the operator should not have to infer it from a harness message.
+      // Carrying it further, so that a later harness death is renamed from `unknown`, is #1538:
+      // that failure lands outside any guard this connector owns and main behaves identically.
+      if (stored.kind === "unreadable")
+        writeJcodeDiagnostic(
+          `[cotal-jcode] stored sessions directory could not be read (${stored.path}: ${stored.code}); asking the harness anyway\n`,
+        );
+      try {
+        prior = chooseSessionToResume(await client.listSessions(), cwd);
+      } catch (error) {
+        listingFailed = true;
+        const panic =
+          classifyStoredSessionPanic(bridgeStderr) ??
+          classifyStoredSessionPanic(String((error as Error).message ?? ""));
+        const cause = boundStoredSessionCause(panic ?? (error as Error).message);
+        writeJcodeDiagnostic(
+          `[cotal-jcode] could not list prior sessions at ${sessionsPath}: ${cause}; starting fresh on a new harness\n`,
+        );
+        await stopPrivateJcode();
+        client = await launchPrivateJcode();
+      }
+    }
+    let session;
+    try {
+      if (prior) {
+        session = await client.attachSession(prior.session_id);
+        writeJcodeDiagnostic(
+          `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
+        );
+      } else {
+        session = await client.createSession(cwd);
+        writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
+      }
+    } catch (error) {
+      // The seat could not get a session, and the stored-sessions path is the known suspect:
+      // listing died on it. Name that path and the bounded cause; `unknown` is what sent
+      // operators to rename the seat (#1293).
+      if (!listingFailed) throw error;
+      const panic =
+        classifyStoredSessionPanic(bridgeStderr) ??
+        classifyStoredSessionPanic(String((error as Error).message ?? ""));
+      throw new JcodeSessionsEnumerationFailure(
+        sessionsPath,
+        boundStoredSessionCause(panic ?? `${(error as Error).message ?? ""}\n${bridgeStderr}`),
+      );
     }
     const resumed = prior !== undefined;
     sessionId = session.session_id;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -137,12 +137,47 @@ const saveSession = (session) => {
   if (sessionStatePath) writeFileSync(sessionStatePath, JSON.stringify(session));
 };
 
+// Real jcode writes the new session to JCODE_HOME/sessions/session_<id>.json. It ACCEPTS
+// create_session even when that directory is unwritable and fails afterwards, during the first
+// turn, with `SESSION_PERSISTENCE ... error=Permission denied` and then a closed session. The
+// failure is recorded here and raised at that later point, because a fixture that fails at the
+// wrong point in the protocol certifies claims the real binary disproves.
+let sessionPersistenceError;
+const persistSession = (sessionId, workingDir) => {
+  const home = process.env.JCODE_HOME;
+  if (!home) return true;
+  const dir = join(home, "sessions");
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `session_${sessionId}.json`),
+      JSON.stringify({ session_id: sessionId, working_dir: workingDir }),
+    );
+    return true;
+  } catch (error) {
+    sessionPersistenceError = error;
+    log({ ev: "session_persist_failed", path: dir, code: error.code ?? "unknown" });
+    process.stderr.write(`session index warmup skipped: ${error.message}\n`);
+    return false;
+  }
+};
+
 // One model turn. Lifted out of the send_message handler so a turn that arrives while the agent is
 // busy can be QUEUED and replayed later against its own connection, which is what the real server
 // does. Writes its events to the socket that submitted it rather than to whichever connection
 // happens to be current.
 function runTurn(frame, socket) {
   const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
+  // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
+  // point, fails to persist the session close state, and the session dies under the turn.
+  if (sessionPersistenceError) {
+    log({ ev: "session_persistence_error", code: sessionPersistenceError.code ?? "unknown" });
+    process.stderr.write(
+      `SESSION_PERSISTENCE session=${frame.session_id} error=${sessionPersistenceError.message}\nFailed to persist session close state\n`,
+    );
+    socket.destroy();
+    process.exit(1);
+  }
   // A real Harness reports idle between tool rounds while the host's run() is still awaiting
   // turn_done. That is the #1075 idle-during-drive wedge: the connector used that advisory status
   // to refuse soft_interrupt even though the Cotal-owned turn was live.
@@ -247,6 +282,28 @@ const server = createServer((socket) => {
         // A prior session is offered only when the harness is told to have one, so the same fake
         // covers both a first launch (nothing to resume) and a restart (exactly one candidate).
         case "list_sessions": {
+          const home = process.env.JCODE_HOME;
+          const sessionsDir = home ? join(home, "sessions") : "";
+          const emptySessions =
+            Boolean(sessionsDir) &&
+            existsSync(sessionsDir) &&
+            (() => {
+              try {
+                const stats = lstatSync(sessionsDir);
+                return stats.isDirectory() && readdirSync(sessionsDir).length === 0;
+              } catch {
+                return false;
+              }
+            })();
+          if (emptySessions || process.env.FAKE_JCODE_PANIC_LIST === "1") {
+            const panicPath = sessionsDir || "(unset-JCODE_HOME)/sessions";
+            process.stderr.write(
+              `thread 'tokio-runtime-worker' panicked at crates/jcode-harness-api-server/src/translate.rs:1707:38:\nchunk size must be non-zero\n`,
+            );
+            log({ ev: "empty_sessions_panic", path: panicPath });
+            socket.destroy();
+            process.exit(1);
+          }
           const preset = process.env.FAKE_JCODE_SESSIONS;
           const remembered = storedSession();
           reply({ ev: "sessions", sessions: preset ? JSON.parse(preset) : remembered ? [remembered] : [] });
@@ -280,6 +337,12 @@ const server = createServer((socket) => {
         case "create_session":
           createdFresh = true;
           sessionWorkingDir = frame.working_dir;
+          // Real jcode v0.81.5 ACCEPTS create_session on a sessions/ it cannot write and only
+          // fails later, while persisting the session during the first turn. A fake that
+          // rejected the create would fail at the wrong point in the protocol and certify a
+          // connector claim the real binary disproves, so the persistence failure is recorded
+          // here and surfaced where the real one surfaces.
+          persistSession("fake-session", sessionWorkingDir);
           saveSession({ session_id: "fake-session", working_dir: sessionWorkingDir, transcript_bytes: 1 });
           writeJournal("fake-session");
           reply({ ev: "attached", session: { session_id: "fake-session", working_dir: sessionWorkingDir, status: "idle" } });

@@ -1,5 +1,11 @@
 import { runJcodeHost } from "./host.js";
-import { JcodeEffortRefusal, JcodeEffortUnsupported, JcodeReadinessProviderRefusal, writeJcodeDiagnostic } from "./startup-diagnostics.js";
+import {
+  JcodeEffortRefusal,
+  JcodeEffortUnsupported,
+  JcodeReadinessProviderRefusal,
+  JcodeSessionsEnumerationFailure,
+  writeJcodeDiagnostic,
+} from "./startup-diagnostics.js";
 
 const STARTUP_FAILURE_CODES = new Set([
   "project_mcp_config",
@@ -15,6 +21,7 @@ const STARTUP_FAILURE_CODES = new Set([
   "model_mismatch",
   "private_state",
   "readiness_timeout",
+  "sessions_enumeration_failed",
 ]);
 
 function startupFailureCode(error: unknown): string {
@@ -53,6 +60,10 @@ runJcodeHost().catch((error) => {
   if (error instanceof JcodeReadinessProviderRefusal) {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\n`,
+    );
+  } else if (error instanceof JcodeSessionsEnumerationFailure) {
+    writeJcodeDiagnostic(
+      `[cotal-jcode] fatal: Jcode host startup failed (sessions_enumeration_failed): ${error.causeText} while reading ${error.sessionsPath}\n`,
     );
   } else {
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);

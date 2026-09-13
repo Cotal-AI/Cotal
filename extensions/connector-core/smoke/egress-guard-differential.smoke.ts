@@ -513,6 +513,9 @@ for (const type of forbiddenTypes) {
   push("forbidden-kind", `forbidden: well-formed ${type}`, [frameOf([eventOf(type)], 1)]);
 }
 for (const type of allowedTypes) {
+  // CUSTOM is in DIVERGENT: predecessor ALLOW, HEAD THROW (extra-property from spread
+  // TextMessageContent siblings). Pinned by identity, not counted in expectStricterMax.
+  if (type === "CUSTOM") continue;
   push("allowed-kind", `allowed: well-formed ${type}`, [frameOf([eventOf(type)])]);
 }
 
@@ -650,6 +653,19 @@ interface DivergentRow {
 
 const unreadablePart = () => over({ seq: -1 });
 const DIVERGENT: DivergentRow[] = [
+  // #1432: the closed-schema check intentionally refuses frames whose events carry
+  // keys outside the per-type allowlist. The corpus builder (eventOf) constructs CUSTOM
+  // by spreading TextMessageContent (adding `messageId` and `delta`), which the
+  // predecessor never checked. BaseEventSchema is `.passthrough()` for ALL event types,
+  // so the upstream schema would accept the extra keys, but the egress fence enforces
+  // the closed shape Cotal publishes: CUSTOM's extension point is `value: z.any()`,
+  // not arbitrary sibling keys.
+  {
+    name: "allowed: well-formed CUSTOM",
+    axis: "allowed-kind",
+    body: [frameOf([eventOf("CUSTOM")])],
+    expected: { [PREDECESSOR]: "ALLOW", HEAD: "THROW", [ADAPTER_FREE]: "ALLOW" },
+  },
   {
     name: "across parts: unreadable then TOOL_CALL_RESULT",
     axis: "body-composition",
@@ -757,6 +773,8 @@ const PAIRS: Pair[] = [
     baseRef: PREDECESSOR,
     headRef: "HEAD",
     expectWeakerMin: 0,
+    // Zero: every known divergence is pinned by identity in DIVERGENT, not counted here.
+    // A new STRICTER row fails loudly rather than slotting into a numeric budget.
     expectStricterMax: 0,
   },
 ];
@@ -875,18 +893,18 @@ try {
   );
   ok(
     "PREDICT across-unreadable-then-forbidden matches the predecessor/HEAD pins",
-    DIVERGENT[0]!.expected[PREDECESSOR] === PREDICT.acrossUnreadableThenForbidden.boolean &&
-      DIVERGENT[0]!.expected.HEAD === PREDICT.acrossUnreadableThenForbidden.threeWay,
+    DIVERGENT[1]!.expected[PREDECESSOR] === PREDICT.acrossUnreadableThenForbidden.boolean &&
+      DIVERGENT[1]!.expected.HEAD === PREDICT.acrossUnreadableThenForbidden.threeWay,
   );
   ok(
     "PREDICT across-forbidden-then-unreadable matches the predecessor/HEAD pins",
-    DIVERGENT[1]!.expected[PREDECESSOR] === PREDICT.acrossForbiddenThenUnreadable.boolean &&
-      DIVERGENT[1]!.expected.HEAD === PREDICT.acrossForbiddenThenUnreadable.threeWay,
+    DIVERGENT[2]!.expected[PREDECESSOR] === PREDICT.acrossForbiddenThenUnreadable.boolean &&
+      DIVERGENT[2]!.expected.HEAD === PREDICT.acrossForbiddenThenUnreadable.threeWay,
   );
   ok(
     "PREDICT same-part unreadable-beats-forbidden matches the predecessor/HEAD pins",
-    DIVERGENT[4]!.expected[PREDECESSOR] === PREDICT.samePartUnreadableAndForbidden.boolean &&
-      DIVERGENT[4]!.expected.HEAD === PREDICT.samePartUnreadableAndForbidden.threeWay,
+    DIVERGENT[5]!.expected[PREDECESSOR] === PREDICT.samePartUnreadableAndForbidden.boolean &&
+      DIVERGENT[5]!.expected.HEAD === PREDICT.samePartUnreadableAndForbidden.threeWay,
   );
 
   let missingHistory = "";

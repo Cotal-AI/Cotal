@@ -348,6 +348,7 @@ const watching = (inner: SimHandler, slowSleep = false) => {
       return await inner.sleep(r, c);
     },
     wait: (r, c) => inner.wait(r, c),
+    observe: (r, c) => inner.observe(r, c),
     notify: (r, c) => inner.notify(r, c),
     monitor: (r, c) => inner.monitor(r, c),
     openConclave: async (r, c) => {
@@ -549,6 +550,7 @@ await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, {
     checkpoint: (r, c) => sim.checkpoint(r, c),
     sleep: (r, c) => sim.sleep(r, c),
     wait: (r, c) => sim.wait(r, c),
+    observe: (r, c) => sim.observe(r, c),
     notify: (r, c) => sim.notify(r, c),
     monitor: (r, c) => sim.monitor(r, c),
     openConclave: (r, c) => sim.openConclave(r, c),

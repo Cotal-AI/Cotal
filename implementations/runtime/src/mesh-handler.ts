@@ -101,6 +101,7 @@ import {
   type JournalEntry,
   type MonitorRequest,
   type NotifyRequest,
+  type ObserveRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,
@@ -111,6 +112,7 @@ import {
 
 import type { RunPauseHost } from "./run-pause-host.js";
 import type { RunWaitHost } from "./run-wait-host.js";
+import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
 
 export interface RunMeshServices {
@@ -217,6 +219,19 @@ export class MeshHandler {
     private readonly watcher: SettleWatcher,
     private readonly clock: () => number = () => Date.now(),
     private readonly services?: RunMeshServices,
+    /**
+     * How this handler learns whether its own process was scheduled (#1508). Injected so a suite
+     * can drive a starved loop deterministically; the default is the process-wide observer, which
+     * is the only honest source outside a test.
+     */
+    private readonly lag: LoopLagObserver = loopLag(),
+    /**
+     * Where the operator notice for an absorbed starvation goes (#1508). A daemon routes it to its
+     * own log rather than stderr, and a suite counts it: an absorbed starvation is otherwise
+     * INVISIBLE, and a cell asserting "the sleep completed" cannot tell a completion that survived
+     * starvation from one that was never starved at all.
+     */
+    private readonly onStarved: (note: string) => void = (note) => console.error(note),
   ) {}
 
   /**
@@ -515,6 +530,21 @@ export class MeshHandler {
         if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string")
           this.turnGoals.get(`${x.name}#${x.uid}`)?.delete(x.goalId);
       }
+      if (e.kind === "waitUntil") {
+        // A `waitUntil` arms ONE cadence pause per observation, each under a derived token, so the
+        // sweep releases the one that is actually open: the observation the entry is on. The
+        // earlier ones already settled (that is how the wait got here) and `cancelTimer` tolerates
+        // a claim that loses its own race, so releasing the current index is both necessary and
+        // sufficient. Attempt 0 never arms anything, which is why the index is the observation
+        // COUNT rather than the count minus one.
+        const attempt = (e.observations ?? []).length;
+        if (attempt > 0)
+          await this.cancelTimer({
+            endpoint: this.binding.endpoint,
+            token: derivedToken(e.requestId, `observe-${attempt}`),
+          });
+        continue;
+      }
       if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") continue;
       // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
       // crash before the first bind leaves attempt 1, which is the request id itself.
@@ -674,6 +704,48 @@ export class MeshHandler {
 
     await this.settle(ref, ctx.signal);
     return null;
+  }
+
+  /**
+   * `waitUntil`'s cadence, as a durable pause nobody answers.
+   *
+   * THE SAME PLANE AS `sleep`, for the reason `sleep` gives for reusing the checkpoint plane: a
+   * durable pause with a deadline, a token that survives a crash and a one-use settle is what this
+   * needs, and a second timer mechanism would be a second thing to get wrong. What differs is that
+   * a `waitUntil` parks MANY times under one step, so each observation's pause takes its own
+   * DERIVED token (`observe-<n>`), exactly as an ask's re-attempts and a wait's second deadline do.
+   * Deriving rather than remembering is what makes it recoverable: a resumed run re-derives the
+   * same token from the request id and the attempt index, and re-attaches to the pause the crashed
+   * attempt armed instead of arming a second one.
+   *
+   * THIS HANDLER NEVER OBSERVES ANYTHING. The probe is the program's and the interpreter calls it;
+   * all that happens here is the waiting. So there is nothing to bind and nothing to read back:
+   * the observations are the journal's, written by the interpreter, and this returns only whether
+   * there was time left.
+   */
+  async observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    // OUT OF TIME IS ANSWERED BEFORE ANYTHING IS ARMED. A pause armed at an instant that has
+    // already passed is a timer that fires immediately and a record nobody needs, and the caller's
+    // next act on `false` is to fail the step.
+    if (this.now() >= req.deadlineAt) return false;
+    // ATTEMPT 0 LOOKS IMMEDIATELY: a wait that sleeps before it has ever looked cannot notice a
+    // predicate that already holds, and "are the checks finished" is often already true.
+    if (req.attempt === 0) return true;
+
+    // The cadence, CLAMPED to the deadline. Parking past it would hold the run beyond the instant
+    // the program said to give up at, and then report a lateness the wait never agreed to.
+    const wake = Math.min(this.now() + parseDuration(req.every), req.deadlineAt);
+    const ref: CheckpointRef = {
+      endpoint: this.binding.endpoint,
+      token: derivedToken(ctx.requestId, `observe-${req.attempt}`),
+    };
+    await this.arm(ref, wake);
+    await this.settle(ref, ctx.signal);
+    // Re-read the clock rather than trusting the arithmetic: the pause may have been settled by a
+    // heartbeat-advanced deadline or by this host being away, and what decides whether there is
+    // still time is where the clock actually is now.
+    return this.now() < req.deadlineAt;
   }
 
   /**
@@ -1950,6 +2022,12 @@ export class MeshHandler {
    * raised rather than waited on.
    */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
+    // #1508: every read and write below rides a client-side deadline, and a deadline that elapsed
+    // because THIS PROCESS was off the CPU is not evidence about the plane. See `host-starvation`.
+    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);
+  }
+
+  private async armOnce(ref: CheckpointRef, deadline: number): Promise<void> {
     if (this.services) return this.services.pauses.arm(ref.token, deadline);
     // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
     // caller reads the fact next.
@@ -2136,6 +2214,14 @@ export class MeshHandler {
    * already in the past.
    */
   private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
+    // #1508, and the load-bearing half: this is where a `sleep` spends its whole duration, so this
+    // is where a starved host was reporting its own scheduling as the effect's failure. The pause
+    // and its timer are durable facts on the plane; re-reading them observes the same world, and a
+    // sleep whose deadline passed while this process was blocked settles `ok`, late.
+    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+  }
+
+  private async settleOnce(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
     const already = this.services ? await this.services.pauses.readSettle(ref.token) : await readCheckpointSettle(this.jsm, this.binding.space, ref);
     if (already !== undefined) return already;
     // The watcher waits for the FACT. For a pause with an answer the fact arrives because somebody

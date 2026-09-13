@@ -17,6 +17,7 @@ export const EFFECT_KINDS = [
   "checkpoint",
   "sleep",
   "wait",
+  "waitUntil",
   "notify",
   "monitor",
   "conclave",
@@ -61,6 +62,25 @@ export interface PrimitiveSpec extends CalleeDoc {
   readonly hashesSubject: boolean;
   /** This primitive opens a concurrency scope, so it pushes a scope frame. */
   readonly opensScope: boolean;
+  /**
+   * This primitive takes a PROBE: a program function the runtime calls, repeatedly, to observe
+   * something outside the run.
+   *
+   * It is in the table rather than spelled as a name at each site for the reason `opensScope` is:
+   * the emitter has to hand that argument over unevaluated, the validator has to know the
+   * position is a function rather than data, and a second primitive that takes one must not be
+   * able to arrive with any of those silently wrong. The value is the argument INDEX, so nothing
+   * downstream has to re-derive which position it is.
+   */
+  readonly probeAt?: number;
+  /**
+   * Option keys whose value is a program FUNCTION rather than data, for the same reason
+   * {@link PrimitiveSpec.probeAt} exists: the options bag is held to the crossing rule as a whole,
+   * and a predicate sitting in it is code the interpreter calls, not a value that crosses to a
+   * handler or a journal. Named here so the exemption is a property of the primitive rather than a
+   * key spelled at the check.
+   */
+  readonly functionOptions?: readonly string[];
 }
 
 export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze({
@@ -148,6 +168,35 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     doc: "Await one event. Resolves null on timeout rather than throwing, which is what makes ?? the recovery operator.",
     example:
       'const m = await wait(message(team, { from: builder }), { name: "await-build", timeout: "20m" })\n           ?? await turn(planner, { name: "chase" })',
+  },
+  waitUntil: {
+    kind: "waitUntil",
+    nameRequired: true,
+    options: ["name", "every", "deadline", "terminal"],
+    optionsAt: 1,
+    // `every` AND `deadline` both STOP OBSERVATION, so both are hashed, for the reason `wait`'s
+    // timeout is: a wait that gave up recorded "the predicate did not hold within THIS deadline",
+    // never "never", and a wait that polled hourly did not ask the question a minutely one asks.
+    // `terminal` is deliberately NOT hashed: it READS an observation rather than making one, which
+    // is exactly the `onExpiry: fail|proceed` reapply case — editing the predicate over a history
+    // of observations must be a reapply, or no program could ever fix its own predicate on a run
+    // that is already waiting, which is the case this primitive exists for.
+    hashedOptions: ["every", "deadline"],
+    // The probe is a FUNCTION, and a function has no canonical form (L3042), so it cannot be in
+    // the hash. What identifies this step is its name and its cadence; what the probe DOES is
+    // re-observed on every resume by construction, so a probe whose body changed is answered by
+    // observing again rather than by a divergence over something unhashable.
+    hashesSubject: false,
+    opensScope: false,
+    probeAt: 0,
+    functionOptions: ["terminal"],
+    signature:
+      "waitUntil(probe, { name, every, deadline, terminal? }) -> observation",
+    doc: "Block until a predicate over something OUTSIDE the mesh holds. The runtime owns the cadence and the deadline; the program owns the probe and the predicate. Each observation is journalled AS AN OBSERVATION, not as the step's result, so a resumed run OBSERVES AGAIN rather than replaying what the world looked like before the crash. An elapsed deadline is a catchable L4023.",
+    example:
+      'const checks = await waitUntil(async () => await ask(builder, { name: "checks", schema: { state: "string" } }),\n'
+      + '                              { name: "checks-green", every: "1m", deadline: "1h",\n'
+      + '                                terminal: (o) => o.state !== "pending" })',
   },
   notify: {
     kind: "notify",

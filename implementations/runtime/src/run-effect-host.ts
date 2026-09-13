@@ -59,6 +59,12 @@ export function createRunEffectHost(
     checkpoint: (req, ctx) => dispatch("checkpoint", req, ctx, (request, current) => handler.checkpoint(request, current)),
     sleep: (req, ctx) => dispatch("sleep", req, ctx, (request, current) => handler.sleep(request, current)),
     wait: (req, ctx) => dispatch("wait", req, ctx, (request, current) => handler.wait(request, current)),
+    // Through the same authority dispatch as every other effect: a cadence pause is world state
+    // this driver arms under a lease, so it must re-read the entry it belongs to and re-assert the
+    // lease at each observation, exactly as a `sleep` does. A `waitUntil` parks many times under
+    // one step, so this is the one effect where that re-assertion happens repeatedly, which is a
+    // stronger reason to route it here rather than a reason to shortcut it.
+    observe: (req, ctx) => dispatch("waitUntil", req, ctx, (request, current) => handler.observe(request, current)),
     notify: (req, ctx) => dispatch("notify", req, ctx, (request, current) => handler.notify(request, current)),
     monitor: (req, ctx) => dispatch("monitor", req, ctx, (request, current) => handler.monitor(request, current)),
     openConclave: (req, ctx) => dispatch("conclave", req, ctx, (request, current) => handler.openConclave(request, current)),

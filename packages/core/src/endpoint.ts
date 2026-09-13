@@ -803,6 +803,54 @@ export class CotalEndpoint extends EventEmitter {
    *  (75% of iat→exp), not a fixed margin — standing creds span hours to days, bearers minutes. */
   private static readonly CREDS_RETRY_MS = 60_000;
 
+  /** THE ONE PLACE a credential is cleared for presentation to a broker.
+   *
+   *  The property is unconditional — this endpoint never presents a credential it has already
+   *  decoded as expired — so it is a property of the SUPPLY, not of any one dial site. It used to
+   *  live inside {@link bindConnection}, which only `start()` and `doRebuild` reach; the
+   *  authenticator nats.js re-evaluates on ITS OWN reconnects read the cache directly and so
+   *  presented whatever was last fetched, expired included. Two such reconnects exist and neither
+   *  passes through bindConnection: the one the broker forces at JWT `exp`, and an ALREADY RUNNING
+   *  dial loop from an earlier drop that crosses `exp` while it retries (the pre-expiry
+   *  reconnect fence flips a policy flag nats-core only reads when it observes a NEW drop, so it
+   *  cannot stop a loop already in flight).
+   *
+   *  Putting the refusal here instead means a future caller cannot miss it: the only way to reach a
+   *  dial is through {@link credsForWire}, and the one presentation that does not read the cache
+   *  (the adoption preflight, which presents a fresh CANDIDATE) calls this same function on it.
+   *
+   *  An unbounded credential (no numeric `exp`) is presentable: bounded lifetimes are the renewal
+   *  seam's concern, and a cred with no expiry has none to be past. */
+  private static presentableCreds(creds: string, opts: { renewable: boolean }): string {
+    const { exp } = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
+    if (typeof exp === "number" && exp * 1000 <= Date.now())
+      throw new Error(
+        opts.renewable
+          ? "this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
+          : "this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)",
+      );
+    return creds;
+  }
+
+  /** The cached credential, checked. Handed to nats.js as the authenticator's source on EVERY auth
+   *  mode (renewed or static), so each (re)connect attempt — ours or the library's — re-reads a
+   *  CHECKED value. A refusal throws out of the authenticator, which nats-core turns into a closed
+   *  connection rather than a CONNECT carrying dead material; the endpoint's own supervisor then
+   *  rebuilds on capped backoff, and {@link bindConnection} re-fetches from the source on each of
+   *  those attempts, so a renewal that starts working recovers the endpoint without presenting
+   *  anything expired in the meantime. Deliberately side-effect free: kicking the renewal timer
+   *  from here would retry the source once per dial attempt, which is the flat load on a dead
+   *  broker that {@link RETRY_BACKOFF_CAP_MS} exists to prevent. */
+  private credsForWire(): string {
+    if (!this.currentCreds)
+      throw new Error(
+        this.credsSource
+          ? "this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material"
+          : "this endpoint was constructed with an empty creds string - not dialing without auth material (an empty credential is not anonymous access)",
+      );
+    return CotalEndpoint.presentableCreds(this.currentCreds, { renewable: Boolean(this.credsSource) });
+  }
+
   /** The disposable-preflight connect bound for the EXPLICIT reload proof (D5 class-2 adoption). A
    *  rogue or unreachable candidate must resolve well UNDER the manager's delivery-admin request
    *  bound, so this stays a few seconds and never blocks the responder. */
@@ -959,7 +1007,13 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error("reloadCreds: re-read credential generation did not match the expected re-signed generation (a different store, or a torn/stale read); nothing adopted");
     // PREFLIGHT = the proof. A disposable connection presenting exactly the candidate BEFORE the live
     // cache is touched; a refused cred throws here, leaving the resident connection untouched.
-    const probe = await probeConnect(this.servers, { creds: candidate, tls: this.tls, timeoutMs: Math.max(500, Math.min(CotalEndpoint.PREFLIGHT_MS, deadline - Date.now())) });
+    // The candidate goes through the SAME checkpoint the resident getter uses: this is the one
+    // presentation that does not read the cache, so routing it here is what makes the refusal a
+    // property of every path rather than of the cached one. An already-dead re-signed generation is
+    // refused locally instead of spending a round trip to be told so, and — because this throws
+    // BEFORE the commit below — it can never become the resident connection's next-presented cred.
+    const proven = CotalEndpoint.presentableCreds(candidate, { renewable: true });
+    const probe = await probeConnect(this.servers, { creds: proven, tls: this.tls, timeoutMs: Math.max(500, Math.min(CotalEndpoint.PREFLIGHT_MS, deadline - Date.now())) });
     if (!probe.ok)
       throw new Error(`reloadCreds: the broker did not accept the re-signed credential (${probe.reason}); nothing adopted`);
     if (Date.now() > deadline)
@@ -1082,13 +1136,13 @@ export class CotalEndpoint extends EventEmitter {
           ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
           : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
       );
-    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;
-    if (typeof credsExp === "number" && credsExp * 1000 <= Date.now())
-      throw new Error(
-        this.credsSource
-          ? "this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
-          : "this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)",
-      );
+    // The CREDS refusal is NOT repeated here. It lives on the supply itself ({@link credsForWire}),
+    // which the authenticator below re-reads per attempt, so it covers this dial AND the reconnects
+    // nats.js runs on its own. Raising it early here too would only duplicate it on the one path
+    // that was already covered, and a fourth dial site added later would silently miss the copy.
+    // The refusal still surfaces on this path: the authenticator throws during the CONNECT, the
+    // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
+    // the source re-fetch above is what recovers a renewable endpoint.
     this.nc = await dialerFor(this.servers)({
       servers: this.servers,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
@@ -1104,9 +1158,16 @@ export class CotalEndpoint extends EventEmitter {
       inboxPrefix: `_INBOX_${this.connId}`,
       // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
       // attempt, so internal reconnects present whatever refreshBearer last fetched.
-      // Creds likewise ride a GETTER when a source renews them, so internal reconnects (incl. the
-      // one the broker forces at JWT `exp`) present whatever refreshCreds last fetched.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.credsSource ? () => this.currentCreds! : this.currentCreds, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
+      // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
+      // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
+      // just been proven unexpired rather than whatever the cache happens to hold.
+      // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
+      // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
+      // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
+      // (an empty credential) was never named. Routing it into the checked getter fails it loud
+      // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();

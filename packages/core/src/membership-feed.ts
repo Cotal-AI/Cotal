@@ -121,8 +121,26 @@ async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: num
 }
 const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server before a loud under-report)
 
-/** Connect, wire the triggers + safety poll, and run an immediate first reconcile. */
+/** Connect, wire the triggers + safety poll, and run an immediate first reconcile.
+ *
+ *  Startup is TRANSACTIONAL. Conn A opens first, and every step after it can throw: an rw source that
+ *  rejects, credential bytes `idFromCreds` refuses, conn B's own dial (its pre-dial checkpoint refuses a
+ *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open,
+ *  the first reconcile. The only `drain()` in this file is inside the handle's `stop()`, and a caller
+ *  that never receives the handle can never call it — so a reject left the observer connection open for
+ *  the life of the process. Everything acquired is drained here before the rejection propagates. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
+  const opened: NatsConnection[] = [];
+  try {
+    return await startFeed(opts, opened);
+  } catch (err) {
+    // `allSettled`: a drain that itself fails must not replace the startup error the caller needs.
+    await Promise.allSettled(opened.map((c) => c.drain()));
+    throw err;
+  }
+}
+
+async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Promise<MembershipFeedHandle> {
   const log = opts.log ?? ((m: string) => console.error(`! membership: ${m}`));
   const intervalMs = opts.intervalMs ?? 15_000;
   const debounceMs = opts.debounceMs ?? 400;
@@ -138,6 +156,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX, // scoped reply inboxes — the cred only allows `<prefix>.>`
     maxReconnectAttempts: -1,
   });
+  opened.push(connA); // the transactional record — `startMembershipFeed` drains this if anything below throws
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
   // The rw source: async-capable (a hosted `store.get`) or sync (a local FS read / literal). Read ONCE
@@ -162,18 +181,34 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   // incidental reconnect (broker expiry-close, a network blip) can never present an unproven or
   // broker-refused generation and strand conn B — closing the membership half of the D5 blocker.
   let currentRwCreds = initialRw;
+  // Proven when adopted is not unexpired now. The cache only ever advances through a preflight-proven
+  // adoption, so it cannot hold an UNPROVEN generation, but the clock alone expires a legitimately
+  // proven one. If re-signing has stopped (the manager is down, the store unreachable) and conn B drops
+  // after `exp`, the client's own redial presents the expired credential to the broker: a denial that
+  // still costs the auth round trip, and one that reports the broker's words instead of the local cause.
+  // Refuse here instead, the same pre-dial checkpoint the endpoint raises before its own dial.
+  const refuseExpiredRwCreds = (): void => {
+    const exp = credsClaims(currentRwCreds).exp;
+    if (typeof exp !== "number" || exp * 1000 > Date.now()) return;
+    const why = rwIsSource
+      ? "the membership feed's rw creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
+      : "the membership feed's rw creds have expired and the feed holds no rw creds source to renew them - replace the credential and restart the feed (pass an rw creds FUNCTION for standing renewal)";
+    log(why);
+    throw new Error(why);
+  };
   const connB = await connect({
     servers: opts.servers,
     // Synchronous per (re)connect attempt: presents the last BROKER-PROVEN cred, never a fresh
     // un-preflighted source read. The 75% timer / explicit reload advance `currentRwCreds` only AFTER a
     // disposable preflight proves the broker accepts the candidate.
-    authenticator: (nonce?: string) => credsAuthenticator(enc(currentRwCreds))(nonce),
+    authenticator: (nonce?: string) => { refuseExpiredRwCreds(); return credsAuthenticator(enc(currentRwCreds))(nonce); },
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
     inboxPrefix: `_INBOX_${rwSelfId}`,
     maxReconnectAttempts: -1,
   });
+  opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
 
   const kvm = new Kvm(connB);

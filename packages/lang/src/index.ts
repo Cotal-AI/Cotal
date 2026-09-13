@@ -102,6 +102,7 @@ export {
   type MonitorRequest,
   type NotifyFact,
   type NotifyRequest,
+  type ObserveRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,
@@ -125,6 +126,7 @@ export {
   type PlannedAgent,
   type PlannedCheckpoint,
   type PlannedEffect,
+  type PlannedWait,
 } from "./dryrun.js";
 
 export {

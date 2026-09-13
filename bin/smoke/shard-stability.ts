@@ -297,7 +297,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "e6f6302f1a432b2eebe170fecc7dbf712c2c7545d1893ba01524318df9213bc6";
+    return actual === "4206ff926c9ff74e2d1990e77a786808930c429915c06a407262233f43b0264c";
   } catch {
     return false;
   }

@@ -1134,7 +1134,7 @@ export class AguiBracketStateLost extends AguiVocabularyError {
 
 export class AguiEmitterHalted extends Error {
   constructor(
-    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable",
+    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property",
     message: string,
   ) {
     super(message);
@@ -1271,6 +1271,84 @@ const EGRESS_FORBIDDEN_TYPES: ReadonlySet<string> = new Set([
 /** Every `type` the vocabulary defines. An element outside it cannot be classified, only refused. */
 const KNOWN_AGUI_EVENT_TYPES: ReadonlySet<string> = new Set(Object.values(AGUI_EVENT_TYPE));
 
+// ---------------------------------------------------------------------------
+// Closed-schema tables.
+//
+// The egress fence must validate the WHOLE envelope, not just `.events[].type`.
+// A frame with extra properties at any level passes the event-kind check and
+// publishes its payload untouched. These tables define the closed shape so the
+// fence can refuse an envelope carrying unknown properties and name the path.
+//
+// `cotal` is an allowed extension key on every event (WithCotal<E>). AG-UI
+// schemas are `.passthrough()`, so the upstream schema would not refuse it;
+// this fence enforces the closed shape Cotal publishes.
+// ---------------------------------------------------------------------------
+
+/** The ONLY keys a frame part may carry at the top level. */
+const KNOWN_FRAME_KEYS: ReadonlySet<string> = new Set([
+  "kind", "protocol", "threadId", "runId", "epoch", "seq", "events",
+]);
+
+/**
+ * The allowed keys per event type. Each set includes the AG-UI schema keys for
+ * that type PLUS `cotal` (the Cotal extension key carried via `WithCotal<E>`).
+ *
+ * The source of truth is the AG-UI 0.0.57 schema shapes, measured at build time
+ * by the conformance smoke. `rawEvent` is an AG-UI schema key on every type.
+ */
+const KNOWN_EVENT_KEYS_BY_TYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [AGUI_EVENT_TYPE.RUN_STARTED, new Set(["type", "timestamp", "rawEvent", "threadId", "runId", "parentRunId", "input", "cotal"])],
+  [AGUI_EVENT_TYPE.RUN_FINISHED, new Set(["type", "timestamp", "rawEvent", "threadId", "runId", "result", "outcome", "cotal"])],
+  [AGUI_EVENT_TYPE.RUN_ERROR, new Set(["type", "timestamp", "rawEvent", "message", "code", "cotal"])],
+  [AGUI_EVENT_TYPE.TEXT_MESSAGE_START, new Set(["type", "timestamp", "rawEvent", "messageId", "role", "name", "cotal"])],
+  [AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, new Set(["type", "timestamp", "rawEvent", "messageId", "delta", "cotal"])],
+  [AGUI_EVENT_TYPE.TEXT_MESSAGE_END, new Set(["type", "timestamp", "rawEvent", "messageId", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_START, new Set(["type", "timestamp", "rawEvent", "toolCallId", "toolCallName", "parentMessageId", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_ARGS, new Set(["type", "timestamp", "rawEvent", "toolCallId", "delta", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_END, new Set(["type", "timestamp", "rawEvent", "toolCallId", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_RESULT, new Set(["type", "timestamp", "rawEvent", "messageId", "toolCallId", "content", "role", "cotal"])],
+  [AGUI_EVENT_TYPE.REASONING_MESSAGE_START, new Set(["type", "timestamp", "rawEvent", "messageId", "role", "cotal"])],
+  [AGUI_EVENT_TYPE.REASONING_MESSAGE_CONTENT, new Set(["type", "timestamp", "rawEvent", "messageId", "delta", "cotal"])],
+  [AGUI_EVENT_TYPE.REASONING_MESSAGE_END, new Set(["type", "timestamp", "rawEvent", "messageId", "cotal"])],
+  [AGUI_EVENT_TYPE.CUSTOM, new Set(["type", "timestamp", "rawEvent", "name", "value", "cotal"])],
+]);
+
+/**
+ * Find the first extra property on a parsed frame, returning its JSON-path
+ * string, or `undefined` when the envelope is closed.
+ *
+ * Checks two levels:
+ * 1. Frame-level keys against {@link KNOWN_FRAME_KEYS}.
+ * 2. Per-event keys against {@link KNOWN_EVENT_KEYS_BY_TYPE} for the event's
+ *    `type`. An event whose `type` is not in the map has already been refused
+ *    by `parseAguiFrame`; if it somehow reaches here it is reported as
+ *    `events[i]` with no key.
+ *
+ * Returns the dotted path of the first unknown property found, e.g.
+ * `"recovery"` for a frame-level extra or `"events[0].leaked"` for an
+ * event-level extra. The caller turns this into a named verdict.
+ */
+export function extraPropertyPath(part: Record<string, unknown>): string | undefined {
+  // Frame-level extra keys.
+  for (const key of Object.keys(part)) {
+    if (!KNOWN_FRAME_KEYS.has(key)) return key;
+  }
+  // Per-event extra keys.
+  const events = part.events;
+  if (!Array.isArray(events)) return undefined; // parseAguiFrame already validated
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i] as Record<string, unknown> | null;
+    if (typeof e !== "object" || e === null) continue; // parseAguiFrame already validated
+    const t = e.type as string;
+    const allowed = KNOWN_EVENT_KEYS_BY_TYPE.get(t);
+    if (!allowed) return `events[${i}]`; // unknown type
+    for (const key of Object.keys(e)) {
+      if (!allowed.has(key)) return `events[${i}].${key}`;
+    }
+  }
+  return undefined;
+}
+
 export function isForbiddenEgressEventType(type: unknown): boolean {
   return typeof type === "string" && EGRESS_FORBIDDEN_TYPES.has(type);
 }
@@ -1281,7 +1359,7 @@ export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[]
 }
 
 /** What a frozen body is, as far as the egress policy can tell. */
-export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable";
+export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable" | "extra-property";
 
 /**
  * Classify a frozen body for egress. Used on retry, where the body is already on disk and must not
@@ -1355,6 +1433,11 @@ export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgr
         for (const e of frame.events) {
           if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return "forbidden-kind";
         }
+        // Closed-schema check: refuse any property not in the known set.
+        // This is the fix for #1432: the fence previously checked only
+        // .events[].type and let sibling/extra properties ride through.
+        const extra = extraPropertyPath(part as Record<string, unknown>);
+        if (extra !== undefined) return "extra-property";
       } catch {
         unreadable = true;
       }
@@ -1873,6 +1956,26 @@ export class AguiEmitter<T> {
           `something else. Clear the pending frame only as an explicit abandonment of this epoch.`,
       );
     }
+    if (egress === "extra-property") {
+      // Re-scan to name the path. This is the error path; the cost is negligible.
+      let path = "(unknown)";
+      for (const part of o.body) {
+        if (!isAguiFramePart(part)) continue;
+        const p = extraPropertyPath(part as Record<string, unknown>);
+        if (p !== undefined) { path = p; break; }
+      }
+      throw this.halt(
+        "egress-extra-property",
+        `event emitter for ${this.channel}: refusing to ${o.retry ? "republish a frozen" : "publish a"} ` +
+          `frame whose body carries an unknown property at \`${path}\` onto ${this.channel}. ` +
+          `The egress fence validates the whole envelope against a closed schema: known top-level ` +
+          `frame keys (kind, protocol, threadId, runId, epoch, seq, events) and known per-event ` +
+          `keys per type. A property outside that schema could carry tool output or other content ` +
+          `that bypasses the event-kind check. The body is not rewritten: the WAL froze it at ` +
+          `beginSend, and mutating it between disk and wire would break the recovery machine. ` +
+          `Clear the pending frame only as an explicit abandonment of this epoch.`,
+      );
+    }
     let ack: { seq: number; duplicate: boolean };
     try {
       ({ ack } = await this.ep.multicastExpecting({
@@ -1967,7 +2070,7 @@ export class AguiEmitter<T> {
     );
   }
 
-  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable", message: string): AguiEmitterHalted {
+  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property", message: string): AguiEmitterHalted {
     this.halted = new AguiEmitterHalted(reason, message);
     return this.halted;
   }

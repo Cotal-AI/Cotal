@@ -1,5 +1,50 @@
 # @cotal-ai/runtime
 
+## 0.49.0
+
+### Minor Changes
+
+- 1469d18: Add `waitUntil(probe, { name, every, deadline })`: a durable wait on a resource the mesh does not own. Before this a program could only wait on a mesh event or on the clock, so blocking until something outside the mesh became true meant writing a poll loop, and a poll loop is broken across a resume: the probe's observation of "not yet" was journalled as the step's RESULT and replayed forever, so a resumed run was handed a stale answer for a resource that had since completed, and never looked again.
+
+  A `waitUntil`'s non-terminal observation is now journalled AS AN OBSERVATION and leaves the entry pending, so a resumed run re-observes the world. Only a terminal observation settles the entry, carrying its observation history beside the result. Each observation's probe is journalled in its own key namespace, so the effects one look performs can never be replayed as another look's answer. The deadline is absolute from the entry's start, so a crash does not buy the wait more time, and an elapsed deadline is catchable as `L4023` and reports how many times it looked. The handler is asked only to wait out the cadence: which resource to look at, and what counts as done, stay with the program. `every` and `deadline` are part of the step's identity, so editing either on a resumed run diverges; the predicate is not, so a program can correct it on a run that is already waiting. Neither `every` nor `deadline` may be defaulted, and a cadence longer than the deadline is refused at parse.
+
+  Journals written before this release are unaffected: the new entry shape adds an optional field, and no existing kind changes.
+
+- 36d1779: Issued authority and run admission (SPEC 13.15, 14.8). A static credential is now an issuance: the issuer records its permission ceiling as evidence under a fresh generation before the material exists, its endpoint rows ride the versioned `ep.v1` rail with that generation pinned beside the caller triple, and a connected client reads its generation from an issuer-written accepted row. A hosted workflow run is admitted under the starting caller's resolved ceiling, recorded once per run in a dedicated admission store the driver cannot write, checked before every channel effect (wait open, fetch, recorded re-read, conclave writes), and revoked by an independent create-only marker that ends open waits at their next poll and refuses resume, takeover and reconcile. `run-start` on the legacy rail is refused with `permission-denied` and the `ai.cotal.ep.unbound-caller-authority` detail. `cotal run start --local` takes `--admit-read` and `--admit-publish` (required) and `cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker. Three new per-space stores (`cotal_issued_`, `cotal_accepted_`, `cotal_admission_`), immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup headers, message deletes and purges, so a holder of its own key row can neither widen nor erase what was recorded. Two new one-shot profiles (`issuer`, `run-admitter`), an admission read on the run mediator and operator profiles, and `COTAL_ACCEPTED_TOKEN` on every connector's spawn environment. Breaking pre-1.0 authority change.
+
+### Patch Changes
+
+- 4b3881f: A workflow `sleep` that a busy host was simply too loaded to schedule no longer fails the run. A pause waits by reading the durable checkpoint plane, and each of those reads carries a client-side deadline that is itself a timer; when the machine is loaded hard enough that the run's process does not get back onto the CPU, that timer cannot run either, so it expires the moment the process resumes and reports a bare `timeout` even though the broker answered long ago. That was recorded as `L4000 EffectError: timeout`, which names the effect as the thing that broke and sends the author looking at their own program, and it killed runs whose only fault was being polite about load.
+
+  The runtime now measures whether its own process was actually running across the wait, namely event-loop lag over the window together with a shortfall in the ticks that window should have contained, and treats a deadline that elapsed while the process was demonstrably off the CPU as a fact about the host rather than about the effect. The pause and its timer are durable, so the wait is simply re-entered and a `sleep` whose deadline passed during the starvation completes late, which is what a lower-bound wait promises. Nothing is widened and nothing is swallowed: a deadline on a loop that was running, and every failure that is not a client deadline, still fails immediately as `L4000` with its message intact. A host that still cannot serve the run after a bounded number of consecutive starved attempts fails under the new `L4025`, "Host did not schedule the run", quoting the lag and tick measurement it made, so a caller that genuinely cannot be served fails rather than hanging and the operator reads the real cause.
+
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [1469d18]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [4b3881f]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/workspace@0.49.0
+  - @cotal-ai/lang@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

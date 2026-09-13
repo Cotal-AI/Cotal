@@ -106,6 +106,27 @@ workspace="$(/bin/pwd -P)"
 runner_user="${runner_home##*/}"
 clean_path="$pnpm_dir:$node_dir:$runner_home/nats-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# env -i drops the Actions environment, including BASE/HEAD. The freeze smoke's
+# committed-list cell reds by name when those are absent, so the shard has to
+# re-supply the two revisions or CI reports a local-shaped false red.
+zero="0000000000000000000000000000000000000000"
+head_rev="${HEAD:-${GITHUB_SHA:-}}"
+base_rev="${BASE:-}"
+if [ -z "$base_rev" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "${GITHUB_EVENT_PATH}" ]; then
+  base_rev="$("$node_bin" -e 'const fs=require("fs"); const e=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write((e.pull_request&&e.pull_request.base&&e.pull_request.base.sha)||e.before||"");' "${GITHUB_EVENT_PATH}")"
+fi
+if [ -z "$head_rev" ]; then
+  head_rev="$(/usr/bin/git --no-replace-objects rev-parse HEAD)"
+fi
+if [ -z "$base_rev" ] || [ "$base_rev" = "$zero" ]; then
+  base_rev="$(/usr/bin/git --no-replace-objects rev-parse HEAD^ 2>/dev/null || true)"
+fi
+if [ -n "$base_rev" ] && [ "$base_rev" != "$zero" ]; then
+  if ! /usr/bin/git --no-replace-objects cat-file -e "${base_rev}^{commit}" 2>/dev/null; then
+    /usr/bin/git --no-replace-objects fetch --no-tags --depth=1 origin "$base_rev" || true
+  fi
+fi
+
 exec /usr/bin/env -i \
   PATH="$clean_path" \
   HOME="$runner_home" \
@@ -123,4 +144,6 @@ exec /usr/bin/env -i \
   RUNNER_TEMP=/tmp \
   RUNNER_OS=Linux \
   RUNNER_ARCH=X64 \
+  BASE="$base_rev" \
+  HEAD="$head_rev" \
   "$node_bin" bin/smoke/shard.mjs "$2" "$3"

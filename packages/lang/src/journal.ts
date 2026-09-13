@@ -62,6 +62,25 @@ export interface JournalEntry {
   /** The external resource this effect bound, so a crash mid-effect is recoverable. */
   readonly external?: Readonly<Record<string, unknown>>;
   /**
+   * WHAT THIS STEP HAS OBSERVED SO FAR, and the distinction this field exists to make is the whole
+   * of #1459.
+   *
+   * `result` is what a resume hands back INSTEAD of running the step again. An OBSERVATION is the
+   * opposite promise: it is what the world looked like at a moment that has passed, recorded so
+   * the history is auditable, and explicitly NOT an answer a later activation may reuse. A
+   * `waitUntil` whose predicate did not hold records the observation here and leaves the entry
+   * PENDING, so a resume re-enters the live path and OBSERVES AGAIN.
+   *
+   * Written the other way round — a non-terminal observation settled as the step's `result` — is
+   * precisely the defect: measured on the shape this primitive replaces, a run that observed
+   * "pending" once replayed "pending" forever, for a resource that had since completed, and the
+   * handler was never called again because `lookup` answers `replay` from a settled entry without
+   * dispatching. A wait that cannot re-observe is not a wait; it is a cached first glance.
+   *
+   * Only the TERMINAL observation becomes `result`, because only that one is an answer.
+   */
+  readonly observations?: readonly { readonly at: number; readonly value: unknown }[];
+  /**
    * A cancelling scope's INTENT, durable with its outcome.
    *
    * A journal write cancels nothing by itself: marking a branch cancelled while its agent keeps
@@ -283,7 +302,7 @@ export function journalEntryKeyString(entry: JournalEntry): string {
  * `workerData` is a structured clone, which preserves `Date`, `NaN`, `-0`, an own `undefined` key
  * and a `Map`.
  */
-type RecordedField = "external" | "error.detail" | "result";
+type RecordedField = "external" | "error.detail" | "result" | "observations";
 
 /**
  * WHY EACH FIELD MATTERS, said in its own words. One sentence for all three would have to be vague
@@ -293,6 +312,8 @@ const WHAT_THE_FIELD_IS: Record<RecordedField, string> = {
   external: "`external` is what a resume re-binds the handler's own record to",
   "error.detail": "`error.detail` is how a failed step explains itself, and a resume hands it to the program that catches it",
   result: "`result` is what a resume hands back INSTEAD of running the step again",
+  observations:
+    "`observations` is the history of what a still-waiting step saw, and a resumed `waitUntil` hands the newest one to the program's own predicate",
 };
 
 function bindingWithoutCanonicalForm(entry: JournalEntry, field: RecordedField, cause: NotCrossable): RuntimeFault {
@@ -316,6 +337,7 @@ const LABEL_OF: Record<RecordedField, string> = {
   external: "the recorded binding",
   "error.detail": "the recorded failure detail",
   result: "the recorded result",
+  observations: "the recorded observation",
 };
 
 export class Journal {
@@ -385,6 +407,18 @@ export class Journal {
         } catch (cause) {
           if (!(cause instanceof NotCrossable)) throw cause;
           throw bindingWithoutCanonicalForm(e, field, cause);
+        }
+      }
+      // AND THE OBSERVATIONS, by the same rule and for a reason the other two do not cover: an
+      // observation is not merely READ back, it is handed to the program's own `terminal` predicate
+      // on the next activation. A recorded observation the language cannot express would therefore
+      // reach program code as an argument, which is further than a corrupt `result` ever travels.
+      if (e.observations !== undefined) {
+        try {
+          assertCrossable(e.observations, LABEL_OF.observations);
+        } catch (cause) {
+          if (!(cause instanceof NotCrossable)) throw cause;
+          throw bindingWithoutCanonicalForm(e, "observations", cause);
         }
       }
       // `result` IS THE THIRD FIELD, AND IT IS NOT READ LIKE THE OTHER TWO. An effect's result is
@@ -549,6 +583,39 @@ export class Journal {
     const next = { ...entry, external };
     await this.persist(k, next);
     this.byKey.set(k, next);
+  }
+
+  /**
+   * Record ONE OBSERVATION onto a pending entry, leaving it pending.
+   *
+   * The counterpart to {@link Journal.settle}, and deliberately not a variant of it. `settle` says
+   * "this step has an answer, and every later activation may use it". This says "this is what the
+   * world looked like, and it is history rather than an answer": the entry stays `pending`, so a
+   * resume takes the live path and looks again. The two differ in exactly the property #1459 is
+   * about, so they are two methods rather than one with a flag — a flag is how the next edit makes
+   * an observation settle.
+   *
+   * DURABLE BEFORE IT IS VISIBLE, like every other transition here: the append is awaited before
+   * the in-memory entry moves, so a store that refuses leaves the journal exactly as it was.
+   */
+  async observe(key: StepKey, value: unknown, at: number): Promise<JournalEntry> {
+    if (this.readOnly) throw new JournalReadOnlyError(key);
+    const k = Journal.keyOf(key);
+    const entry = this.byKey.get(k);
+    if (entry === undefined) throw new Error(`observe before begin for ${k}`);
+    if (entry.state !== "pending")
+      throw new Error(`observe on a settled entry for ${k}; an observation is what a step saw while it was still waiting`);
+    // The same rule the result and the binding answer to. An observation is handed back to the
+    // program's own predicate and is written to a durable store, so a value with no canonical form
+    // can be neither — refused HERE, where the value is, rather than at a digest that cannot name it.
+    assertCrossable(value, `the observation of ${stepKeyString(key)}`);
+    const next: JournalEntry = {
+      ...entry,
+      observations: [...(entry.observations ?? []), { at, value: deepFreeze(value) }],
+    };
+    await this.persist(k, next);
+    this.byKey.set(k, next);
+    return next;
   }
 
   /**
