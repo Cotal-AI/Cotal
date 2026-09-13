@@ -75,6 +75,29 @@ class CotalAdapter(BasePlatformAdapter):
             # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
             await asyncio.to_thread(self._client.reopen)
         self._client.start(self._on_incoming)  # reader thread → _on_incoming
+
+        # THE BRIDGE MUST BE PROVED LIVE BEFORE THE PLATFORM IS CALLED CONNECTED.
+        #
+        # Marking connected is what removes this platform from anyone's attention: upstream's
+        # watcher only ever revisits platforms in `_failed_platforms`, entry to which requires a
+        # failed connect or a NOTIFIED retryable fatal, and there is no periodic health probe of a
+        # platform believed connected. A dying reader thread notifies nothing by itself. So a
+        # reader that is absent or already dead here would produce a platform reporting connected
+        # and deaf for the lifetime of the process, which is precisely the failure this connector
+        # exists to prevent.
+        #
+        # Reporting it as a RETRYABLE fatal is what turns the gateway's existing machinery into a
+        # real safety net: the platform enters `_failed_platforms` and the background reconnect
+        # queue picks it up, rather than the operator being the health check.
+        if self._client.reader_is_dead():
+            self._set_fatal_error(
+                "cotal_bridge_reader_dead",
+                "cotal bridge reader thread is not running, so no mesh traffic can arrive",
+                retryable=True,
+            )
+            await self._notify_fatal_error()
+            return False
+
         self._mark_connected()
         hooks.relay("gateway_startup")  # present + free
         return True

@@ -45,6 +45,30 @@ class BasePlatformAdapter:
     def build_source(self, **kw):
         return kw
 
+    # Mirrors the real base API this adapter now uses. Kept faithful to upstream's shape
+    # (gateway/platforms/base.py): _set_fatal_error records code/message/retryable and clears
+    # _running, and the retryable flag is what admits the platform to the reconnect queue.
+    def _set_fatal_error(self, code, message, *, retryable):
+        self._running = False
+        self._fatal_error_code = code
+        self._fatal_error_message = message
+        self._fatal_error_retryable = retryable
+
+    @property
+    def has_fatal_error(self):
+        return getattr(self, "_fatal_error_message", None) is not None
+
+    @property
+    def fatal_error_retryable(self):
+        return getattr(self, "_fatal_error_retryable", False)
+
+    @property
+    def fatal_error_code(self):
+        return getattr(self, "_fatal_error_code", None)
+
+    async def _notify_fatal_error(self):
+        return None
+
 
 class MessageEvent:
     def __init__(self, **kw):
@@ -212,6 +236,19 @@ def main() -> None:
         print("RACE_READER_CLEARED", _guarded(_race_reader_cleared))
         print("RACE_LIVE_READER_KEPT", _guarded(_race_live_reader_kept))
         try:
+            for name, ok in _handle_rows():
+                print(name, ok)
+            for name, ok in _fatal_rows():
+                print(name, ok)
+        except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
+            print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
+            for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
+                         "NO_DEAD_HANDLE_AFTER_EXIT", "LIVE_READER_OF_CURRENT_GEN_KEPT",
+                         "START_MADE_LIVE_REPLACEMENT", "DEAD_READER_REPORTS_FATAL",
+                         "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
+                         "HEALTHY_READER_REPORTS_NO_FATAL"):
+                print(name, False)
+        try:
             responsive, elapsed = _loop_stays_responsive()
             print("LOOP_STAYS_RESPONSIVE", responsive)
             print(f"LOOP_BLOCKED_SECONDS {elapsed:.2f}")
@@ -270,6 +307,169 @@ def _loop_stays_responsive() -> tuple[bool, float]:
     return ticks >= 20, elapsed
 
 
+def _race_live_reader_kept() -> bool:
+    """A RETIRED reader must stand down rather than keep consuming the socket.
+
+    THIS CHECK CHANGED WITH THE FIX, and the old form is worth recording because it was correct
+    under the old design and wrong under the new one. It used to assert that `reopen` LEAVES a
+    genuinely running reader installed, on the reasoning that dropping the reference to a live
+    thread would let `start` create a second reader on one socket.
+
+    The generation counter makes that reasoning obsolete. `reopen` means "the previous generation
+    is finished", so it retires that generation unconditionally, live or not: keeping a live reader
+    installed is exactly the guess that produced the dead handle. Double-reading is prevented at
+    the other end instead, by `start` holding the lock across its check-and-install and by `_run`
+    standing down as soon as its captured generation is stale.
+
+    So the property asserted now is the one that actually protects the socket: after a retirement,
+    the old reader stops running and exactly one reader is installed.
+    """
+    client = BridgeClient(_sockpath)
+    release = threading.Event()
+    old_reader = threading.Thread(target=lambda: release.wait(5), daemon=True)
+    client._reader = old_reader
+    client._stop.set()
+    old_reader.start()
+    try:
+        client.reopen()
+        retired = client._reader is None          # the old generation is no longer the handle
+        client.start(lambda _m: None)
+        installed = client._reader
+        fresh = installed is not None and installed is not old_reader and installed.is_alive()
+        return retired and fresh
+    finally:
+        release.set()
+        old_reader.join(timeout=5)
+        client.close()
+
+
+def _handle_rows() -> list[tuple[str, bool]]:
+    """The dead-handle matrix: a reader committed to exit must never remain the active handle.
+
+    This is the defect three reviewers converged on, and it is NOT the same as the on-loop freeze.
+    The old `reopen` joined the closed reader and then decided with `is_alive()`. That is a guess
+    about the future: a reader committed to exit but descheduled past the 2s timeout reads alive,
+    stays installed, and then dies, leaving a dead handle while the platform is still marked
+    connected. Nothing behind it ever looks again, because the gateway's watcher only revisits
+    platforms in `_failed_platforms` and never re-probes one it believes connected.
+
+    Four rows, each an independent client:
+      UNWIND_FAST   a reader that exits well inside the window   (the easy case)
+      UNWIND_SLOW   a reader descheduled PAST the window         (the defect: the accept control)
+      LIVE_READER   a genuinely running reader                   (the refuse control)
+      REPLACEMENT   start() must produce a live reader after a slow unwind
+
+    UNWIND_SLOW and LIVE_READER are near neighbours: both are alive when `reopen` returns. They
+    differ only in whether the thread is on its way out, which is exactly what a liveness check
+    cannot see and a generation counter does not need to.
+    """
+    rows: list[tuple[str, bool]] = []
+
+    def client_with_reader(release_after: float):
+        c = BridgeClient(_sockpath)
+        gate = threading.Event()
+        reader = threading.Thread(target=lambda: gate.wait(30), daemon=True)
+        c._reader = reader
+        c._stop.set()
+        reader.start()
+        timer = threading.Timer(release_after, gate.set)
+        timer.start()
+        return c, reader, gate, timer
+
+    # Row 1: exits inside the window.
+    c, reader, gate, timer = client_with_reader(0.4)
+    c.reopen()
+    rows.append(("HANDLE_CLEARED_FAST_UNWIND", c._reader is None))
+    gate.set(); timer.cancel(); reader.join(timeout=5)
+
+    # Row 2: THE DEFECT. Committed to exit, descheduled past the bounded join.
+    c, reader, gate, timer = client_with_reader(3.0)
+    c.reopen()
+    cleared = c._reader is None
+    gate.set(); timer.cancel(); reader.join(timeout=5)
+    # After it finally dies, the handle must still not be a dead thread.
+    rows.append(("HANDLE_CLEARED_SLOW_UNWIND", cleared))
+    rows.append(("NO_DEAD_HANDLE_AFTER_EXIT", c._reader is None or c._reader.is_alive()))
+
+    # Row 3: REFUSE CONTROL. A genuinely live reader of the CURRENT generation must survive, or
+    # start() would run a second reader on one socket.
+    c = BridgeClient(_sockpath)
+    hold = threading.Event()
+    live = threading.Thread(target=lambda: hold.wait(30), daemon=True)
+    with c._lock:
+        c._reader = live
+    live.start()
+    kept = c._reader is live
+    rows.append(("LIVE_READER_OF_CURRENT_GEN_KEPT", kept))
+    hold.set(); live.join(timeout=5)
+
+    # Row 4: after a slow unwind, start() must actually produce a LIVE reader.
+    c, reader, gate, timer = client_with_reader(3.0)
+    c.reopen()
+    c.start(lambda _m: None)
+    replacement = c._reader
+    # Identity matters, not just liveness. The first draft of this row asked only "is a thread
+    # installed and alive", which the PRE-LATCH code satisfied by retaining the OLD dying reader:
+    # the row read True against the very defect it was meant to catch. Asserting the handle is a
+    # DIFFERENT object than the retired reader is what makes it a replacement rather than a
+    # survivor.
+    rows.append((
+        "START_MADE_LIVE_REPLACEMENT",
+        replacement is not None and replacement.is_alive() and replacement is not reader,
+    ))
+    gate.set(); timer.cancel(); reader.join(timeout=5)
+    c.close()
+    return rows
+
+
+def _fatal_rows() -> list[tuple[str, bool]]:
+    """A dead reader must be REPORTED, never silently marked connected.
+
+    This is the second half of the panel's fix and it is load-bearing rather than belt-and-braces.
+    Verified against the pinned upstream source: the reconnect watcher iterates `_failed_platforms`
+    only, entry requires a failed connect or a NOTIFIED retryable fatal, and there is no periodic
+    health probe of a platform believed connected. A dying reader thread notifies nothing. So if
+    `connect` returned True with a dead reader, nothing would ever look at that platform again and
+    it would be deaf for the process lifetime.
+
+    Accept row: a healthy connect reports no fatal, proving the check is not firing on everything.
+    """
+    rows: list[tuple[str, bool]] = []
+
+    adapter = CotalAdapter(PlatformConfig())
+    client = get_client()
+    # A reader that is installed and already dead: exactly the dead handle.
+    dead = threading.Thread(target=lambda: None, daemon=True)
+    dead.start()
+    dead.join(timeout=5)
+    with client._lock:
+        client._reader = dead
+    marked = {"connected": False}
+    adapter._mark_connected = lambda: marked.__setitem__("connected", True)
+    notified = {"n": 0}
+    adapter._notify_fatal_error = lambda: _async_noop(notified)
+
+    ok = asyncio.run(adapter.connect())
+    rows.append(("DEAD_READER_REPORTS_FATAL", ok is False and adapter.has_fatal_error))
+    rows.append(("DEAD_READER_FATAL_IS_RETRYABLE", bool(adapter.fatal_error_retryable) and notified["n"] == 1))
+    rows.append(("DEAD_READER_NOT_MARKED_CONNECTED", marked["connected"] is False))
+
+    # ACCEPT CONTROL: a healthy client must connect cleanly and report nothing.
+    with client._lock:
+        client._reader = None
+    client._stop.clear()
+    adapter2 = CotalAdapter(PlatformConfig())
+    healthy = {"connected": False}
+    adapter2._mark_connected = lambda: healthy.__setitem__("connected", True)
+    ok2 = asyncio.run(adapter2.connect())
+    rows.append(("HEALTHY_READER_REPORTS_NO_FATAL", ok2 is True and healthy["connected"] and not adapter2.has_fatal_error))
+    return rows
+
+
+async def _async_noop(counter: dict) -> None:
+    counter["n"] += 1
+
+
 def _guarded(check) -> bool:
     try:
         return check()
@@ -325,27 +525,6 @@ def _race_reader_cleared() -> bool:
         return client._reader is None and not client._stop.is_set()
     finally:
         timer.cancel()
-        release.set()
-        reader.join(timeout=5)
-
-
-def _race_live_reader_kept() -> bool:
-    """The other half: a genuinely running reader must SURVIVE reopen.
-
-    Dropping the reference to a live thread would let `start()` create a second reader on the same
-    socket, which is a different bug in the same method. This is the near-neighbour control for the
-    assertion above: the two differ only in whether the reader actually exits.
-    """
-    client = BridgeClient(_sockpath)
-    release = threading.Event()
-    reader = threading.Thread(target=lambda: release.wait(5), daemon=True)
-    client._reader = reader
-    client._stop.set()
-    reader.start()
-    try:
-        client.reopen()
-        return client._reader is reader and not client._stop.is_set()
-    finally:
         release.set()
         reader.join(timeout=5)
 

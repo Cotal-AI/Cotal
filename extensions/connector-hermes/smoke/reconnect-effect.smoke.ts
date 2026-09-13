@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 32;
+const EXPECTED_CELLS = 41;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -227,11 +227,79 @@ assert.equal(
   "the bounded join must run OFF the gateway event loop: a wedged reader must not freeze every other platform in the process",
 );
 
+// ---- THE DEAD HANDLE: a reader committed to exit must never remain the active handle ----------
+// Three reviewers converged on this independently and it is NOT the on-loop freeze fixed above.
+// The old reopen() joined the closed reader and then decided with is_alive(). That is a guess
+// about the future: a reader committed to exit but descheduled past the 2s window reads alive,
+// stays installed, and then dies, leaving a dead handle while the platform is still marked
+// connected. Nothing behind it ever looks again, because upstream's watcher only revisits
+// platforms in `_failed_platforms` and never re-probes one it believes connected, so the bridge is
+// deaf for the lifetime of the process.
+//
+// A generation counter removes the guess: close() and reopen() bump it, each reader captures its
+// own at birth, and a reader from a previous generation is retired by definition regardless of
+// when it actually exits. Measured against the pre-latch implementation, HANDLE_CLEARED_SLOW_UNWIND,
+// NO_DEAD_HANDLE_AFTER_EXIT and START_MADE_LIVE_REPLACEMENT all read False while the fast-unwind
+// and live-reader rows stayed True, so these cells fail for this defect and not in general.
+assert.equal(
+  subject.HANDLE_CLEARED_SLOW_UNWIND,
+  "True",
+  "a reader committed to exit but descheduled past the join window must NOT remain the active handle (the dead-handle defect)",
+);
+assert.equal(
+  subject.NO_DEAD_HANDLE_AFTER_EXIT,
+  "True",
+  "after that reader finally dies the handle must not be a dead thread: that is a platform reporting connected while deaf",
+);
+assert.equal(
+  subject.START_MADE_LIVE_REPLACEMENT,
+  "True",
+  "start() must install a DIFFERENT live reader after a slow unwind, not retain the dying one",
+);
+// Accept and refuse rows for the two cells above, so a red is attributable.
+assert.equal(
+  subject.HANDLE_CLEARED_FAST_UNWIND,
+  "True",
+  "accept control: a reader that exits inside the window is cleared (true before and after the fix)",
+);
+assert.equal(
+  subject.LIVE_READER_OF_CURRENT_GEN_KEPT,
+  "True",
+  "refuse control: a genuinely live reader of the CURRENT generation must survive, or start() would run two on one socket",
+);
+
+// ---- AND THE DEAD HANDLE MUST BE REPORTED, NOT SILENTLY MARKED CONNECTED ----------------------
+// The second half, and load-bearing rather than belt-and-braces. Verified against the pinned
+// upstream source: the reconnect watcher iterates `_failed_platforms` only, entry requires a failed
+// connect or a NOTIFIED retryable fatal, and there is no periodic health probe of a connected
+// platform. So a connect() that returned True with a dead reader would never be revisited.
+assert.equal(
+  subject.DEAD_READER_REPORTS_FATAL,
+  "True",
+  "connect() must return False and record a fatal when the bridge reader is dead, rather than reporting a connected platform that receives nothing",
+);
+assert.equal(
+  subject.DEAD_READER_FATAL_IS_RETRYABLE,
+  "True",
+  "the fatal must be RETRYABLE and notified, or the gateway's reconnect queue never picks the platform up",
+);
+assert.equal(
+  subject.DEAD_READER_NOT_MARKED_CONNECTED,
+  "True",
+  "a platform with a dead reader must never be marked connected",
+);
+assert.equal(
+  subject.HEALTHY_READER_REPORTS_NO_FATAL,
+  "True",
+  "accept control: a healthy connect marks connected and reports no fatal, so the check is not firing on everything",
+);
+
 console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);
 console.log(
   "reconnect effect: a reconnected bridge delivers mesh traffic; both refuse controls (emptied reopen body, " +
-    "deleted call site) go silent on the warm leg while their cold legs still deliver; a reader still unwinding " +
-    "is not mistaken for a live one, and a genuinely live reader survives",
+    "deleted call site) go silent on the warm leg while their cold legs still deliver; a reader retired by " +
+    "generation can never remain the active handle however late it exits; and a dead reader is reported as a " +
+    "retryable fatal rather than marked connected",
 );
 
 // The floor check runs LAST, so a suite that lost an assertion fails here even though every

@@ -70,6 +70,22 @@
       "replace": "            self._client.reopen()",
       "expectRed": "the bounded join must run OFF the gateway event loop: a wedged reader must not freeze every other platform in the process",
       "note": "A REGRESSION THE BOUNDED JOIN ITSELF INTRODUCED, and it was found by measuring rather than reading: the inline call blocked the loop for a measured 2.00s against a wedged reader. Note that every OTHER cell in this suite stays green under this mutation, because the reconnect still delivers - it just freezes every other platform in the process while doing so. That is why the tick-count assertion exists rather than a timing threshold: both versions take the same 2.00s of wall time and only the loop's responsiveness during it differs."
+    },
+    {
+      "name": "M5 reopen decides by liveness instead of retiring the generation",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n            # Retire the old reader unconditionally: it belongs to a previous generation, so it is\n            # not the active handle regardless of whether it has finished unwinding yet.\n            self._reader = None\n        self._stop.clear()\n        if reader is not None:\n            # Courtesy only: nothing below depends on whether this returns in time.\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "replace": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return\n        reader.join(timeout=_REOPEN_JOIN_SECONDS)\n        with self._lock:\n            if self._reader is reader and not reader.is_alive():\n                self._reader = None\n",
+      "expectRed": "a reader committed to exit but descheduled past the join window must NOT remain the active handle (the dead-handle defect)",
+      "note": "THE DEAD HANDLE, restored. Three reviewers converged on this independently. A reader committed to exit but descheduled past the 2s window reads alive, stays installed, then dies, leaving a dead handle while the platform is marked connected and nothing ever looks again. Note the fast-unwind and live-reader control rows stay GREEN under this mutation, which is what makes the red attributable to the slow-unwind case rather than to reopen being broken in general."
+    },
+    {
+      "name": "M6 a dead reader is marked connected instead of reported",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "        if self._client.reader_is_dead():\n            self._set_fatal_error(\n                \"cotal_bridge_reader_dead\",\n                \"cotal bridge reader thread is not running, so no mesh traffic can arrive\",\n                retryable=True,\n            )\n            await self._notify_fatal_error()\n            return False\n\n",
+      "replace": "",
+      "expectRed": "connect() must return False and record a fatal when the bridge reader is dead, rather than reporting a connected platform that receives nothing",
+      "note": "The second half of the fix, removed. Load-bearing rather than belt-and-braces: verified against the pinned upstream source that the reconnect watcher iterates _failed_platforms only, entry requires a failed connect or a NOTIFIED retryable fatal, and there is no periodic health probe of a connected platform. Without this report a dead reader is never revisited and the bridge is deaf for the process lifetime. HEALTHY_READER_REPORTS_NO_FATAL stays green under it, so the cell is not merely asserting that connect always fails."
     }
   ]
 }
