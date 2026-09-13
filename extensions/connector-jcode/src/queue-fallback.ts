@@ -101,7 +101,27 @@ export function attributionBlockedByOpenRun(unsettledRunDispatches: number, bloc
  * hung run cannot hold the queue past it. It is deliberately much larger than the 60s fallback
  * ceiling: the pacing loop re-attempts throughout, and only the write is withheld.
  */
-export const DEFERRAL_MAX_MS = 300_000;
+export const DEFERRAL_MAX_MS = readDeferralMaxMs();
+
+/**
+ * The bound, with a test-only override.
+ *
+ * A reviewer asked for END-TO-END evidence that the deferral expires and delivery resumes, not just
+ * a policy cell. At five minutes that is ungradable in a smoke suite, and a cell that cannot run is
+ * a cell that grades nothing. The override exists so the composition (expiry, then boundary, then
+ * exactly-once delivery) can be watched on a real host in seconds.
+ *
+ * It is read ONCE at module load and never from the decision path, so no per-call behaviour depends
+ * on the environment. Out-of-range, unparseable and absent all fall back to the shipped default,
+ * which is the only value any non-test process can ever see.
+ */
+function readDeferralMaxMs(): number {
+  const raw = process.env.COTAL_JCODE_DEFERRAL_MAX_MS?.trim();
+  if (!raw) return 300_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 300_000) return 300_000;
+  return parsed;
+}
 
 /**
  * Whether a deferral has outlived its bound, so the open run must be treated as unsettleable and the

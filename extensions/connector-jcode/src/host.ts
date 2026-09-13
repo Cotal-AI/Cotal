@@ -1096,13 +1096,31 @@ export async function runJcodeHost(): Promise<void> {
       const blockedForMs = Date.now() - deferralStartedAt;
       if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) return;
       if (deferralExhausted(unsettledLapsedDispatches, blockedForMs)) {
-        acceptanceSuspectUntilBridgeReplaced = true;
+        // The run is unsettleable, so the connection boundary is the answer -- BUT ONLY IF THERE IS
+        // ONE LEFT TO TAKE. `recoverBridge` is one-shot: once spent it does not replace anything, it
+        // calls `shutdown(1)` and the seat exits. Forcing the boundary here on a spent recovery
+        // would answer a starvation report by killing the seat, which is worse than either failure
+        // this repair exists to prevent, and a reviewer named it before I had measured it.
+        //
+        // So when no recovery remains, keep DELIVERING instead. The batch is genuinely owed, the
+        // bridge is healthy, and the only cost of an unattributable acceptance is that the batch
+        // stays unacked and may be delivered again -- late and possibly twice, which is the stance
+        // this tier already takes everywhere else: late delivery beats loss, and a live seat that
+        // repeats beats a dead seat that cannot be steered at all.
+        if (!bridgeRecoveryUsed) {
+          acceptanceSuspectUntilBridgeReplaced = true;
+          writeJcodeDiagnostic(
+            `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
+              `without settling, so it is treated as unsettleable; replacing the Harness connection ` +
+              `before re-delivering ${items.length} queued automatic message(s)\n`,
+          );
+          return;
+        }
         writeJcodeDiagnostic(
           `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
-            `without settling, so it is treated as unsettleable; replacing the Harness connection ` +
-            `before re-delivering ${items.length} queued automatic message(s)\n`,
+            `and the one bridge recovery is already spent, so ${items.length} queued automatic ` +
+            `message(s) are delivered without attributable acceptance rather than stranded\n`,
         );
-        return;
       }
     } else deferralStartedAt = undefined;
     const injection = formatInjection(items);
