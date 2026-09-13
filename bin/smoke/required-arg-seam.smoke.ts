@@ -343,7 +343,14 @@ const SEAMS: Seam[] = [
   // back (moving the revision while the holder stays byte-identical), one writes a successor's row
   // (same holder, another incarnation). Both read and write the lease KV directly, which is the
   // point - the evidence comes off the broker rather than from the daemon's own log.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 153, untypecheckedSites: 113 },
+  // 153/113 -> 156/116: three more, attributed rather than merely counted. TWO are smoke-side
+  // connections in delivery-starvation.smoke.ts for cells X1-X6, which break the fan-out durable
+  // at the broker and then repair it, so a start-up failure the CLI CATCHES can be graded off the
+  // lease row rather than from the daemon's log. The THIRD is not a call at all: it is inside
+  // `find`/`replace` STRINGS in bin/smoke/mutations/attach-open-mode.json, which arrived on main,
+  // and it counts because this reader scans text and a mutation body is text that will become
+  // code. All three state `tls` explicitly, so the seam itself is unchanged.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 156, untypecheckedSites: 116 },
 ];
 
 /**
