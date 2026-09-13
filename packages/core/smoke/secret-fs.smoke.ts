@@ -66,6 +66,11 @@ const TSX_CLI = join(
   "cli.mjs",
 );
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
+// Read for an ASSERTION, never for control flow. A broken implementation can delete or never
+// create the file a cell is about to inspect, and a raw readFileSync would then throw and abort
+// the whole suite — every later cell silently unreported, which reads as a WRONG-RED rather than
+// as the kill it actually is. A missing file simply is not the expected bytes.
+const readSafe = (p: string): string => { try { return readFileSync(p, "utf8"); } catch { return "\u0000ABSENT"; } };
 let failures = 0;
 function check(label: string, cond: boolean): void {
   console.log(`${cond ? "✓" : "✗"} ${label}`);
@@ -89,7 +94,7 @@ try {
   exclusiveCode = (e as NodeJS.ErrnoException).code;
 }
 check("writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites", exclusiveCode === "EEXIST");
-check("...and the first writer's bytes are unchanged", readFileSync(exclusive, "utf8") === "first-writer\n");
+check("...and the first writer's bytes are unchanged", readSafe(exclusive) === "first-writer\n");
 
 // The TEMP write is exclusive too. A temp-name collision that plain-overwrote would destroy the
 // other creator's bytes, and the caller whose link then succeeded would return the candidate IT
@@ -117,7 +122,7 @@ try {
 check("REFUSE: a temp name already held by another creator is EEXIST, not a silent overwrite",
   squatCode === "EEXIST");
 check("...and that other creator's bytes were NOT destroyed",
-  readFileSync(squattedTmp, "utf8") === "other-creator\n");
+  readSafe(squattedTmp) === "other-creator\n");
 check("...and nothing was published at the destination on that refusal", !statSafe(squatDest));
 
 // A loser must never destroy a live creator's temp. Publishing into an already-taken destination
@@ -133,7 +138,7 @@ try {
 check("REFUSE: publishing into a taken destination is EEXIST", secondPublish === "EEXIST");
 check("...and a failed create leaves no .tmp litter behind",
   readdirSync(dir).filter((n) => n.endsWith(".tmp") && n.startsWith("taken.secret")).length === 0);
-check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8") === "incumbent\n");
+check("...and the incumbent's bytes are intact", readSafe(takenDest) === "incumbent\n");
 
 // REFUSING an existing file is NOT the same property as being ATOMIC about it. A userspace
 // check-then-write (`if (existsSync) throw; writeFileSync(...)`) passes every cell above: it
@@ -203,7 +208,7 @@ for (const code of ["ENOTSUP", "EPERM", "ENOSYS"] as const) {
     const fresh = join(fbDir, "fresh.secret");
     writeSecretFileCreateOnly(fresh, "first\n");
     check(`ACCEPT: the ${code} fallback still creates a missing path`,
-      readFileSync(fresh, "utf8") === "first\n");
+      readSafe(fresh) === "first\n");
     let fbCode: string | undefined;
     try {
       writeSecretFileCreateOnly(fresh, "second\n");
@@ -213,7 +218,7 @@ for (const code of ["ENOTSUP", "EPERM", "ENOSYS"] as const) {
     check(`REFUSE: the ${code} fallback is EEXIST on an existing path, never an overwrite`,
       fbCode === "EEXIST");
     check(`...and the ${code} fallback did not replace the first writer's bytes`,
-      readFileSync(fresh, "utf8") === "first\n");
+      readSafe(fresh) === "first\n");
     check(`...and the ${code} fallback left no .tmp litter`,
       readdirSync(fbDir).filter((n) => n.endsWith(".tmp")).length === 0);
   } finally {
@@ -279,7 +284,7 @@ check("...and that failure left no .tmp litter",
   // The bytes are the real assertion. An error code alone would also be satisfied by a write that
   // clobbered the incumbent and then failed for some other reason.
   check("REFUSE: a name taken AFTER the check but BEFORE the write does not get overwritten (O_EXCL decides at the write)",
-    readFileSync(contested, "utf8") === "incumbent\n");
+    readSafe(contested) === "incumbent\n");
   check("...and the losing creator sees EEXIST", raced === "EEXIST");
   check("...and that loss left no .tmp litter",
     readdirSync(atomicDir).filter((n) => n.endsWith(".tmp")).length === 0);
@@ -312,7 +317,7 @@ check("...and that failure left no .tmp litter",
     Math.random = realRandom;
   }
   check("REFUSE: a temp name taken before the write is not overwritten (the temp write is exclusive too)",
-    readFileSync(tmpName, "utf8") === "squatter\n");
+    readSafe(tmpName) === "squatter\n");
   check("...and the creator that lost the temp name sees EEXIST", tempRaced === "EEXIST");
   check("...and nothing was published at the destination on that refusal", !statSafe(dest));
 }
