@@ -88,14 +88,6 @@
       "note": "The second half of the fix, removed. Load-bearing rather than belt-and-braces: verified against the pinned upstream source that the reconnect watcher iterates _failed_platforms only, entry requires a failed connect or a NOTIFIED retryable fatal, and there is no periodic health probe of a connected platform. Without this report a dead reader is never revisited and the bridge is deaf for the process lifetime. HEALTHY_READER_REPORTS_NO_FATAL stays green under it, so the cell is not merely asserting that connect always fails."
     },
     {
-      "name": "M7 the socket assignment is fenced by the lock alone, not by generation",
-      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
-      "find": "        while not self._stop.is_set():\n            if gen is not None and gen != self._gen:\n                return  # retired while dialing: this socket is not wanted\n            try:\n                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n                s.connect(self._path)\n                with self._lock:\n                    if gen is not None and gen != self._gen:\n                        # Retired between the dial and the assignment. Close rather than install:\n                        # installing here is exactly the clobber this fence exists to prevent.\n                        try:\n                            s.close()\n                        except OSError:\n                            pass\n                        return\n                    self._sock = s\n                return\n            except OSError:\n                time.sleep(_BACKOFF_S)\n",
-      "replace": "        while not self._stop.is_set():\n            try:\n                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n                s.connect(self._path)\n                with self._lock:\n                    self._sock = s\n                return\n            except OSError:\n                time.sleep(_BACKOFF_S)\n",
-      "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
-      "note": "FOUND BY REVIEW, NOT BY ME, and worth recording why it was easy to miss: the assignment was ALREADY under the lock. A lock makes a write atomic, which prevents a torn read, and says nothing about WHO is writing. A reader that entered _connect before its generation was retired finishes dialing afterwards and installs its socket over the live generation's. This mutant restores the base body, which is byte-identical to the merge base, so it also demonstrates that the defect was latent at base and made REACHABLE by reopen() rather than introduced by this line. CURRENT_GEN_STILL_INSTALLS stays green under it, so the red is the clobber and not a fence that refuses everything."
-    },
-    {
       "name": "M8 the generation is re-checked only BEFORE the dial, not after it",
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
       "find": "                if self._stop.is_set() or gen != self._gen:\n                    return\n",
@@ -126,6 +118,22 @@
       "replace": "",
       "expectRed": "every reconnect must retire its reader thread rather than strand it in a blocked read",
       "note": "close() does not wake a thread already blocked in recv: it drops this object's reference to the open file description while the blocked thread keeps its own, so the read never returns. The delivery cells are blind to it because a reader stranded forever stops competing for the new socket just as well as one that exits. Measured: bridge threads grew 4,5,6,7,8,9,10 over six reopen cycles without the shutdown and stayed flat at 4 with it."
+    },
+    {
+      "name": "M7a the PRE-DIAL generation check is removed (the under-lock check remains)",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "            if gen is not None and gen != self._gen:\n                return  # retired while dialing: this socket is not wanted\n",
+      "replace": "",
+      "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
+      "note": "Half of the old M7. Splitting it says WHICH guard carries the kill: the pre-dial check is an early-out, and if the under-lock check alone still refuses the clobber then this half is an optimisation rather than a correctness guard. Stated as a question to be measured, not an assumption."
+    },
+    {
+      "name": "M7b the UNDER-LOCK generation check is removed (the pre-dial check remains)",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "                    if gen is not None and gen != self._gen:\n                        # Retired between the dial and the assignment. Close rather than install:\n                        # installing here is exactly the clobber this fence exists to prevent.\n                        try:\n                            s.close()\n                        except OSError:\n                            pass\n                        return\n",
+      "replace": "",
+      "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
+      "note": "The other half. This is the one that must matter: a reader retired BETWEEN the pre-dial check and the assignment is exactly the window the lock cannot close, because the lock makes the write atomic rather than correct."
     }
   ]
 }
