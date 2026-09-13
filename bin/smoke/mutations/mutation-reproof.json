@@ -274,7 +274,7 @@
     {
       "name": "mixed KILLED+INCONCLUSIVE is bucketed as inconclusive and not counted as discriminated",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "  else if (verdicts.every((v) => v === \"INCONCLUSIVE\")) inconclusive.push(path);\n  else if (verdicts.includes(\"INCONCLUSIVE\") && verdicts.every((v) => v === \"KILLED\" || v === \"INCONCLUSIVE\")) {\n    discriminated.push(path);\n  }",
+      "find": "  else if (verdicts.length > 0 && verdicts.every((v) => v === \"INCONCLUSIVE\")) inconclusive.push(path);\n  else if (verdicts.includes(\"INCONCLUSIVE\") && verdicts.every((v) => v === \"KILLED\" || v === \"INCONCLUSIVE\")) {\n    discriminated.push(path);\n  }",
       "replace": "  else if (verdicts.includes(\"INCONCLUSIVE\") && verdicts.every((v) => v === \"KILLED\" || v === \"INCONCLUSIVE\")) inconclusive.push(path);",
       "expectRed": "a mixed KILLED+INCONCLUSIVE fixture reaches the OK summary with a non-zero discriminated count",
       "cell": "a mixed KILLED+INCONCLUSIVE fixture reaches the OK summary with a non-zero discriminated count"

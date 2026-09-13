@@ -645,10 +645,10 @@ for (const { path, command, mutations } of prove) {
   const verdicts = verdictsIn(output);
   // A single adverse verdict anywhere in the fixture is a finding: SURVIVED does not become benign
   // because another mutation in the same file was INCONCLUSIVE. INCONCLUSIVE is its own reported
-  // state ONLY when every verdict is INCONCLUSIVE. Mixed KILLED+INCONCLUSIVE counts as
-  // discriminated: a kill was observed. Anything else — an empty parse, an exit-1 with only
-  // KILLED lines, a token this gate does not know — is an unexplained non-zero and is treated as
-  // a finding, never as a pass.
+  // state ONLY when every parsed verdict is INCONCLUSIVE and at least one was parsed. An empty
+  // parse (`[].every` is true) is unexplained, not INCONCLUSIVE. Mixed KILLED+INCONCLUSIVE
+  // counts as discriminated: a kill was observed. Anything else — an empty parse, an exit-1
+  // with only KILLED lines, a token this gate does not know — is a finding, never a pass.
   if (verdicts.some((v) => FATAL_VERDICTS.has(v))) {
     if (verdicts.includes("KILLED")) discriminated.push(path);
     if (a.all) { fatal.push(path); continue; }
@@ -688,7 +688,7 @@ for (const { path, command, mutations } of prove) {
     else fatal.push(path);
     continue;
   }
-  else if (verdicts.every((v) => v === "INCONCLUSIVE")) inconclusive.push(path);
+  else if (verdicts.length > 0 && verdicts.every((v) => v === "INCONCLUSIVE")) inconclusive.push(path);
   else if (verdicts.includes("INCONCLUSIVE") && verdicts.every((v) => v === "KILLED" || v === "INCONCLUSIVE")) {
     discriminated.push(path);
   }
