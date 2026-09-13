@@ -132,18 +132,18 @@
       "cell": "under L4025, which names the HOST rather than the effect"
     },
     {
-      "name": "MP13 the window is measured on the WALL clock, so a forward NTP step reads as starvation on a perfectly healthy loop",
+      "name": "MP13 the window is measured on the WALL clock, so a forward NTP step inflates elapsedMs and ticksExpected from the same reading and the window moves with the step",
       "file": "implementations/runtime/src/host-starvation.ts",
       "find": "    const elapsedMs = Math.max(0, this.clock.monotonic() - mark.at);",
       "replace": "    const elapsedMs = Math.max(0, this.clock.wall() - mark.wallAt);",
-      "expectRed": "a forward clock step on a healthy loop is NOT starvation, measured through the real observer",
-      "cell": "a forward clock step on a healthy loop is NOT starvation, measured through the real observer"
+      "expectRed": "and the step is visible in the skew while the window did not move with it",
+      "cell": "and the step is visible in the skew while the window did not move with it"
     },
     {
       "name": "MP14 the TICK measures its own lateness on the wall clock, so a backward step erases a real block and #1508's misattribution returns",
       "file": "implementations/runtime/src/host-starvation.ts",
-      "find": "      const late = this.clock.monotonic() - due;",
-      "replace": "      const late = this.clock.wall() - due;",
+      "find": "    const due = this.clock.monotonic() + this.tickMs;\n    const timer = setTimeout(() => {\n      // Lateness against the instant this tick was SCHEDULED for, not against the previous tick:\n      // measuring tick-to-tick would report a healthy loop's own jitter as lag and would miss a\n      // block that straddled exactly one tick.\n      const late = this.clock.monotonic() - due;",
+      "replace": "    const due = this.clock.wall() + this.tickMs;\n    const timer = setTimeout(() => {\n      const late = this.clock.wall() - due;",
       "expectRed": "a backward clock step during a REAL block does not hide the starvation",
       "cell": "a backward clock step during a REAL block does not hide the starvation"
     }
