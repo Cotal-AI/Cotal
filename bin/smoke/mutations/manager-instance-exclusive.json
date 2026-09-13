@@ -27,7 +27,8 @@
       "replace": "    if ((e as NodeJS.ErrnoException).code !== \"EEXIST\") throw e;\n    return candidate;",
       "expectRed": "N=8 concurrent first mints over 20 rounds share exactly one identity",
       "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",
-      "note": "The file is single-valued; the loser keeps a different in-memory id. That is the lease-CAS hole."
+      "note": "The file is single-valued; the loser keeps a different in-memory id. That is the lease-CAS hole.",
+      "command": "pnpm smoke:manager-instance-exclusive"
     },
     {
       "name": "M2 exclusive create is a plain overwrite (no EEXIST)",
@@ -37,6 +38,7 @@
       "expectRed": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
       "cell": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
       "note": "The second writer must not replace the first. Overwrite is the pre-fix persist.",
+      "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
@@ -47,6 +49,7 @@
       "expectRed": "N=8 concurrent first mints over 20 rounds share exactly one identity",
       "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",
       "note": "Rename cannot interleave torn bytes, but every caller still returns its own candidate. That is why exclusive create, not rename, is the primitive.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-instance-exclusive",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
