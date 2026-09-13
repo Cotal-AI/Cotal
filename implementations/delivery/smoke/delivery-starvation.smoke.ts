@@ -845,12 +845,20 @@ try {
   let peakBound = 0;
   let answeredSubs = 0;
 
-  // FREEZE THE LOSER THE INSTANT IT SAYS IT WENT QUIET, and sample at leisure.
+  // FREEZE THE LOSER WHEN IT SAYS IT WENT QUIET, and sample at leisure. This narrows the window;
+  // it does NOT close it, and the comment here used to claim that it did.
   //
-  // The window between "unbound" and "decided" is a couple of broker round trips — tens of
-  // milliseconds — and a CONNZ round is not free. Racing it is not a test, it is a coin flip: the
-  // first version of this cell won locally and lost on CI, where the reading came back after the
-  // daemon had already printed its verdict. Re-running that is exactly the kind of green I refuse.
+  // WHAT THIS HOOK CANNOT DO, corrected after a CI red and confirmed by a reviewer's 8-trial control
+  // (stderr-triggered stop: the child had already decided in 3 of 8; an IPC-fenced leg: 0 of 8).
+  // A PIPE DATA EVENT IS NOT AN EXECUTION FENCE. By the time this process is scheduled to handle the
+  // quiesce bytes, the child may already have run on and printed its verdict, and SIGSTOP after the
+  // fact does not unspeak it. The old text here asserted that the signal "lands before this process
+  // yields, so the daemon cannot get another slice" — that is false about a different process on a
+  // loaded box, and it was the reasoning behind a cell that reddened on CI for the wrong reason.
+  //
+  // The freeze is still worth keeping: when it does win it holds the quiesced state still and makes
+  // the sampled reading below meaningful. But nothing PASSES on it any more. G7e now grades the
+  // ordering the daemon itself recorded, which no scheduler can alter.
   //
   // SIGSTOP at that moment changes nothing about what the daemon DID. Its subscriptions are already
   // gone or already there; freezing a process does not unbind it, and the broker's answer is about
@@ -870,11 +878,18 @@ try {
     signalGroup(d, "SIGSTOP");
     froze = true;
   };
+  // Wait for the ANNOUNCEMENT, not for our own freeze to land. Waiting on `froze` alone burned the
+  // full 30s deadline whenever the hook lost the race, which is the case this suite now tolerates.
   const quiesceSeen = Date.now() + 30_000;
-  while (Date.now() < quiesceSeen && !incumbent.exited && !froze) await wait(20);
+  while (Date.now() < quiesceSeen && !incumbent.exited && !froze
+         && !incumbent.stderr.includes("stopped serving shard")) await wait(20);
   incumbent.onLine = undefined;
+  // G5b grades that the loser ANNOUNCED going quiet, which is the precondition for everything below.
+  // It used to assert `froze`, i.e. that this process won the race to SIGSTOP it. That is the same
+  // coin flip as the old G7e: losing the race does not mean the daemon failed to quiesce, only that
+  // we read its bytes late. The announcement is in the transcript either way, so grade that.
   check("G5b the loser announced going quiet, so there is a quiesced state to inspect at all",
-    froze, tail(incumbent));
+    incumbent.stderr.includes("stopped serving shard"), { froze, tail: tail(incumbent) });
 
   const arbDeadline = Date.now() + 25_000;
   while (Date.now() < arbDeadline && !incumbent.exited) {
@@ -937,9 +952,50 @@ try {
   // THE DISCRIMINATING ASSERTION. Unbinding inside `shutdown()` also happens while the process is
   // alive, so G7d alone is satisfied by the pre-fix behaviour — verified by disabling the quiesce
   // call and watching every G cell stay green. What only the repair can do is stop serving BEFORE
-  // the ownership question has been answered at all.
-  check("G7e and it stopped serving BEFORE it had concluded anything about ownership — quiesced, not shutting down",
-    overlapEndedUndecided, { overlapEndedAlive, overlapEndedUndecided, tail: tail(incumbent) });
+  // the ownership question has been answered at all, and G8/G9 below grade exactly that on the
+  // daemon's own transcript rather than on a sampled instant.
+  // G7e, RE-MEASURED AFTER A CI RED. The claim is unchanged; the way it is observed is not.
+  //
+  // The sampled form asked: at the moment the responder count fell to 1, had the daemon printed its
+  // ownership verdict yet? That question is only answerable if OUR READER gets scheduled between the
+  // daemon's two announcements. It does not always: CI job 103789248360 reddened here with the tail
+  // `... is held by local.UAV4... (renew: wrong last sequence: 12) - exiting so the holder is single`,
+  // i.e. by the time this process handled the quiesce chunk the daemon had ALREADY decided. The
+  // SIGSTOP hook exists to stop the daemon running on, and it cannot: it fires on a data event, and
+  // the data event is itself the thing that arrived late. Freezing a process after it has spoken
+  // does not unspeak it. That is the same defect as the 1ms sleep the lease suite's V5/V6 used to
+  // race, and the same repair: stop timing the observation, and observe an ordering instead.
+  //
+  // THE DAEMON'S OWN SEQUENCING IS THE EVIDENCE. It announces going quiet ("stopped serving shard
+  // ... while it re-checks who owns the lease") and only afterwards announces a verdict ("exiting so
+  // the holder is single"). That order is a fact about what the daemon DID, fixed in the transcript
+  // before this process reads any of it, so no amount of scheduling luck can change it. And it is
+  // exactly the claim: quiescing came first, the conclusion came second.
+  //
+  // IT STILL KILLS THE MUTATION, which is the only reason to accept a re-measurement. A daemon that
+  // never quiesces never prints the first line at all, so there is no ordering to satisfy.
+  // G7e IS GONE, AND THE REASON MATTERS MORE THAN THE DELETION.
+  //
+  // It asked: at the instant the responder count fell to 1, had the daemon printed its ownership
+  // verdict yet? Answering that requires OUR READER to be scheduled between the daemon's two
+  // announcements, and it is not always: CI job 103789248360 reddened here with a tail showing the
+  // daemon had already decided. The SIGSTOP hook cannot prevent that, because it fires on a data
+  // event and the data event is itself the thing that arrived late; freezing a process after it has
+  // spoken does not unspeak it. A reviewer measured the race directly: stderr-triggered stop let the
+  // child decide first in 3 of 8 trials, an IPC-fenced leg in 0 of 8.
+  //
+  // MY FIRST REPAIR WAS TO REGRADE IT ON THE TRANSCRIPT ORDERING - quiesce line before verdict line,
+  // a fact fixed before this process reads a byte, so no scheduling luck can alter it. That is the
+  // right instrument, AND G9 TWENTY LINES BELOW ALREADY IS IT. I had written a second copy of a cell
+  // this suite already had, which would have been two names for one measurement and one more thing
+  // to keep in step. So the honest fix is a deletion: G8 and G9 carry the claim, on the durable
+  // evidence, and they always did.
+  //
+  // The sampled reading is kept as REPORTED CONTEXT below. When this process wins the race it is a
+  // genuinely stronger statement (the overlap ended while the daemon was still undecided); when it
+  // loses it says nothing at all. A cell whose truth depends on which process the scheduler favoured
+  // grades nothing, so it asserts nothing and is printed for whoever reads a future failure here.
+  console.log(`    · sampled-undecided reading: ${overlapEndedUndecided} (context only: races the daemon's own output; G8/G9 carry this claim on the transcript)`);
   check("G7f and serving never resumed during the arbitration — no re-arm without proof",
     !overlapReturned, { overlapReturned });
   // REQUIRES A READING. `peakPulls === undefined` means the sampler could not get an answer off the
@@ -1313,7 +1369,7 @@ try {
   // 93 -> 98: P1-P5. The discriminator shipped unreachable and no cell noticed, because a branch
   // that only fires on a broken environment is never walked by a passing suite. It is a pure
   // function now precisely so it can be walked without one.
-  const EXPECTED_CELLS = 98;
+  const EXPECTED_CELLS = 97;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

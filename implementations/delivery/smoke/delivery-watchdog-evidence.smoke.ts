@@ -559,10 +559,23 @@ const ELAPSED = 30_000;
 const composed = new LoopLagMeter(PROBE_INTERVAL_MS);
 composed.tick(0);
 composed.tick(ELAPSED + PROBE_INTERVAL_MS);   // the timer saw the whole stall
-composed.credit(ELAPSED);                      // so did the probe that spanned it
+// ON THE DAEMON'S OWN TIMELINE. The runtime calls `credit(lagMs, endedAt)` with the clock reading
+// from the probe that just answered, so the charge lands on the SAME timeline as the ticks. Passing
+// no `endedAt` defaults to `Date.now()`, which in a suite whose ticks are synthetic zero-based
+// numbers puts the probe's interval decades away from them - disjoint by construction, so the union
+// sums instead of overlapping and the composed reading is 60000 for a 30000ms stall. A reviewer
+// caught these two call sites still written the old way after the union landed; the cells were
+// grading an arrangement the daemon never produces. Compose it the way the caller does.
+composed.credit(ELAPSED, ELAPSED + PROBE_INTERVAL_MS);   // so did the probe that spanned it
 check("I3 lag measured over one stall never exceeds the time that actually passed",
   composed.starvedMsWithin(ELAPSED) <= ELAPSED,
   { raw: composed.starvedMs, clamped: composed.starvedMsWithin(ELAPSED), elapsed: ELAPSED });
+// I3b: the composed reading is the stall ITSELF, not a multiple of it. This is the cell that would
+// have caught the defect above: `<= ELAPSED` is satisfied by any under-count too, so it cannot tell
+// a correct union from a lossy one, and it was satisfied by the 60000 reading only because the clamp
+// hid it. Pinning the exact value is what makes the two instruments' agreement observable.
+check("I3b one stall seen by BOTH instruments is charged ONCE, on the daemon's own timeline",
+  composed.starvedMs === ELAPSED, { raw: composed.starvedMs, elapsed: ELAPSED });
 // WHAT THE CLAMP ACTUALLY GUARANTEES, stated as narrowly as it is true. Unstarved time can no longer
 // go NEGATIVE, which is the property the evidence clause needs: a negative can never be cleared by
 // any amount of real outage, so a dead broker stopped being detectable at all. Non-negative is a
@@ -571,24 +584,33 @@ const SPAN = 50_000;
 const clamped = composed.starvedMsWithin(SPAN);
 check("I4 unstarved time is never negative, so real outage can always accumulate against it",
   SPAN - clamped >= 0, { clamped, span: SPAN, unstarved: SPAN - clamped });
-// I5, THE RESIDUAL, RECORDED RATHER THAN HIDDEN. Clamping bounds the damage; it cannot un-double-count
-// a single stall, because two charges of 30000 inside a 50000 span are indistinguishable from genuine
-// near-total starvation. Measured: this shape still misses the evidence clause and ends on the
-// backstop instead of at ~44s. That is a real cost and it is why the backstop must stay unconditional
-// - it is the bound that keeps an over-generous excuse from becoming an unbounded one. Honest
-// accounting of the same stall exits on evidence, which is the difference this cell fixes in view.
-const residual = brokerGoneVerdict(evidence({ msSinceLastReachable: SPAN, starvedMs: clamped, completedNegatives: 6 }));
+// I5, REWRITTEN. It used to record a RESIDUAL: a fully-overlapped stall double-charged to 60000,
+// clamped to the span, missing the evidence clause and ending on the backstop. That residual was an
+// artifact of charging scalars, and the interval union removed it - the same stall is now charged
+// once, so the daemon exits on EVIDENCE at the honest time. The cell would have kept passing anyway,
+// because its companions composed the meter off the daemon's timeline; it asserted `exit === false`
+// and got it from a 60000 reading the runtime cannot produce. A cell that keeps passing after the
+// defect it describes is gone is a cell that has stopped grading anything.
+// What replaces it is the POSITIVE claim the union earns: the fully-overlapped case, the hardest one
+// for this accounting, now lands on the evidence clause rather than the backstop, and the composed
+// reading equals the single stall rather than a multiple of it.
+const overlapped = brokerGoneVerdict(evidence({ msSinceLastReachable: SPAN, starvedMs: clamped, completedNegatives: 6 }));
 const honest = brokerGoneVerdict(evidence({ msSinceLastReachable: SPAN, starvedMs: ELAPSED, completedNegatives: 6 }));
-check("I5 a fully-overlapped stall still reaches the backstop rather than the evidence clause, and the daemon still dies",
-  residual.exit === false && honest.exit === true &&
-  brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, starvedMs: composed.starvedMsWithin(BACKSTOP + 1), completedNegatives: 6 })).exit === true,
-  { residual, honest });
+check("I5 a fully-overlapped stall is charged ONCE, so a dead broker exits on EVIDENCE and not on the backstop",
+  clamped === ELAPSED && overlapped.exit === true && overlapped.reason === "broker-gone" &&
+  honest.exit === overlapped.exit && honest.reason === overlapped.reason,
+  { clamped, elapsed: ELAPSED, overlapped, honest });
+// I5b: the backstop stays unconditional anyway. The union removed the residual that USED to be the
+// argument for it, so the argument has to be restated on its own terms: the backstop is the bound
+// that keeps any over-generous excuse from becoming an unbounded one, whether or not one exists today.
+check("I5b the backstop still exits unconditionally, whatever the excuse claims",
+  brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, starvedMs: composed.starvedMsWithin(BACKSTOP + 1), completedNegatives: 6 })).exit === true);
 // I6 CONTROL: where the two charges do NOT swallow the whole span, the clamp restores exactly what
 // the defect broke - a dead broker exits on EVIDENCE, on time, rather than waiting for the backstop.
 const partial = new LoopLagMeter(PROBE_INTERVAL_MS);
 partial.tick(0);
 partial.tick(10_000 + PROBE_INTERVAL_MS);
-partial.credit(10_000);
+partial.credit(10_000, 10_000 + PROBE_INTERVAL_MS);   // same timeline as its ticks, as the daemon does
 const partialVerdict = brokerGoneVerdict(evidence({
   msSinceLastReachable: SPAN,
   starvedMs: partial.starvedMsWithin(SPAN),
@@ -605,7 +627,7 @@ check("I6 CONTROL: a dead broker behind a bounded stall exits on evidence, not o
 // 98 -> 100: F3-F4, pinning the backstop's own label. The elapsed-time exit and the evidence exit
 // were indistinguishable to callers, which is what let the exit line make an evidentiary claim on a
 // path that never established one.
-const EXPECTED_CELLS = 103;
+const EXPECTED_CELLS = 105;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
