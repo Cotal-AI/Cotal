@@ -90,7 +90,19 @@ class BridgeClient:
                 data = b""
             if not data:
                 with self._lock:
-                    self._sock = None
+                    # CLEAR ONLY WHAT WE OWN. This branch runs on EOF *and* on OSError, which is
+                    # how a retired reader is woken: `reopen` shuts the socket down underneath it.
+                    # An unguarded `self._sock = None` therefore lets a RETIRED generation erase the
+                    # socket the LIVE generation has already installed. Neither existing guard
+                    # catches it: the generation check is evaluated at the TOP of the loop, which
+                    # this thread has not reached, and the `_connect` fence governs INSTALLING a
+                    # socket rather than clearing one. The damage is silent and total: `_send`
+                    # returns early when `_sock is None`, so every outbound reply is dropped, and
+                    # nothing re-dials on the write path, so the seat stays mute until an inbound
+                    # frame happens to wake the reader. Measured before this guard: replies
+                    # delivered 0 of 8 with the live socket erased on every rep.
+                    if self._sock is sock:
+                        self._sock = None
                 continue
             buf += data
             while b"\n" in buf:
@@ -234,12 +246,37 @@ class BridgeClient:
             # cannot tear. Measured at 100KB before this close: 6 of 8 frames lost, two readers
             # alive on one socket every rep.
             #
-            # Closing here makes the retirement reach the syscall: the parked recv returns
-            # immediately, the retired reader exits without consuming a partial frame, and the
+            # Shutting down here makes the retirement reach the syscall. AN EARLIER VERSION OF THIS
+            # COMMENT CLAIMED `close()` ALONE DID THAT, AND IT WAS WRONG: `close()` drops this
+            # object's reference to the open file description, but a thread already blocked in
+            # `recv` holds its own, so the description stays open and that read never returns. The
+            # delivery cells could not catch the error because a reader stranded forever on a dead
+            # socket stops competing for the new one just as well as a reader that exits, so the
+            # frames arrived either way and the only trace was a leaked thread per reconnect.
+            # `shutdown` acts on the connection rather than the descriptor, so the parked recv
+            # returns at once, the retired reader exits without consuming a partial frame, and the
             # replacement dials a socket of its own.
             sock = self._sock
             self._sock = None
         if sock is not None:
+            # SHUTDOWN BEFORE CLOSE, because `close()` alone does NOT wake a thread already blocked
+            # in `recv` on this socket. `close()` drops THIS object's reference to the file
+            # description; the blocked thread still holds its own, so the description stays open and
+            # the read never returns. Measured directly on a socketpair: with `close()` alone the
+            # reader was still blocked after 3s, and with `shutdown(SHUT_RDWR)` first it returned
+            # 0 bytes in 300ms. `shutdown` acts on the connection rather than the descriptor, so it
+            # reaches the parked reader.
+            #
+            # This was a real leak, not a theoretical one: each retired reader stayed parked forever
+            # on a socket nobody would ever write to, so every reconnect stranded one more thread.
+            # Measured over 6 reopen cycles: bridge threads 1,2,3,4,5,6,7 without the shutdown and
+            # flat at 1 with it. The delivery cell could not see this, because a reader stuck
+            # forever on a dead socket stops competing for the new one just as effectively as a
+            # reader that exits, so frames arrive either way.
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already disconnected; the close below still frees the descriptor
             try:
                 sock.close()
             except OSError:

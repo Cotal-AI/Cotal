@@ -247,6 +247,10 @@ def main() -> None:
                 print(name, ok)
             for name, ok in _last_subscriber_rows():
                 print(name, ok)
+            for name, ok in _eof_clear_rows():
+                print(name, ok)
+            for name, ok in _reader_leak_rows():
+                print(name, ok)
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
             print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
             for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
@@ -258,6 +262,9 @@ def main() -> None:
                          "LARGE_FRAME_SPANS_MULTIPLE_RECVS",
                          "LAST_SUB_WRITER_NEVER_TIMED_OUT",
                          "LAST_SUB_EVERY_REP_DELIVERED",
+                         "EOF_LEFT_LIVE_SOCKET_INSTALLED",
+                         "EOF_REPLY_STILL_REACHES_BROKER",
+                         "RECONNECT_LEAKS_NO_READER_THREAD",
                          "DEAD_READER_REPORTS_FATAL",
                          "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
                          "HEALTHY_READER_REPORTS_NO_FATAL"):
@@ -799,6 +806,325 @@ def _last_subscriber_rows() -> list[tuple[str, bool]]:
         print(f"LAST_SUB_WRITER_OK {writer_ok} of {_LAST_SUB_REPS}")
         print(f"LAST_SUB_DELIVERED {delivered} of {_LAST_SUB_REPS}")
     finally:
+        try:
+            srv.close()
+        except OSError:
+            pass
+    return rows
+
+
+_EOF_REPS = 8
+
+
+def _eof_clear_rows() -> list[tuple[str, bool]]:
+    """The EOF path erases the LIVE socket, so replies are dropped until an inbound wakes a redial.
+
+    The shape. `_run` now reads through a local handle, so a retired generation recv()s the socket
+    it actually had. But the EOF branch clears the SHARED field unconditionally:
+
+        if not data:
+            with self._lock:
+                self._sock = None
+
+    That write is not guarded by identity. Sequence, all on one client:
+
+      1. gen0's reader is parked in `recv` on s0.
+      2. `reopen()` retires gen0 and closes s0, then `start()` installs gen1, which dials s1.
+      3. gen0's parked `recv` returns EOF (b"") because s0 was closed. That is the CORRECT wakeup,
+         and it is exactly what the M9 close was added to cause.
+      4. gen0 then executes `self._sock = None`, erasing **s1**, which it never owned.
+
+    The generation check cannot save this: it is evaluated at the TOP of the loop, and the clear
+    happens before the thread gets back there. The socket fence cannot save it either, because the
+    fence governs INSTALLING a socket, not clearing one.
+
+    Why it is a real outage rather than a cosmetic nil. `_send` returns early when `_sock is None`,
+    so every outbound reply is silently dropped. Nothing re-dials on the write path: only `_run`
+    dials, and it only does so when it next reaches the top of its loop. The live reader is by then
+    parked in `recv` on a socket it still holds locally, so it will not notice until an INBOUND
+    frame arrives. A seat that is asked a question and answers it therefore answers into a void.
+
+    Graded on `reply()` because that is the observable behaviour, not on the private field.
+
+    Both parking shapes alternate by rep, for the same reason the last-subscriber cell does: the
+    EOF wakeup is reachable only when the retired reader is parked in `recv` (shape A), so a cell
+    that only parked in `_connect` would never execute the clear at all and would pass green
+    against the defect it is named for. Shape B is kept so the cell still covers the case where the
+    retired reader is mid-dial and the EOF never fires, which must ALSO leave the live socket alone.
+    """
+    rows: list[tuple[str, bool]] = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    eof_path = os.path.join(_tmp, "eofclear.sock")
+    srv.bind(eof_path)
+    srv.listen(16)
+    side: dict = {"subs": []}
+
+    def _accept_loop() -> None:
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            side["subs"].append(c)
+
+    threading.Thread(target=_accept_loop, daemon=True).start()
+
+    replies_out = 0
+    sock_live = 0
+    try:
+        for rep in range(_EOF_REPS):
+            park_in_dial = rep % 2 == 1
+            client = BridgeClient(eof_path)
+            entered = threading.Event()
+            released = threading.Event()
+            real_connect = client._connect
+
+            if park_in_dial:
+                def _park(gen=None, _e=entered, _r=released, _rc=real_connect):
+                    if not _e.is_set():
+                        _e.set()
+                        _r.wait(5.0)
+                        return
+                    return _rc(gen)
+
+                client._connect = _park
+                client.start(lambda _m: None)
+                entered.wait(5.0)
+                client.reopen()
+                client._connect = real_connect
+                client.start(lambda _m: None)
+                deadline = time.time() + 5.0
+                while not side["subs"] and time.time() < deadline:
+                    time.sleep(0.02)
+                released.set()
+                time.sleep(0.3)
+            else:
+                # Shape A: gen0 parked in recv on s0. reopen() closes s0 so that recv returns EOF.
+                #
+                # THE INTERLEAVING HAS TO BE FORCED, and saying why matters more than the code. The
+                # EOF clear is only destructive if gen1's socket is ALREADY INSTALLED when gen0 runs
+                # it. reopen() sets `_sock = None` itself and then joins the old reader for up to
+                # _REOPEN_JOIN_SECONDS, so in the common case gen0 wakes, clears a field that is
+                # already None, and exits before start() installs s1. Harmless, and that is why a
+                # naive version of this cell passes 8 of 8 against the live defect.
+                #
+                # The damaging order is the one where gen0 is DESCHEDULED past the courtesy join:
+                # it is a bounded wait, not a barrier, and the comment in reopen() says correctness
+                # must not depend on its outcome. So this holds gen0 between its EOF wakeup and its
+                # clear, installs s1, and only then releases it. That is a real schedule, not a
+                # synthetic one: a 2s join expiring under load is precisely the case the generation
+                # counter exists to survive.
+                # A real `socket` object refuses attribute assignment ('recv' is read-only), so the
+                # hold is installed as a thin WRAPPER that `_sock` accepts: the client only ever
+                # calls recv / sendall / close on it. An earlier version of this cell patched the
+                # socket directly, swallowed the AttributeError, and passed 8 of 8 against the live
+                # defect because the hold never attached at all.
+                at_eof = threading.Event()
+                may_clear = threading.Event()
+
+                class _HoldAtEOF:
+                    """Pass-through socket that parks the reader between its EOF and its clear."""
+
+                    def __init__(self, inner):
+                        self._inner = inner
+                        self._held = False
+
+                    def recv(self, n):
+                        # THE WAKEUP IS AN EXCEPTION, NOT A ZERO-BYTE RETURN. reopen() CLOSES the
+                        # socket, so the parked recv raises OSError; it does not return b"". `_run`
+                        # catches that and sets `data = b""`, falling into the very same unguarded
+                        # clear. A version of this hold that only fired on the b"" return never
+                        # triggered at all and reported 8 of 8 against the live defect. Both paths
+                        # are held, and the raise is re-raised so the client sees normal behaviour.
+                        try:
+                            out = self._inner.recv(n)
+                        except OSError:
+                            if not self._held:
+                                self._held = True
+                                at_eof.set()
+                                may_clear.wait(5.0)
+                            raise
+                        if not out and not self._held:
+                            self._held = True
+                            at_eof.set()       # EOF observed, the clear has NOT run yet
+                            may_clear.wait(5.0)  # hold while gen1 installs s1
+                        return out
+
+                    def sendall(self, data):
+                        return self._inner.sendall(data)
+
+                    def shutdown(self, how):
+                        # The double must implement the WHOLE surface the client uses. `reopen`
+                        # shuts the socket down before closing it, and a double missing this method
+                        # raises AttributeError from inside the client, which reddens unrelated rows
+                        # and hides the cell this stands in for.
+                        return self._inner.shutdown(how)
+
+                    def close(self):
+                        return self._inner.close()
+
+                # THE WRAPPER HAS TO BE INSTALLED BEFORE start(), NOT AFTER IT. `_run` reads
+                # through a LOCAL handle (`sock = self._sock`, the race fix this PR already
+                # shipped), so a reader that has already dialled is holding the RAW socket and
+                # never calls through a wrapper swapped into the field behind it. Wrapping after
+                # start() left the hold unreachable: traced, the wrapper's recv was never called
+                # once, and only reopen()'s close touched it. So gen0's dial is wrapped at source.
+                real_connect_a = client._connect
+
+                def _wrap_after_dial(gen=None, _rc=real_connect_a, _c=client):
+                    _rc(gen)
+                    with _c._lock:
+                        if _c._sock is not None and not isinstance(_c._sock, _HoldAtEOF):
+                            _c._sock = _HoldAtEOF(_c._sock)
+
+                client._connect = _wrap_after_dial
+                client.start(lambda _m: None)
+                deadline = time.time() + 5.0
+                while not side["subs"] and time.time() < deadline:
+                    time.sleep(0.02)
+                # gen1 must dial a REAL socket, so the wrapping dialer is retired first.
+                client._connect = real_connect_a
+                if not isinstance(client._sock, _HoldAtEOF):
+                    at_eof.set()  # never wrapped; do not deadlock the cell
+
+                client.reopen()
+                at_eof.wait(5.0)
+                client.start(lambda _m: None)
+                deadline = time.time() + 5.0
+                while len(side["subs"]) < 2 and time.time() < deadline:
+                    time.sleep(0.02)
+                # Release gen0 into its clear and then measure AT ONCE. The 0.4s settle this cell
+                # first used was itself a bug: with the socket erased, the LIVE reader reaches the
+                # top of its loop, sees `_sock is None` and RE-DIALS, so the outage self-heals
+                # inside the settle and the row graded the heal instead of the damage. A seat that
+                # has just been asked a question answers immediately, which is exactly the window
+                # the erase lands in.
+                may_clear.set()
+                time.sleep(0.05)
+
+            # Observable grading: can the seat still SPEAK? Count bytes the broker actually reads.
+            target = side["subs"][-1] if side["subs"] else None
+            if client._sock is not None:
+                sock_live += 1
+            # GRADE BY CONTENT, NOT BY BYTE COUNT. Reading "some bytes arrived" off this socket
+            # counts the client's own `{"t": "subscribe"}` frame as if it were the reply: measured
+            # directly, erasing `_sock` and replying at once still put 19 bytes on the wire, and
+            # every one of them was the subscribe. The reply itself was dropped exactly as the
+            # defect predicts. A cell that greps for bytes therefore reports the outage as healthy.
+            # Drain until the reply's own marker is seen or the socket goes quiet.
+            saw_reply = False
+            if target is not None:
+                marker = ("eof-probe-%d" % rep).encode()
+                client.reply({"kind": "dm", "to": "eof-probe-%d" % rep}, "hello")
+                target.settimeout(0.6)
+                pending = b""
+                deadline_r = time.time() + 1.5
+                while time.time() < deadline_r:
+                    try:
+                        chunk = target.recv(65536)
+                    except (OSError, socket.timeout):
+                        break
+                    if not chunk:
+                        break
+                    pending += chunk
+                    if marker in pending and b'"reply"' in pending:
+                        saw_reply = True
+                        break
+            replies_out += 1 if saw_reply else 0
+
+            client.close()
+            for c in side["subs"]:
+                try:
+                    c.close()
+                except OSError:
+                    pass
+            side["subs"].clear()
+
+        rows.append(("EOF_LEFT_LIVE_SOCKET_INSTALLED", sock_live == _EOF_REPS))
+        rows.append(("EOF_REPLY_STILL_REACHES_BROKER", replies_out == _EOF_REPS))
+        print(f"EOF_SOCK_LIVE {sock_live} of {_EOF_REPS}")
+        print(f"EOF_REPLIES_DELIVERED {replies_out} of {_EOF_REPS}")
+    finally:
+        try:
+            srv.close()
+        except OSError:
+            pass
+    return rows
+
+
+# Read from source at HEAD, not guessed: bridge_client.py line 53 names the reader thread.
+_READER_THREAD_NAME = "cotal-bridge"
+_LEAK_CYCLES = 6
+
+
+def _reader_leak_rows() -> list[tuple[str, bool]]:
+    """Every reconnect must retire its reader thread, not strand it in a blocked read.
+
+    `close()` on a socket does NOT wake a thread already blocked in `recv` on it. It drops this
+    object's reference to the open file description; the blocked thread still holds its own, so the
+    description stays open and the read never returns. Measured on a bare socketpair: with `close()`
+    alone the reader was still blocked after 3s, and with `shutdown(SHUT_RDWR)` first it returned 0
+    bytes in 300ms.
+
+    Why the delivery cells are blind to it. A reader stuck forever on a dead socket stops competing
+    for the new socket's frames just as effectively as a reader that exits, so every delivery cell
+    stays green either way. The only visible difference is the thread, which is why this is graded
+    by counting threads rather than messages. Left unfixed, a long-lived seat strands one reader per
+    reconnect: measured 1,2,3,4,5,6,7 over six cycles before the shutdown, flat at 1 after it.
+    """
+    rows: list[tuple[str, bool]] = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    leak_path = os.path.join(_tmp, "leak.sock")
+    srv.bind(leak_path)
+    srv.listen(64)
+    subs: list = []
+
+    def _accept_loop() -> None:
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            subs.append(c)
+
+    threading.Thread(target=_accept_loop, daemon=True).start()
+
+    def _bridge_threads() -> int:
+        return sum(1 for t in threading.enumerate() if t.name == _READER_THREAD_NAME and t.is_alive())
+
+    client = BridgeClient(leak_path)
+    try:
+        client.start(lambda _m: None)
+        deadline = time.time() + 5.0
+        while not subs and time.time() < deadline:
+            time.sleep(0.02)
+        baseline = _bridge_threads()
+        counts = [baseline]
+        for _ in range(_LEAK_CYCLES):
+            client.reopen()
+            client.start(lambda _m: None)
+            time.sleep(0.25)
+            counts.append(_bridge_threads())
+        # GRADE GROWTH, NOT THE ABSOLUTE COUNT. Earlier cells in this probe leave their own bridge
+        # threads alive, so the absolute number is not 1 here and asserting `<= 1` fails for a
+        # reason that has nothing to do with this defect. What this cell owns is whether EACH
+        # RECONNECT adds one: the leak is strictly monotonic, one per cycle, so growth over the
+        # baseline is the signal and the baseline itself is noise from other cells.
+        growth = max(counts) - baseline
+        rows.append(("RECONNECT_LEAKS_NO_READER_THREAD", growth <= 0))
+        print(f"BRIDGE_THREADS_PER_CYCLE {','.join(str(x) for x in counts)}")
+        print(f"BRIDGE_THREADS_BASELINE {baseline}")
+        print(f"BRIDGE_THREADS_GROWTH {max(counts) - baseline} over {_LEAK_CYCLES} cycles")
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - teardown must not mask the rows
+            pass
+        for c in subs:
+            try:
+                c.close()
+            except OSError:
+                pass
         try:
             srv.close()
         except OSError:
