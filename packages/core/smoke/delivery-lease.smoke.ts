@@ -12,8 +12,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor } from "../src/index.js";
-import { connect } from "@nats-io/transport-node";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -207,7 +207,109 @@ try {
   const fanoutBack = await jsmConflict.consumers.info(chat, FANOUT_DURABLE).then(() => true, () => false);
   check("Q8 and the fan-out durable is really bound again, read from the broker", fanoutBack);
 
-  try { await d3.stop(); } catch { /* ignore */ }
+  // ── V. A UNIT ALREADY IN FLIGHT MUST NOT TAKE EFFECT AFTER THE QUIESCE ─────────────────
+  //
+  // A REVIEWER FINDING, and it is the half of "one server" that unsubscribing cannot deliver.
+  // `quiescePlane3` stops NEW work: it unsubscribes the responders and stops the consumers. It
+  // cannot recall work already dispatched. A handler that entered before the freeze and awaited
+  // broker I/O inside it RESUMES after it, and the ordering that makes that a split rather than a
+  // blip is: the loser accepts a request and awaits, the loser is descheduled, the successor
+  // acquires the shard and flips its lease READY, the loser resumes and answers for a shard it no
+  // longer holds. Two live servers on one shard, which is what the lease exists to prevent.
+  //
+  // THE STARVATION SUITE'S CELL G COULD NOT SEE THIS, and that is the point of adding it here: G
+  // reads subscription counts and parked pulls, and INJECTS NO TRAFFIC, so a daemon with no work in
+  // flight looks identical to one whose in-flight work is about to land. The effect is the REPLY,
+  // not the binding. So this drives the real `ctl.delivery` rail over the wire and grades what the
+  // caller actually receives.
+  console.log("\nV. work dispatched before a quiesce must not act after it");
+  // SOLE SERVER ON THE RAIL, or this cell grades nothing. `serveControl` subscribes with a QUEUE
+  // group, so every endpoint this suite has started is a candidate responder for the same subject.
+  // The first version of this cell left them up, and V3 went green-then-red on `ok:true` served by a
+  // DIFFERENT daemon - which is correct queue behaviour and says nothing about the one under test.
+  // The others are stopped first so the only endpoint that can answer is the one being quiesced.
+  for (const other of [d1, d2, d3]) { try { await other?.stop(); } catch { /* ignore */ } }
+  d1 = undefined; d2 = undefined;
+
+  // A FRESH daemon with a REAL ACL resolver: d3 above is mid-experiment (quiesced and rearmed by the
+  // Q cells) and was started with a stub resolver that answers no ACL at all, so it cannot serve a
+  // control request and could never provide the accept control this cell needs.
+  const dv = await mkDaemon(); dv.on("error", () => {}); await dv.start();
+  await dv.startPlane3((owner, lifecycleUid) => dv.aclForOwner(owner, lifecycleUid));
+  const vIdentity = newIdentity();
+  const vLifecycleUid = mintLifecycleUid();
+  const vNoop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+  const vCreds = await provisionAgent(vNoop, auth, vIdentity, { subscribe: [], allowSubscribe: [], lifecycleUid: vLifecycleUid });
+  const vNc = await connect({
+    servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(vCreds)),
+    inboxPrefix: `_INBOX_${vIdentity.id}`, maxReconnectAttempts: 0,
+  });
+  try {
+    const vSubject = controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, vIdentity.id);
+    // BOUND REPLY, because the rail demands it: `serveControl(..., { boundReply: true })` answers only
+    // when `m.reply` sits under the authenticated request subject, which is the confused-deputy
+    // defence. A plain `nc.request()` uses an `_INBOX_` reply and is silently never answered - it
+    // cost this cell two red accept controls before the harness was fixed, which is the harness
+    // being broken rather than the daemon.
+    const ask = async (): Promise<{ ok?: boolean; error?: string } | undefined> => {
+      const replyTo = `${vSubject}.reply.${randomUUID()}`;
+      const inbox = vNc.subscribe(replyTo, { max: 1 });
+      // An EMPTY body is a real outcome here, not a parse bug: once the rail is unsubscribed nobody
+      // answers, and the race below resolves undefined. Decode defensively so "no answer" reports as
+      // no answer rather than throwing out of the suite.
+      const answer = (async () => {
+        for await (const m of inbox) {
+          try { return m.json<{ ok?: boolean; error?: string }>(); } catch { return { error: "unparseable reply" }; }
+        }
+        return undefined;
+      })();
+      vNc.publish(vSubject, new TextEncoder().encode(JSON.stringify({
+        op: "listMemberships", args: { lifecycleUid: vLifecycleUid },
+        from: { id: `${DEV_OWNER}.${vIdentity.id}`, name: "v-caller", kind: "agent" }, // the subject encodes owner.actor; `from.id` must be that dot-form, not the bare nkey
+      })), { reply: replyTo });
+      await vNc.flush();
+      const out = await Promise.race([answer, wait(2500).then(() => undefined)]);
+      try { inbox.unsubscribe(); } catch { /* already gone */ }
+      return out;
+    };
+    // ACCEPT CONTROL FIRST, so a refusal below is the fence rather than a rail that never worked.
+    const vServing = await ask();
+    check("V1 CONTROL: while serving, the control rail ANSWERS this caller", vServing?.ok === true, vServing);
+    // Now the daemon stops serving the shard, exactly as a failed renew makes it.
+    await dv.quiescePlane3();
+    check("V2 the endpoint records itself as not serving", dv.plane3IsQuiesced() === true);
+    const vQuiesced = await ask();
+    // The subscription is gone, so the honest outcomes are "no reply" or "a refusal". What must
+    // NEVER happen is an ok:true answer served for a shard this daemon has stopped serving.
+    check("V3 a request is NOT answered ok by a daemon that has stopped serving the shard",
+      vQuiesced?.ok !== true, vQuiesced);
+    // REFUSING CASE, and it is what keeps V3 from passing on a permanently dead rail: the same call
+    // is answered again once ownership is re-proven and serving resumes.
+    await dv.rearmPlane3();
+    const vBack = await ask();
+    check("V4 REFUSING CASE: once serving resumes, the SAME request is answered again", vBack?.ok === true, vBack);
+
+    // V5-V6 ARE THE CELLS THAT ACTUALLY GRADE THE FENCE, and V3 above is NOT one of them: with the
+    // rail unsubscribed nobody answers at all, so V3 stays green with every fence removed. Measured,
+    // not assumed - that control is why these two exist.
+    //
+    // The ordering under test is the one three reviewers described: a request ADMITTED while serving,
+    // descheduled inside its broker read, resuming after a successor has taken the shard. It is
+    // reproduced by quiescing WHILE the request is in flight rather than before it, so the handler
+    // entered through a live subscription and returns through a stood-down daemon.
+    const inflight = ask();
+    await wait(1);                 // let the request reach the handler and enter its await
+    await dv.quiescePlane3();      // the successor has taken the shard; this daemon stands down
+    const vInflight = await inflight;
+    check("V5 a request admitted BEFORE the quiesce is not answered ok after it", vInflight?.ok !== true, vInflight);
+    check("V6 and it is refused by name rather than silently dropped, so the caller can retry",
+      vInflight === undefined || /stopped serving this shard/.test(vInflight.error ?? ""), vInflight);
+  } finally {
+    try { await vNc.close(); } catch { /* ignore */ }
+    try { await dv.stop(); } catch { /* ignore */ }
+  }
+
+  // d3 was stopped above, before the V cells took sole ownership of the control rail.
   // Drain the observer connection, or the suite's event loop stays alive on an open socket and the
   // run hangs after the last cell instead of exiting.
   try { await conflictNc.close(); } catch { /* ignore */ }

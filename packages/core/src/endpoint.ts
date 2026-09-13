@@ -3999,7 +3999,28 @@ export class CotalEndpoint extends EventEmitter {
    *  id is the authenticated subject sender ({@link serveControl} fail-closes on a mismatch). Validation
    *  is against the durable ACL registry — the SAME KV the reader re-auths against (single source of
    *  truth, no in-memory ledger to drift). */
+  /** Whether an ALREADY-DISPATCHED unit of Plane-3 work may still take effect.
+   *
+   *  Unsubscribing stops NEW work; it cannot recall work already in flight. A handler that entered
+   *  before {@link quiescePlane3} and awaited broker I/O inside it resumes AFTER the freeze, and a
+   *  reviewer traced the ordering that makes that a split rather than a latency blip: the loser
+   *  accepts a unit and awaits, the loser is descheduled, the successor acquires the shard and flips
+   *  its lease READY, then the loser resumes and answers or acks for a shard it no longer holds.
+   *  Subscription counts and parked-pull readings cannot see it, because the effect is the reply and
+   *  the ack rather than the binding.
+   *
+   *  So each work path re-asks HERE, at the point of effect, after its awaits and before it acts.
+   *  The lease keeps one ROW, not one SERVER; this is the half that keeps one server. An unacked
+   *  message is not lost by refusing: a stopped consumer redelivers it to whoever holds the shard
+   *  next, which is the same property quiescing already relies on. */
+  private plane3MayAct(): boolean {
+    return !this.plane3Quiesced;
+  }
+
   private async handleDeliveryControl(req: ControlRequest): Promise<ControlReply> {
+    // FENCE: entered before a quiesce, resuming after it. Answering now would put a second server on
+    // this shard's control rail while the winner is already READY.
+    if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     const caller = req.from.id;
     const args = req.args ?? {};
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
@@ -4011,7 +4032,13 @@ export class CotalEndpoint extends EventEmitter {
       let uid: string;
       try { uid = assertLifecycleToken(args.lifecycleUid); }
       catch (e) { return { ok: false, error: (e as Error).message }; }
-      return { ok: true, data: { memberships: await this.ownerMemberships(caller, uid) } };
+      const memberships = await this.ownerMemberships(caller, uid);
+      // FENCE AFTER THE AWAIT, which is the one that matters. The entry check above cannot catch the
+      // case this exists for: a request admitted WHILE SERVING, then descheduled inside its broker
+      // read, resuming after a successor has taken the shard and reached READY. Re-ask at the point
+      // of effect, so the answer is never served by a daemon that has stood down.
+      if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon stopped serving this shard while the request was in flight; retry" };
+      return { ok: true, data: { memberships } };
     }
     return { ok: false, error: `op "${req.op}" not supported on the delivery control service` };
   }
@@ -4292,6 +4319,8 @@ export class CotalEndpoint extends EventEmitter {
    *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
    *  structured failure (e.g. the file was never re-signed), never a silent partial. */
   private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
+    // FENCE: same reason as the runtime rail above.
+    if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {
       // The renewal owner's EXPECTED-generation tokens (SHA-256 of each JWT it re-signed), per
       // component. A missing entry means "no expectation" (the passive backstop still adopts).
@@ -4410,6 +4439,12 @@ export class CotalEndpoint extends EventEmitter {
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  Members KV is scanned FRESH per message (no cache — red-team BLOCKER-1 catch-up correctness). */
   private async fanOutMessage(m: JsMsg): Promise<void> {
+    // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
+    // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
+    // this daemon no longer serves. Returning WITHOUT acking is the whole point - a stopped consumer
+    // redelivers to whoever holds the shard next, so refusing here loses no message, while acking it
+    // would consume the successor's work.
+    if (!this.plane3MayAct()) return;
     const parsed = parseSubject(m.subject);
     if (!parsed || parsed.kind !== "chat") { m.ack(); return; }
     const channel = parsed.rest;
@@ -4418,6 +4453,11 @@ export class CotalEndpoint extends EventEmitter {
     if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
+    // SECOND FENCE, AT THE COMMIT POINT. The entry check above cannot cover this unit's own awaits:
+    // the class read and the member scan below both hit the broker, and a daemon descheduled inside
+    // them can resume after a successor owns the shard. Re-ask immediately before the first WRITE,
+    // and again return without acking so the entry redelivers rather than being consumed here.
+    if (!this.plane3MayAct()) return;
     if ((await this.deliveryClassFresh(channel)) === "durable") {
       for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
@@ -4426,6 +4466,11 @@ export class CotalEndpoint extends EventEmitter {
         // retired lifecycle's inbox, never the alias's new occupant (SPEC 13.1 cross-plane scoping).
         // Store the AUTHENTICATED-channel copy (main's normalization): the durable frame validates
         // msg.channel === frame.channel, and payload to/toService are stripped.
+        // Per-copy, because the scan above and every publish below is a broker round trip: a fan-out
+        // to fifty members can straddle a quiesce in its middle. Stopping part-way is safe where
+        // stopping late is not - the entry is never acked here, so the successor redelivers it and
+        // re-sends the whole set; publishDinbox is idempotent per (owner, lifecycle, msgID).
+        if (!this.plane3MayAct()) return;
         await this.publishDinbox(rec.owner, rec.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation });
       }
     } else {
@@ -4439,9 +4484,14 @@ export class CotalEndpoint extends EventEmitter {
         try { row = await this.aclForAlias(owner); }
         catch (e) { this.emit("error", e as Error); continue; }
         if (!row || !channelInAllow(row.allowSubscribe, channel)) continue; // @mention can't bypass the read ACL
+        if (!this.plane3MayAct()) return;   // same rule on the live-mention path
         await this.publishDinbox(owner, row.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
       }
     }
+    // FINAL FENCE, BEFORE THE ACK ITSELF, which is the real commit: acking tells the stream this
+    // shard's work is done. A daemon that stopped serving mid-fan-out must not make that claim, or
+    // the successor never sees the entry and the message is lost outright rather than duplicated.
+    if (!this.plane3MayAct()) return;
     m.ack();
   }
 
@@ -4466,6 +4516,9 @@ export class CotalEndpoint extends EventEmitter {
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
   private async readerHandle(m: JsMsg): Promise<void> {
+    // FENCE, same rule as the fan-out writer: no effect and no ack once this daemon has stopped
+    // serving the shard. The entry redelivers to the holder rather than being consumed here.
+    if (!this.plane3MayAct()) return;
     const pr = parseDinboxPrincipal(m.subject);
     if (!pr) { m.ack(); return; } // unparseable subject (incl. a pre-cut 5-segment form) — not a real entry
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
@@ -4500,6 +4553,11 @@ export class CotalEndpoint extends EventEmitter {
       // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut.
       if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
     }
+    // COMMIT-POINT FENCE. Everything above this line is broker I/O - the ACL read and the member
+    // re-read - so the entry check at the top of the handler is stale by now if this unit was
+    // descheduled inside either. The transfer below is the effect that must not happen on behalf of
+    // a shard we no longer serve; returning without acking leaves it for the holder.
+    if (!this.plane3MayAct()) return;
     try {
       // DLV has no original chat subject, so preserve the channel the trusted fan-out reader derived
       // from CHAT. Never let the publisher-controlled payload label choose connector attention.
@@ -4529,6 +4587,11 @@ export class CotalEndpoint extends EventEmitter {
       m.nak(2000);
       return;
     }
+    // The ack is the last commit: the transfer above already happened, so the only question left is
+    // whether THIS daemon may retire the source entry. If it stopped serving mid-transfer, leave the
+    // entry pending - the successor re-transfers and stream-wide dedupe on the msgID collapses the
+    // duplicate, which is the recoverable direction. Acking here is the unrecoverable one.
+    if (!this.plane3MayAct()) return;
     m.ack();
   }
 
