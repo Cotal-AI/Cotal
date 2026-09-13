@@ -299,15 +299,22 @@ const evaluatedProgramLoads = (evalPath, argvNode) => {
  * mutating imported source. This is the same shape as the launcher and copier rules: the path must
  * be the argument the call actually reads, not a value sitting near it.
  *
- * BUT A READ OF AN IMPORTABLE SOURCE MODULE IS NOT AN EXECUTION WITNESS, and that distinction is
+ * A NAMED read of an importable SOURCE module is not an execution witness, and that distinction is
  * the whole point of this tool. Reading a file proves the suite depends on its TEXT. For a data
- * file the text IS the artifact, so a read is the strongest witness available and nothing stronger
- * exists. For a `.ts`/`.js` module the text is not the behaviour: a suite that does
- * `readFileSync("mesh-handler.ts")` and counts `"export class MeshHandler"` reddens when the
- * SPELLING changes and stays green when the SEMANTICS change. Grading that as coverage is the
- * original defect of this tool wearing a data-flow costume, because the read really is evaluated
- * and the path really does resolve; the fact it establishes is simply not execution. A source
- * module has a stronger witness available (import, launch, build), so requiring one costs nothing.
+ * file the text IS the artifact, so a read is the strongest witness available. For a `.ts`/`.js`
+ * module the text is not the behaviour: a suite that does `readFileSync("mesh-handler.ts")` and
+ * counts `"export class MeshHandler"` reddens when the SPELLING changes and stays green when the
+ * SEMANTICS change. Grading that as coverage is the original defect of this tool wearing a
+ * data-flow costume, because the read really is evaluated and the path really does resolve; the
+ * fact it establishes is simply not execution. A source module has a stronger witness available
+ * (import, launch, build), so requiring one costs nothing.
+ *
+ * A RECURSIVE SWEEP IS THE OPPOSITE CASE AND IS DELIBERATELY LEFT ALONE. A lint that walks
+ * `src/**` and asserts a property over every file it finds NEVER NAMES its subjects: the text is
+ * not standing in for behaviour, the text IS what the suite asserts about, and a new file in the
+ * tree is picked up precisely because nothing enumerated it. `surface.smoke.ts` walking the package
+ * for uncatalogued error codes is real coverage of every file it reads, and refusing it would trade
+ * a false accept for a false refusal.
  */
 /**
  * Environment variables the command itself assigns, as `NAME=value` prefixes on a run step.
@@ -496,7 +503,13 @@ const readsFile = (suite, source, file, env = new Map()) => {
   const visit = (node) => {
     if (ts.isCallExpression(node) && readers.has(calleeText(node.expression)) && evaluated(node, sf)) {
       const target = node.arguments[0];
-      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)) hit = true;
+      // A read of a file the suite NAMES is a proxy for that file's behaviour, and for a source
+      // module the text is not the behaviour: this is the `mesh-seam` shape, where the suite counts
+      // `export class MeshHandler` in `mesh-handler.ts`. A source module always has a stronger
+      // witness available, so requiring one costs nothing. Data files keep the read, because for
+      // them the bytes ARE the artifact and no stronger witness exists.
+      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)
+        && !isSourceModule(file)) hit = true;
     }
     if (ts.isCallExpression(node) && listers.has(calleeText(node.expression)) && evaluated(node, sf)) {
       const dir = evalPath(node.arguments[0]);
@@ -687,6 +700,30 @@ const sourceOfBuilt = (absolute) => {
 
 const importsBuiltOutput = (path, source) => {
   const roots = [];
+  const sf = ast(path, source);
+  // A worker entry is written as `new URL(spec, import.meta.url)`, as a plain string, or as a
+  // const holding one. An identifier is resolved to the initialiser it is DECLARED with rather
+  // than by its spelling, so the fact recorded is the path the program actually hands over.
+  const declared = new Map();
+  const collect = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      declared.set(node.name.text, node.initializer);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(sf);
+  const distUrlText = (node) => {
+    let target = node;
+    if (ts.isIdentifier(target)) {
+      const bound = declared.get(target.text);
+      if (bound === undefined) return undefined;
+      target = bound;
+    }
+    if (ts.isNewExpression(target) && calleeText(target.expression) === "URL" && target.arguments?.[0]) {
+      target = target.arguments[0];
+    }
+    return stringValue(target);
+  };
   const record = (value) => {
     if (typeof value !== "string") return;
     const v = value.replaceAll("\\", "/");
@@ -704,9 +741,19 @@ const importsBuiltOutput = (path, source) => {
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       record(stringValue(node.arguments[0]));
     }
+    // A worker thread's entry is EXECUTED, not imported, so it never appears as an import
+    // declaration. The thread is started by `new Worker(options.entry)` inside the worker helper,
+    // so the fact that identifies the running module is the dist URL THIS file hands over as the
+    // `entry` it asks to be run: `{ entry: new URL("../dist/engine/worker-entry.js", ...) }`. The
+    // mutated source is compiled into that artifact, so the caller still pairs this with a build
+    // exactly as for a dist import, because without one the thread starts a stale artifact. Only a
+    // `dist` path is recorded, by the same `record` that guards every other route here.
+    if (ts.isPropertyAssignment(node) && node.name.getText() === "entry") {
+      record(distUrlText(node.initializer));
+    }
     ts.forEachChild(node, visit);
   };
-  visit(ast(path, source));
+  visit(sf);
   return roots;
 };
 
@@ -931,16 +978,28 @@ const expandScripts = (command, depth = SCRIPT_EXPANSION_DEPTH) => {
 
 const buildsPackage = (command, name) => {
   if (!name) return false;
+  // `build`, and its variants `build:emit`, `build:types`. A package splits its build into named
+  // steps, and `pnpm --filter <pkg> build:emit` really does emit that package's dist. A variant
+  // counts only when the PACKAGE ITSELF DECLARES that script and the script runs a compiler, so
+  // the fact comes from the manifest rather than from the `build:` spelling: a `build:docs` that
+  // shells out to a doc generator produces no dist and is not a build for this purpose.
+  const emitsDist = (script) => {
+    const found = manifestByName.get(name);
+    const body = found?.manifest?.scripts?.[script];
+    if (typeof body !== "string") return false;
+    return /(^|\s|&&|;)(tsc|tsup|rollup|esbuild|vite|swc|babel)(\s|$)/.test(body);
+  };
+  const isBuildScript = (token) => token === "build" || (token.startsWith("build:") && emitsDist(token));
   for (const segment of expandScripts(command).split(/&&|;/)) {
     const tokens = segment.trim().split(/\s+/);
     if (tokens.includes("||")) continue;
     if (tokens[0] !== "pnpm") continue;
-    if (tokens[1] === "build") return true;
+    if (tokens[1] !== undefined && isBuildScript(tokens[1])) return true;
     const filter = tokens.findIndex((token) => token === "--filter" || token.startsWith("--filter="));
     if (filter < 0) continue;
     const value = tokens[filter].startsWith("--filter=") ? tokens[filter].slice(9) : tokens[filter + 1];
     if (value?.replace(/\.\.\.$/, "") !== name) continue;
-    if (tokens.slice(filter + (tokens[filter].startsWith("--filter=") ? 1 : 2)).includes("build")) return true;
+    if (tokens.slice(filter + (tokens[filter].startsWith("--filter=") ? 1 : 2)).some(isBuildScript)) return true;
   }
   return false;
 };
@@ -1074,7 +1133,7 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
     const source = readFileSync(suite, "utf8");
     if (resolve(mutation.file) === resolve(suite)) return;
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
-    if (!isSourceModule(mutation.file) && readsFile(suite, source, mutation.file, commandEnv(command))) return;
+    if (readsFile(suite, source, mutation.file, commandEnv(command))) return;
     if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
     if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;

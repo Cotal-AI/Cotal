@@ -42,7 +42,12 @@ const run = (...names) => runArgs(...names.map((name) => `${name}.json`));
 const report = (result) => `${result.stdout}\n${result.stderr}`;
 
 try {
-  write("packages/seat/package.json", JSON.stringify({ name: "@cotal-ai/seat" }));
+  write("packages/seat/package.json", JSON.stringify({
+    name: "@cotal-ai/seat",
+    // `build:emit` runs a compiler and so produces dist; `build:docs` does not, and is the
+    // discriminator for the manifest check that keeps `build:` from being a magic prefix.
+    scripts: { build: "tsc -p tsconfig.json", "build:emit": "tsc -p tsconfig.json --noCheck", "build:docs": "typedoc --out docs" },
+  }));
   write("packages/seat/src/index.ts", "export const x = 1;\n");
   write("packages/seat/src/impl.ts", "export const impl = 1;\n");
   write("packages/seat/smoke/local.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
@@ -55,6 +60,15 @@ try {
   write("bin/direct.mjs", "export const x = 1;\n");
   write("bin/smoke/assembling.smoke.ts", 'cpSync(join(ROOT, "packages", "seat"), clone);\n');
   write("bin/smoke/by-name.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  // A worker thread's entry: the dist URL is handed over as `entry`, and the thread runs it.
+  write("bin/smoke/worker-entry.smoke.ts",
+    'import { runInWorker } from "../../packages/seat/src/index.js";\n' +
+    'const WORKER_ENTRY = new URL("../../packages/seat/dist/index.js", import.meta.url);\n' +
+    'await runInWorker({ run: 1 }, { entry: WORKER_ENTRY });\n');
+  // The discriminator: the same dist URL is BOUND but never handed to anything that runs it.
+  write("bin/smoke/worker-entry-unused.smoke.ts",
+    'const WORKER_ENTRY = new URL("../../packages/seat/dist/index.js", import.meta.url);\n' +
+    'console.log(WORKER_ENTRY);\n');
   write("bin/smoke/reads-data.smoke.ts",
     'import { readFileSync } from "node:fs";\n' +
     'readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8");\n');
@@ -360,10 +374,13 @@ try {
   result = run("recursive-listing-names");
   check("a listing that only observes names is refused", result.status !== 0 && /REFUSED recursive-listing-names/.test(result.stderr), report(result));
 
-  // The same sweep, aimed at a SOURCE module: refused, because a wide text read is still a text read.
+  // A recursive sweep NEVER NAMES its subjects: a lint that walks `src/**` asserting a property
+  // over every file it finds is real coverage of each one, because the text is what it asserts
+  // ABOUT rather than a stand-in for behaviour. This is `surface.smoke.ts` walking the package for
+  // uncatalogued error codes, and refusing it would trade a false accept for a false refusal.
   config("recursive-listing-source", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("recursive-listing-source");
-  check("a recursive listing that reads a source module is not executing it", result.status !== 0 && /REFUSED recursive-listing-source/.test(result.stderr), report(result));
+  check("a recursive sweep that reads every file covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
@@ -492,6 +509,27 @@ try {
   config("dist-named-script", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm smoke:seat-dist && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("dist-named-script");
   check("a build named indirectly through a package script still counts", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A worker thread runs its entry; the `new Worker` is inside the helper, so the fact this file
+  // carries is the dist URL it hands over as `entry`. Paired with the build, that is execution.
+  config("worker-entry-built", { suite: ["bin/smoke/worker-entry.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("worker-entry-built");
+  check("a dist entry handed to a worker plus its build is gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The discriminator: the same URL, bound and logged, never handed to anything that runs it.
+  config("worker-entry-unused", { suite: ["bin/smoke/worker-entry-unused.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("worker-entry-unused");
+  check("a dist URL that is only logged never starts a thread", result.status !== 0 && /REFUSED worker-entry-unused/.test(result.stderr), report(result));
+
+  // `build:emit` is a real build: the package declares it and it runs a compiler.
+  config("build-variant", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm --filter @cotal-ai/seat build:emit && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("build-variant");
+  check("a build: variant the package declares with a compiler counts as the build", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The discriminator: same `build:` prefix, but the script emits docs, not dist.
+  config("build-variant-nonemitting", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm --filter @cotal-ai/seat build:docs && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("build-variant-nonemitting");
+  check("a build: script that emits no dist is not the build", result.status !== 0 && /REFUSED build-variant-nonemitting/.test(result.stderr), report(result));
 
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");
