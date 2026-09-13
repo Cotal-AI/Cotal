@@ -62,6 +62,14 @@
       "replace": "        with self._lock:\n            if not reader.is_alive():\n                self._reader = None",
       "expectRed": "reopen must not leave a closed reader installed: a reader still unwinding when reopen is called must not be mistaken for a live one",
       "note": "THE MECHANISM THAT ACTUALLY FIXES THE RACE, removed. An earlier draft of this config named the STOP/LIVENESS ORDERING here instead, and the harness graded it UNGRADABLE because with the join in place the ordering genuinely does not matter - the mutant changed no behaviour. That verdict was right and it corrected the fix's own description: the bounded join is what settles liveness, not the order of the two statements. Without it, a reader still unwinding reads as alive and stays installed, which is the dead bridge."
+    },
+    {
+      "name": "M4 the bounded join runs ON the gateway event loop",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "            await asyncio.to_thread(self._client.reopen)",
+      "replace": "            self._client.reopen()",
+      "expectRed": "the bounded join must run OFF the gateway event loop: a wedged reader must not freeze every other platform in the process",
+      "note": "A REGRESSION THE BOUNDED JOIN ITSELF INTRODUCED, and it was found by measuring rather than reading: the inline call blocked the loop for a measured 2.00s against a wedged reader. Note that every OTHER cell in this suite stays green under this mutation, because the reconnect still delivers - it just freezes every other platform in the process while doing so. That is why the tick-count assertion exists rather than a timing threshold: both versions take the same 2.00s of wall time and only the loop's responsiveness during it differs."
     }
   ]
 }

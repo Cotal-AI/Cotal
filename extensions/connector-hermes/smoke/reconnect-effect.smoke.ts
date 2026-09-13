@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 31;
+const EXPECTED_CELLS = 32;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -210,6 +210,24 @@ assert.equal(
   "reopen must LEAVE a genuinely running reader installed, or start() would run a second reader on one socket",
 );
 
+// ---- THE JOIN MUST NOT RUN ON THE GATEWAY'S EVENT LOOP ----------------------------------------
+// `reopen` waits for a closed reader to land, and a reader wedged in a blocking recv makes that
+// wait run to its full timeout. Called inline from `async def connect` that stalls the entire
+// event loop, freezing every other platform in the process to repair this one, which an operator
+// would report as the gateway hanging on reconnect.
+//
+// This was a real defect introduced by the bounded join and caught by measuring rather than by
+// reading: the inline version blocked the loop for 2.00s. The probe holds a reader wedged, runs
+// the real connect(is_reconnect=True), and ticks a concurrent coroutine throughout. Off-loop the
+// ticker keeps running; on-loop it cannot. Both cases take the same 2.00s of wall time, so the
+// tick count is what separates them and the elapsed figure is reported for the reader.
+assert.equal(
+  subject.LOOP_STAYS_RESPONSIVE,
+  "True",
+  "the bounded join must run OFF the gateway event loop: a wedged reader must not freeze every other platform in the process",
+);
+
+console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);
 console.log(
   "reconnect effect: a reconnected bridge delivers mesh traffic; both refuse controls (emptied reopen body, " +
     "deleted call site) go silent on the warm leg while their cold legs still deliver; a reader still unwinding " +

@@ -211,6 +211,63 @@ def main() -> None:
         # the probe and redden an instrument row instead of the named cell.
         print("RACE_READER_CLEARED", _guarded(_race_reader_cleared))
         print("RACE_LIVE_READER_KEPT", _guarded(_race_live_reader_kept))
+        try:
+            responsive, elapsed = _loop_stays_responsive()
+            print("LOOP_STAYS_RESPONSIVE", responsive)
+            print(f"LOOP_BLOCKED_SECONDS {elapsed:.2f}")
+        except BaseException as exc:  # noqa: BLE001 - a crash here fails the property, not the probe
+            print(f"LOOP_CHECK_CRASHED {type(exc).__name__}: {exc}")
+            print("LOOP_STAYS_RESPONSIVE False")
+            print("LOOP_BLOCKED_SECONDS -1")
+
+
+def _loop_stays_responsive() -> tuple[bool, float]:
+    """The bounded join must not run ON the gateway's event loop.
+
+    `reopen` waits for a closed reader to land, and a reader wedged in a blocking recv makes that
+    wait run to its full timeout. Called inline from `async def connect`, that stalls the whole
+    event loop and freezes every other platform in the process to repair this one. Measured at
+    2.00s against a wedged reader before the fix, which an operator would report as the gateway
+    hanging on reconnect.
+
+    This holds a reader wedged, runs the real `CotalAdapter.connect(is_reconnect=True)`, and ticks
+    a concurrent coroutine throughout. If the loop is blocked the ticker cannot run, so the tick
+    count collapses toward zero while the elapsed time still covers the whole join.
+    """
+    adapter = CotalAdapter(PlatformConfig())
+    client = get_client()
+    hold = threading.Event()
+    wedged = threading.Thread(target=lambda: hold.wait(30), daemon=True)
+    client._reader = wedged
+    client._stop.set()
+    wedged.start()
+
+    async def main() -> tuple[int, float]:
+        ticks = 0
+        running = True
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while running:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        task = asyncio.ensure_future(ticker())
+        await asyncio.sleep(0)
+        t0 = time.monotonic()
+        await adapter.connect(is_reconnect=True)
+        elapsed = time.monotonic() - t0
+        running = False
+        task.cancel()
+        return ticks, elapsed
+
+    try:
+        ticks, elapsed = asyncio.run(main())
+    finally:
+        hold.set()
+        wedged.join(timeout=5)
+    # A free loop ticks ~100/s; a blocked one manages a handful before and after and nothing during.
+    return ticks >= 20, elapsed
 
 
 def _guarded(check) -> bool:
