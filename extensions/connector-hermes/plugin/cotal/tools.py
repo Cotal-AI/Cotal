@@ -7,8 +7,9 @@ growing the team. We do NOT hand-write the list: the TS sidecar renders it once 
 registers each as a Hermes plugin tool whose handler forwards the call (by name) over the bridge
 and returns the sidecar's already-formatted text result.
 
-The exact ``ctx.register_tool`` schema/handler contract is the Hermes 0.16 plugin API; adjust the
-``_spec`` shape if a pinned version differs.
+The exact ``ctx.register_tool`` schema/handler contract is the Hermes plugin API across the
+supported 0.18 to 0.21 range, where its signature is unchanged; adjust the ``_spec`` shape if a
+future supported version differs.
 """
 from __future__ import annotations
 
