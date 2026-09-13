@@ -4159,12 +4159,38 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Whether Plane-3 is currently quiesced: unbound, and refusing to re-bind until ownership is proven.
+   *  Read-only. The flag is the daemon's own answer to "am I serving this shard", so a cell that asserts
+   *  a recovery worked can check the endpoint's state rather than inferring it from a log line. */
+  plane3IsQuiesced(): boolean {
+    return this.plane3Quiesced;
+  }
+
   /** Resume serving Plane-3 after {@link quiescePlane3}, once ownership has been re-established.
-   *  Idempotent, and a no-op when the daemon was never quiesced. */
+   *  Idempotent, and a no-op when the daemon was never quiesced.
+   *
+   *  The flag is cleared ONLY after every binding is up, and restored if any of them throws. Clearing
+   *  it first looks equivalent and is not: `armPlane3` binds in four stages (`manager`, the two control
+   *  responders, the fan-out consumer, the reader), so a failure at any one leaves the endpoint recorded
+   *  as un-quiesced while some of those are missing. From there every later `rearmPlane3` returns at the
+   *  `!plane3Quiesced` guard WITHOUT attempting to bind, and the caller goes on to flip the lease READY.
+   *  That is a readiness lie surviving a transient broker error — the daemon claims a responder it does
+   *  not have, which is the #1318 outage wearing the readiness flag instead of the exit path. */
   async rearmPlane3(): Promise<void> {
     if (!this.plane3Quiesced) return;
+    // `armPlane3` refuses while quiesced (a reconnect must not resume mid-question), so the flag is
+    // lowered for the attempt and RAISED AGAIN on failure. A partial bind leaves the endpoint quiesced,
+    // which is the honest state: not serving, and a later retry will attempt the whole sequence again.
     this.plane3Quiesced = false;
-    await this.armPlane3();
+    try {
+      await this.armPlane3();
+    } catch (e) {
+      this.plane3Quiesced = true;
+      // Drop whatever DID bind. Leaving half-bound responders up would answer control requests for a
+      // shard this process has just declared itself not to be serving.
+      this.quiescePlane3();
+      throw e;
+    }
   }
 
   /** (Re)bind the Plane-3 fan-out writer + trusted reader. Idempotent — the durables resume from their
