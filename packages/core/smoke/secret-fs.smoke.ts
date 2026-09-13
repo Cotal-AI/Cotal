@@ -7,7 +7,7 @@
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
@@ -37,6 +37,36 @@ try {
 }
 check("writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites", exclusiveCode === "EEXIST");
 check("...and the first writer's bytes are unchanged", readFileSync(exclusive, "utf8") === "first-writer\n");
+
+// The TEMP write is exclusive too. A temp-name collision that plain-overwrote would let the caller
+// whose link succeeded return the candidate IT minted while the file held the OTHER one's bytes —
+// the identity split, one step earlier. Drive the collision directly on a temp-shaped name.
+const tmpShaped = join(dir, `collide.secret.${process.pid}.0.zzz.tmp`);
+writeSecretFileCreateOnly(tmpShaped, "creator-A\n");
+let tmpCollisionCode: string | undefined;
+try {
+  writeSecretFileCreateOnly(tmpShaped, "creator-B\n");
+} catch (e) {
+  tmpCollisionCode = (e as NodeJS.ErrnoException).code;
+}
+check("REFUSE: a colliding temp-shaped name is EEXIST, not a silent overwrite", tmpCollisionCode === "EEXIST");
+check("...and the colliding creator did NOT swap the first creator's bytes",
+  readFileSync(tmpShaped, "utf8") === "creator-A\n");
+
+// A loser must never destroy a live creator's temp. Publishing into an already-taken destination
+// fails, and the pre-existing temp-shaped sibling must survive that failure untouched.
+const takenDest = join(dir, "taken.secret");
+writeSecretFileCreateOnly(takenDest, "incumbent\n");
+let secondPublish: string | undefined;
+try {
+  writeSecretFileCreateOnly(takenDest, "challenger\n");
+} catch (e) {
+  secondPublish = (e as NodeJS.ErrnoException).code;
+}
+check("REFUSE: publishing into a taken destination is EEXIST", secondPublish === "EEXIST");
+check("...and a failed create leaves no .tmp litter behind",
+  readdirSync(dir).filter((n) => n.endsWith(".tmp") && n.startsWith("taken.secret")).length === 0);
+check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8") === "incumbent\n");
 
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");

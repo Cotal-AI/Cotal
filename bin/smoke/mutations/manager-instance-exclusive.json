@@ -17,7 +17,13 @@
     "M3 RESTORES ATOMIC RENAME. linkSync becomes renameSync. Rename publishes one file but every",
     "caller still believes it won. The concurrent unique-identity cell must red, which is why",
     "atomic replace is not the fix. The command rebuilds @cotal-ai/core so the exclusive helper",
-    "is not graded against a stale dist."
+    "is not graded against a stale dist.",
+    "",
+    "M4 RESTORES THE PLAIN TEMP WRITE. The publish is exclusive but the temp write becomes a plain",
+    "overwrite, which is what the code did before review. Two creators that collide on the temp name",
+    "then swap each other's bytes, and the one whose link succeeds returns the candidate IT minted",
+    "while the published file holds the OTHER identity - the same split, one step earlier. A temp",
+    "name unique only by pid+clock+Math.random is a probability argument, not a concurrency one."
   ],
   "mutations": [
     {
@@ -50,6 +56,17 @@
       "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",
       "note": "Rename cannot interleave torn bytes, but every caller still returns its own candidate. That is why exclusive create, not rename, is the primitive.",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-instance-exclusive",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "M4 the temp write is a plain overwrite again (colliding creators swap bytes)",
+      "file": "packages/core/src/secret-fs.ts",
+      "find": "  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
+      "replace": "  writeSecretFile(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
+      "expectRed": "REFUSE: a colliding temp-shaped name is EEXIST, not a silent overwrite",
+      "cell": "REFUSE: a colliding temp-shaped name is EEXIST, not a silent overwrite",
+      "note": "A probabilistically-unique temp name is not a concurrency argument; the collision must refuse, not overwrite.",
+      "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

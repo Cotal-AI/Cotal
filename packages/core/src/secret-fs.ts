@@ -123,6 +123,27 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
 }
 
 /**
+ * {@link writeSecretFile} with `O_EXCL`: the bytes land only if this caller created the name.
+ * Same fail-closed hardening contract as {@link writeSecretFile} — a win32 ACL failure propagates
+ * and the just-written file is best-effort removed, so a caller never proceeds as if the secret
+ * were private. EEXIST propagates to the caller, which is the point: the name was already taken.
+ */
+function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {
+  writeFileSync(path, data, { flag: "wx", mode: 0o600 });
+  if (!isWin) return; // POSIX mode set at create — nothing more to do
+  try {
+    hardenPrivate(path, "file");
+  } catch (e) {
+    try {
+      unlinkSync(path); // best-effort cleanup; the hardening error below is what the caller sees
+    } catch {
+      /* ignore — surface the original hardening failure, not a secondary unlink error */
+    }
+    throw e;
+  }
+}
+
+/**
  * Create a private secret file that MUST NOT already exist. Bytes are written to a unique temp
  * sibling first, then {@link linkSync} publishes that complete inode at `path`. `link` is an
  * atomic filesystem primitive: it fails with EEXIST if the destination exists, so of N concurrent
@@ -135,18 +156,26 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
  *
  * When the filesystem cannot hard-link (some Windows volumes), the fallback is `wx`
  * (`O_CREAT|O_EXCL`) on `path` itself, which is still exclusive create, not a replace.
+ *
+ * The TEMP write is exclusive for the same reason the publish is. A temp name is unique only by
+ * probability (pid plus clock plus `Math.random`), and probability is not a concurrency argument:
+ * two creators that collided on the name would plain-overwrite each other's bytes, and then the
+ * one whose `link` succeeded would return the candidate IT minted while the published file held
+ * the OTHER one's identity — the exact split this function exists to prevent, reintroduced one
+ * step earlier. `wx` on the temp makes a collision fail loudly instead of silently swapping bytes.
  */
 export function writeSecretFileCreateOnly(path: string, data: string | Buffer): void {
   const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  // Exclusive, so EEXIST here means the temp name belongs to ANOTHER creator. Cleanup below must
+  // never run in that case: unlinking it would delete a live creator's bytes out from under it.
+  writeSecretFileCreateOnlyRaw(tmp, data);
   try {
-    writeSecretFile(tmp, data);
     try {
       linkSync(tmp, path);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === "ENOTSUP" || code === "EPERM" || code === "ENOSYS") {
-        writeFileSync(path, data, { flag: "wx", mode: 0o600 });
-        if (isWin) hardenPrivate(path, "file");
+        writeSecretFileCreateOnlyRaw(path, data);
       } else {
         throw e;
       }
