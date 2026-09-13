@@ -507,6 +507,8 @@ const CELL_EXPECTATIONS = new Map([
   ['host-token-ceiling', `scanner=broken source=repository-variable matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${SELFTEST_HOST.length}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
   ['binary-skip', 'files_scanned=1/1 binary_skipped=1/1'],
   ['production-main-wiring', 'exit=0/0 configuration_errors=0/0 machine_source_errors=0/0 skip_accounting_errors=0/0 skip_rows=1/1 unique_skip_paths=1/1 binary_skipped=1/1'],
+  ['production-short-token-guard', `exit=2/2 configuration_errors=1/1 source=argument source_rows=1/1 reason_rows=1/1 token_length=5/${MIN_HOST_TOKEN_LENGTH}_minimum`],
+  ['production-token-ceiling-guard', `exit=2/2 configuration_errors=1/1 source=repository-variable source_rows=1/1 reason_rows=1/1 matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling`],
   ['allowlisted-fixture', 'scanner=clean allowed=1/1'],
   ['same-token-elsewhere', 'scanner=dirty findings=1/1'],
   ['allowlist-fixture-deleted', 'scanner=broken errors=1/1'],
@@ -572,14 +574,25 @@ function cidrBoundaryCell(id, positive, control, rule) {
   };
 }
 
-function productionPathFixtureResult() {
+function productionPathFixtureResult({
+  argumentHostTokens = [],
+  matchingFiles = 0,
+  matchingToken,
+  repositoryHostTokens = '',
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'operator-literal-production-selftest-'));
   try {
     git(['init', '-q'], dir);
     writeFileSync(join(dir, 'fixture.txt'), 'clean fixture\n');
     writeFileSync(join(dir, 'fixture.bin'), Buffer.from([0x66, 0x69, 0x78, 0x00]));
     writeFileSync(join(dir, 'allowlist.json'), '{}\n');
-    git(['add', '--', 'fixture.txt', 'fixture.bin', 'allowlist.json'], dir);
+    for (let index = 0; index < matchingFiles; index += 1) {
+      writeFileSync(
+        join(dir, `matching-${index}.txt`),
+        `connect ${matchingToken} now\n`,
+      );
+    }
+    git(['add', '--', '.'], dir);
     git(
       [
         '-c',
@@ -594,22 +607,21 @@ function productionPathFixtureResult() {
     );
 
     const rows = [];
-    const exitCode = main(
-      [
-        'node',
-        'scripts/check-operator-literals.mjs',
-        '--root',
-        dir,
-        '--allowlist',
-        join(dir, 'allowlist.json'),
-      ],
-      {
-        runtimeHostname: 'runner',
-        repositoryHostTokens: '',
-        skipSelftest: true,
-        writeLine: (line) => rows.push(line),
-      },
-    );
+    const argv = [
+      'node',
+      'scripts/check-operator-literals.mjs',
+      '--root',
+      dir,
+      '--allowlist',
+      join(dir, 'allowlist.json'),
+    ];
+    for (const token of argumentHostTokens) argv.push('--host-token', token);
+    const exitCode = main(argv, {
+      runtimeHostname: 'runner',
+      repositoryHostTokens,
+      skipSelftest: true,
+      writeLine: (line) => rows.push(line),
+    });
     return { exitCode, rows };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -869,6 +881,66 @@ const SELFTEST_CELLS = [
     },
   },
   // SELFTEST_CELL production-main-wiring END
+  // SELFTEST_CELL production-short-token-guard START
+  {
+    id: 'production-short-token-guard',
+    measure: () => {
+      const result = productionPathFixtureResult({ argumentHostTokens: ['short'] });
+      const errors = result.rows.filter(
+        (row) => row.startsWith('ERROR_ROW ') && row.includes('subject=host-configuration'),
+      );
+      const sourceRows = errors.filter(
+        (row) => row.includes('source=argument status=broken'),
+      ).length;
+      const reasonRows = errors.filter(
+        (row) => row.includes('reason="host token is shorter than minimum"'),
+      ).length;
+      const tokenLength = Number(/ token_length=(\d+)\//.exec(errors[0] ?? '')?.[1] ?? 0);
+      return {
+        actual: `exit=${result.exitCode}/2 configuration_errors=${errors.length}/1 source=argument source_rows=${sourceRows}/1 reason_rows=${reasonRows}/1 token_length=${tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum`,
+        pass:
+          result.exitCode === 2 &&
+          errors.length === 1 &&
+          sourceRows === 1 &&
+          reasonRows === 1 &&
+          tokenLength === 5,
+      };
+    },
+  },
+  // SELFTEST_CELL production-short-token-guard END
+  // SELFTEST_CELL production-token-ceiling-guard START
+  {
+    id: 'production-token-ceiling-guard',
+    measure: () => {
+      const result = productionPathFixtureResult({
+        matchingFiles: HOST_TOKEN_FILE_CEILING + 1,
+        matchingToken: SELFTEST_HOST,
+        repositoryHostTokens: SELFTEST_HOST,
+      });
+      const errors = result.rows.filter(
+        (row) => row.startsWith('ERROR_ROW ') && row.includes('subject=host-configuration'),
+      );
+      const sourceRows = errors.filter(
+        (row) => row.includes('source=repository-variable status=broken'),
+      ).length;
+      const reasonRows = errors.filter(
+        (row) => row.includes('reason="host token matches too many files"'),
+      ).length;
+      const matchingFileCount = Number(
+        / matching_files=(\d+)\//.exec(errors[0] ?? '')?.[1] ?? 0,
+      );
+      return {
+        actual: `exit=${result.exitCode}/2 configuration_errors=${errors.length}/1 source=repository-variable source_rows=${sourceRows}/1 reason_rows=${reasonRows}/1 matching_files=${matchingFileCount}/${HOST_TOKEN_FILE_CEILING}_ceiling`,
+        pass:
+          result.exitCode === 2 &&
+          errors.length === 1 &&
+          sourceRows === 1 &&
+          reasonRows === 1 &&
+          matchingFileCount === HOST_TOKEN_FILE_CEILING + 1,
+      };
+    },
+  },
+  // SELFTEST_CELL production-token-ceiling-guard END
   // SELFTEST_CELL allowlisted-fixture START
   scanCell('allowlisted-fixture', 'clean', 'allowed', 1, () => scanEntries([{ path: 'fixtures/scrubber.txt', text: SELFTEST_HOME }], [SELFTEST_HOST], SELFTEST_ALLOWLIST)),
   // SELFTEST_CELL allowlisted-fixture END
