@@ -10,7 +10,7 @@
     "The recovery is the whole point, and three of its parts can rot independently: the retry itself,",
     "the cleanup of the attempt that failed readiness, and what the give-up message carries. A suite that",
     "only checked 'it eventually came up' would pass under a version that leaks a process per attempt and",
-    "under one whose failure names a single port — which is exactly how the original loss read as an",
+    "under one whose failure names a single port \u2014 which is exactly how the original loss read as an",
     "unhealthy runner rather than as a taken port.",
     "The accept control is graded separately: an implementation that always retries would satisfy every",
     "retry cell, so the one-attempt count on a free port is its own mutation."
@@ -47,10 +47,10 @@
       "name": "a zero bound is accepted and silently does nothing",
       "file": "packages/core/smoke/_free-port.ts",
       "find": "  if (attempts < 1) throw new Error(`startOnFreePort: attempts must be at least 1, got ${attempts}`);",
-      "replace": "  attempts = Math.max(attempts, 0);",
+      "replace": "  if (attempts < 0) throw new Error(`startOnFreePort: attempts must be at least 1, got ${attempts}`);",
       "expectRed": "a zero bound is refused, not silently treated as one",
       "cell": "a zero bound is refused, not silently treated as one",
-      "note": "Without the refusal a caller passing 0 gets the give-up error with an empty list, which reads as 'nothing was free' rather than 'you asked for no attempts'."
+      "note": "Weakens the bound rather than assigning to `attempts`, which is a const from the options destructuring \u2014 assigning would crash the accept control and red the wrong cell. With 0 accepted the loop never runs and the give-up error names no port, which reads as 'nothing was free' rather than 'you asked for no attempts'."
     }
   ]
 }
