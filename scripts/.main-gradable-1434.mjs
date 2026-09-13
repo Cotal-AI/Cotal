@@ -12,7 +12,6 @@
  *
  *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still refused)
  *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still refused
- *   node scripts/mutation-coverage.mjs --gradable-only [config…]    # validate reachability, do not execute
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
@@ -54,278 +53,33 @@ const refused = [];
 const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
+const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
+const referencesRoot = (source, root) =>
+  new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(source);
 const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
-const COPIERS = ["cpSync", "copyFileSync"];
-const JOINERS = ["join", "resolve", "dirname", "fileURLToPath"];
-const RELATIVE_SRC = /(?:^|\/)(?:\.\.\/)+src\//;
-/** A loader CLI that occupies the first positional and executes the NEXT one (tsx's own cli.mjs). */
-const RUNNER_CLI = /(?:^|\/)(?:tsx|ts-node|tsimp)(?:\/dist)?\/(?:cli|esm)\.(?:m?js|cjs)$/i;
-
-const calleeText = (expr) => {
-  if (ts.isIdentifier(expr)) return expr.text;
-  if (ts.isPropertyAccessExpression(expr) || ts.isPropertyAccessChain(expr)) return expr.name.text;
-  return "";
-};
-
-const namedAliases = (source, fromSpec, originals) => {
-  const names = new Set(originals);
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      const from = node.moduleSpecifier.text;
-      if (from !== fromSpec && from !== `node:${fromSpec}`) return;
-      const named = node.importClause?.namedBindings;
-      if (!named || !ts.isNamedImports(named)) return;
-      for (const el of named.elements) {
-        const orig = (el.propertyName ?? el.name).text;
-        if (originals.includes(orig)) names.add(el.name.text);
-      }
+const launcherNames = (source) => {
+  const names = new Set(LAUNCHERS);
+  for (const m of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g)) {
+    for (const part of m[1].split(",")) {
+      const alias = part.match(/^\s*(\w+)\s+as\s+(\w+)\s*$/);
+      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(ast("alias.ts", source));
-  return names;
-};
-
-const pathEval = (suite, source) => {
-  const sf = ast(suite, source);
-  const joiners = namedAliases(source, "path", JOINERS);
-  const variables = new Map();
-  const rootish = (node) => {
-    if (ts.isIdentifier(node)) {
-      const n = node.text;
-      return n === "ROOT" || n === "root" || n === "repo" || n === "repoRoot" || n === "pkgRoot"
-        || n === "here" || n === "base" || n.endsWith("Root") || n.endsWith("Clone");
-    }
-    if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === "process.cwd") return true;
-    if (ts.isPropertyAccessExpression(node)) {
-      const t = node.getText();
-      return t === "import.meta.dirname" || t === "import.meta.url" || t === "process.cwd";
-    }
-    return false;
-  };
-  const evalPath = (node) => {
-    if (!node) return undefined;
-    if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
-    const literal = stringValue(node);
-    if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) {
-      if (variables.has(node.text)) return variables.get(node.text);
-      if (rootish(node)) return process.cwd();
-      return undefined;
-    }
-    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
-      if (node.name.text === "dirname") return dirname(resolve(suite));
-      if (node.name.text === "url") return resolve(suite);
-    }
-    if (rootish(node)) return process.cwd();
-    // `new URL(spec, import.meta.url)` is how a suite names a sibling file without `path`. It is
-    // the same resolution `join` performs, spelled through the URL constructor, so it is evaluated
-    // here rather than left undefined — otherwise every suite using it loses its launch witness.
-    if (ts.isNewExpression(node) && calleeText(node.expression) === "URL") {
-      const spec = evalPath(node.arguments?.[0]);
-      const base = node.arguments?.[1] ? evalPath(node.arguments[1]) : undefined;
-      if (typeof spec === "string" && typeof base === "string") return resolve(dirname(base), spec);
-      if (typeof spec === "string" && spec.startsWith("file:")) return spec.slice("file://".length);
-    }
-    if (ts.isCallExpression(node)) {
-      const name = calleeText(node.expression);
-      const parts = [];
-      for (const arg of node.arguments) {
-        if (ts.isSpreadElement(arg)) continue;
-        parts.push(evalPath(arg) ?? (rootish(arg) ? process.cwd() : undefined));
-      }
-      if (name === "dirname" && parts.length === 1 && parts[0] !== undefined) return dirname(parts[0]);
-      if ((name === "join" || name === "resolve") && joiners.has(name) && parts.every((part) => part !== undefined)) {
-        return resolve(...parts);
-      }
-      if (name === "fileURLToPath" && parts.length === 1 && parts[0] !== undefined) return parts[0];
-    }
-    return undefined;
-  };
-  const walk = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const value = evalPath(node.initializer);
-      if (value !== undefined) variables.set(node.name.text, value);
-    }
-    ts.forEachChild(node, walk);
-  };
-  walk(sf);
-  return { sf, evalPath };
-};
-
-const coversPath = (got, want) => {
-  if (got === undefined || got === null) return false;
-  const g = resolve(got).replaceAll("\\", "/");
-  const w = resolve(want).replaceAll("\\", "/");
-  return g === w || g.startsWith(w + "/");
-};
-
-const exprCovers = (evalPath, node, want) => {
-  if (coversPath(evalPath(node), want)) return true;
-  if (ts.isArrayLiteralExpression(node)) {
-    return node.elements.some((el) => !ts.isOmittedExpression(el) && !ts.isSpreadElement(el) && exprCovers(evalPath, el, want));
   }
-  let hit = false;
-  ts.forEachChild(node, (child) => { if (exprCovers(evalPath, child, want)) hit = true; });
-  return hit;
+  return [...names];
 };
-
-const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "-pe"]);
-const NODE_VALUE_FLAGS = new Set([
-  "-e", "--eval", "-p", "--print", "-pe",
-  "-r", "--require", "--import", "--loader", "--experimental-loader",
-  "-C", "--conditions", "--env-file", "--env-file-if-exists", "--input-type", "--title",
-]);
-
-const flagName = (text) => (typeof text === "string" && text.startsWith("-") ? text.split("=")[0] : "");
-
-const isNodeExecutable = (evalPath, node) => {
-  if ((ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node))
-    && node.expression.getText() === "process" && node.name.text === "execPath") return true;
-  const value = stringValue(node) ?? evalPath(node);
-  if (typeof value !== "string") return false;
-  const base = value.replaceAll("\\", "/").split("/").pop() ?? "";
-  return /^(node|nodejs|tsx)(\.exe|\.cmd)?$/i.test(base);
-};
-
-const argvElements = (node) => {
-  if (Array.isArray(node)) return node;
-  if (!ts.isArrayLiteralExpression(node)) return [];
-  return node.elements.filter((el) => !ts.isOmittedExpression(el) && !ts.isSpreadElement(el));
-};
-
-/** Node's first positional after flags, or undefined when -e/--eval/-p runs code instead of a file. */
-const launchedScriptArg = (evalPath, argvNode) => {
-  const tokens = argvElements(argvNode);
-  for (let i = 0; i < tokens.length; i++) {
-    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);
-    const text = typeof raw === "string" ? raw : "";
-    if (text === "--") return tokens[i + 1];
-    const flag = flagName(text);
-    if (flag) {
-      if (NODE_EVAL_FLAGS.has(flag)) return undefined;
-      if (!text.includes("=") && NODE_VALUE_FLAGS.has(flag)) i += 1;
-      continue;
-    }
-    // `node <tsx-cli> <script>` runs the script THROUGH a loader whose own CLI occupies the first
-    // positional. The launched file is then the next positional, and it is still an argument of
-    // this call in the slot that gets executed — not a path found somewhere nearby.
-    if (RUNNER_CLI.test(text.replaceAll("\\", "/"))) return launchedScriptArg(evalPath, tokens.slice(i + 1));
-    return tokens[i];
+const boundNames = (source, basename) =>
+  [...source.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=[^;\\n]{0,300}${quoted(basename)}`, "g"))].map((m) => m[1]);
+const invokesFile = (source, file) => {
+  const basename = file.split("/").at(-1);
+  if (basename === undefined || !referencesRoot(source, file)) return false;
+  const call = `(?:${launcherNames(source).join("|")})\\s*\\(`;
+  if (new RegExp(`${call}[\\s\\S]{0,500}${quoted(basename)}`).test(source)) return true;
+  const names = boundNames(source, basename);
+  if (names.length === 0) return false;
+  for (const m of source.matchAll(new RegExp(`${call}((?:[^()]|\\([^()]*\\))*)\\)`, "g"))) {
+    if (names.some((name) => new RegExp(`\\b${name}\\b`).test(m[1]))) return true;
   }
-  return undefined;
-};
-
-/** Every repo path this suite hands to a launcher in the slot that actually gets executed. */
-const launchedPaths = (suite, source) => {
-  const { sf, evalPath } = pathEval(suite, source);
-  const launchers = namedAliases(source, "child_process", LAUNCHERS);
-  const found = [];
-  const visit = (node) => {
-    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {
-      const args = node.arguments.filter((arg) => !ts.isSpreadElement(arg));
-      const command = args[0];
-      const argv = args[1] && !ts.isObjectLiteralExpression(args[1]) ? args[1] : undefined;
-      const direct = command ? evalPath(command) : undefined;
-      if (typeof direct === "string") found.push(direct);
-      if (command && isNodeExecutable(evalPath, command) && argv) {
-        const script = launchedScriptArg(evalPath, argv);
-        const value = script ? evalPath(script) : undefined;
-        if (typeof value === "string") found.push(value);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return found;
-};
-
-const invokesFile = (suite, source, file) =>
-  launchedPaths(suite, source).some((path) => coversPath(path, file));
-
-const stringsCover = (suite, source, want) => {
-  const { sf, evalPath } = pathEval(suite, source);
-  let hit = false;
-  const visit = (node) => {
-    if (ts.isStringLiteralLike(node) && coversPath(evalPath(node) ?? node.text, want)) hit = true;
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return hit;
-};
-
-
-const copiesRoot = (suite, source, root) => {
-  const { sf, evalPath } = pathEval(suite, source);
-  const copiers = namedAliases(source, "fs", COPIERS);
-  let hit = false;
-  const visit = (node) => {
-    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {
-      for (const arg of node.arguments) {
-        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return hit;
-};
-
-const importsSource = (path, source) => {
-  let hit = false;
-  const specOk = (value) => {
-    if (typeof value !== "string") return false;
-    const v = value.replaceAll("\\", "/");
-    return RELATIVE_SRC.test(v) || v.startsWith("./src/");
-  };
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {
-      if (specOk(stringValue(node.moduleSpecifier))) hit = true;
-    }
-    if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier) {
-      if (specOk(stringValue(node.moduleSpecifier))) hit = true;
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      if (specOk(stringValue(node.arguments[0]))) hit = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(ast(path, source));
-  return hit;
-};
-
-/**
- * Value-imports of a package's BUILT output, as source-root relative directories.
- *
- * A suite that `await import("../dist/index.js")` is loading bytes the build produced from that
- * package's `src`. That is a genuine data-flow fact, but only when the command actually builds the
- * package, so `buildsPackage` remains the other half of the pair. Without the build it is a stale
- * artifact and proves nothing, which is exactly why this is not a witness on its own.
- */
-const importsBuiltOutput = (path, source) => {
-  const roots = [];
-  const record = (value) => {
-    if (typeof value !== "string") return;
-    const v = value.replaceAll("\\", "/");
-    if (!/(?:^|\/)dist\//.test(v) && !/(?:^|\/)dist$/.test(v)) return;
-    const absolute = resolve(dirname(path), v);
-    const cut = absolute.replaceAll("\\", "/").indexOf("/dist/");
-    roots.push(cut >= 0 ? absolute.slice(0, cut) : dirname(absolute));
-  };
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {
-      record(stringValue(node.moduleSpecifier));
-    }
-    if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier) {
-      record(stringValue(node.moduleSpecifier));
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      record(stringValue(node.arguments[0]));
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(ast(path, source));
-  return roots;
+  return false;
 };
 
 const validStringArray = (value) =>
@@ -358,43 +112,6 @@ const relativeImports = (path, source) => {
   };
   visit(ast(path, source));
   return found;
-};
-
-/**
- * Does `entry`'s own source tree load `target`, following only relative specifiers?
- *
- * This is the data-flow fact behind a suite that launches a package's real entrypoint under a TS
- * runner: the entrypoint is source, its relative imports are source, and the mutated file is one
- * of them. Resolution is by the same candidate-extension rule the executes walk uses, so a `.js`
- * specifier finds the `.ts` that produces it. Bare specifiers stop the walk: a by-name import
- * resolves to a package's dist, which a source mutation does not reach.
- */
-const SOURCE_REACH_LIMIT = 400;
-const sourceReachCache = new Map();
-const sourceReaches = (entry, target) => {
-  const start = candidateFiles(resolve(entry));
-  if (start === undefined) return false;
-  const want = resolve(target);
-  const key = `${start}\u0000${want}`;
-  if (sourceReachCache.has(key)) return sourceReachCache.get(key);
-  const seen = new Set();
-  const queue = [start];
-  let hit = false;
-  while (queue.length > 0 && seen.size < SOURCE_REACH_LIMIT) {
-    const path = queue.shift();
-    if (seen.has(path)) continue;
-    seen.add(path);
-    if (path === want) { hit = true; break; }
-    let source;
-    try { source = readFileSync(path, "utf8"); } catch { continue; }
-    for (const specifier of relativeImports(path, source)) {
-      if (!specifier.startsWith(".")) continue;
-      const next = candidateFiles(resolve(dirname(path), specifier));
-      if (next !== undefined && !seen.has(next)) queue.push(next);
-    }
-  }
-  sourceReachCache.set(key, hit);
-  return hit;
 };
 
 const manifestByName = new Map();
@@ -502,39 +219,10 @@ const packageName = (file) => {
   return JSON.parse(readFileSync(manifest, "utf8")).name;
 };
 
-/**
- * The command with `pnpm <script>` replaced by what that script actually runs.
- *
- * Configs name the workflow (`pnpm smoke:hermes-boot-requirement`), and the build lives inside the
- * script body. Reading the manifest is a fact about this checkout, not a guess about the string:
- * without it a real `pnpm --filter … build &&` is invisible purely because it was named indirectly.
- */
-const SCRIPT_EXPANSION_DEPTH = 4;
-let rootScripts;
-const expandScripts = (command, depth = SCRIPT_EXPANSION_DEPTH) => {
-  if (rootScripts === undefined) {
-    try { rootScripts = JSON.parse(readFileSync(resolve("package.json"), "utf8")).scripts ?? {}; }
-    catch { rootScripts = {}; }
-  }
-  if (depth <= 0) return command;
-  let changed = false;
-  const expanded = command.split(/(?=&&|;)/).map((segment) => {
-    const tokens = segment.replace(/^(?:&&|;)\s*/, "").trim().split(/\s+/);
-    const lead = segment.startsWith("&&") ? "&& " : segment.startsWith(";") ? "; " : "";
-    if (tokens[0] !== "pnpm" || tokens.length !== 2) return segment;
-    const body = rootScripts[tokens[1]];
-    if (typeof body !== "string") return segment;
-    changed = true;
-    return `${lead}${body}`;
-  }).join(" ");
-  return changed ? expandScripts(expanded, depth - 1) : command;
-};
-
 const buildsPackage = (command, name) => {
   if (!name) return false;
-  for (const segment of expandScripts(command).split(/&&|;/)) {
+  for (const segment of command.split(/&&|;/)) {
     const tokens = segment.trim().split(/\s+/);
-    if (tokens.includes("||")) continue;
     if (tokens[0] !== "pnpm") continue;
     if (tokens[1] === "build") return true;
     const filter = tokens.findIndex((token) => token === "--filter" || token.startsWith("--filter="));
@@ -559,17 +247,10 @@ const executedWitness = (suite, source, command, mutation, executes) => {
 const assertGradable = (configPath, cfg, suites, mutation) => {
   for (const suite of suites) {
     const source = readFileSync(suite, "utf8");
-    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;
-    // A suite that launches a repo entrypoint under a TS runner executes that entrypoint's own
-    // source tree. The mutated file is covered when the entrypoint's relative imports reach it.
-    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
-    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source)) return;
+    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;
+    if (packageRoot(mutation.file) === packageRoot(suite) && source.includes("../src/")) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
-    if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;
-    // A value-import of a package's dist reaches the mutated source only through a build the
-    // command actually runs. Both halves are required: the import alone loads a stale artifact.
-    if (buildsPackage(cfg.command, packageName(mutation.file))
-      && importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;
+    if (assembled !== undefined && referencesRoot(source, assembled)) return;
     if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;
   }
   throw new Error(

@@ -70,16 +70,16 @@
     {
       "name": "a bound entry anywhere after a launcher is treated as its argument",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        const script = launchedScriptArg(evalPath, argv);\n        if (script && coversPath(evalPath(script), file)) hit = true;",
-      "replace": "        if (exprCovers(evalPath, sf, file)) hit = true;",
+      "find": "        const script = launchedScriptArg(evalPath, argv);\n        const value = script ? evalPath(script) : undefined;\n        if (typeof value === \"string\") found.push(value);",
+      "replace": "        for (const token of argvElements(argv)) {\n          const value = evalPath(token);\n          if (typeof value === \"string\") found.push(value);\n        }",
       "expectRed": "a name bound to the target but never passed to a launcher is still refused",
       "cell": "a name bound to the target but never passed to a launcher is still refused"
     },
     {
       "name": "any spawn-arg subtree is treated as the launched script",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (command && coversPath(evalPath(command), file)) hit = true;\n      else if (command && isNodeExecutable(evalPath, command) && argv) {\n        const script = launchedScriptArg(evalPath, argv);\n        if (script && coversPath(evalPath(script), file)) hit = true;\n      }",
-      "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, file)) hit = true;\n      }",
+      "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      if (command && isNodeExecutable(evalPath, command) && argv) {\n        const script = launchedScriptArg(evalPath, argv);\n        const value = script ? evalPath(script) : undefined;\n        if (typeof value === \"string\") found.push(value);\n      }",
+      "replace": "      for (const arg of node.arguments) {\n        const value = ts.isSpreadElement(arg) ? undefined : evalPath(arg);\n        if (typeof value === \"string\") found.push(value);\n      }",
       "expectRed": "a path after -e is not a launched script",
       "cell": "a path after -e is not a launched script"
     },
@@ -182,8 +182,8 @@
     {
       "name": "printed build text counts as a package build",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  for (const segment of command.split(/&&|;/)) {",
-      "replace": "  if (command.includes(\"pnpm build\")) return true;\n  for (const segment of command.split(/&&|;/)) {",
+      "find": "  for (const segment of expandScripts(command).split(/&&|;/)) {\n    const tokens = segment.trim().split(/\\s+/);\n    if (tokens.includes(\"||\")) continue;\n    if (tokens[0] !== \"pnpm\") continue;",
+      "replace": "  for (const segment of expandScripts(command).split(/&&|;/)) {\n    const tokens = segment.trim().split(/\\s+/);\n    if (tokens.includes(\"||\")) continue;",
       "expectRed": "printed-build cannot fabricate executes evidence",
       "cell": "printed-build cannot fabricate executes evidence"
     },
@@ -234,6 +234,62 @@
       "replace": "",
       "expectRed": "gradable-only accepts a named config without executing it",
       "cell": "gradable-only accepts a named config without executing it"
+    },
+    {
+      "name": "new URL paths are not evaluated, so a URL-built launch is invisible",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isNewExpression(node) && calleeText(node.expression) === \"URL\") {\n      const spec = evalPath(node.arguments?.[0]);\n      const base = node.arguments?.[1] ? evalPath(node.arguments[1]) : undefined;\n      if (typeof spec === \"string\" && typeof base === \"string\") return resolve(dirname(base), spec);\n      if (typeof spec === \"string\" && spec.startsWith(\"file:\")) return spec.slice(\"file://\".length);\n    }\n",
+      "replace": "",
+      "expectRed": "a launched path built with new URL still witnesses the file",
+      "cell": "a launched path built with new URL still witnesses the file"
+    },
+    {
+      "name": "a runner CLI is treated as the launched script itself",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (RUNNER_CLI.test(text.replaceAll(\"\\\\\", \"/\"))) return launchedScriptArg(evalPath, tokens.slice(i + 1));\n",
+      "replace": "",
+      "expectRed": "a script run through the tsx CLI slot is witnessed",
+      "cell": "a script run through the tsx CLI slot is witnessed"
+    },
+    {
+      "name": "a launched entrypoint's own imports are not followed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;\n",
+      "replace": "",
+      "expectRed": "a launched entrypoint's own relative import is reached",
+      "cell": "a launched entrypoint's own relative import is reached"
+    },
+    {
+      "name": "the entrypoint reach follows bare specifiers into dist-backed packages",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!specifier.startsWith(\".\")) continue;\n      const next = candidateFiles(resolve(dirname(path), specifier));",
+      "replace": "      const next = candidateFiles(resolve(dirname(path), specifier));",
+      "expectRed": "a source file the launched entrypoint never imports is refused",
+      "cell": "a source file the launched entrypoint never imports is refused"
+    },
+    {
+      "name": "a dist import is a witness without the build that produces it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (buildsPackage(cfg.command, packageName(mutation.file))\n      && importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;\n",
+      "replace": "    if (importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;\n",
+      "expectRed": "a value import of built output without the build is refused",
+      "cell": "a value import of built output without the build is refused"
+    },
+    {
+      "name": "type-only dist imports count as loads of built output",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {\n      record(stringValue(node.moduleSpecifier));\n    }",
+      "replace": "    if (ts.isImportDeclaration(node) && node.moduleSpecifier) {\n      record(stringValue(node.moduleSpecifier));\n    }",
+      "expectRed": "a type-only import of built output is not a load",
+      "cell": "a type-only import of built output is not a load"
+    },
+    {
+      "name": "package scripts are not expanded, hiding an indirectly named build",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  for (const segment of expandScripts(command).split(/&&|;/)) {",
+      "replace": "  for (const segment of command.split(/&&|;/)) {",
+      "expectRed": "a build named indirectly through a package script still counts",
+      "cell": "a build named indirectly through a package script still counts"
     }
   ]
 }
