@@ -123,6 +123,13 @@ const credsPathF = join(dir, "delivery-f.creds");
 // of them exceed what one test broker can promise — the suite fails to provision with "insufficient
 // storage resources available" before a single cell runs. Measured, not predicted.
 //
+// SO THE RUNNING COST IS SIX, NOT EIGHT: `setupSpaceStreams` is called six times, and spaceG/spaceH
+// below are ALIASES of A's and C's spaces. Six still reserves about 24.4 GiB, 6 x (4 GiB artifact
+// store + 64 MiB membership bucket), before a cell runs, which a small or busy TMPDIR cannot promise.
+// That refusal used to surface as a bare broker string with no cell attached, and it read as a daemon
+// regression to three separate readers, so the catch at the foot of this file now reports it BY NAME
+// and prints the size an operator has to act on.
+//
 // Reuse is sound here for the one reason that made separate spaces necessary in the first place.
 // The isolation those comments describe is specifically about the 30s lease-bucket TTL refusing the
 // slot to a second daemon; that is answered exactly by DELETING the row, which both cells do
@@ -1274,11 +1281,14 @@ try {
   const why = (e as Error).message;
   if (/insufficient storage resources/i.test(why)) {
     console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
-    console.error(`     This is the test environment, not the daemon. Every space reserves a 4 GiB artifact`);
-    console.error(`     Object Store, and this suite provisions eight, so a small or busy store cannot promise`);
-    console.error(`     them. The broker's JetStream directory is under TMPDIR, currently ${tmpdir()}.`);
-    console.error(`     Point TMPDIR at a filesystem with room (and NOT under the workstation root, which the`);
-    console.error(`     daemon's own root walk would then pick up) and re-run before reading this as a defect.`);
+    console.error(`     This is the test environment, not the daemon. This suite provisions SIX spaces (cells`);
+    console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 4 GiB artifact`);
+    console.error(`     Object Store plus a 64 MiB membership bucket, so the store must promise about 24.4 GiB`);
+    console.error(`     before a single cell runs, plus whatever headroom JetStream wants on top.`);
+    console.error(`     The broker's JetStream directory is under TMPDIR, currently ${tmpdir()}.`);
+    console.error(`     Point TMPDIR at a filesystem with 24 GiB+ free (and NOT under the workstation root,`);
+    console.error(`     which the daemon's own root walk would then pick up) and re-run before reading this`);
+    console.error(`     as a defect.`);
   } else {
     console.error("  ✗ scenario threw:", why);
   }
