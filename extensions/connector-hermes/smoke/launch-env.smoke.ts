@@ -262,7 +262,7 @@ assert.match(pyproject, /^\s*"hermes-agent>=0\.18,<0\.22",\s*$/m, "pyproject.tom
 // else, because the managed path's config.yaml and SOUL.md writes would destroy a real profile.
 assert.equal(adoptedHome({}), undefined, "no opt-in means the managed disposable profile");
 assert.equal(adoptedHome({ [ADOPT_HOME_ENV]: "   " }), undefined, "a blank opt-in is not an opt-in");
-assert.equal(adoptedHome({ [ADOPT_HOME_ENV]: "/home/op/.hermes" }), "/home/op/.hermes", "the opt-in names the profile to adopt");
+assert.equal(adoptedHome({ [ADOPT_HOME_ENV]: "/srv/op/.hermes" }), "/srv/op/.hermes", "the opt-in names the profile to adopt");
 
 const opAdopt = mkdtempSync(join(tmpdir(), "cotal-hermes-adopt-"));
 assert.throws(
@@ -312,9 +312,9 @@ assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a 
 
 // The opt-in has to survive the launch env or the launcher never sees it: every other COTAL_* name
 // is deliberately reset per session, and this one would be stripped with them.
-process.env.COTAL_HERMES_ADOPT_HOME = "/home/op/.hermes";
+process.env.COTAL_HERMES_ADOPT_HOME = "/srv/op/.hermes";
 const adoptEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
-assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/home/op/.hermes", "the adopt-home opt-in reaches the launcher");
+assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/srv/op/.hermes", "the adopt-home opt-in reaches the launcher");
 delete process.env.COTAL_HERMES_ADOPT_HOME;
 const plainEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
 assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
