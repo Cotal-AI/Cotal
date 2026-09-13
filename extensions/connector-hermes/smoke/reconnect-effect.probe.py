@@ -17,6 +17,7 @@ Modes:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import socket
@@ -240,11 +241,15 @@ def main() -> None:
                 print(name, ok)
             for name, ok in _fatal_rows():
                 print(name, ok)
+            for name, ok in _socket_fence_rows():
+                print(name, ok)
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
             print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
             for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
                          "NO_DEAD_HANDLE_AFTER_EXIT", "LIVE_READER_OF_CURRENT_GEN_KEPT",
-                         "START_MADE_LIVE_REPLACEMENT", "DEAD_READER_REPORTS_FATAL",
+                         "START_MADE_LIVE_REPLACEMENT", "CONNECT_TAKES_A_GENERATION",
+                         "STALE_DIALER_DID_NOT_CLOBBER", "CURRENT_GEN_STILL_INSTALLS",
+                         "DEAD_READER_REPORTS_FATAL",
                          "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
                          "HEALTHY_READER_REPORTS_NO_FATAL"):
                 print(name, False)
@@ -468,6 +473,59 @@ def _fatal_rows() -> list[tuple[str, bool]]:
 
 async def _async_noop(counter: dict) -> None:
     counter["n"] += 1
+
+
+def _socket_fence_rows() -> list[tuple[str, bool]]:
+    """A reader retired mid-dial must not install its socket over the live generation's.
+
+    Found by review, reproduced here before it was fixed. The assignment in `_connect` was already
+    under the lock, and that is what makes this easy to miss: the lock makes the write ATOMIC, but
+    says nothing about WHO is writing. A reader that entered `_connect` before its generation was
+    retired finishes dialing afterwards and installs its socket over the live one, which rebuilds
+    the deaf bridge the generation counter exists to eliminate.
+
+    Measured before the fence: STALE_OVERWROTE_LIVE_SOCKET True.
+
+    The accept row is what stops this being a fence that simply refuses everything: the CURRENT
+    generation must still dial and install normally.
+    """
+    rows: list[tuple[str, bool]] = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    fence_path = os.path.join(_tmp, "fence.sock")
+    srv.bind(fence_path)
+    srv.listen(16)
+
+    def _accept_loop() -> None:
+        while True:
+            try:
+                srv.accept()
+            except OSError:
+                return
+
+    threading.Thread(target=_accept_loop, daemon=True).start()
+    try:
+        fenced = "gen" in inspect.signature(BridgeClient._connect).parameters
+        rows.append(("CONNECT_TAKES_A_GENERATION", fenced))
+
+        client = BridgeClient(fence_path)
+        live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        live.connect(fence_path)
+        client._sock = live
+        stale_gen = client._gen
+        client._gen += 1  # the dialer below is now retired
+        client._connect(stale_gen) if fenced else client._connect()
+        rows.append(("STALE_DIALER_DID_NOT_CLOBBER", client._sock is live))
+
+        # ACCEPT CONTROL: the live generation still dials and installs.
+        fresh = BridgeClient(fence_path)
+        fresh._connect(fresh._gen) if fenced else fresh._connect()
+        rows.append(("CURRENT_GEN_STILL_INSTALLS", fresh._sock is not None))
+    finally:
+        try:
+            srv.close()
+        except OSError:
+            pass
+    return rows
 
 
 def _guarded(check) -> bool:

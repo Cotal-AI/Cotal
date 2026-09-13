@@ -65,7 +65,7 @@ class BridgeClient:
         buf = b""
         while not self._stop.is_set() and gen == self._gen:
             if self._sock is None:
-                self._connect()
+                self._connect(gen)
                 if self._sock is None:
                     continue
                 self._send({"t": "subscribe"})  # (re)subscribe after every (re)connect
@@ -83,12 +83,39 @@ class BridgeClient:
                 if line.strip():
                     self._dispatch(line)
 
-    def _connect(self) -> None:
+    def _connect(self, gen: Optional[int] = None) -> None:
+        """Dial the bridge socket for generation ``gen``, retrying until connected or stopped.
+
+        THE ASSIGNMENT IS FENCED BY GENERATION, NOT ONLY BY THE LOCK. The lock makes the write
+        atomic, which prevents a torn read but says nothing about WHO is writing. A reader that
+        entered here before its generation was retired can finish dialing afterwards and install
+        its socket over the live generation's, which reproduces the deaf-bridge symptom the
+        generation counter exists to eliminate: the new reader ends up reading a socket nobody
+        owns while the old one is closed underneath it. Measured before this fence:
+        ``STALE_OVERWROTE_LIVE_SOCKET True``.
+
+        Checking the generation under the same lock that guards the assignment closes it, because
+        retirement and assignment can no longer interleave between the check and the write. A
+        stale dialer closes the socket it just opened rather than leaking it, and returns.
+
+        ``gen`` defaults to None for callers outside the reader loop, which means "unfenced" and
+        is only correct before any reader exists.
+        """
         while not self._stop.is_set():
+            if gen is not None and gen != self._gen:
+                return  # retired while dialing: this socket is not wanted
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.connect(self._path)
                 with self._lock:
+                    if gen is not None and gen != self._gen:
+                        # Retired between the dial and the assignment. Close rather than install:
+                        # installing here is exactly the clobber this fence exists to prevent.
+                        try:
+                            s.close()
+                        except OSError:
+                            pass
+                        return
                     self._sock = s
                 return
             except OSError:

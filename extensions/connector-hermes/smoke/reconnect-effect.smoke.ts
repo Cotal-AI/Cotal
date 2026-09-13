@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 41;
+const EXPECTED_CELLS = 44;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -298,6 +298,30 @@ assert.equal(
   subject.HEALTHY_READER_REPORTS_NO_FATAL,
   "True",
   "accept control: a healthy connect marks connected and reports no fatal, so the check is not firing on everything",
+);
+
+// ---- THE SOCKET MUST BE FENCED BY GENERATION, NOT ONLY BY THE LOCK --------------------------
+// Found by review, and the reason it was easy to miss is that the assignment in `_connect` was
+// ALREADY under the lock. The lock makes the write atomic, which prevents a torn read, and says
+// nothing about WHO is writing. A reader that entered `_connect` before its generation was retired
+// finishes dialing afterwards and installs its socket over the live generation's, rebuilding the
+// deaf bridge the generation counter exists to eliminate. Measured before the fence:
+// STALE_OVERWROTE_LIVE_SOCKET True.
+assert.equal(
+  subject.STALE_DIALER_DID_NOT_CLOBBER,
+  "True",
+  "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
+);
+assert.equal(
+  subject.CONNECT_TAKES_A_GENERATION,
+  "True",
+  "_connect must be fenced by generation, or the retirement it belongs to cannot be enforced at the socket",
+);
+// Accept control, so this is a fence rather than a refusal of everything.
+assert.equal(
+  subject.CURRENT_GEN_STILL_INSTALLS,
+  "True",
+  "accept control: the CURRENT generation must still dial and install its socket normally",
 );
 
 console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);
