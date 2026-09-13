@@ -39,6 +39,15 @@
       "replace": "      throw e;",
       "expectRed": "Q4 and the endpoint is STILL QUIESCED after that failure, not silently un-quiesced",
       "note": "Found in review, and the recovery path re-introducing #1318's own class. armPlane3 binds in four stages, so it can throw with some bound. Leaving the flag lowered on that throw records the endpoint as serving while it is not: every later rearmPlane3 returns at the !plane3Quiesced guard WITHOUT retrying, and resumeServing then flips the lease READY over missing bindings. A transient broker error becomes a permanent readiness lie. Q5 and Q6 grade the lost retry and Q8 reads the durable back off the broker, so this is graded by broker state rather than only by the flag it mutates."
+    },
+    {
+      "name": "M3 the launcher derives the lease holder as the bare connection nkey",
+      "file": "packages/core/src/lease.ts",
+      "find": "  return principalKey(DEV_OWNER, idFromCreds(creds)).key;",
+      "replace": "  return idFromCreds(creds);",
+      "expectRed": "the holder a launcher derives from the cred alone MATCHES the row the daemon wrote",
+      "cell": "the holder a launcher derives from the cred alone MATCHES the row the daemon wrote",
+      "note": "The shipped defect, restored. `idFromCreds` is the daemon's identity at the CONNECTION layer and reads as the obvious answer, but the endpoint rewrites card.id to the principal dot-form before stamping it into the row, so a launcher comparing against the bare nkey can never match. It fails in the safe direction - the fresh-launch readiness wait simply times out and reports a ready daemon as not-ready - which is exactly why it survived: a guarantee defeated by a comparison that never fires looks like a slow start rather than a bug. The refusing control beside the cell (a DIFFERENT cred must not match) stays green under this mutation, so the kill is attributable to the derivation rather than to the comparison collapsing."
     }
   ]
 }

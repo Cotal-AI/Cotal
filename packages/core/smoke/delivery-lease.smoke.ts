@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, fanoutDurableConfig, FANOUT_DURABLE } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor } from "../src/index.js";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
@@ -77,6 +77,37 @@ try {
   check("CONTROL: waiting for the lease's ACTUAL holder sees it ready", await waitFor(d1.card.id));
   check("a ready lease held by another daemon does NOT answer for the one we launched", (await waitFor(d2.card.id)) === false);
   check("CONTROL: an unnamed holder (adopting a running daemon) still accepts any ready lease", await waitFor(undefined));
+
+  // #837 AGAIN, FROM THE LAUNCHER'S SIDE. The three cells above hand the wait `d1.card.id`, taken off
+  // a live endpoint object - so they grade the WAIT while assuming the hardest part, which is that a
+  // launcher can work out that string in the first place. It cannot read it off anything: it holds a
+  // creds FILE, and the process that will write the row does not exist yet. Deriving the bare nkey
+  // from that cred is the obvious move and is wrong, because the endpoint rewrites `card.id` to the
+  // principal dot-form before stamping it, so the comparison could only ever be false - the #837
+  // guarantee defeated by a test that never fires rather than by one that accepts anything. That is
+  // what `cotal up` actually did on every fresh launch until this was found in review (#1318).
+  const launchCreds = await mintCreds(auth, newIdentity(), "delivery");
+  const launched = new CotalEndpoint({
+    space, servers: SERVERS, creds: launchCreds, channels: [],
+    consume: false, watchPresence: false, registerPresence: false,
+    card: { id: idFromCreds(launchCreds), name: "delivery", role: "delivery", kind: "endpoint" },
+  });
+  launched.on("error", () => {}); await launched.start();
+  try {
+    const lrev = await launched.acquireDeliveryLease(1);
+    await launched.markDeliveryLeaseReady(1, lrev);
+    const row = await launched.readDeliveryLease(1);
+    // The launcher has ONLY the cred. This is the whole cell: does the value it can derive match the
+    // value the daemon wrote?
+    check("the holder a launcher derives from the cred alone MATCHES the row the daemon wrote",
+      deliveryLeaseHolderFor(launchCreds) === row?.holder,
+      { derived: deliveryLeaseHolderFor(launchCreds), written: row?.holder });
+    // REFUSING CONTROL: the derivation is not just returning whatever is in the row. A different
+    // cred must derive a holder that does NOT match.
+    check("CONTROL: a DIFFERENT cred derives a holder that does not match that row",
+      deliveryLeaseHolderFor(await mintCreds(auth, newIdentity(), "delivery")) !== row?.holder);
+    await launched.releaseDeliveryLease(1, (await launched.readDeliveryLeaseEntry(1))?.revision);
+  } finally { await launched.stop(); }
 
   // RELEASE ARGUES THE REVISION IT LAST OWNED, and `markDeliveryLeaseReady` moved it — a release
   // offering the stale `rev1` is refused, which is the correct outcome for a row that has moved on
