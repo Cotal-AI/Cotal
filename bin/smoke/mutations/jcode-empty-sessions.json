@@ -88,7 +88,8 @@
       "replace": "    throw error;",
       "command": "pnpm smoke:jcode-empty-sessions",
       "expectRed": "the unreadable sessions directory is named to the operator",
-      "cell": "the unreadable sessions directory is named to the operator"
+      "cell": "the unreadable sessions directory is named to the operator",
+      "note": "POSIX-only proof. The win32 arm of this block declares the cell unreachable and passes unconditionally, so on Windows this mutant is a correct SURVIVOR and the mark count matches a POSIX kill. Read the verdict, not the marks."
     },
     {
       "name": "M9 report an unrecognised harness failure as a closed connection",
@@ -106,16 +107,18 @@
       "replace": "      if (false)",
       "command": "pnpm smoke:jcode-empty-sessions",
       "expectRed": "the unreadable sessions directory is named to the operator",
-      "cell": "the unreadable sessions directory is named to the operator"
+      "cell": "the unreadable sessions directory is named to the operator",
+      "note": "POSIX-only proof. The win32 arm of this block declares the cell unreachable and passes unconditionally, so on Windows this mutant is a correct SURVIVOR and the mark count matches a POSIX kill. Read the verdict, not the marks."
     },
     {
-      "name": "M11 let an unreadable home die unknown instead of naming the path",
+      "name": "M11 forget the unreadable path so a later startup failure renders unknown",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (!listingFailed && stored.kind !== \"unreadable\") throw error;",
-      "replace": "      if (!listingFailed) throw error;",
+      "find": "      storedSessionsUnreadable &&",
+      "replace": "      false &&",
       "command": "pnpm smoke:jcode-empty-sessions",
-      "expectRed": "an unreadable sessions directory either starts the seat or names sessions_enumeration_failed",
-      "cell": "an unreadable sessions directory either starts the seat or names sessions_enumeration_failed"
+      "expectRed": "an unreadable sessions directory either runs the seat or names sessions_enumeration_failed",
+      "cell": "an unreadable sessions directory either runs the seat or names sessions_enumeration_failed",
+      "note": "POSIX-only proof. The win32 arm of this block declares the cell unreachable and passes unconditionally, so on Windows this mutant is a correct SURVIVOR and the mark count matches a POSIX kill. Read the verdict, not the marks."
     }
   ]
 }

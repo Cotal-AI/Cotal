@@ -171,7 +171,7 @@ try {
   if (process.platform === "win32") {
     check("the unreadable sessions directory is named to the operator (unreachable on Windows)", true);
     check("the unreadable-directory seat does not die as startup failed (unknown) (unreachable on Windows)", true);
-    check("an unreadable sessions directory either starts the seat or names sessions_enumeration_failed (unreachable on Windows)", true);
+    check("an unreadable sessions directory either runs the seat or names sessions_enumeration_failed (unreachable on Windows)", true);
     check("a seat killed by an unreadable sessions directory names the path it could not read (unreachable on Windows)", true);
   } else {
     // The local inspection runs on every managed seat's startup path. A directory it cannot read
@@ -213,14 +213,18 @@ try {
         30_000,
       ).catch(() => undefined);
       const settledErr = locked.stderr();
+      const started = locked.child.exitCode === null && /started a fresh session/.test(settledErr);
+      // `started a fresh session` is printed BEFORE the harness persists, so on the real binary it
+      // appears on a seat that then dies. Requiring the process to still be alive is what stops
+      // this cell passing on a corpse (rev-i1293-opus-r1's false-pass finding).
       check(
-        "an unreadable sessions directory either starts the seat or names sessions_enumeration_failed",
-        /started a fresh session/.test(settledErr) || /sessions_enumeration_failed/.test(settledErr),
-        settledErr,
+        "an unreadable sessions directory either runs the seat or names sessions_enumeration_failed",
+        started || /sessions_enumeration_failed/.test(settledErr),
+        { exitCode: locked.child.exitCode, stderr: settledErr },
       );
       check(
         "a seat killed by an unreadable sessions directory names the path it could not read",
-        !/sessions_enumeration_failed/.test(settledErr) || /while reading .*sessions/.test(settledErr),
+        started || /while reading .*sessions/.test(settledErr),
         settledErr,
       );
       check(

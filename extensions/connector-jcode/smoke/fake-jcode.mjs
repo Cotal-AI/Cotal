@@ -137,11 +137,13 @@ const saveSession = (session) => {
   if (sessionStatePath) writeFileSync(sessionStatePath, JSON.stringify(session));
 };
 
-// Real jcode writes the new session to JCODE_HOME/sessions/session_<id>.json and closes the
-// session when that write fails ("persistence to sessions/session_*.json failed ... session
-// closed"). Reproduced here so a home the harness cannot write to fails the same way it does in
-// production instead of passing on a fake that never touched the directory.
-const persistSession = (sessionId, workingDir, reply) => {
+// Real jcode writes the new session to JCODE_HOME/sessions/session_<id>.json. It ACCEPTS
+// create_session even when that directory is unwritable and fails afterwards, during the first
+// turn, with `SESSION_PERSISTENCE ... error=Permission denied` and then a closed session. The
+// failure is recorded here and raised at that later point, because a fixture that fails at the
+// wrong point in the protocol certifies claims the real binary disproves.
+let sessionPersistenceError;
+const persistSession = (sessionId, workingDir) => {
   const home = process.env.JCODE_HOME;
   if (!home) return true;
   const dir = join(home, "sessions");
@@ -153,9 +155,9 @@ const persistSession = (sessionId, workingDir, reply) => {
     );
     return true;
   } catch (error) {
+    sessionPersistenceError = error;
     log({ ev: "session_persist_failed", path: dir, code: error.code ?? "unknown" });
-    process.stderr.write(`persistence to sessions/session_${sessionId}.json failed: ${error.message}; session closed\n`);
-    reply({ ev: "error", code: "internal", message: `persistence to sessions/ failed: ${error.code ?? error.message}` });
+    process.stderr.write(`session index warmup skipped: ${error.message}\n`);
     return false;
   }
 };
@@ -166,6 +168,16 @@ const persistSession = (sessionId, workingDir, reply) => {
 // happens to be current.
 function runTurn(frame, socket) {
   const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
+  // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
+  // point, fails to persist the session close state, and the session dies under the turn.
+  if (sessionPersistenceError) {
+    log({ ev: "session_persistence_error", code: sessionPersistenceError.code ?? "unknown" });
+    process.stderr.write(
+      `SESSION_PERSISTENCE session=${frame.session_id} error=${sessionPersistenceError.message}\nFailed to persist session close state\n`,
+    );
+    socket.destroy();
+    process.exit(1);
+  }
   // A real Harness reports idle between tool rounds while the host's run() is still awaiting
   // turn_done. That is the #1075 idle-during-drive wedge: the connector used that advisory status
   // to refuse soft_interrupt even though the Cotal-owned turn was live.
@@ -325,11 +337,12 @@ const server = createServer((socket) => {
         case "create_session":
           createdFresh = true;
           sessionWorkingDir = frame.working_dir;
-          // The real harness PERSISTS the new session into JCODE_HOME/sessions before it answers,
-          // and closes the session if that write fails. A fake that only wrote its optional state
-          // file was green on an unreadable sessions/ while real jcode v0.81.5 died there, so the
-          // suite proved nothing about the case it existed for.
-          if (!persistSession("fake-session", sessionWorkingDir, reply)) break;
+          // Real jcode v0.81.5 ACCEPTS create_session on a sessions/ it cannot write and only
+          // fails later, while persisting the session during the first turn. A fake that
+          // rejected the create would fail at the wrong point in the protocol and certify a
+          // connector claim the real binary disproves, so the persistence failure is recorded
+          // here and surfaced where the real one surfaces.
+          persistSession("fake-session", sessionWorkingDir);
           saveSession({ session_id: "fake-session", working_dir: sessionWorkingDir, transcript_bytes: 1 });
           writeJournal("fake-session");
           reply({ ev: "attached", session: { session_id: "fake-session", working_dir: sessionWorkingDir, status: "idle" } });
