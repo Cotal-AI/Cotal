@@ -142,6 +142,9 @@ try {
   write("bin/smoke/unused-root.smoke.ts",
     'import { x } from "@cotal-ai/seat";\n' +
     'const unused = join(ROOT, "packages", "seat");\n');
+  write("bin/smoke/copy-into-root.smoke.ts",
+    'import { x } from "@cotal-ai/seat";\n' +
+    'cpSync(scratch, join(ROOT, "packages", "seat"), { recursive: true });\n');
   write("bin/smoke/unrelated-spawn.smoke.ts",
     'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
     'const unused = join(ROOT, "scripts", "direct.mjs");\n');
@@ -317,6 +320,10 @@ try {
   config("malformed-assembles", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: "packages/seat", mutations: [mutation("packages/seat/package.json")] });
   result = run("malformed-assembles");
   check('a non-array "assembles" is refused', result.status !== 0 && /"assembles" must be an array/.test(result.stderr), report(result));
+
+  config("copy-into-root", { suite: ["bin/smoke/copy-into-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("copy-into-root");
+  check("a root appearing as a copy's DESTINATION is not a copy of that root", result.status !== 0 && /REFUSED copy-into-root/.test(result.stderr), report(result));
 
   config("unused-root", { suite: ["bin/smoke/unused-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("unused-root");
