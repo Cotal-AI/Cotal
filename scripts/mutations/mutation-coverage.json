@@ -294,7 +294,7 @@
     {
       "name": "a read of any file is treated as a read of the mutated one",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)) hit = true;",
+      "find": "      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)\n        && !isSourceModule(file)) hit = true;",
       "replace": "      if (target && !ts.isSpreadElement(target)) hit = true;",
       "expectRed": "reading some OTHER file is not a witness for the mutated one",
       "cell": "reading some OTHER file is not a witness for the mutated one"
@@ -386,6 +386,30 @@
       "replace": "      if (ts.isIdentifier(n) && n.text === name && n !== cur.name) {",
       "expectRed": "a call a literal condition excludes never runs",
       "cell": "a call a literal condition excludes never runs"
+    },
+    {
+      "name": "a named text read of a source module counts as executing it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "const isSourceModule = (file) => SOURCE_MODULE.has(extname(file));",
+      "replace": "const isSourceModule = (file) => false;",
+      "expectRed": "reading a SOURCE module as text is not executing it",
+      "cell": "reading a SOURCE module as text is not executing it"
+    },
+    {
+      "name": "a worker entry handed over as a value is invisible",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isPropertyAssignment(node) && node.name.getText() === \"entry\") {\n      record(distUrlText(node.initializer));\n    }",
+      "replace": "",
+      "expectRed": "a dist entry handed to a worker plus its build is gradable",
+      "cell": "a dist entry handed to a worker plus its build is gradable"
+    },
+    {
+      "name": "any build: prefixed script counts as producing dist",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (typeof body !== \"string\") return false;\n    return /(^|\\s|&&|;)(tsc|tsup|rollup|esbuild|vite|swc|babel)(\\s|$)/.test(body);",
+      "replace": "    return true;",
+      "expectRed": "a build: script that emits no dist is not the build",
+      "cell": "a build: script that emits no dist is not the build"
     }
   ]
 }
