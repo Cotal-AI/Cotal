@@ -107,8 +107,15 @@ function loadCorpus(root, paths) {
       errors.push(`${path}: ${err.message}`);
       continue;
     }
+    // Length matters, not just shape. A fixture with `"mutations": []` is well-formed JSON that
+    // grades nothing: mutation-proof reports `All 0 mutation(s) killed` and exits 0. Admitting it
+    // to the corpus lets a member that can never discriminate be counted as one that does.
     if (!Array.isArray(config.mutations)) {
       errors.push(`${path}: no top-level "mutations" array`);
+      continue;
+    }
+    if (config.mutations.length === 0) {
+      errors.push(`${path}: "mutations" array is empty — a fixture that grades nothing cannot stand as coverage`);
       continue;
     }
     let suites;
@@ -579,6 +586,7 @@ const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head R
 const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base comparison — loud failure
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
 const discriminated = []; // fixtures that produced at least one KILLED (including mixed)
+const zeroGraded = []; // exit 0 with no KILLED parsed — graded nothing, never counts as discrimination
 for (const { path, command, mutations } of prove) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
@@ -588,7 +596,16 @@ for (const { path, command, mutations } of prove) {
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");
   process.stderr.write(run.stderr ?? "");
-  if (run.status === 0) { discriminated.push(path); continue; } // every mutation KILLED
+  // Exit 0 means "no mutation failed to produce a clean named red", which is NOT the same as
+  // "a kill was observed": mutation-proof prints `All 0 mutation(s) killed` and exits 0 for a
+  // fixture whose `mutations` array is empty. Crediting discrimination on the status alone would
+  // let a fixture that graded nothing hold the floor up for a corpus that killed nothing — the
+  // very vacuity this floor exists to refuse, one layer down. Credit the observed verdict.
+  if (run.status === 0) {
+    if (verdictsIn(output).includes("KILLED")) discriminated.push(path);
+    else zeroGraded.push(path);
+    continue;
+  }
   // Pre-red is keyed on exit 4 ALONE, the code mutation-proof sets only in its pre-mutation baseline
   // refusal and nowhere a mutation actually ran. Attribute it by the SAME command's base-to-head
   // transition, never by a declared suite path that may name a different command.
@@ -743,6 +760,12 @@ function discriminationFloor(provenCount, discriminatedCount) {
   // by accident and would fail a legitimate one-fixture synthetic.
   if (provenCount === 0) return { pass: true, required: 0 };
   return { pass: discriminatedCount > 0, required: 1 };
+}
+// A fixture that exited 0 without a single parsed KILLED graded nothing. It is not a finding
+// against the guard and not a pass for it, so it is named rather than folded into either: a
+// reader who sees the corpus shrink this way should see WHICH member stopped grading.
+if (zeroGraded.length) {
+  console.log(`\nZERO GRADED (${zeroGraded.length} fixture(s)) — exited 0 with no KILLED verdict parsed; graded nothing and cannot count toward the floor:\n${zeroGraded.map((path) => `  ${path}`).join("\n")}`);
 }
 const floor = discriminationFloor(prove.length, discriminated.length);
 if (!floor.pass) {

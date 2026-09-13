@@ -294,6 +294,30 @@
       "replace": "        : \"No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.\");\n  process.exit(1);",
       "expectRed": "the gate PASSES an unrelated change and prints the evidence of a real all-clear",
       "cell": "the gate PASSES an unrelated change and prints the evidence of a real all-clear"
+    },
+    {
+      "name": "a zero-mutation fixture is admitted to the corpus again",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    if (config.mutations.length === 0) {",
+      "replace": "    if (false && config.mutations.length === 0) {",
+      "expectRed": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing",
+      "cell": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing"
+    },
+    {
+      "name": "the corpus rejects any fixture whose mutations array is non-empty, inverting the length check",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    if (config.mutations.length === 0) {",
+      "replace": "    if (config.mutations.length !== 0) {",
+      "expectRed": "the same fixture carrying one real mutation is admitted and discriminates",
+      "cell": "the same fixture carrying one real mutation is admitted and discriminates"
+    },
+    {
+      "name": "discrimination is credited on a bare exit 0 again, without an observed KILLED",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    if (verdictsIn(output).includes(\"KILLED\")) discriminated.push(path);\n    else zeroGraded.push(path);",
+      "replace": "    discriminated.push(path);",
+      "expectRed": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing",
+      "cell": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing"
     }
   ]
 }

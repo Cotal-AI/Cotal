@@ -1579,6 +1579,59 @@ try {
       `status=${status}\n${out}`,
     );
   }
+  // 23c. The floor must be satisfiable only by an OBSERVED kill, not by a bare exit 0. A fixture
+  //     whose `mutations` array is empty makes mutation-proof print "All 0 mutation(s) killed" and
+  //     exit 0, which would earn a free discrimination credit and hold the floor up for a corpus
+  //     that killed nothing. Two independent guards: the corpus refuses to admit such a fixture,
+  //     and the floor refuses to credit an exit 0 with no KILLED parsed. Each is proven separately
+  //     so neither can be shadowed by the other.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "k.mjs"), "export const k = () => 1;\n");
+        writeFileSync(join(r, "suites", "k.suite.mjs"), "import { k } from '../k.mjs';\nif (k() !== 1) { console.error('✗ FAIL: k is one'); process.exit(1); }\nconsole.log('✓ k is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "k.mutations.json"), JSON.stringify({
+          suite: ["suites/k.suite.mjs"], command: "node suites/k.suite.mjs", mutations: [],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const { status, out } = scanAll(root);
+    check(
+      "a fixture with an empty mutations array is refused by the corpus instead of grading nothing",
+      status === 1
+        && out.includes("mutation reproof: UNMEASURED — 1 malformed fixture(s)")
+        && out.includes("\"mutations\" array is empty")
+        && out.includes("smoke/mutations/k.mutations.json")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status}\n${out}`,
+    );
+  }
+  // 23d. REFUSING contrast to 23c, differing only by the array having one member: an otherwise
+  //     identical fixture with a real mutation is admitted and discriminates.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "k.mjs"), "export const k = () => 1;\n");
+        writeFileSync(join(r, "suites", "k.suite.mjs"), "import { k } from '../k.mjs';\nif (k() !== 1) { console.error('✗ FAIL: k is one'); process.exit(1); }\nconsole.log('✓ k is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "k.mutations.json"), JSON.stringify({
+          suite: ["suites/k.suite.mjs"], command: "node suites/k.suite.mjs", mutations: [{
+            name: "k stops returning one", file: "k.mjs", find: "export const k = () => 1;",
+            replace: "export const k = () => 2;", expectRed: "k is one",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const { status, out } = scanAll(root);
+    check(
+      "the same fixture carrying one real mutation is admitted and discriminates",
+      status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(out)
+        && !out.includes("ZERO GRADED"),
+      `status=${status}\n${out}`,
+    );
+  }
   {
     const { root } = makeSingle(
       (r) => {
