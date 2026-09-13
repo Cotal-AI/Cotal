@@ -131,7 +131,10 @@ try {
     'const unused = join(ROOT, "scripts", "direct.mjs");\nconsole.log(unused);\n');
   // A launched entrypoint whose OWN source imports the mutated file.
   write("packages/seat/src/reached.ts", "export const y = 2;\n");
-  write("packages/seat/src/entry-main.ts", 'import { y } from "./reached.js";\nconsole.log(y);\n');
+  // The entry also imports a package BY NAME. That resolves to the other package's dist, so a
+  // mutation of the other package's src is not reached — unless the walk follows bare specifiers.
+  write("packages/seat/src/entry-main.ts",
+    'import { y } from "./reached.js";\nimport { x } from "@cotal-ai/other";\nconsole.log(y, x);\n');
   write("packages/seat/src/unreached.ts", "export const z = 3;\n");
   write("bin/smoke/launch-entry-main.smoke.ts",
     'const ENTRY = join(ROOT, "packages", "seat", "src", "entry-main.ts");\n' +
@@ -262,9 +265,13 @@ try {
   result = run("launch-reached");
   check("a launched entrypoint's own relative import is reached", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
 
-  config("launch-unreached", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/unreached.ts")] });
+  config("launch-unreached", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/other/src/index.ts")] });
   result = run("launch-unreached");
-  check("a source file the launched entrypoint never imports is refused", result.status !== 0 && /REFUSED launch-unreached/.test(result.stderr), report(result));
+  check("a by-name package the launched entrypoint imports is not reached in source", result.status !== 0 && /REFUSED launch-unreached/.test(result.stderr), report(result));
+
+  config("launch-foreign", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/unreached.ts")] });
+  result = run("launch-foreign");
+  check("a source file the launched entrypoint never imports is refused", result.status !== 0 && /REFUSED launch-foreign/.test(result.stderr), report(result));
 
   config("dist-built", { suite: ["bin/smoke/dist-import.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("dist-built");

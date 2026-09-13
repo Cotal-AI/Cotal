@@ -38,8 +38,8 @@
     {
       "name": "a suite launching the exact mutated repo script is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;",
-      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;\n    // A suite that launches a repo entrypoint under a TS runner executes that entrypoint's own\n    // source tree. The mutated file is covered when the entrypoint's relative imports reach it.\n    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;\n",
+      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;\n",
       "expectRed": "a suite is gradable when it launches the exact mutated script path",
       "cell": "a suite is gradable when it launches the exact mutated script path"
     },
@@ -71,7 +71,7 @@
       "name": "a bound entry anywhere after a launcher is treated as its argument",
       "file": "scripts/mutation-coverage.mjs",
       "find": "        const script = launchedScriptArg(evalPath, argv);\n        const value = script ? evalPath(script) : undefined;\n        if (typeof value === \"string\") found.push(value);",
-      "replace": "        for (const token of argvElements(argv)) {\n          const value = evalPath(token);\n          if (typeof value === \"string\") found.push(value);\n        }",
+      "replace": "        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(sf);",
       "expectRed": "a name bound to the target but never passed to a launcher is still refused",
       "cell": "a name bound to the target but never passed to a launcher is still refused"
     },
@@ -79,7 +79,7 @@
       "name": "any spawn-arg subtree is treated as the launched script",
       "file": "scripts/mutation-coverage.mjs",
       "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      if (command && isNodeExecutable(evalPath, command) && argv) {\n        const script = launchedScriptArg(evalPath, argv);\n        const value = script ? evalPath(script) : undefined;\n        if (typeof value === \"string\") found.push(value);\n      }",
-      "replace": "      for (const arg of node.arguments) {\n        const value = ts.isSpreadElement(arg) ? undefined : evalPath(arg);\n        if (typeof value === \"string\") found.push(value);\n      }",
+      "replace": "      for (const arg of node.arguments) {\n        if (ts.isSpreadElement(arg)) continue;\n        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(arg);\n      }",
       "expectRed": "a path after -e is not a launched script",
       "cell": "a path after -e is not a launched script"
     },
@@ -182,8 +182,8 @@
     {
       "name": "printed build text counts as a package build",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "  for (const segment of expandScripts(command).split(/&&|;/)) {\n    const tokens = segment.trim().split(/\\s+/);\n    if (tokens.includes(\"||\")) continue;\n    if (tokens[0] !== \"pnpm\") continue;",
-      "replace": "  for (const segment of expandScripts(command).split(/&&|;/)) {\n    const tokens = segment.trim().split(/\\s+/);\n    if (tokens.includes(\"||\")) continue;",
+      "find": "  for (const segment of expandScripts(command).split(/&&|;/)) {",
+      "replace": "  if (command.includes(\"pnpm build\")) return true;\n  for (const segment of expandScripts(command).split(/&&|;/)) {",
       "expectRed": "printed-build cannot fabricate executes evidence",
       "cell": "printed-build cannot fabricate executes evidence"
     },
@@ -262,10 +262,10 @@
     {
       "name": "the entrypoint reach follows bare specifiers into dist-backed packages",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (!specifier.startsWith(\".\")) continue;\n      const next = candidateFiles(resolve(dirname(path), specifier));",
-      "replace": "      const next = candidateFiles(resolve(dirname(path), specifier));",
-      "expectRed": "a source file the launched entrypoint never imports is refused",
-      "cell": "a source file the launched entrypoint never imports is refused"
+      "find": "      if (!specifier.startsWith(\".\")) continue;\n",
+      "replace": "",
+      "expectRed": "a by-name package the launched entrypoint imports is not reached in source",
+      "cell": "a by-name package the launched entrypoint imports is not reached in source"
     },
     {
       "name": "a dist import is a witness without the build that produces it",
