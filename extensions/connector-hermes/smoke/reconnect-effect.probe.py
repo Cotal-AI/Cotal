@@ -257,6 +257,8 @@ def main() -> None:
                          "NO_DEAD_HANDLE_AFTER_EXIT", "LIVE_READER_OF_CURRENT_GEN_KEPT",
                          "START_MADE_LIVE_REPLACEMENT", "CONNECT_TAKES_A_GENERATION",
                          "STALE_DIALER_DID_NOT_CLOBBER", "CURRENT_GEN_STILL_INSTALLS",
+                         "MIDDIAL_PARK_REACHED",
+                         "MIDDIAL_RETIRED_DIALER_DID_NOT_CLOBBER",
                          "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
                          "CURRENT_GEN_READER_STILL_READS",
                          "LARGE_FRAME_SPANS_MULTIPLE_RECVS",
@@ -531,6 +533,47 @@ def _socket_fence_rows() -> list[tuple[str, bool]]:
         client._gen += 1  # the dialer below is now retired
         client._connect(stale_gen) if fenced else client._connect()
         rows.append(("STALE_DIALER_DID_NOT_CLOBBER", client._sock is live))
+
+        # RETIRED *DURING* THE DIAL, NOT BEFORE IT. The row above bumps the generation and only then
+        # calls `_connect`, so the PRE-DIAL check catches it and the under-lock check never runs.
+        # Measured consequence: removing either check alone left this suite 52/52 green, so the pair
+        # was proven load-bearing while neither half was attributable. This row closes that by
+        # retiring the generation while the dial is in flight, which is the window ONLY the
+        # under-lock check covers: the pre-dial check has already passed by then.
+        midflight = BridgeClient(fence_path)
+        live2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        live2.connect(fence_path)
+        midflight._sock = live2
+        mid_gen = midflight._gen
+        in_dial = threading.Event()
+        may_finish = threading.Event()
+        real_socket_ctor = socket.socket
+
+        def _parking_ctor(*a, _r=real_socket_ctor, **k):
+            # Park between the pre-dial check and the assignment: the dialer is past the first
+            # guard and has not yet taken the lock.
+            sk = _r(*a, **k)
+            if not in_dial.is_set():
+                in_dial.set()
+                may_finish.wait(5.0)
+            return sk
+
+        def _dial() -> None:
+            socket.socket = _parking_ctor
+            try:
+                midflight._connect(mid_gen) if fenced else midflight._connect()
+            finally:
+                socket.socket = real_socket_ctor
+
+        th = threading.Thread(target=_dial, daemon=True)
+        th.start()
+        reached = in_dial.wait(5.0)
+        midflight._gen += 1        # retire it while the dial is parked in flight
+        may_finish.set()
+        th.join(timeout=5.0)
+        # The instrument must be proven to have reached the window, or a pass means nothing.
+        rows.append(("MIDDIAL_PARK_REACHED", reached))
+        rows.append(("MIDDIAL_RETIRED_DIALER_DID_NOT_CLOBBER", midflight._sock is live2))
 
         # ACCEPT CONTROL: the live generation still dials and installs.
         fresh = BridgeClient(fence_path)

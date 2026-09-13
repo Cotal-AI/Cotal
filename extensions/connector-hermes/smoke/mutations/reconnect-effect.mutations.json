@@ -125,15 +125,15 @@
       "find": "            if gen is not None and gen != self._gen:\n                return  # retired while dialing: this socket is not wanted\n",
       "replace": "",
       "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
-      "note": "Half of the old M7. Splitting it says WHICH guard carries the kill: the pre-dial check is an early-out, and if the under-lock check alone still refuses the clobber then this half is an optimisation rather than a correctness guard. Stated as a question to be measured, not an assumption."
+      "note": "MEASURED SURVIVOR, kept deliberately and disclosed rather than deleted. With only the pre-dial check removed the suite stays 52/52 green, because the under-lock check still refuses the clobber this probe constructs. That makes the pre-dial check an early-out rather than the correctness guard: it saves a pointless dial, and removing it costs work, not safety. A cell that kills this half would have to observe the dial NOT happening, which is a performance property, not a delivery one."
     },
     {
       "name": "M7b the UNDER-LOCK generation check is removed (the pre-dial check remains)",
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
       "find": "                    if gen is not None and gen != self._gen:\n                        # Retired between the dial and the assignment. Close rather than install:\n                        # installing here is exactly the clobber this fence exists to prevent.\n                        try:\n                            s.close()\n                        except OSError:\n                            pass\n                        return\n",
       "replace": "",
-      "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
-      "note": "The other half. This is the one that must matter: a reader retired BETWEEN the pre-dial check and the assignment is exactly the window the lock cannot close, because the lock makes the write atomic rather than correct."
+      "expectRed": "a dialer retired IN FLIGHT, past the pre-dial check, must not install its socket over the live generation's",
+      "note": "The under-lock check is the correctness guard. A dialer parked past the pre-dial check and retired mid-dial is a window only this check covers; the mid-dial cell constructs exactly that, with MIDDIAL_PARK_REACHED proving the park was entered rather than skipped."
     }
   ]
 }
