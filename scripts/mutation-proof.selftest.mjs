@@ -12,10 +12,10 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
@@ -74,9 +74,9 @@ mkdirSync(join(root, "smoke"), { recursive: true });
 writeFileSync(join(root, "smoke", "suite.mjs"), readFileSync(join(root, "suite.mjs"), "utf8"));
 execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm fixture", { cwd: root });
 
-const runTool = (args) =>
+const runTool = (args, options = {}) =>
   spawnSync(process.execPath, [TOOL, ...args], {
-    cwd: root,
+    cwd: options.cwd ?? root,
     encoding: "utf8",
     timeout: 120_000,
     // Prove the tool overrides this only for commands it launches rather than relying on ambient
@@ -784,6 +784,47 @@ check("...and the tree is clean afterwards, which is the accept control for the 
   execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "", "tree dirty after a normal run");
 check("...and the lock is released, so the next proof is not refused by this one",
   !existsSync(lockFor(root)), lockFor(root));
+
+// The lock keys on the TREE, not the launch directory: a run from a package
+// subdirectory, or through a symlink to the root, must meet the same lock. The
+// symlink half is the Linux equivalent of the macOS `/var` vs `/private/var`
+// case that the earlier version got wrong, and a case-folding developer machine
+// cannot observe it — this builds the symlink explicitly.
+{
+  const sub = join(root, "packages", "seat");
+  mkdirSync(sub, { recursive: true });
+  const link = join(dirname(root), `${basename(root)}-link`);
+  // `unlinkSync`, not `rmSync`: the target is a symlink TO a directory, which
+  // `rmSync` refuses without `recursive` — and `recursive` would follow it and
+  // delete the fixture.
+  try { unlinkSync(link); } catch { /* not there */ }
+  symlinkSync(root, link, "dir");
+
+  plantLock(root, process.pid);
+  let r = runTool(adHoc, { cwd: sub });
+  check("a proof launched from a SUBDIRECTORY meets the same tree lock",
+    r.status === 3 && stripAnsi(r.stdout).includes("already running against this tree"), r.stdout.slice(-300));
+  r = runTool(adHoc, { cwd: link });
+  check("a proof launched through a SYMLINK to the root meets it too",
+    r.status === 3 && stripAnsi(r.stdout).includes("already running against this tree"), r.stdout.slice(-300));
+  rmSync(lockFor(root), { force: true });
+  unlinkSync(link);
+}
+
+// Acquisition is one syscall, so two runs starting together cannot both pass a
+// check that ran before either wrote.
+{
+  rmSync(lockFor(root), { force: true });
+  writeFileSync(lockFor(root), JSON.stringify({ pid: process.pid, started: "x", cwd: root, command: "held" }), { flag: "wx" });
+  let threw = "";
+  try {
+    writeFileSync(lockFor(root), "second", { flag: "wx" });
+  } catch (error) {
+    threw = error.code;
+  }
+  check("the lock file is created exclusively, so a second create cannot silently win", threw === "EEXIST", threw);
+  rmSync(lockFor(root), { force: true });
+}
 
 // A killed proof must leave the tree byte-identical. Gated on an OBSERVED
 // applied mutation, not on a fixed delay: a timer that lands between fixtures

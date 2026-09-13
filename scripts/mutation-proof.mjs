@@ -46,7 +46,7 @@
  * Measured here: a subset config keyed on `expectRed` outlived a cell rename and re-ran the
  * pre-fix mutation for a minute before the mismatch was noticed.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, readdirSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, readdirSync, realpathSync, renameSync, rmSync, statSync, utimesSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -138,13 +138,34 @@ const countOccurrences = (hay, needle) => hay.split(needle).length - 1;
 // a dirty tree, so a lockfile in the worktree would refuse itself.
 // ---------------------------------------------------------------------------
 
-// `realpathSync`, not `resolve`: two invocations reaching the same tree by
-// different spellings must share one lock, and on macOS they routinely do —
-// `/var/folders/...` and `/private/var/folders/...` are one directory. A key
-// that distinguishes them hands each run its own lock, which is the exact
-// failure the lock exists to prevent.
+/**
+ * The TREE a run mutates, not the directory it was launched from.
+ *
+ * `git rev-parse --show-toplevel`, because two runs sharing one repository must
+ * share one lock however they were invoked: from the root, from
+ * `packages/core`, or through `--cwd`. Keying on the launch directory gave each
+ * its own lock file and let both mutate the same git tree at once, which is the
+ * failure the lock exists to prevent.
+ *
+ * `realpathSync` on top, because on macOS `/var/folders/...` and
+ * `/private/var/folders/...` are one directory; a key that distinguishes them
+ * splits the lock the same way.
+ *
+ * Falls back to the resolved cwd when git cannot answer — a tree with no `.git`
+ * is not a tree two proofs can share through a repository anyway.
+ */
+function lockKeyPath(cwd) {
+  try {
+    const top = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (top) return realpathSync(top);
+  } catch {
+    // not a repository, or git is unavailable
+  }
+  return realpathSync(resolve(cwd));
+}
+
 const lockPath = (cwd) =>
-  join(tmpdir(), `mutation-proof-lock-${createHash("sha1").update(realpathSync(resolve(cwd))).digest("hex").slice(0, 12)}.json`);
+  join(tmpdir(), `mutation-proof-lock-${createHash("sha1").update(lockKeyPath(cwd)).digest("hex").slice(0, 12)}.json`);
 
 /** Is `pid` a live process? `kill(pid, 0)` signals nothing and only asks. */
 function pidAlive(pid) {
@@ -154,6 +175,24 @@ function pidAlive(pid) {
   } catch (error) {
     // EPERM means it exists and belongs to someone else — alive for our purpose.
     return error.code === "EPERM";
+  }
+}
+
+/**
+ * What that pid is actually running, when the OS will say.
+ *
+ * A pid is not an identity: the OS recycles them, so a lock from a run that
+ * died can name a pid that now belongs to something unrelated, and
+ * `--clear-lock` would then refuse forever on a process that is not a proof.
+ * The refusal cannot be dropped — a live proof must still win — but it can say
+ * what it is refusing for, which turns a wedge into one line the reader can act
+ * on. Advisory only: an empty answer changes no decision.
+ */
+function processCommand(pid) {
+  try {
+    return execSync(`ps -p ${Number(pid)} -o command=`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
   }
 }
 
@@ -168,34 +207,82 @@ function strandedBackups() {
   }
 }
 
+/**
+ * Take the tree's lock, or refuse and say why.
+ *
+ * The create is `wx` — `O_CREAT | O_EXCL`, one syscall — because
+ * `existsSync` then `writeFileSync` is a check and a use with a gap between
+ * them, and two proofs starting in the same millisecond both passed the check.
+ *
+ * Reclaiming a stale lock is the hard half and is deliberately NOT
+ * "unlink then write": two runners that both saw the same dead pid would both
+ * unlink, the second one deleting the first's LIVE lock, and both would go on
+ * to mutate one tree. The stale file is renamed aside instead, and the winner
+ * is whoever's `wx` create then succeeds; the loser finds a lock again and
+ * refuses naming it. The acquire is re-read afterwards, so a lock that is not
+ * ours — however it got that way — is a refusal rather than a silent overlap.
+ */
 function acquireTreeLock(cwd, clearLock) {
   const path = lockPath(cwd);
-  if (existsSync(path)) {
-    let held = null;
+  const mine = JSON.stringify({
+    pid: process.pid,
+    started: new Date().toISOString(),
+    cwd: lockKeyPath(cwd),
+    command: process.argv.slice(1).join(" "),
+  }) + "\n";
+
+  const readHeld = () => {
     try {
-      held = JSON.parse(readFileSync(path, "utf8"));
+      return JSON.parse(readFileSync(path, "utf8"));
     } catch {
-      held = null;  // an unreadable lock is still a lock; treat it as stale
+      return null;  // unreadable or half-written: still a lock, and stale-shaped
     }
+  };
+
+  const claim = () => {
+    try {
+      writeFileSync(path, mine, { flag: "wx" });
+      return true;
+    } catch (error) {
+      if (error.code === "EEXIST") return false;
+      throw error;
+    }
+  };
+
+  const refuseLive = (held) => {
+    const running = held?.pid === undefined ? "" : processCommand(held.pid);
+    say(`${C.red}REFUSING: a mutation proof is already running against this tree (pid ${held?.pid ?? "unknown"}).${C.off}`);
+    say(`Started ${held?.started ?? "unknown"} · command: ${held?.command ?? "unknown"}`);
+    if (running && !/mutation-proof/.test(running)) {
+      // A pid is not an identity — the OS recycles them. Say so rather than
+      // leaving the reader to wonder why a proof is "running" as something else.
+      say(`${C.yellow}! pid ${held.pid} is now \`${running.slice(0, 90)}\`, which is not a proof —`);
+      say(`  the pid was probably recycled. Remove ${path} if you are sure.${C.off}`);
+    }
+    say("Two proofs mutate and restore the same files, so EVERY verdict from either is");
+    say("uninterpretable — each reads a file the other is rewriting, and both still print");
+    say("ordinary KILLED/SURVIVED lines. Wait for it, or work in your own clone.");
+    process.exit(3);
+  };
+
+  if (!claim()) {
+    const held = readHeld();
     const live = held && typeof held.pid === "number" && pidAlive(held.pid);
-    if (clearLock) {
-      if (live) {
-        say(`${C.red}REFUSING: --clear-lock, but pid ${held.pid} is still alive.${C.off}`);
-        say("Stop that proof first; clearing a LIVE lock is how two proofs corrupt one tree.");
-        process.exit(3);
-      }
-      rmSync(path, { force: true });
-      say(`${C.yellow}! cleared a stale lock from pid ${held?.pid ?? "unknown"}${C.off}`);
-    } else if (live) {
-      say(`${C.red}REFUSING: a mutation proof is already running against this tree (pid ${held.pid}).${C.off}`);
-      say(`Started ${held.started ?? "unknown"} · command: ${held.command ?? "unknown"}`);
-      say("Two proofs mutate and restore the same files, so EVERY verdict from either is");
-      say("uninterpretable — each reads a file the other is rewriting, and both still print");
-      say("ordinary KILLED/SURVIVED lines. Wait for it, or work in your own clone.");
+    if (live && !clearLock) refuseLive(held);
+    if (live && clearLock) {
+      const running = processCommand(held.pid);
+      say(`${C.red}REFUSING: --clear-lock, but pid ${held.pid} is still alive.${C.off}`);
+      if (running) say(`  pid ${held.pid} is \`${running.slice(0, 90)}\``);
+      say("Stop that proof first; clearing a LIVE lock is how two proofs corrupt one tree.");
+      say(`If that pid was recycled and is not a proof, remove ${path} by hand.`);
       process.exit(3);
-    } else {
-      // The lock is stale: the run that wrote it died without restoring. That is the
-      // SIGKILL case no handler can catch, so the only defence is to say so here.
+    }
+    if (!clearLock) {
+      // Stale: the run that wrote it died without restoring. That is the
+      // SIGKILL case no handler can catch — `mutation-reproof.mjs` kills on a
+      // 140-minute deadline with SIGKILL, so this path is reached by the
+      // harness itself, not only by an operator — and this refusal is its only
+      // defence.
       say(`${C.red}REFUSING: a previous proof (pid ${held?.pid ?? "unknown"}) died without restoring.${C.off}`);
       say("Its mutation may still be applied to a product file in this tree.");
       const backups = strandedBackups();
@@ -206,13 +293,29 @@ function acquireTreeLock(cwd, clearLock) {
       say("Recover with `git status` / `git checkout -- <file>`, then re-run with --clear-lock.");
       process.exit(3);
     }
+    // Reclaim: move the stale file aside, then race for the create. Renaming
+    // rather than unlinking means a runner that loses cannot have deleted the
+    // winner's live lock — it moved the stale inode, and the create below is
+    // what decides.
+    const aside = `${path}.stale-${process.pid}`;
+    try {
+      renameSync(path, aside);
+      rmSync(aside, { force: true });
+    } catch {
+      // Someone else moved it first; the create below settles who holds it.
+    }
+    if (!claim()) refuseLive(readHeld());
+    say(`${C.yellow}! cleared a stale lock from pid ${held?.pid ?? "unknown"}${C.off}`);
   }
-  writeFileSync(path, JSON.stringify({
-    pid: process.pid,
-    started: new Date().toISOString(),
-    cwd: resolve(cwd),
-    command: process.argv.slice(1).join(" "),
-  }) + "\n");
+
+  // The create said we won. Read it back and make sure it is still ours: any
+  // path that ends with someone else's lock here is a refusal, never a shared
+  // tree.
+  const after = readHeld();
+  if (!after || after.pid !== process.pid) {
+    say(`${C.red}REFUSING: the tree lock was taken by pid ${after?.pid ?? "unknown"} while this run was acquiring it.${C.off}`);
+    process.exit(3);
+  }
   return path;
 }
 
