@@ -253,6 +253,18 @@
   "completionMarker": "DELIVERY-STARVATION SMOKE",
   "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
   "note": "WHERE THE HANDLERS ARE ARMED IS THE FIX, and a placement cannot be defended by any assertion about a return value, so it needs its own mutation. Deleting the arming restores the inherited shape exactly: the later `process.off` of the same two functions becomes a no-op that removes listeners never added, which is what the shipped daemon effectively had. Between the CAS-create of the lease row and a handler registered at the END of start-up, SIGTERM takes Node's DEFAULT action - immediate death, no release - and the row claims the shard for the rest of the 30s bucket TTL with no process behind it, so the next daemon is refused outright. Graded end to end against a real daemon, hence the build: the suite spawns through bin/cotal.ts, which resolves the package to its BUILD, and a source-only edit would grade nothing. Measured: this reddens W4-W7 and leaves all 81 other cells green."
+ },
+ {
+  "name": "M20 the start-up release goes back to being reachable only from a process-level guard",
+  "file": "implementations/delivery/src/delivery.ts",
+  "find": "    if (releaseOnStartupFailure !== undefined) {\n      console.error(`\\u2717 delivery: start-up failed - releasing the shard before exiting`);\n      try { await releaseOnStartupFailure(); } catch { /* the throw below is the report */ }\n    }\n    throw e;",
+  "replace": "    throw e;",
+  "expectRed": "X4 the lease row is GONE \u2014 a caught start-up rejection still released the shard",
+  "cell": "X4 the lease row is GONE \u2014 a caught start-up rejection still released the shard",
+  "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+  "completionMarker": "DELIVERY-STARVATION SMOKE",
+  "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+  "note": "A REVIEWER FINDING, and it disproved a claim this repair was already making. `uncaughtException` and `unhandledRejection` do not see a start-up rejection on the path that ships: `runCli` awaits the command inside its OWN try/catch, so the rejection is HANDLED, the CLI prints one line and exits 1, and neither listener ever runs. Deleting this catch body restores exactly that state, leaving the process-level guards in place and the shard stranded for the bucket TTL with the replacement refused. Measured: X4, X5 and X6 redden while all 90 other cells stay green, so the cells grade the caught-rejection door specifically rather than start-up failure in general."
  }
  ]
 }
