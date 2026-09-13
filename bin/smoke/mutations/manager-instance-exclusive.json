@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "packages/workspace/smoke/manager-instance-exclusive.smoke.ts",
+    "packages/core/smoke/secret-fs.smoke.ts"
+  ],
+  "guard": "first identity mint on a fresh root is exclusive create: of N concurrent starts exactly one identity exists and losers adopt or refuse; a second exclusive create of an existing file is EEXIST",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-instance-exclusive && pnpm smoke:secret-fs",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-instance-exclusive.json",
+  "why": [
+    "M1 RESTORES THE IN-MEMORY LOSER. Exclusive create loses with EEXIST and the helper still",
+    "returns the candidate it minted. That is the defect the issue named: the file is single-valued",
+    "and the loser still serves under a different id. The concurrent unique-identity cell must red.",
+    "",
+    "M2 RESTORES THE PLAIN WRITE. writeSecretFileCreateOnly becomes writeSecretFile, so a second",
+    "writer overwrites instead of EEXIST. The refuse-existing cell must red.",
+    "",
+    "M3 RESTORES ATOMIC RENAME. linkSync becomes renameSync. Rename publishes one file but every",
+    "caller still believes it won. The concurrent unique-identity cell must red, which is why",
+    "atomic replace is not the fix. The command rebuilds @cotal-ai/core so the exclusive helper",
+    "is not graded against a stale dist."
+  ],
+  "mutations": [
+    {
+      "name": "M1 EEXIST still returns the minted candidate (in-memory loser)",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "    if ((e as NodeJS.ErrnoException).code !== \"EEXIST\") throw e;\n    const winner = loadManagerInstanceIdentity(root, space);\n    if (winner === undefined)\n      throw new Error(\n        `manager-instance-identity-create-lost: exclusive create for space \"${space}\" at ${path} lost and the existing file could not be adopted`,\n      );\n    return winner;",
+      "replace": "    if ((e as NodeJS.ErrnoException).code !== \"EEXIST\") throw e;\n    return candidate;",
+      "expectRed": "N=8 concurrent first mints over 20 rounds share exactly one identity",
+      "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",
+      "note": "The file is single-valued; the loser keeps a different in-memory id. That is the lease-CAS hole."
+    },
+    {
+      "name": "M2 exclusive create is a plain overwrite (no EEXIST)",
+      "file": "packages/core/src/secret-fs.ts",
+      "find": "  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;\n  try {\n    writeSecretFile(tmp, data);\n    try {\n      linkSync(tmp, path);",
+      "replace": "  writeSecretFile(path, data);\n  return;\n  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;\n  try {\n    writeSecretFile(tmp, data);\n    try {\n      linkSync(tmp, path);",
+      "expectRed": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
+      "cell": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
+      "note": "The second writer must not replace the first. Overwrite is the pre-fix persist.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "M3 exclusive link becomes rename (atomic replace, still two in-memory ids)",
+      "file": "packages/core/src/secret-fs.ts",
+      "find": "      linkSync(tmp, path);",
+      "replace": "      renameSync(tmp, path);",
+      "expectRed": "N=8 concurrent first mints over 20 rounds share exactly one identity",
+      "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",
+      "note": "Rename cannot interleave torn bytes, but every caller still returns its own candidate. That is why exclusive create, not rename, is the primitive.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

@@ -425,6 +425,8 @@
     "smoke:manager-spawn-action-auth": "tsx implementations/manager/smoke/spawn-action-auth.smoke.ts",
     "smoke:manager-restart-fence": "tsx implementations/manager/smoke/manager-restart-fence.smoke.ts",
     "smoke:manager-coexist": "tsx implementations/manager/smoke/manager-coexist.smoke.ts",
+    "smoke:manager-instance-exclusive": "tsx packages/workspace/smoke/manager-instance-exclusive.smoke.ts",
+    "smoke:manager-fresh-root-identity": "tsx implementations/manager/smoke/manager-fresh-root-identity.smoke.ts",
     "smoke:goal-sibling-race": "tsx implementations/manager/smoke/goal-sibling-race.smoke.ts",
     "smoke:manager-reconcile-ownership": "tsx implementations/manager/smoke/manager-reconcile-ownership.smoke.ts",
     "smoke:manager-reconcile-startup": "tsx implementations/manager/smoke/manager-reconcile-startup.smoke.ts",

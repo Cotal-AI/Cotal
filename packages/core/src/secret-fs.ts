@@ -7,7 +7,7 @@
  * world-readable (e.g. a `.cotal/auth` under a project on a permissive path). The fix is to harden
  * the NTFS ACL explicitly with the built-in `icacls` (no new dependency). See {@link hardenPrivate}.
  */
-import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -119,6 +119,50 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
       /* ignore — surface the original write/rename error */
     }
     throw e;
+  }
+}
+
+/**
+ * Create a private secret file that MUST NOT already exist. Bytes are written to a unique temp
+ * sibling first, then {@link linkSync} publishes that complete inode at `path`. `link` is an
+ * atomic filesystem primitive: it fails with EEXIST if the destination exists, so of N concurrent
+ * creators exactly one succeeds and the others observe EEXIST. A concurrent reader never sees a
+ * torn destination because the name appears only after the temp write finished.
+ *
+ * `renameSync` is NOT this function. Rename replaces a winner, which would let every caller keep
+ * the identity it minted in memory. Exclusive create is the mutual-exclusion primitive; atomic
+ * replace is not.
+ *
+ * When the filesystem cannot hard-link (some Windows volumes), the fallback is `wx`
+ * (`O_CREAT|O_EXCL`) on `path` itself, which is still exclusive create, not a replace.
+ */
+export function writeSecretFileCreateOnly(path: string, data: string | Buffer): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    writeSecretFile(tmp, data);
+    try {
+      linkSync(tmp, path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOTSUP" || code === "EPERM" || code === "ENOSYS") {
+        writeFileSync(path, data, { flag: "wx", mode: 0o600 });
+        if (isWin) hardenPrivate(path, "file");
+      } else {
+        throw e;
+      }
+    }
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore — surface the original exclusive-create error */
+    }
+    throw e;
+  }
+  try {
+    unlinkSync(tmp);
+  } catch {
+    /* drop the extra nlink after a successful link, or a leftover temp */
   }
 }
 

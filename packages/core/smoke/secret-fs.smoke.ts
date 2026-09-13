@@ -7,10 +7,10 @@
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hardenPrivate, mkSecretDir, writeSecretFile } from "../src/secret-fs.js";
+import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
 
 const isWin = process.platform === "win32";
 let failures = 0;
@@ -25,6 +25,18 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-secret-"));
 const file = join(dir, "creds.secret");
 writeSecretFile(file, "super-secret-token\n");
 check("writeSecretFile wrote the file", statSync(file).isFile());
+
+const exclusive = join(dir, "exclusive.secret");
+writeSecretFileCreateOnly(exclusive, "first-writer\n");
+check("writeSecretFileCreateOnly ACCEPTS a missing path", statSync(exclusive).isFile());
+let exclusiveCode: string | undefined;
+try {
+  writeSecretFileCreateOnly(exclusive, "second-writer\n");
+} catch (e) {
+  exclusiveCode = (e as NodeJS.ErrnoException).code;
+}
+check("writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites", exclusiveCode === "EEXIST");
+check("...and the first writer's bytes are unchanged", readFileSync(exclusive, "utf8") === "first-writer\n");
 
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");
