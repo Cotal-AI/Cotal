@@ -319,8 +319,13 @@ const CASES = [
     // The guard must reject a token matching more files than the ceiling allows. `errors` counts
     // those rejections. Strip the token from the fixture texts so nothing matches, and a live
     // guard must find no over-ceiling token to report, dropping the count to 0.
-    find: "        text: `connect ${SELFTEST_HOST} now`,\n      }));\n      const failures = hostTokenCeilingFailures(entries, [",
-    replace: "        text: 'connect PLAIN now',\n      }));\n      const failures = hostTokenCeilingFailures(entries, [",
+    //
+    // The anchor is the fixture text, deliberately NOT the `hostTokenCeilingFailures(...)` call:
+    // the mutation that hollows this cell replaces that call, so anchoring there made the tamper
+    // vanish and mutation-proof reported WRONG-RED rather than a kill. A tamper whose anchor is
+    // destroyed by the mutation it is meant to catch is not a reading of anything.
+    find: "        text: `connect ${SELFTEST_HOST} now`,\n      }));",
+    replace: "        text: 'connect PLAIN now',\n      }));",
   },
   {
     cell: "binary-skip",
