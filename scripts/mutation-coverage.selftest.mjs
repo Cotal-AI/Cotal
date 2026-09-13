@@ -115,10 +115,38 @@ try {
     'spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("bin/smoke/ops-live.smoke.ts",
     "/* REAL broker */\nconsole.log('ops');\n");
+  // A suite that names a sibling with new URL(...) rather than join(...).
+  write("bin/smoke/url-entry.smoke.ts",
+    'const ENTRY = fileURLToPath(new URL("../../scripts/direct.mjs", import.meta.url));\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/url-entry-unused.smoke.ts",
+    'const ENTRY = fileURLToPath(new URL("../../scripts/direct.mjs", import.meta.url));\n' +
+    'spawnSync(process.execPath, ["-e", "void 0"]);\nconsole.log(ENTRY);\n');
+  // A suite that runs the target THROUGH tsx's own CLI, which takes the first positional.
+  write("node_modules/tsx/dist/cli.mjs", "// tsx cli\n");
+  write("bin/smoke/tsx-cli.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "node_modules", "tsx", "dist", "cli.mjs"), join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/tsx-cli-only.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "node_modules", "tsx", "dist", "cli.mjs")]);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\nconsole.log(unused);\n');
+  // A launched entrypoint whose OWN source imports the mutated file.
+  write("packages/seat/src/reached.ts", "export const y = 2;\n");
+  write("packages/seat/src/entry-main.ts", 'import { y } from "./reached.js";\nconsole.log(y);\n');
+  write("packages/seat/src/unreached.ts", "export const z = 3;\n");
+  write("bin/smoke/launch-entry-main.smoke.ts",
+    'const ENTRY = join(ROOT, "packages", "seat", "src", "entry-main.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  // A suite that value-imports a package's BUILT output.
+  write("packages/seat/dist/index.js", "export const x = 1;\n");
+  write("bin/smoke/dist-import.smoke.ts",
+    'const mod = await import("../../packages/seat/dist/index.js");\nconsole.log(mod);\n');
+  write("bin/smoke/dist-type-only.smoke.ts",
+    'import type { X } from "../../packages/seat/dist/index.js";\nexport type Y = X;\n');
   write("package.json", JSON.stringify({
     name: "fixture",
     scripts: {
       "smoke:manager-service-ops": "tsx bin/smoke/ops-live.smoke.ts",
+      "smoke:seat-dist": "pnpm --filter @cotal-ai/seat build && tsx bin/smoke/dist-import.smoke.ts",
     },
   }));
   write("pnpm", "#!/bin/sh\nexit 0\n");
@@ -213,6 +241,46 @@ try {
   config("import-then-script", { suite: ["bin/smoke/import-then-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("import-then-script");
   check("a script after --import still witnesses the launched file", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("url-entry", { suite: ["bin/smoke/url-entry.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("url-entry");
+  check("a launched path built with new URL still witnesses the file", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("url-entry-unused", { suite: ["bin/smoke/url-entry-unused.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("url-entry-unused");
+  check("a new URL path never launched is still refused", result.status !== 0 && /REFUSED url-entry-unused/.test(result.stderr), report(result));
+
+  config("tsx-cli", { suite: ["bin/smoke/tsx-cli.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("tsx-cli");
+  check("a script run through the tsx CLI slot is witnessed", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("tsx-cli-only", { suite: ["bin/smoke/tsx-cli-only.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("tsx-cli-only");
+  check("a runner CLI without a following script does not witness a nearby path", result.status !== 0 && /REFUSED tsx-cli-only/.test(result.stderr), report(result));
+
+  config("launch-reached", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/reached.ts")] });
+  result = run("launch-reached");
+  check("a launched entrypoint's own relative import is reached", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("launch-unreached", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/unreached.ts")] });
+  result = run("launch-unreached");
+  check("a source file the launched entrypoint never imports is refused", result.status !== 0 && /REFUSED launch-unreached/.test(result.stderr), report(result));
+
+  config("dist-built", { suite: ["bin/smoke/dist-import.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-built");
+  check("a value import of built output plus the build that produces it is gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("dist-unbuilt", { suite: ["bin/smoke/dist-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-unbuilt");
+  check("a value import of built output without the build is refused", result.status !== 0 && /REFUSED dist-unbuilt/.test(result.stderr), report(result));
+
+  config("dist-type-only", { suite: ["bin/smoke/dist-type-only.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-type-only");
+  check("a type-only import of built output is not a load", result.status !== 0 && /REFUSED dist-type-only/.test(result.stderr), report(result));
+
+  config("dist-named-script", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm smoke:seat-dist && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-named-script");
+  check("a build named indirectly through a package script still counts", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
 
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");
