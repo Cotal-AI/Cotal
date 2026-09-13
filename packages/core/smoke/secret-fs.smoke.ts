@@ -289,7 +289,18 @@ check("...and that failure left no .tmp litter",
   const preload = fileURLToPath(new URL("./_secret-fs-interleave-preload.cjs", import.meta.url));
   const child = fileURLToPath(new URL("./_secret-fs-interleave-child.mjs", import.meta.url));
   // The BUILT module, because the preload patches the `fs` binding the shipped package closes over.
-  const dist = pathToFileURL(fileURLToPath(new URL("../dist/secret-fs.js", import.meta.url))).href;
+  // The BUILT module, because tsx re-execs into a child process and the `--require` preload does
+  // not survive that, while plain node running the compiled `.js` keeps it. That makes the cell
+  // dependent on `dist` being current, so staleness is checked rather than assumed: a stale build
+  // would grade the PREVIOUS implementation and pass while the current one is broken, which is the
+  // vacuous green this suite exists to make impossible.
+  const distPath = fileURLToPath(new URL("../dist/secret-fs.js", import.meta.url));
+  const srcPath = fileURLToPath(new URL("../src/secret-fs.ts", import.meta.url));
+  const distFresh = statSafe(distPath) &&
+    statSync(distPath).mtimeMs >= statSync(srcPath).mtimeMs;
+  check("the built module is current with its source (else this cell would grade stale code)",
+    distFresh);
+  const dist = pathToFileURL(distPath).href;
   // Whatever runs a suite may be a managed agent session, so a raw env spread would hand the child
   // a live credential and broker URL. Strip every COTAL_ key, then add only what it needs.
   const childEnv: NodeJS.ProcessEnv = { ...process.env };

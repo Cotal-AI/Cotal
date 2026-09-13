@@ -99,7 +99,7 @@
       "expectRed": "REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
       "cell": "REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
       "note": "The mutant no in-process cell can catch: it REFUSES an existing name exactly as O_EXCL does. They differ only for a creator already past its check when the name is taken. An N-process race reached that window only by luck and let this escape ~1 run in 6 while staying green when the implementation was correct, so the competitor is now placed in the window by an fs preload.",
-      "command": "pnpm smoke:secret-fs",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
