@@ -1039,6 +1039,25 @@ export async function runJcodeHost(): Promise<void> {
   const queueTurnFallback = async (): Promise<void> => {
     const items = unservedAutomatic();
     if (!items.length) return;
+    // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, so re-delivering here would be
+    // strictly harmful. A reviewer measured the alternative: keep handing the batch to a healthy
+    // Harness that cannot be trusted to acknowledge attributably, and every attempt is ACCEPTED and
+    // EXECUTED, so the same non-idempotent instruction runs once a minute forever. That is worse
+    // than the loss the refusal prevents, and the durable inbox cannot break the cycle because a
+    // redelivery only refreshes the same pending entry.
+    //
+    // So while acceptance is unattributable this tier stands down entirely. The batch stays owed and
+    // unacked, nothing is dropped, and delivery resumes at the next connection boundary, where an
+    // acknowledgement means something again. The seat reports `stalled` meanwhile, which is exactly
+    // what it is: work is queued and not being served, stated rather than hidden.
+    if (acceptanceSuspectUntilBridgeReplaced) {
+      writeJcodeDiagnostic(
+        `[cotal-jcode] holding ${items.length} queued automatic message(s): a lapsed send left ` +
+          `acceptance unattributable on this connection, so re-delivery would risk repeated ` +
+          `execution; waiting for the connection boundary\n`,
+      );
+      return;
+    }
     const injection = formatInjection(items);
     if (!injection) return;
     const current = client;
@@ -1119,9 +1138,33 @@ export async function runJcodeHost(): Promise<void> {
         // our `sendMessage` on its own accept wait, which proves only that we stopped listening: the
         // request is still live at the Harness and may emit its session-only acceptance at any
         // later point, when some other batch is the one waiting. Nothing settles that promise in a
-        // way that proves otherwise, so the debt cannot be discharged by waiting. Until the bridge
-        // is replaced, acceptance on this client is not attributable to anyone.
-        if (!acknowledged) acceptanceSuspectUntilBridgeReplaced = true;
+        // way that proves otherwise, so the debt cannot be discharged by waiting.
+        //
+        // SO SUSPICION MUST FORCE THE BOUNDARY RATHER THAN WAIT FOR ONE. A reviewer measured what
+        // happens if it merely waits: on a healthy bridge that never closes, nothing ever clears it,
+        // the batch stays owed forever, and the level-triggered loop re-delivers it about once a
+        // minute. Every one of those is ACCEPTED by the live Harness, so the same instruction
+        // EXECUTES repeatedly, which is worse than the loss this refusal prevents. Non-idempotent
+        // peer instructions run again and again, and the durable inbox cannot help because a
+        // redelivery only refreshes the same pending entry.
+        //
+        // Replacing the bridge is the boundary, and it is a real repair rather than a reset: the
+        // replacement attaches the SAME session, the batch is still owed and unacked, and the
+        // redrive delivers it once on a connection where acceptance means something again. The
+        // existing one-shot guard still governs how many times this may happen, and if recovery is
+        // already spent the seat stops rather than pretending it can serve the queue.
+        //
+        // The re-delivery loop stands down in the meantime (see the guard at the top of this
+        // function), so suspicion cannot become a repeated-execution engine while it waits.
+        if (!acknowledged) {
+          acceptanceSuspectUntilBridgeReplaced = true;
+          writeJcodeDiagnostic(
+            `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
+              `connection can no longer be attributed; replacing the Harness connection to restore ` +
+              `a boundary rather than re-delivering unacknowledgeable work\n`,
+          );
+          if (current === client) void recoverBridge(current);
+        }
         release();
         writeJcodeDiagnostic(
           acknowledged

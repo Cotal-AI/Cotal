@@ -71,12 +71,12 @@
     {
       "name": "M7 acceptance is inferred from the resolve, so a swallowed send is treated as delivered",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (!acknowledged) {",
-      "replace": "      if (false) {",
+      "find": "      if (!acknowledged || !attributable) {\n",
+      "replace": "      if (false) {\n",
       "command": "pnpm smoke:jcode-queue-fallback-loss",
       "expectRed": "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
       "cell": "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
-      "note": "The second reviewer finding, restored. The SDK's acceptance wait RESOLVES on its own timeout rather than rejecting, so `await sendMessage(...)` returning proves only that the frame was written. Infer acceptance from it and a Harness that takes the frame and never acknowledges it is recorded as having taken the batch; the next clean boundary then ACKS a message the session never ran, so the peer's message is lost rather than late. Runs the loss fixture, whose fake takes the queued send and stays silent, and whose witness is a turn_run record: arrival is logged for every frame, so only an execution record can distinguish delivered from dropped. Its cell is distinct from M5's and M6's: M5 removes the record of acceptance, M6 removes the exclusion during the window, M7 accepts something that was never acknowledged."
+      "note": "The second reviewer finding, restored. The SDK's acceptance wait RESOLVES on its own timeout rather than rejecting, so `await sendMessage(...)` returning proves only that the frame was written. Infer acceptance from it and a Harness that takes the frame and never acknowledges it is recorded as having taken the batch; the next clean boundary then ACKS a message the session never ran, so the peer's message is lost rather than late. Runs the loss fixture, whose fake takes the queued send and stays silent, and whose witness is a turn_run record: arrival is logged for every frame, so only an execution record can distinguish delivered from dropped. Its cell is distinct from M5's and M6's: M5 removes the record of acceptance, M6 removes the exclusion during the window, M7 accepts something that was never acknowledged. RE-ANCHORED: my own later work inserted the attributability term into this condition, which displaced the original `if (!acknowledged) {` anchor and made mutation-proof ERROR rather than fail. Anchored on the whole condition now, so the mutant removes the refusal entirely rather than one of its terms."
     },
     {
       "name": "M8 a new turn takes over items another handover is still delivering",
@@ -87,16 +87,6 @@
       "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback",
       "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct. NOTE ON WHAT IS AND IS NOT GRADED HERE. The duplicate needs BOTH guards to fail: drive must select the reserved item AND the wholesale wipe must drop the reservation. Severing only the wipe leaves this cell GREEN, because this filter alone still refuses the item; I measured that by hand rather than inferring it. So a separate mutation for the wipe SURVIVES by construction, and I removed it instead of keeping a survivor or inventing a cell to justify it. The redundancy is deliberate defence in depth, and this mutation grades the guard that is load-bearing on its own."
-    },
-    {
-      "name": "M9 acceptance is attributed by session alone, so a concurrent send settles another handover",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    await previous.catch(() => {});\n",
-      "replace": "    void previous;\n",
-      "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
-      "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
-      "command": "pnpm smoke:jcode-queue-fallback-loss",
-      "note": "Severs ONLY the queueing: the gate still publishes its promise and still releases it, it simply never waits for the previous handover, so two acceptance-listening sends can be outstanding at once. An earlier version of this mutant also removed the promise assignment, which left the release callback unassigned and crashed the host. mutation-proof called that a WRONG-RED rather than a kill, correctly: the suite reddened on a different cell (a duplicate, aRuns=6) while the named assertion still printed green. A red that names something else is not a kill, and the tool refusing to credit it is the reason this mutant now severs the property instead of breaking the function."
     },
     {
       "name": "M10 the run handle is returned bare, so promise assimilation extends the gate to the whole turn",
@@ -116,7 +106,7 @@
       "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback-loss",
-      "note": "Reviewer-found against the SDK and then reproduced through the shipped host. The exclusion gate alone does NOT fix this: the gate releases on a 10s lapse so a silent Harness cannot starve the queue, and the lapsed send is still live and can emit its session-only acceptance later, when a different batch is the one listening. A timeout proves only that a send has not acknowledged YET. This mutation removes the one line that records the lapse, keeping the gate, the listener and the refusal path intact, so what is severed is exactly the knowledge that a late event may belong to someone else."
+      "note": "Reviewer-found against the SDK and then reproduced through the shipped host. The exclusion gate alone does NOT fix this: the gate releases on a 10s lapse so a silent Harness cannot starve the queue, and the lapsed send is still live and can emit its session-only acceptance later, when a different batch is the one listening. A timeout proves only that a send has not acknowledged YET. This mutation removes the one line that records the lapse, keeping the gate, the listener and the refusal path intact, so what is severed is exactly the knowledge that a late event may belong to someone else. ON THE MUTATION THAT IS NOT HERE: an earlier M9 severed the gate's queueing and named the cross-talk cell. It SURVIVED once this defence landed, and I applied it by hand rather than trusting the verdict. Reading it: the mutant DOES red, but on the re-attempt and no-duplicate cells with deliveredTurns 2 and turnsRun 1, while the cell it NAMED still printed green. That is a WRONG-RED, not a kill, so it was deleted rather than re-aimed at whichever cell happened to fail. The exclusion gate is still load-bearing and is still graded, by those two cells reddening; what no longer has a mutation of its own is the specific claim that exclusivity alone prevents cross-talk, and that claim is FALSE, which is the whole finding behind M11."
     }
   ]
 }
