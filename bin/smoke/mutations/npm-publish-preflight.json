@@ -143,6 +143,33 @@
       "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)"
     },
     {
+      "name": "the census state widens back to bare string in the published type",
+      "note": "The defect this file is being extended for: with the @returns removed, tsc widens the object-literal property and the declaration stops carrying the state contract. The byte-identity cell above cannot catch it on its own, because the declaration and the module still agree with each other.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ ([\"nothing-to-publish\", \"ready\"]);",
+      "replace": "export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ ([\"nothing-to-publish\", \"ready\", \"inconclusive\"]);",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a census state literal is renamed in the published union",
+      "note": "Graded separately from preflightNpmPublish because the two properties are emitted independently: before this fix each was its own bare `string`, so one entry point's coverage says nothing about the other's. This mutation widens the declared return rather than deleting it, and the difference was measured: DELETING the annotation here does not widen anything, because this function returns preflightNpmPublish(...) directly and inherits the union by inference, so a deletion reds the byte-identity cell instead and grades WRONG-RED. The annotation is kept in the source anyway, because inference only holds while the body stays a direct return.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "([\"nothing-to-publish\", \"ready\"]);",
+      "replace": "([\"nothing-to-publish\", \"shipped\"]);",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a census state the module can return is dropped from the published union",
+      "note": "The union has to match the module, not merely be a union: `inconclusive` is a registryVerdict that throws, so admitting it into the published type would invite a caller to branch on a state no call site can produce.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "[\"nothing-to-publish\", \"ready\"]",
+      "replace": "[\"nothing-to-publish\"]",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
       "name": "a publisher with blank environment bypasses the environment check",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "  if (expectedEnvironment && envValue !== expectedEnvironment) return false;\n",

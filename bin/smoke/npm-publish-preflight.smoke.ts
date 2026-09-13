@@ -629,10 +629,217 @@ check(
 );
 
 const committedDts = readFileSync(join(ROOT, "scripts/preflight-npm-publish.d.mts"), "utf8");
+const freshDts = emitDeclaration();
 check(
   "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
-  committedDts === emitDeclaration(),
+  committedDts === freshDts,
 );
+
+/**
+ * The census state contract, graded on the DECLARATION rather than on the module.
+ *
+ * The skew cell above pins the declaration to the module byte for byte, and is still blind to this:
+ * `tsc` widens an object-literal property to `string` on emit, so renaming a census state literal
+ * leaves the declaration byte-identical and the skew cell green. Measured on the tree before this
+ * check existed: both `"nothing-to-publish"` and `"ready"` could be renamed with no declaration
+ * movement at all, while the same rename inside `classifyDirectPublishPermission`, which has a
+ * declared return type, did move it. The contract therefore has to be read out of the declaration
+ * and graded, not inferred from the two files agreeing.
+ *
+ * Both entry points are graded separately because they are two independently emitted widenings,
+ * not one echoed twice, and every refusal names the entry point it came from so a fault on one
+ * cannot be reported as the other.
+ */
+const CENSUS_STATE_MEMBERS = ["nothing-to-publish", "ready"] as const;
+const CENSUS_STATE_ENTRY_POINTS = ["preflightNpmPublish", "preflightFromRepository"] as const;
+
+function resolvedResultBlock(dts: string, fn: string): string | null {
+  const start = dts.indexOf(`export function ${fn}(`);
+  if (start < 0) return null;
+  const open = dts.indexOf("): Promise<{", start);
+  if (open < 0) return null;
+  const end = dts.indexOf("\n}>;", open);
+  if (end < 0) return null;
+  return dts.slice(open, end);
+}
+
+/**
+ * An identifier is followed to its exported alias; `null` means the declaration never defines it.
+ *
+ * The alias may itself be an indexed access over an exported const array, which is the form the
+ * module uses so that the member names live in CODE rather than in a JSDoc comment. `tsc` emits
+ * that as `export const X: readonly ["a", "b"];`, so the tuple is followed one further hop and
+ * rewritten into the union it denotes. Without this the cell reads the alias as a non-literal
+ * type and refuses a declaration that in fact pins the contract exactly.
+ */
+function followAlias(dts: string, written: string): string | null {
+  if (!/^[A-Za-z_$][\w$]*$/.test(written)) return written;
+  const alias = new RegExp(`^export type ${written} = ([^;]+);`, "m").exec(dts);
+  if (!alias) return null;
+  return followTupleIndex(dts, alias[1].trim());
+}
+
+/**
+ * `(typeof X)[number]` is resolved to the union of X's emitted tuple members. Any other type is
+ * returned unchanged, so a plain literal union still reads exactly as it did before.
+ */
+function followTupleIndex(dts: string, type: string): string | null {
+  const indexed = /^\(typeof ([A-Za-z_$][\w$]*)\)\[number\]$/.exec(type);
+  if (!indexed) return type;
+  const tuple = new RegExp(`^export const ${indexed[1]}: readonly \\[([^\\]]*)\\];`, "m").exec(dts);
+  if (!tuple) return null;
+  return tuple[1].split(",").map((part) => part.trim()).join(" | ");
+}
+
+/** `null` means the type is not a union of string literals at all, which is what `string` is. */
+function literalMembers(type: string): string[] | null {
+  const parts = type.split("|").map((part) => part.trim());
+  const members: string[] = [];
+  for (const part of parts) {
+    const literal = /^"([^"]*)"$/.exec(part);
+    if (!literal) return null;
+    members.push(literal[1]);
+  }
+  return members;
+}
+
+/** Every reason this declaration fails to pin the census state contract. Empty means it pins it. */
+function censusStateRefusals(dts: string): string[] {
+  const refusals: string[] = [];
+  for (const fn of CENSUS_STATE_ENTRY_POINTS) {
+    const block = resolvedResultBlock(dts, fn);
+    if (block === null) { refusals.push(`${fn}: no resolved result object in the declaration`); continue; }
+    const property = /^\s*state:\s*([^;]+);/m.exec(block);
+    if (!property) { refusals.push(`${fn}: the result carries no state property`); continue; }
+    const written = property[1].trim();
+    const resolved = followAlias(dts, written);
+    if (resolved === null) { refusals.push(`${fn}: state is ${written}, which this declaration never defines`); continue; }
+    const members = literalMembers(resolved);
+    if (members === null) { refusals.push(`${fn}: state is ${resolved}, not a union of the census literals`); continue; }
+    const missing = CENSUS_STATE_MEMBERS.filter((member) => !members.includes(member));
+    if (missing.length) { refusals.push(`${fn}: state union is missing ${missing.join(", ")}`); continue; }
+    const extra = members.filter((member) => !CENSUS_STATE_MEMBERS.includes(member as typeof CENSUS_STATE_MEMBERS[number]));
+    if (extra.length) refusals.push(`${fn}: state union carries ${extra.join(", ")}, which the census never returns`);
+  }
+  return refusals;
+}
+
+function replaceNth(text: string, needle: string, replacement: string, nth: number): string {
+  let index = -1;
+  for (let seen = 0; seen < nth; seen++) {
+    index = text.indexOf(needle, index + 1);
+    if (index < 0) throw new Error(`fixture is stale: occurrence ${nth} of ${needle} is not in the declaration`);
+  }
+  return text.slice(0, index) + replacement + text.slice(index + needle.length);
+}
+
+check(
+  "the committed .d.mts pins the census state union on both entry points",
+  censusStateRefusals(committedDts).length === 0,
+  censusStateRefusals(committedDts),
+);
+check(
+  "a fresh emit from the module pins the census state union on both entry points",
+  censusStateRefusals(freshDts).length === 0,
+  censusStateRefusals(freshDts),
+);
+
+/**
+ * One refusing fixture per accepting branch of the grader above, each derived from the real
+ * declaration by a single substitution so it differs from an accepting input only in the one
+ * context under test. A grader with no refusing case is green on everything, including `string`.
+ *
+ * The fixtures are derived from an accepting base rather than straight from the committed file, so
+ * that carrying this cell back onto a declaration that does NOT pin the contract still grades the
+ * grader instead of throwing on a missing substring. That matters: the pre-fix control for this
+ * check runs exactly that way, and a crash there would red the suite without saying why.
+ */
+const stateProperty = "state: NpmPublishPreflightState;";
+/**
+ * The fallback base STRIPS any existing alias and tuple before appending its own.
+ *
+ * Appending blindly was wrong, and a self-attack caught it: widening only ONE entry point leaves
+ * a declaration that still defines the alias, so the fallback produced a base with TWO competing
+ * `export type NpmPublishPreflightState = ...` lines. The fixtures that rewrite "the" alias then
+ * edited one copy while the grader matched the other, and three refusing cells reported a fault
+ * that was an artefact of the malformed base rather than of the thing under test. A fixture that
+ * can red for a reason other than the one it names is not evidence, so the base is normalised to
+ * exactly one definition of each and asserted below.
+ */
+const aliasDefinition = /^export (type NpmPublishPreflightState|const NPM_PUBLISH_PREFLIGHT_STATES) = .*$|^export (type NpmPublishPreflightState|const NPM_PUBLISH_PREFLIGHT_STATES): .*$/gm;
+const acceptingBase = censusStateRefusals(committedDts).length === 0
+  ? committedDts
+  : `${committedDts.replaceAll("state: string;", stateProperty).replace(aliasDefinition, "")}\n`
+    + `export type NpmPublishPreflightState = "nothing-to-publish" | "ready";\n`;
+check(
+  "the census state grader accepts a declaration that pins the contract",
+  censusStateRefusals(acceptingBase).length === 0,
+  censusStateRefusals(acceptingBase),
+);
+check(
+  "the fixture base defines the state alias exactly once, so a fixture edits what the grader reads",
+  (acceptingBase.match(/^export type NpmPublishPreflightState\b/gm) ?? []).length === 1,
+  (acceptingBase.match(/^export type NpmPublishPreflightState .*$/gm) ?? []),
+);
+const stateFixtures: Array<{ name: string; dts: string; names: string }> = [
+  {
+    name: "state widened back to string on preflightNpmPublish",
+    dts: replaceNth(acceptingBase, stateProperty, "state: string;", 1),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "state widened back to string on preflightFromRepository",
+    dts: replaceNth(acceptingBase, stateProperty, "state: string;", 2),
+    names: "preflightFromRepository",
+  },
+  {
+    name: "a state property dropped from the result object",
+    dts: replaceNth(acceptingBase, `    ${stateProperty}\n`, "", 1),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a result object the declaration never resolves",
+    dts: replaceNth(acceptingBase, "export function preflightFromRepository(", "export function preflightElsewhere(", 1),
+    names: "preflightFromRepository",
+  },
+  {
+    name: "a state alias this declaration never defines",
+    dts: acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, ""),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a census member dropped from the union",
+    dts: acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish";'),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a state the census can never return added to the union",
+    dts: acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish" | "ready" | "inconclusive";'),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a tuple the declaration never defines behind the state alias",
+    dts: `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
+      .replace(/^export type NpmPublishPreflightState = .*$/m, "")}\nexport type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];\n`,
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a census member dropped from the tuple behind the state alias",
+    dts: `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
+      .replace(/^export type NpmPublishPreflightState = .*$/m, "")}\nexport const NPM_PUBLISH_PREFLIGHT_STATES: readonly ["nothing-to-publish"];\nexport type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];\n`,
+    names: "preflightNpmPublish",
+  },
+];
+for (const fixture of stateFixtures) {
+  const refusals = censusStateRefusals(fixture.dts);
+  check(
+    `the census state grader refuses ${fixture.name}`,
+    fixture.dts !== acceptingBase
+      && refusals.length > 0
+      && refusals.some((refusal) => refusal.startsWith(`${fixture.names}:`)),
+    refusals,
+  );
+}
 
 console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
