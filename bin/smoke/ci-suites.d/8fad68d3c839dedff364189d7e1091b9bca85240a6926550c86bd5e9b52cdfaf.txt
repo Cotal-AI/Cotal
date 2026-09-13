@@ -1,0 +1,2 @@
+# Attach on a registered open mesh without a seed, and refuse a missing static seed as still authenticated (#1205).
+smoke:attach-open-mode
