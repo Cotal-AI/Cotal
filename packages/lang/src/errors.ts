@@ -115,6 +115,10 @@ export const CATALOG = {
   // nothing crossed a boundary wrongly at a CALL, a program function the runtime invoked returned
   // the wrong shape, and the author needs to be told which of the two it was.
   L4024: "`waitUntil` probe or predicate answered the wrong shape",
+  // The HOST could not schedule the run's own process. Not the effect, not the resource, not the
+  // program: a deadline that elapsed while this process was off the CPU is evidence about the box
+  // it runs on. It has its own code because `L4000` sends a reader looking at their own source.
+  L4025: "Host did not schedule the run",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

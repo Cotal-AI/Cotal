@@ -1,0 +1,112 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/host-starvation.smoke.ts",
+    "implementations/runtime/src/host-starvation.ts",
+    "implementations/runtime/src/mesh-handler.ts"
+  ],
+  "guard": "a pause-plane deadline that elapsed while THIS PROCESS was off the CPU is evidence about the host and not about the effect: the operation is re-entered on the durable pause it already holds, so a `sleep` whose deadline passed during the starvation completes LATE rather than failing; the distinction is measured from event-loop lag AND a shortfall in the ticks the window should have contained, so neither a deadline on a running loop nor a wall clock that jumped can be read as starvation; a caller that still cannot be served after a bounded number of consecutive starved attempts fails under L4025 naming its measurement rather than hanging; and every failure that is not a client deadline is raised on the first attempt, unretried and unwrapped, still recorded as L4000",
+  "command": "pnpm smoke:runtime-host-starvation",
+  "completionMarker": "host-starvation.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/host-starvation.json",
+  "why": [
+    "#1508 (2026-09-12). A `sleep(\"4m\")` journalled `failed (L4000)` at load1 118.26 and `ok` at",
+    "load1 9.08 with nothing in the program changed. The mechanism is a NATS client deadline — a",
+    "`setTimeout` — that cannot run on a blocked loop, so it fires late and rejects `timeout` while",
+    "the broker is healthy and its reply is unread in the socket.",
+    "",
+    "MP1 IS THE PRE-FIX CONTROL. It removes exactly the repair, leaving the rest of the tree intact,",
+    "and the starvation cell goes red — which is what makes that cell a proof rather than a shape",
+    "that would have passed before the change.",
+    "",
+    "MP7 is the band-aid detector, and it exists because the two halves of this repair are each",
+    "satisfiable alone: it makes the wrapper retry EVERY failure, which is the fix a lazy reading",
+    "would have shipped, and the GENUINE-FAILURE cell reddens on the FIXED tree. A repair that",
+    "swallowed all timeouts would pass the starvation half and be caught here.",
+    "",
+    "MP2..MP6 and MP8 take the classifier one branch at a time. The classifier is what separates the",
+    "two conditions, so each accepting branch has a mutation whose kill is a REFUSING cell — the",
+    "direction a green probe hides a hole in."
+  ],
+  "mutations": [
+    {
+      "name": "MP1 the pre-fix tree: the starved wait is not re-entered, so the client's deadline escapes as the effect's failure",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`);",
+      "replace": "    return await this.settleOnce(ref, signal);",
+      "expectRed": "the sleep COMPLETES: a lower-bound wait that was late is not a failed wait",
+      "cell": "the sleep COMPLETES: a lower-bound wait that was late is not a failed wait"
+    },
+    {
+      "name": "MP2 the deadline is recognised by its MESSAGE instead of its class",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (nameOf(error) === \"TimeoutError\") return true;",
+      "replace": "  if ((error as { message?: unknown })?.message === \"timeout\") return true;",
+      "expectRed": "A1 refuses an error carrying the identical message from another class",
+      "cell": "A1 refuses an error carrying the identical message from another class"
+    },
+    {
+      "name": "MP3 a wrapped deadline is not recognised at all",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (nameOf(error) === \"RequestError\" && nameOf((error as { cause?: unknown }).cause) === \"TimeoutError\") return true;",
+      "replace": "  if (false) return true;",
+      "expectRed": "A2 accepts a request whose CAUSE is the deadline",
+      "cell": "A2 accepts a request whose CAUSE is the deadline"
+    },
+    {
+      "name": "MP4 the wrapper's cause is ignored, so any RequestError reads as a deadline",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (nameOf(error) === \"RequestError\" && nameOf((error as { cause?: unknown }).cause) === \"TimeoutError\") return true;",
+      "replace": "  if (nameOf(error) === \"RequestError\") return true;",
+      "expectRed": "A2 refuses the same wrapper caused by no-responders, which is a plane fault",
+      "cell": "A2 refuses the same wrapper caused by no-responders, which is a plane fault"
+    },
+    {
+      "name": "MP5 the tick shortfall is dropped, so lag alone decides and a clock jump reads as starvation",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (w.ticksObserved * STARVED_TICK_KEPT_DIVISOR >= w.ticksExpected) return false;",
+      "replace": "  if (false) return false;",
+      "expectRed": "A3 refuses a window with large lag whose ticks all ran: a clock that jumped, not a loop that stopped",
+      "cell": "A3 refuses a window with large lag whose ticks all ran: a clock that jumped, not a loop that stopped"
+    },
+    {
+      "name": "MP6 the lag floor is dropped, so a window too short to mean anything reads as starvation",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (w.lagMs < STARVED_FLOOR_MS) return false;",
+      "replace": "  if (false) return false;",
+      "expectRed": "A3 refuses a window too short to have contained a tick at all",
+      "cell": "A3 refuses a window too short to have contained a tick at all"
+    },
+    {
+      "name": "MP7 THE BAND-AID: every failure is retried, so a broken plane is swallowed as starvation",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "      if (verdict.condition === \"fault\") throw error;",
+      "replace": "      if (false) throw error;",
+      "expectRed": "a genuine fault is raised on the first attempt, unretried and unwrapped",
+      "cell": "a genuine fault is raised on the first attempt, unretried and unwrapped"
+    },
+    {
+      "name": "MP8 the share test is dropped, so a small lag in a long window reads as starvation",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (w.lagMs * STARVED_SHARE_DIVISOR < w.elapsedMs) return false;",
+      "replace": "  if (false) return false;",
+      "expectRed": "A3 refuses lag that is real but a small share of a long window",
+      "cell": "A3 refuses lag that is real but a small share of a long window"
+    },
+    {
+      "name": "MP9 the retry is unbounded, so a host that never recovers leaves the caller hanging instead of failing",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "      if (attempt >= STARVED_ATTEMPTS) {",
+      "replace": "      if (false) {",
+      "expectRed": "it ends rather than retrying forever",
+      "cell": "it ends rather than retrying forever"
+    },
+    {
+      "name": "MP10 the unservable caller fails under the generic code again, sending the reader back to their own source",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "          \"L4025\",\n          \"host-starved\",",
+      "replace": "          \"L4000\",\n          \"handler-fault\",",
+      "expectRed": "under L4025, which names the HOST rather than the effect",
+      "cell": "under L4025, which names the HOST rather than the effect"
+    }
+  ]
+}
