@@ -7,7 +7,9 @@
 // code after it still joined `reader` parsed perfectly and then died with NameError at runtime. The
 // harness graded that as WRONG-RED, which is correct but reads like a coverage problem rather than
 // a typo in the config.
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const cfgPath = process.argv[2];
@@ -25,7 +27,11 @@ for (const m of cfg.mutations ?? []) {
   let compiles = "skipped";
   let names = "skipped";
   if (mutant !== null && m.file.endsWith(".py")) {
-    const tmp = `${m.file}.preflight.tmp.py`;
+    // Write the scratch file OUTSIDE the package. Writing it beside the source made CPython drop
+    // its bytecode into that package's __pycache__/, which `git status` ignores and which the
+    // cleanup below could not reach: it removed a sibling .pyc, and CPython writes into
+    // __pycache__/ instead. Every run left an orphan behind in a directory that ships.
+    const tmp = join(mkdtempSync(join(tmpdir(), "mutation-preflight-")), "candidate.py");
     writeFileSync(tmp, mutant);
     try {
       execFileSync("python3", ["-m", "py_compile", tmp], { stdio: "pipe" });
@@ -66,8 +72,8 @@ for (const m of cfg.mutations ?? []) {
     } catch {
       compiles = "SYNTAX-ERROR";
     } finally {
-      try { unlinkSync(tmp); } catch {}
-      try { unlinkSync(tmp.replace(/\.py$/, ".pyc")); } catch {}
+      // Remove the whole scratch directory, so bytecode cannot outlive the source that made it.
+      try { rmSync(dirname(tmp), { recursive: true, force: true }); } catch {}
     }
   }
   const okRow = resolves === 1 && compiles !== "SYNTAX-ERROR" && !names.startsWith("UNDEFINED-NAME");
