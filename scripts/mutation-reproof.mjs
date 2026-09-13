@@ -769,8 +769,28 @@ if (zeroGraded.length) {
 }
 const floor = discriminationFloor(prove.length, discriminated.length);
 if (!floor.pass) {
-  const expected = prove.map(({ path }) => path);
-  console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED (${discriminated.length} of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs) — expected a kill from: ${expected.join(", ")}`);
+  // The floor's question is corpus-shaped but its scope is the unit it runs in, and under a
+  // sharded fan-out that unit is one shard. A shard can therefore draw only work that CANNOT
+  // discriminate — every fixture pre-red before any mutation, or graded nothing — while the
+  // corpus as a whole kills. That still reds, deliberately: a unit that obtained no verdict has
+  // not earned an all-clear, and exempting an all-PRE-RED set is precisely the vacuity this
+  // floor exists to refuse. But the two cases need different human responses, so they are named
+  // differently. COULD NOT means re-shard or fix the already-red commands, and blaming a
+  // specific fixture for failing to produce a kill it was never in a position to produce is
+  // what a single banner would do.
+  const unableSet = new Set([
+    ...preRed.map(({ path }) => path),
+    ...unmeasuredPreRed.map(({ path }) => path),
+    ...inconclusive,
+    ...zeroGraded,
+  ]);
+  const expected = prove.map(({ path }) => path).filter((path) => !unableSet.has(path));
+  const unable = prove.map(({ path }) => path).filter((path) => unableSet.has(path));
+  if (expected.length === 0) {
+    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED — COULD NOT (0 of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: ${unable.join(", ")}`);
+  } else {
+    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED (${discriminated.length} of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs) — expected a kill from: ${expected.join(", ")}${unable.length ? `; not attributable to (could not discriminate): ${unable.join(", ")}` : ""}`);
+  }
   process.exit(1);
 }
 console.log(a.all

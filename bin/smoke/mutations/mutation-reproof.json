@@ -318,6 +318,22 @@
       "replace": "    discriminated.push(path);",
       "expectRed": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing",
       "cell": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing"
+    },
+    {
+      "name": "the COULD NOT split collapses so an all-pre-red shard blames the fixture it named",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  if (expected.length === 0) {",
+      "replace": "  if (false) {",
+      "expectRed": "a shard holding only an inherited pre-red fixture reds as COULD NOT without blaming that fixture",
+      "cell": "a shard holding only an inherited pre-red fixture reds as COULD NOT without blaming that fixture"
+    },
+    {
+      "name": "every floor red is reported as COULD NOT, so a shard that should have killed is excused as unable",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  if (expected.length === 0) {",
+      "replace": "  if (true) {",
+      "expectRed": "a ZERO DISCRIMINATED banner names the configs it expected to kill",
+      "cell": "a ZERO DISCRIMINATED banner names the configs it expected to kill"
     }
   ]
 }

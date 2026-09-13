@@ -96,9 +96,24 @@ const okCounts = (out: string): { discriminated: number; preRed: number; inconcl
 };
 /** Parse configs the zero-discrimination floor named as expected kills. */
 const zeroDiscExpected = (out: string): string[] => {
-  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED .*expected a kill from: (.+)$/m);
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED .*expected a kill from: ([^;\n]+)/m);
   return m ? m[1].split(", ") : [];
 };
+/** Parse configs named by the COULD NOT arm: present, but never in a position to kill. */
+const zeroDiscUnable = (out: string): string[] => {
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED — COULD NOT .*re-shard or repair the already-red commands: (.+)$/m);
+  return m ? m[1].split(", ") : [];
+};
+/**
+ * Vacuous all-clear refused where NO proven fixture could have killed: pre-red, inconclusive or
+ * zero-graded. Still a red, but attributed to the unit's composition rather than to a fixture that
+ * was never in a position to produce a kill, and never collapsed into SURVIVED/FAILED.
+ */
+const floorCouldNot = (out: string, paths: string[]): boolean =>
+  eq(zeroDiscUnable(out), paths)
+  && zeroDiscExpected(out).length === 0
+  && !out.includes("MUTATION REPROOF OK")
+  && !/^MUTATION REPROOF FAILED /m.test(out);
 /** Vacuous all-clear: proven configs, zero kills, named, not collapsed into SURVIVED/FAILED. */
 const floorRed = (out: string, paths: string[]): boolean =>
   eq(zeroDiscExpected(out), paths)
@@ -121,8 +136,10 @@ const scan = (root: string, base: string, head: string, env = childEnv(), shard?
   const run = spawnSync(process.execPath, args, { encoding: "utf8", env });
   return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 };
-const scanAll = (root: string): { status: number | null; out: string } => {
-  const run = spawnSync(process.execPath, [SCAN, "--root", root, "--all"], { encoding: "utf8", env: childEnv() });
+const scanAll = (root: string, shard?: string): { status: number | null; out: string } => {
+  const args = [SCAN, "--root", root, "--all"];
+  if (shard !== undefined) args.push("--shard", shard);
+  const run = spawnSync(process.execPath, args, { encoding: "utf8", env: childEnv() });
   return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 };
 
@@ -1068,7 +1085,7 @@ try {
         && eq(selectedPaths(out), ["smoke/mutations/p.mutations.json"])
         && eq(preRedPaths(out), ["smoke/mutations/p.mutations.json"])
         && attributablePreRedPaths(out).length === 0
-        && floorRed(out, ["smoke/mutations/p.mutations.json"]),
+        && floorCouldNot(out, ["smoke/mutations/p.mutations.json"]),
       `status=${status} selected=${JSON.stringify(selectedPaths(out))} preRed=${JSON.stringify(preRedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
     );
   }
@@ -1552,7 +1569,7 @@ try {
         && eq(preRedPaths(out), ["smoke/mutations/all.mutations.json"])
         && attributablePreRedPaths(out).length === 0
         && unmeasuredPreRedPaths(out).length === 0
-        && floorRed(out, ["smoke/mutations/all.mutations.json"]),
+        && floorCouldNot(out, ["smoke/mutations/all.mutations.json"]),
       `status=${status} preRed=${JSON.stringify(preRedPaths(out))}\n${out}`,
     );
   }
@@ -1632,6 +1649,54 @@ try {
       `status=${status}\n${out}`,
     );
   }
+  // 23e. The floor's question is corpus-shaped but its scope is the unit it runs in. Under the
+  //     sharded fan-out a shard can draw ONLY work that cannot discriminate, while the corpus as a
+  //     whole kills. That still reds — a unit with no verdict has not earned an all-clear, and
+  //     exempting an all-PRE-RED set is the exact vacuity #1347 is about — but it must not blame a
+  //     fixture that was never in a position to kill. Same corpus, two shards, opposite outcomes.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "d.mjs"), "export function cap(input) {\n  return Math.min(input, 32);\n}\n");
+        writeFileSync(join(r, "suites", "d.suite.mjs"), "import { cap } from '../d.mjs';\nif (cap(100) !== 32) { console.error('✗ FAIL: the d cap holds'); process.exit(1); }\nconsole.log('✓ the d cap holds');\n");
+        writeFileSync(join(r, "smoke", "mutations", "d.mutations.json"), JSON.stringify({
+          suite: ["suites/d.suite.mjs"], command: "node suites/d.suite.mjs", mutations: [{
+            name: "the d cap is removed", file: "d.mjs", find: "  return Math.min(input, 32);",
+            replace: "  return input;", expectRed: "the d cap holds",
+          }],
+        }, null, 2));
+        writeFileSync(join(r, "p.mjs"), "export const p = () => 1;\n");
+        writeFileSync(join(r, "suites", "p.suite.mjs"), "console.error('✗ FAIL: pre-red before any mutation'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "p.mutations.json"), JSON.stringify({
+          suite: ["suites/p.suite.mjs"], command: "node suites/p.suite.mjs", mutations: [{
+            name: "p", file: "p.mjs", find: "export const p = () => 1;",
+            replace: "export const p = () => 2;", expectRed: "pre-red",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const preRedShard = scanAll(root, "0/3");
+    check(
+      "a shard holding only an inherited pre-red fixture reds as COULD NOT without blaming that fixture",
+      preRedShard.status === 1
+        && preRedShard.out.includes("MUTATION REPROOF ZERO DISCRIMINATED — COULD NOT")
+        && preRedShard.out.includes("re-shard or repair the already-red commands: smoke/mutations/p.mutations.json")
+        && !/expected a kill from/.test(preRedShard.out),
+      `status=${preRedShard.status}\n${preRedShard.out}`,
+    );
+    // REFUSING twin, same corpus and same command, differing only by which shard is asked: the
+    // shard holding the killing fixture is green, so the red above is shard composition and not a
+    // corpus-wide failure.
+    const killShard = scanAll(root, "1/3");
+    check(
+      "the sibling shard holding the killing fixture is green on the same corpus",
+      killShard.status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(killShard.out)
+        && !killShard.out.includes("ZERO DISCRIMINATED"),
+      `status=${killShard.status}\n${killShard.out}`,
+    );
+  }
   {
     const { root } = makeSingle(
       (r) => {
@@ -1653,7 +1718,7 @@ try {
     else process.env.COTAL_MUTATION_REPROOF_SENTINEL = previous;
     if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = previousNodeOptions;
-    check("the --all scan child strips parent COTAL_ material through the shared ambient-env chokepoint", status === 1 && !out.includes("COTAL_SCAN_PROCESS_LEAKED") && !out.includes("COTAL ambient leaked") && floorRed(out, ["smoke/mutations/ambient.mutations.json"]), `status=${status}\n${out}`);
+    check("the --all scan child strips parent COTAL_ material through the shared ambient-env chokepoint", status === 1 && !out.includes("COTAL_SCAN_PROCESS_LEAKED") && !out.includes("COTAL ambient leaked") && floorCouldNot(out, ["smoke/mutations/ambient.mutations.json"]), `status=${status}\n${out}`);
   }
   {
     const { root, base, head } = makeSingle(
@@ -1771,7 +1836,7 @@ try {
       status === 1
         && eq(inconclusivePaths(out), ["smoke/mutations/c.mutations.json"])
         && offenderPaths(out).length === 0
-        && floorRed(out, ["smoke/mutations/c.mutations.json"])
+        && floorCouldNot(out, ["smoke/mutations/c.mutations.json"])
         && !/^SURVIVED /m.test(out.replace(/\x1b\[[0-9;]*m/g, "")),
       `status=${status} inconclusive=${JSON.stringify(inconclusivePaths(out))} offenders=${JSON.stringify(offenderPaths(out))} zero=${JSON.stringify(zeroDiscExpected(out))}\n${out}`,
     );
@@ -2117,6 +2182,28 @@ check(
 check(
   "a prose mention of ZERO DISCRIMINATED does not mint expected configs",
   zeroDiscExpected("historically MUTATION REPROOF ZERO DISCRIMINATED expected a kill from: fake.json in yesterday's run\n").length === 0,
+);
+// The expected-kill list stops at the `;` that introduces the not-attributable tail, so a mixed
+// banner never reports an unable fixture as one that should have killed.
+check(
+  "the expected-kill list stops before the not-attributable tail",
+  eq(
+    zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 2 proven fixture(s) discriminated; required 1 from the selected configs) — expected a kill from: smoke/mutations/d.mutations.json; not attributable to (could not discriminate): smoke/mutations/p.mutations.json\n"),
+    ["smoke/mutations/d.mutations.json"],
+  ),
+);
+// REFUSING twin for the COULD NOT parser: the ordinary banner carries no COULD NOT marker, so a
+// run that DID have a fixture able to kill can never be read as one that could not.
+check(
+  "an ordinary ZERO DISCRIMINATED banner mints no COULD NOT configs",
+  zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs) — expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
+);
+check(
+  "a COULD NOT banner names the fixtures that were never in a position to kill",
+  eq(
+    zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED — COULD NOT (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: smoke/mutations/p.mutations.json\n"),
+    ["smoke/mutations/p.mutations.json"],
+  ),
 );
 
 console.log(`mutation-reproof smoke: ${passed} passed, ${failed} failed`);
