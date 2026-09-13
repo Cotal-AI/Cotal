@@ -113,6 +113,14 @@ try {
     'spawnSync(process.execPath, ["-e", "void 0", "--", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("bin/smoke/import-then-script.smoke.ts",
     'spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/ops-live.smoke.ts",
+    "/* REAL broker */\nconsole.log('ops');\n");
+  write("package.json", JSON.stringify({
+    name: "fixture",
+    scripts: {
+      "smoke:manager-service-ops": "tsx bin/smoke/ops-live.smoke.ts",
+    },
+  }));
   write("pnpm", "#!/bin/sh\nexit 0\n");
   chmodSync(join(root, "pnpm"), 0o755);
   execFileSync("git", ["init", "-q"], { cwd: root });
@@ -469,6 +477,7 @@ try {
     result.status === 0
       && !existsSync(sentinelPath("ops"))
       && /bin\/smoke\/mutations\/ops\.json\s+REFUSED `/.test(report(result))
+      && /declares REAL broker/.test(report(result))
       && /1 live-shaped config\(s\) refused/.test(result.stdout)
       && /fenced-live=1/.test(result.stdout),
     report(result),

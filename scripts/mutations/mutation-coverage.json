@@ -84,6 +84,14 @@
       "cell": "a path after -e is not a launched script"
     },
     {
+      "name": "eval flags still look for a later script path",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (NODE_EVAL_FLAGS.has(flag)) return undefined;\n",
+      "replace": "",
+      "expectRed": "a path after -e and -- is not a launched script",
+      "cell": "a path after -e and -- is not a launched script"
+    },
+    {
       "name": "a string mentioning ../src is treated as a source import",
       "file": "scripts/mutation-coverage.mjs",
       "find": "    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source)) return;",
