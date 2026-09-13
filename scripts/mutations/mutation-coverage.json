@@ -246,8 +246,8 @@
     {
       "name": "a launched entrypoint's own imports are not followed",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;\n",
-      "replace": "",
+      "find": "    for (const specifier of relativeImports(path, source)) {\n      if (!specifier.startsWith(\".\")) continue;\n      const next = candidateFiles(resolve(dirname(path), specifier));\n      if (next !== undefined && !seen.has(next)) queue.push(next);\n    }",
+      "replace": "    // the walk stops at the entrypoint and never follows its own imports",
       "expectRed": "a launched entrypoint's own relative import is reached",
       "cell": "a launched entrypoint's own relative import is reached"
     },
