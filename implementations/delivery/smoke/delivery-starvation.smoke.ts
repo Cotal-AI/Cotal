@@ -1262,7 +1262,26 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).message);
+  // A PROVISIONING REFUSAL IS AN ENVIRONMENT REPORT, NOT A VERDICT ON THE DAEMON. JetStream RESERVES
+  // each space's 4 GiB artifact cap against the server's store the moment the space is provisioned,
+  // so on a small or busy filesystem the suite is refused before a single cell runs. That arrived as
+  // a bare "insufficient storage resources available" with no cell and nothing naming the cause,
+  // and it read exactly like a product failure: a CI mutation baseline was refused on it while the
+  // same commit passed 94/0 locally, and the first hypothesis on both sides was that the daemon had
+  // regressed. It had not. Measured at this commit, one variable changed and nothing else: on a 16
+  // GiB tmpfs the run exits 1 here, and with TMPDIR on a roomy filesystem it is 94 passed 0 failed.
+  // So the suite now says which it is, and says where to look.
+  const why = (e as Error).message;
+  if (/insufficient storage resources/i.test(why)) {
+    console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
+    console.error(`     This is the test environment, not the daemon. Every space reserves a 4 GiB artifact`);
+    console.error(`     Object Store, and this suite provisions eight, so a small or busy store cannot promise`);
+    console.error(`     them. The broker's JetStream directory is under TMPDIR, currently ${tmpdir()}.`);
+    console.error(`     Point TMPDIR at a filesystem with room (and NOT under the workstation root, which the`);
+    console.error(`     daemon's own root walk would then pick up) and re-run before reading this as a defect.`);
+  } else {
+    console.error("  ✗ scenario threw:", why);
+  }
   process.exitCode = 1;
 } finally {
   // SIGCONT before SIGKILL: a SIGSTOPped process does not act on SIGKILL until it is resumed on
