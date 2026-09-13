@@ -979,6 +979,101 @@ try {
   signalGroup(solo, "SIGKILL");
   await untilExit(solo, 5000);
 
+  // ── R. THE SURVIVABLE RENEW FAILURE: the daemon must recognise its OWN row ──────────────────────
+  //
+  // The `held` reading is the one that says "your renew failed and the shard is STILL YOURS" — the
+  // only survivable verdict in the whole re-read. Cells F and G stage a real takeover (`taken`) and
+  // cell H deletes the row (`gone`), so nothing above drives the re-read to `held`, and a comparison
+  // that could never return it would pass every one of them. That is exactly the hole this cell
+  // fills: it was a live defect (the row carries the principal dot-form `local.U…` while the
+  // comparison used the bare nkey `U…`), and its symptom is this suite's own subject — the daemon
+  // read its own row, failed to recognise itself, exited naming ITSELF as the thief, and left the
+  // shard with a not-ready row and no process.
+  //
+  // THE STIMULUS MOVES THE REVISION WHILE KEEPING THE HOLDER BYTE-IDENTICAL: the row's own bytes are
+  // read and written straight back. That is precisely the "renew whose write landed but whose reply
+  // was lost" case — the daemon's cached revision goes stale, its next CAS is refused, and it must
+  // re-read. One daemon, no rival anywhere in the space, so a takeover verdict cannot be true.
+  console.log("\nR. a renew fails while the row is still ours (the survivable case)");
+  await deleteLease(spaceH, credsPathH); // H's killed daemon left a row behind; clear the slot
+  const own = spawnDaemon(spaceH, credsPathH);
+  const ownUp = await untilUp(own);
+  check("R1 the daemon comes up and holds the shard", ownUp, tail(own));
+  if (!ownUp) throw new Error("the own-row cell needs a daemon that was running; it never came up");
+  const beforeBump = await readLease(spaceH, credsPathH);
+  // Write the row's OWN BYTES back, so only the sequence moves. Done on a connection of the suite's
+  // own, the way deleteLease stages cell F's handover.
+  const bumpCreds = readFileSync(credsPathH, "utf8");
+  const bumpNc = await connect({
+    servers: SERVERS, ...standaloneConnectOpts({ creds: bumpCreds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(bumpCreds)}`, maxReconnectAttempts: 0,
+  });
+  let afterBump: { info: DeliveryLeaseInfo; revision: number } | undefined;
+  try {
+    const kv = await openDeliveryRegistry(bumpNc, spaceH);
+    const e = await kv.get(leaseKey(0));
+    if (!e) throw new Error("the own-row cell needs the daemon's lease row; it was not there");
+    await kv.put(leaseKey(0), e.value); // same bytes, new revision
+    afterBump = await readLease(spaceH, credsPathH);
+  } finally { try { await bumpNc.drain(); } catch { /* already gone */ } }
+  check("R2 the revision moved", afterBump !== undefined && beforeBump !== undefined
+    && afterBump.revision > beforeBump.revision, { before: beforeBump?.revision, after: afterBump?.revision });
+  // THE PRECONDITION THAT MAKES THE REST MEAN ANYTHING. If the holder bytes had changed, a `taken`
+  // verdict would be CORRECT and R5 would be grading the wrong thing.
+  check("R3 and the holder is byte-identical — the row is STILL this daemon's",
+    afterBump !== undefined && beforeBump !== undefined && afterBump.info.holder === beforeBump.info.holder,
+    { before: beforeBump?.info.holder, after: afterBump?.info.holder });
+  // Give the renew ticker time to fail its CAS, re-read, and act on what it read.
+  let ownResumed = false;
+  for (let i = 0; i < 60; i++) {
+    if (/serving shard \d+ again/.test(own.stderr)) { ownResumed = true; break; }
+    if (own.exited) break;
+    await wait(500);
+  }
+  check("R4 it must NOT claim another daemon took the shard", !/is held by/.test(own.stderr), tail(own));
+  check("R5 and it must still be ALIVE", !own.exited, tail(own));
+  check("R6 and it must have RESUMED serving, attributed to the row still being its own",
+    ownResumed && /serving shard \d+ again .*still its own/.test(own.stderr), tail(own));
+  // PROVEN ON THE BROKER. The daemon's log says it resumed; the durables say whether it did.
+  const ownPulls = await pendingPulls(spaceH, credsPathH);
+  check("R7 and both durables have parked pulls — genuinely serving, not merely alive",
+    ownPulls !== undefined && ownPulls.fanout > 0 && ownPulls.reader > 0, ownPulls);
+  // THE REFUSING HALF, and the reason the ownership test is not just a principal comparison. Cells
+  // F and G already run two daemons from ONE creds file, because that is what the product does: the
+  // daemon's cred is a file on disk that every restart re-reads, so a replacement authenticates as
+  // the same nkey and writes the SAME `holder`. A test on the principal alone would therefore let a
+  // displaced daemon read its SUCCESSOR's row as its own. Staged here directly: the row is replaced
+  // with one carrying this daemon's exact holder string but another run's incarnation, which is
+  // byte-for-byte what a successor writes.
+  signalGroup(own, "SIGKILL");   // the R1-R7 daemon is done; its successor gets the shard alone
+  await untilExit(own, 5000);
+  await deleteLease(spaceH, credsPathH);
+  const succCreds = readFileSync(credsPathH, "utf8");
+  const succNc = await connect({
+    servers: SERVERS, ...standaloneConnectOpts({ creds: succCreds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(succCreds)}`, maxReconnectAttempts: 0,
+  });
+  const own2 = spawnDaemon(spaceH, credsPathH);
+  const own2Up = await untilUp(own2);
+  check("R8 a daemon is up and holding the shard again", own2Up, tail(own2));
+  try {
+    const kv = await openDeliveryRegistry(succNc, spaceH);
+    const e = await kv.get(leaseKey(0));
+    if (!e) throw new Error("the successor cell needs the daemon's lease row; it was not there");
+    const mine = e.json<DeliveryLeaseInfo>();
+    // Same holder, different run — exactly a restarted daemon's row.
+    await kv.put(leaseKey(0), new TextEncoder().encode(JSON.stringify({ ...mine, incarnation: randomUUID() })));
+  } finally { try { await succNc.drain(); } catch { /* already gone */ } }
+  let succDecided = false;
+  for (let i = 0; i < 60; i++) {
+    if (/is held by/.test(own2.stderr) || own2.exited) { succDecided = true; break; }
+    await wait(500);
+  }
+  check("R9 a row with OUR holder but another run's incarnation is NOT adopted as our own",
+    succDecided, tail(own2));
+  signalGroup(own2, "SIGKILL");
+  await untilExit(own2, 5000);
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -996,7 +1091,9 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 71;
+  // 71 -> 80: cells R1-R9 (the survivable renew failure, which drives the re-read to `held`, and
+  // the successor row that must NOT be adopted as our own).
+  const EXPECTED_CELLS = 80;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

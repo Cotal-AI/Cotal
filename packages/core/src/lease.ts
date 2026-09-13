@@ -22,6 +22,18 @@ import { deliveryBucket, leaseKey } from "./subjects.js";
  *  to `ready:true` after `startPlane3` — and renews keep it true. */
 export interface DeliveryLeaseInfo {
   holder: string;
+  /** WHICH RUN of that holder, not merely which principal. `holder` is the endpoint's wire identity,
+   *  and it is NOT unique per process: the daemon's cred is a FILE on disk that every restart re-reads
+   *  (`delivery-proc.ts` mints it once and re-launches against it), so a replacement daemon in the same
+   *  space authenticates as the same nkey and presents the same principal as the process it replaced.
+   *  A daemon asking "is this row still mine?" therefore cannot get a truthful answer from `holder`
+   *  alone — it would recognise its own SUCCESSOR's row as its own, keep serving a shard it had lost,
+   *  and CAS-release the row out from under the live holder. Minted per endpoint instance, so it
+   *  changes on every restart even when the credential does not.
+   *
+   *  Optional because rows written by daemons from before this field exist in live buckets; a row
+   *  without one cannot be proven ours (some other process wrote it), which is the safe reading. */
+  incarnation?: string;
   since: number;
   ready: boolean;
 }

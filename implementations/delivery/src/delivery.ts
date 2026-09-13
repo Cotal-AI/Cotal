@@ -353,9 +353,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
-  // THIS daemon's endpoint id, pinned once. It is what the lease record carries as `holder`, so it
-  // is the fact that distinguishes "our own key" from "a replacement daemon's key" when a failed
-  // renew has to be re-read rather than believed (#1318).
+  // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
+  // what `card.id` must carry at construction (a creds SOURCE has no cred to derive it from yet).
+  // It is NOT what the lease record carries as `holder` — see readOwnLease, which compares against
+  // `ep.card.id`, the value the endpoint actually stamps.
   const ownId = idFromCreds(creds.initial);
 
   const ep = new CotalEndpoint({
@@ -525,14 +526,34 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   };
   /** What the broker says about THIS shard's lease key right now — the verdict a failed renew does
    *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
-   *  looking and finding nothing (#1318). The holder comparison is against OUR OWN endpoint id, which
-   *  is what distinguishes this process from a replacement daemon that took the slot. */
+   *  looking and finding nothing (#1318).
+   *
+   *  The ownership test is `ep.ownsDeliveryLease`, which compares the row against BOTH this
+   *  endpoint's wire identity and its per-run incarnation. Neither half is optional, and the two
+   *  failures they rule out are different:
+   *
+   *  1. Comparing against `ownId` (the bare connection nkey `U…`) is comparing across NAMESPACES:
+   *     the endpoint rewrites `card.id` in its constructor to the wire PRINCIPAL dot-form
+   *     `${owner}.${actor}` (`local.U…`), and that is what `encodeLease` stamps. That mismatch made
+   *     `held` UNREACHABLE — the daemon read its own row, failed to recognise itself, took the
+   *     `taken` branch and exited naming ITSELF as the thief, leaving a not-ready row and no
+   *     process. `held` is the one survivable reading ("your renew failed but the shard is still
+   *     yours"), so making it unreachable turned every recoverable renew failure into a permanent
+   *     withdrawal: #1318's own outage re-entering through the path built to prevent it.
+   *
+   *  2. Comparing on the principal ALONE is not sufficient either, and this is the one that looks
+   *     correct: the daemon's cred is a FILE that every restart re-reads, so a REPLACEMENT daemon
+   *     authenticates as the same nkey and writes the same `holder`. A displaced daemon would then
+   *     read its successor's row, conclude the shard was still its own, carry on serving a shard it
+   *     had lost (two daemons on one durable, which is the split this lease exists to prevent) and
+   *     CAS-release the live holder's row on the way out. Cells F and G stage exactly that, with two
+   *     daemons sharing one creds file, because that is what the product does. */
   const readOwnLease = async (): Promise<LeaseReading> => {
     let current: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
     try { current = await ep.readDeliveryLeaseEntry(shard); }
     catch (e) { return { kind: "unknown", why: (e as Error).message }; }
     if (current === undefined) return { kind: "gone" };
-    if (current.info.holder !== ownId) return { kind: "taken", by: current.info.holder };
+    if (!ep.ownsDeliveryLease(current.info)) return { kind: "taken", by: current.info.holder };
     // Held by us, AND at the broker's own revision rather than the one this process last cached.
     // That distinction is load-bearing: the renew that just failed may have been applied before its
     // reply was lost, in which case the cached revision is permanently one behind and every later

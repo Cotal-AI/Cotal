@@ -3509,8 +3509,27 @@ export class CotalEndpoint extends EventEmitter {
     return this.deliveryKv;
   }
 
+  /** This endpoint instance's LEASE INCARNATION: which run of this principal a lease row was written
+   *  by. Minted per construction and never re-derived, because the credential cannot supply it — the
+   *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
+   *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
+  private readonly leaseIncarnation = randomUUID();
+
   private encodeLease(ready: boolean): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+  }
+
+  /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
+   *  just failed has to answer before it decides whether it still owns the shard.
+   *
+   *  Both halves are required. `holder` alone is not sufficient (a successor daemon re-reading the
+   *  same creds file presents the same principal, so its row would read as ours), and `incarnation`
+   *  alone is not sufficient either — it is a bare uuid with no claim to the principal, so a row
+   *  bearing ours but a foreign holder is not something we should ever adopt. A row with NO
+   *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
+   *  to the takeover path rather than to serving on someone else's claim. */
+  ownsDeliveryLease(info: DeliveryLeaseInfo): boolean {
+    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
   }
 
   /** Acquire the single-flight delivery lease for a shard via an ATOMIC CAS create, marked NOT-ready.
