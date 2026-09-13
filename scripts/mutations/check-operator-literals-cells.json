@@ -143,6 +143,30 @@
       "replace": "  return source;",
       "expectRed": "the tamper lands inside the named cell block",
       "cell": "host-planted: the tamper lands inside the named cell block"
+    },
+    {
+      "name": "the marker reader stops distinguishing a real comment from marker-shaped text in a string",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    const visit = (node) => {\n      collect(node.getFullStart());\n      for (const child of node.getChildren(sf)) visit(child);\n    };\n    visit(sf);",
+      "replace": "    for (const match of text.matchAll(/^[ \\t]*\\/\\/ SELFTEST_CELL (\\S+) (START|END)$/gm)) {\n      found.push({ id: match[1], kind: match[2], pos: match.index });\n    }",
+      "expectRed": "census control: the marker reader finds a real marker and refuses one in prose or any string",
+      "cell": "census control: the marker reader finds a real marker and refuses one in prose or any string"
+    },
+    {
+      "name": "the census accepts equal COUNTS of markers and parsed cells rather than equal identities",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const onlyInMarkers = declaredCells.filter((id) => !parsedIds.includes(id));\n  const onlyInParsed = parsedIds.filter((id) => !declaredCells.includes(id));",
+      "replace": "  const onlyInMarkers = declaredCells.length === parsedIds.length ? [] : declaredCells;\n  const onlyInParsed = [];",
+      "expectRed": "census: the marker reader and the parsed cell array name the same cells, not merely as many",
+      "cell": "census: the marker reader and the parsed cell array name the same cells, not merely as many"
+    },
+    {
+      "name": "the census stops reporting duplicated marker ids and unpaired START/END markers",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "      duplicates: starts.filter((id, index) => starts.indexOf(id) !== index),\n      unpaired: [\n        ...starts.filter((id) => !ends.includes(id)),\n        ...ends.filter((id) => !starts.includes(id)),\n      ],",
+      "replace": "      duplicates: [],\n      unpaired: [],",
+      "expectRed": "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading",
+      "cell": "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading"
     }
   ]
 }
