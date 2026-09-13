@@ -27,7 +27,7 @@
     "defect the issue reports. Naming both is what distinguishes 'the method exists' from 'the",
     "method runs and does something'.",
     "",
-    "M3 RESTORES THE ORDERING BUG, and it is the subtlest of the three. Reading liveness BEFORE",
+    "M3 REMOVES THE BOUNDED JOIN, and it is the subtlest of the three. A reader that is still",
     "clearing _stop leaves a window: a reader alive at the check that then reaches the top of its",
     "loop and exits on the still-set flag stays installed as _reader, which rebuilds the dead bridge",
     "the method exists to undo. It is timing dependent, so in production it surfaces as an occasional",
@@ -56,12 +56,12 @@
       "note": "The defect exactly as reported. Note that connect() keeps its is_reconnect parameter under this mutation, so every signature assertion in adapter-contract stays green: this is the clearest demonstration that a signature test and an effect test are not substitutes."
     },
     {
-      "name": "M3 reopen() reads liveness before clearing the stop flag",
+      "name": "M3 reopen() reads liveness immediately instead of joining the closed reader",
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
-      "find": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return",
-      "replace": "        with self._lock:\n            reader = self._reader\n        self._stop.clear()\n        if reader is None:\n            return",
-      "expectRed": "reopen must clear _stop BEFORE reading liveness: a reader that exits during the check must not stay installed",
-      "note": "The race, restored. Under the old ordering a reader observed alive can still exit on the flag that has not been cleared yet, and is left installed. The suite holds a reader at the top of its loop and releases it during the call, so the interleaving is forced rather than sampled."
+      "find": "        reader.join(timeout=_REOPEN_JOIN_SECONDS)\n        with self._lock:\n            # Re-read under the lock: a concurrent start() may have installed a fresh reader while\n            # we were joining the old one, and that one must survive.\n            if self._reader is reader and not reader.is_alive():\n                self._reader = None",
+      "replace": "        with self._lock:\n            if not reader.is_alive():\n                self._reader = None",
+      "expectRed": "reopen must not leave a closed reader installed: a reader still unwinding when reopen is called must not be mistaken for a live one",
+      "note": "THE MECHANISM THAT ACTUALLY FIXES THE RACE, removed. An earlier draft of this config named the STOP/LIVENESS ORDERING here instead, and the harness graded it UNGRADABLE because with the join in place the ordering genuinely does not matter - the mutant changed no behaviour. That verdict was right and it corrected the fix's own description: the bounded join is what settles liveness, not the order of the two statements. Without it, a reader still unwinding reads as alive and stays installed, which is the dead bridge."
     }
   ]
 }

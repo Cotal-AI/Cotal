@@ -100,21 +100,33 @@ function runScenario(mode: "subject" | "neutered-reopen" | "deleted-call"): Reco
 // ---- THE SUBJECT ------------------------------------------------------------------------------
 const subject = runScenario("subject");
 
-// The peer must actually have written both frames. Without this, "not delivered" could simply mean
-// "never sent", and the headline assertion below would be measuring the test's own plumbing.
+// The peer must actually have written the COLD frame. Without this, "not delivered" could mean
+// "never sent", and the headline below would be measuring the test's own plumbing.
 assert.equal(subject.PUSHED_COLD, "True", "instrument: the peer must have pushed the pre-disconnect frame");
-assert.equal(subject.PUSHED_WARM, "True", "instrument: the peer must have pushed the post-reconnect frame");
 
 // The cold leg proves the pipe works at all, so a failure on the warm leg is attributable to the
-// reconnect rather than to the bridge never having worked in this environment.
+// reconnect rather than to a bridge that never worked in this environment.
 assert.equal(subject.COLD_DELIVERED, "True", "a cold connect must deliver mesh traffic into a turn");
 
-// THE HEADLINE. This is the assertion the whole PR turns on.
+// THE HEADLINE. This is the assertion the whole PR turns on, and it is asserted BEFORE the warm
+// instrument row on purpose.
+//
+// The ordering is not cosmetic and the mutation harness is what proved it. When `reopen` is broken
+// the client never redials, so the peer never gets a socket and the warm PUSH fails too. With the
+// instrument row checked first, a real defect reddened on "the peer must have pushed the
+// post-reconnect frame", which reads like a broken harness rather than the bug. The harness graded
+// that WRONG-RED, correctly: the suite went red for a reason other than the cell it names. Checking
+// the effect first means the defect reddens the assertion that describes it.
 assert.equal(
   subject.WARM_DELIVERED,
   "True",
   "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
 );
+
+// Now the warm instrument row, as a diagnostic rather than a gate. On a green run the delivery
+// above already implies it; it stays so that a future failure distinguishes "never redialled" from
+// "redialled and dropped the message".
+assert.equal(subject.PUSHED_WARM, "True", "instrument: the reconnected peer had a socket to push on");
 
 // ---- REFUSE CONTROL 1: reopen() present but its body emptied ----------------------------------
 // The exact mutation that survived the signature suite. `reopen` still exists and is still called,
@@ -165,16 +177,16 @@ assert.equal(
   "refuse control: without the reopen() call the reconnect must go silent (adapter.py M2)",
 );
 
-// ---- THE ORDERING PROPERTY --------------------------------------------------------------------
-// `reopen` used to read liveness first and clear `_stop` second, leaving a window where a reader
-// alive at the check exits on the still-set flag and stays installed as `_reader`. That rebuilds
-// the dead bridge this method exists to undo, and being timing dependent it reproduces as an
-// occasional silent platform rather than a clean failure. The probe drives that interleaving
-// directly by holding a reader at the top of its loop across the call.
+// ---- THE RACE -----------------------------------------------------------------------------
+// `reopen` must not mistake a reader that is still unwinding for a live one. A closed reader that
+// happens to still be alive at the instant of the check gets left installed as `_reader`, and the
+// next `start()` returns having started nothing: the dead bridge, rebuilt by the very method that
+// exists to undo it. Being timing dependent it would surface as an occasional silent platform
+// rather than a clean failure, so the probe forces the interleaving instead of hoping to see it.
 assert.equal(
   subject.RACE_READER_CLEARED,
   "True",
-  "reopen must clear _stop BEFORE reading liveness: a reader that exits during the check must not stay installed",
+  "reopen must not leave a closed reader installed: a reader still unwinding when reopen is called must not be mistaken for a live one",
 );
 assert.equal(
   subject.RACE_LIVE_READER_KEPT,
