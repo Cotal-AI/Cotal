@@ -32,6 +32,7 @@ import {
   fallbackStillOwed,
   nextFallbackAction,
   attributionBlockedByOpenRun,
+  deferralExhausted,
   nextFallbackDelay,
   refusalNeedsBoundary,
   type FallbackState,
@@ -456,6 +457,9 @@ export async function runJcodeHost(): Promise<void> {
    * same path that redrives the durable batch, so delivery still happens: it is late, not lost.
    */
   let acceptanceSuspectUntilBridgeReplaced = false;
+  /** When the current run-debt deferral began, so it can be bounded. Cleared whenever no run debt is
+   *  outstanding, so an ordinary sequence of turns never accumulates a deferral age across them. */
+  let deferralStartedAt: number | undefined;
   /** One boundary request per suspicion, so a lapsing Harness cannot become a reconnect loop. */
   let bridgeReplacementRequestedForSuspicion = false;
   const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -1075,15 +1079,32 @@ export async function runJcodeHost(): Promise<void> {
     if (acceptanceSuspectUntilBridgeReplaced || reconnecting) return;
     // DO NOT WRITE A FRAME THAT CANNOT BE ATTRIBUTED. While a run's acceptance window has lapsed,
     // any `message_accepted` may belong to that run, so a send issued now is refused on arrival no
-    // matter how healthy it is, stays owed, and is re-sent next tick -- while the Harness accepts
+    // matter how healthy it is, stays owed, and is re-sent every tick -- while the Harness accepts
     // and EXECUTES every copy. A reviewer measured 4 executions from 4 send frames that way.
     //
-    // Deferring costs one turn of latency and nothing else: the run's promise settles when the turn
-    // ends, which proves the Harness is finished with it, and the next tick sends ONCE and can
-    // attribute the answer. The batch stays owed and unacked throughout, so this defers delivery
-    // rather than dropping it, and unlike a forced boundary it can neither suppress the queue for a
-    // whole turn nor end in seat shutdown once the one recovery is spent.
-    if (attributionBlockedByOpenRun(unsettledLapsedDispatches)) return;
+    // Deferring costs one turn of latency: the run's promise settles when the turn ends, and the
+    // next tick sends ONCE and can attribute the answer. The batch stays owed and unacked, so this
+    // defers delivery rather than dropping it.
+    //
+    // AND THE DEFERRAL IS BOUNDED, because a second reviewer showed that waiting on a run is waiting
+    // on an edge that may never come: a turn that missed its acceptance and never completes settles
+    // nothing, and an unbounded deferral would starve the queue exactly as the original stall did.
+    // Past the bound the run is unsettleable rather than slow, which is the lapsed-send case, so it
+    // takes that answer and the boundary is forced below.
+    if (unsettledLapsedDispatches > 0) {
+      if (deferralStartedAt === undefined) deferralStartedAt = Date.now();
+      const blockedForMs = Date.now() - deferralStartedAt;
+      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) return;
+      if (deferralExhausted(unsettledLapsedDispatches, blockedForMs)) {
+        acceptanceSuspectUntilBridgeReplaced = true;
+        writeJcodeDiagnostic(
+          `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
+            `without settling, so it is treated as unsettleable; replacing the Harness connection ` +
+            `before re-delivering ${items.length} queued automatic message(s)\n`,
+        );
+        return;
+      }
+    } else deferralStartedAt = undefined;
     const injection = formatInjection(items);
     if (!injection) return;
     const current = client;
@@ -1335,6 +1356,10 @@ export async function runJcodeHost(): Promise<void> {
           acceptanceSuspectUntilBridgeReplaced = false;
           bridgeReplacementRequestedForSuspicion = false;
           unsettledLapsedDispatches = 0;
+          // The deferral clock belongs to the connection whose run held attribution open. That
+          // connection is gone, so a stale age must not make the replacement's first deferral look
+          // already exhausted and force a second boundary on arrival.
+          deferralStartedAt = undefined;
           watchClient(replacement);
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
           void agent.setStatus("idle").catch(() => {});

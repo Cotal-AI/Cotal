@@ -111,7 +111,7 @@
     {
       "name": "M12 a send is written while a run's acceptance is still open, so every refused copy re-executes",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (attributionBlockedByOpenRun(unsettledLapsedDispatches)) return;\n",
+      "find": "      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) return;\n",
       "replace": "\n",
       "expectRed": "and the swallowed handover is never executed more than once",
       "cell": "and the swallowed handover is never executed more than once",

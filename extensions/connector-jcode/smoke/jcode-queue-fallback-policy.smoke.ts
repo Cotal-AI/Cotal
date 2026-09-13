@@ -30,6 +30,8 @@ import {
   nextFallbackAction,
   nextFallbackDelay,
   attributionBlockedByOpenRun,
+  DEFERRAL_MAX_MS,
+  deferralExhausted,
   refusalNeedsBoundary,
   type FallbackState,
 } from "../src/queue-fallback.js";
@@ -256,13 +258,51 @@ console.log("\n13. the two measured failure modes, and the state that separates 
   // THE SEPARATION ITSELF. Run debt clears when the turn ends; a lapsed send's never does. If a
   // future edit routes run debt into the boundary, this is the cell that reddens.
   check(
-    "run debt NEVER forces a boundary, however deep, because it clears itself",
-    [1, 2, 7].every((n) => refusalNeedsBoundary(false) === false && attributionBlockedByOpenRun(n) === true),
+    "run debt NEVER forces a boundary while the deferral is live, however deep",
+    [1, 2, 7].every((n) => refusalNeedsBoundary(false) === false && attributionBlockedByOpenRun(n, 0) === true),
     { checked: [1, 2, 7] },
+  );
+  // LIVENESS, and this is the cell a third reviewer's blocker demanded. Deferring on a run that
+  // never settles is the ORIGINAL bug with extra steps: nothing in the protocol bounds a turn, so
+  // waiting on one is waiting on an edge that may never come. Past the bound the run is treated as
+  // unsettleable and takes the lapsed-send answer.
+  check(
+    "a deferral that outlives its bound stops deferring, so a wedged run cannot starve the queue",
+    attributionBlockedByOpenRun(1, DEFERRAL_MAX_MS) === false,
+    { blockedForMs: DEFERRAL_MAX_MS, stillDeferring: attributionBlockedByOpenRun(1, DEFERRAL_MAX_MS) },
+  );
+  check(
+    "and it forces the boundary instead, so delivery resumes rather than stopping",
+    deferralExhausted(1, DEFERRAL_MAX_MS) === true,
+    { blockedForMs: DEFERRAL_MAX_MS, boundary: deferralExhausted(1, DEFERRAL_MAX_MS) },
+  );
+  // The refusing half of the bound: one millisecond under it must still defer, or the bound is not a
+  // bound at all but an unconditional boundary wearing a comparison.
+  check(
+    "one millisecond under the bound still defers, so an ordinary long turn is never mistaken for wedged",
+    attributionBlockedByOpenRun(1, DEFERRAL_MAX_MS - 1) === true && deferralExhausted(1, DEFERRAL_MAX_MS - 1) === false,
+    { blockedForMs: DEFERRAL_MAX_MS - 1 },
+  );
+  // And with no run open the bound is irrelevant in BOTH directions: an exhausted clock must not
+  // manufacture a boundary for a seat that has no debt at all.
+  check(
+    "no run debt means no deferral and no boundary, whatever the clock says",
+    attributionBlockedByOpenRun(0, DEFERRAL_MAX_MS * 10) === false && deferralExhausted(0, DEFERRAL_MAX_MS * 10) === false,
+    { unsettledRunDispatches: 0, blockedForMs: DEFERRAL_MAX_MS * 10 },
+  );
+  // EXACTLY ONE of deferring and forcing is true whenever debt is outstanding, at every age. If both
+  // were ever false the queue would stall silently, which is the bug; if both were true the host
+  // would defer and reconnect at once.
+  check(
+    "at every age, an outstanding run either defers or forces a boundary, never neither and never both",
+    [0, 1, 1_000, DEFERRAL_MAX_MS - 1, DEFERRAL_MAX_MS, DEFERRAL_MAX_MS + 60_000].every(
+      (ms) => attributionBlockedByOpenRun(1, ms) !== deferralExhausted(1, ms),
+    ),
+    { ages: [0, 1, 1_000, DEFERRAL_MAX_MS - 1, DEFERRAL_MAX_MS, DEFERRAL_MAX_MS + 60_000] },
   );
 }
 
-const EXPECTED_CELLS = 40;
+const EXPECTED_CELLS = 45;
 console.log(`\nSUITE COMPLETE: ${pass + failures.length} cells`);
 console.log(`jcode queue fallback policy: ${pass} cells OK, ${failures.length} failed`);
 if (pass + failures.length !== EXPECTED_CELLS) {

@@ -74,9 +74,42 @@ export function refusalNeedsBoundary(sendLapsed: boolean): boolean {
  * send once and attribute the answer. Late by one turn, delivered exactly once, and no connection
  * replacement is involved, so a live turn can never suppress the queue for its whole duration or end
  * in the seat shutting down once recovery is spent.
+ *
+ * THE DEFERRAL MUST BE BOUNDED OR IT IS THE ORIGINAL BUG AGAIN, which a reviewer put precisely: run
+ * debt clears only when `run()` settles, and a turn that missed its acceptance AND never completes
+ * settles nothing, so an unbounded deferral starves the queue exactly as the un-fallen-back stall
+ * did. Nothing in the protocol bounds a turn's duration, so waiting on one is waiting on an edge
+ * that may never come, which is the defect this whole tier exists to remove.
+ *
+ * So the deferral expires. Past {@link DEFERRAL_MAX_MS} the run is treated as unsettleable rather
+ * than merely slow, which is the LAPSED-SEND case, and it takes that case's answer: force the
+ * connection boundary, which ends the ambiguity at the root because a replaced bridge cannot deliver
+ * an event for a request made on the old one. The bound is generous enough that an ordinary long
+ * turn defers and delivers late rather than reconnecting, and finite so a wedged one cannot defer
+ * forever. Delivery is late, bounded, and exactly once in every branch.
  */
-export function attributionBlockedByOpenRun(unsettledRunDispatches: number): boolean {
-  return unsettledRunDispatches > 0;
+export function attributionBlockedByOpenRun(unsettledRunDispatches: number, blockedForMs = 0): boolean {
+  if (unsettledRunDispatches <= 0) return false;
+  return blockedForMs < DEFERRAL_MAX_MS;
+}
+
+/**
+ * How long a send may be deferred for an open run before that run is treated as unsettleable.
+ *
+ * Five minutes is longer than any acceptance round trip and longer than the ordinary long turns this
+ * connector serves, so a healthy slow turn is never mistaken for a wedged one, while a genuinely
+ * hung run cannot hold the queue past it. It is deliberately much larger than the 60s fallback
+ * ceiling: the pacing loop re-attempts throughout, and only the write is withheld.
+ */
+export const DEFERRAL_MAX_MS = 300_000;
+
+/**
+ * Whether a deferral has outlived its bound, so the open run must be treated as unsettleable and the
+ * connection boundary forced. The exact complement of the deferral's second condition, kept as its
+ * own name so the call site reads as the decision it is rather than as a comparison.
+ */
+export function deferralExhausted(unsettledRunDispatches: number, blockedForMs: number): boolean {
+  return unsettledRunDispatches > 0 && blockedForMs >= DEFERRAL_MAX_MS;
 }
 
 /** First delay after work is owed. Short, because most stalls clear on the next attempt. */
