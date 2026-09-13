@@ -30,24 +30,24 @@
     {
       "name": "a suite mutating its own directly executed source is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;",
-      "replace": "    if (invokesFile(suite, source, mutation.file)) return;",
+      "find": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "replace": "    if (false) return;",
       "expectRed": "a suite is gradable when it directly executes the file being mutated",
       "cell": "a suite is gradable when it directly executes the file being mutated"
     },
     {
       "name": "a suite launching the exact mutated repo script is rejected",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;\n    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;\n",
-      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;\n",
+      "find": "    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;",
+      "replace": "    if (false) return;",
       "expectRed": "a suite is gradable when it launches the exact mutated script path",
       "cell": "a suite is gradable when it launches the exact mutated script path"
     },
     {
       "name": "any quoted mutation path is treated as a direct execution witness",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;",
-      "replace": "    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file) || stringsCover(suite, source, mutation.file)) return;",
+      "find": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;\n    if (readFileSync(suite, \"utf8\").includes(mutation.file)) return;",
       "expectRed": "a quoted script path without an invocation is refused",
       "cell": "a quoted script path without an invocation is refused"
     },
@@ -354,6 +354,14 @@
       "replace": "    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {",
       "expectRed": "a launch inside a function nobody calls never runs",
       "cell": "a launch inside a function nobody calls never runs"
+    },
+    {
+      "name": "any reference to a function counts as running it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const isCallee = parentNode\n          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))\n          && parentNode.expression === n;\n        const isCallbackArg = parentNode\n          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))\n          && parentNode.arguments?.includes(n);\n        if (isCallee || isCallbackArg) invoked = true;",
+      "replace": "        invoked = true;",
+      "expectRed": "referencing a function without calling it does not run its body",
+      "cell": "referencing a function without calling it does not run its body"
     }
   ]
 }

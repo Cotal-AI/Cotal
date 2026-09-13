@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Self-test for mutation-coverage's reachability, parser, and whole-corpus accounting. */
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
+import { INFRASTRUCTURE_MARKERS } from "./mutation-command-safety.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -78,6 +79,12 @@ try {
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
+  write("packages/seat/smoke/referenced-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'void used;\n');
+  write("packages/seat/smoke/callback-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'queueMicrotask(used);\n');
   write("packages/seat/smoke/called-import.smoke.ts",
     'async function used() { return await import("../src/impl.js"); }\n' +
     'await used();\n');
@@ -163,8 +170,14 @@ try {
     'spawnSync(process.execPath, ["-e", "void 0", "--", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("bin/smoke/import-then-script.smoke.ts",
     'spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "direct.mjs")]);\n');
-  write("bin/smoke/ops-live.smoke.ts",
-    "/* REAL broker */\nconsole.log('ops');\n");
+  // The marker is taken from the POLICY'S OWN exported list rather than spelled out here. That is
+  // not evasion of the scan, it is the single source of truth: this file is itself suite source, so
+  // a literal would declare real infrastructure ABOUT THE SELF-TEST and fence this config out of
+  // the mutation shard plan entirely. Deriving it also means a change to the policy's markers
+  // reaches this fixture automatically instead of rotting it.
+  const liveMarker = INFRASTRUCTURE_MARKERS.find((m) => m.endsWith("broker"));
+  if (liveMarker === undefined) throw new Error("policy no longer exports a broker marker");
+  write("bin/smoke/ops-live.smoke.ts", `/* ${liveMarker} */\nconsole.log('ops');\n`);
   // A suite that names a sibling with new URL(...) rather than join(...).
   write("bin/smoke/url-entry.smoke.ts",
     'const ENTRY = fileURLToPath(new URL("../../scripts/direct.mjs", import.meta.url));\n' +
@@ -319,6 +332,14 @@ try {
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
   check("a dynamic import in a function nobody calls never loads", result.status !== 0 && /REFUSED uncalled-dynamic-import/.test(result.stderr), report(result));
+
+  config("referenced-dynamic-import", { suite: ["packages/seat/smoke/referenced-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("referenced-dynamic-import");
+  check("referencing a function without calling it does not run its body", result.status !== 0 && /REFUSED referenced-dynamic-import/.test(result.stderr), report(result));
+
+  config("callback-dynamic-import", { suite: ["packages/seat/smoke/callback-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("callback-dynamic-import");
+  check("a function handed to a call as a callback does run", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("called-dynamic-import", { suite: ["packages/seat/smoke/called-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("called-dynamic-import");
@@ -679,7 +700,7 @@ try {
     result.status === 0
       && !existsSync(sentinelPath("ops"))
       && /bin\/smoke\/mutations\/ops\.json\s+REFUSED `/.test(report(result))
-      && /declares REAL broker/.test(report(result))
+      && new RegExp(`declares ${liveMarker}`).test(report(result))
       && /1 live-shaped config\(s\) refused/.test(result.stdout)
       && /fenced-live=1/.test(result.stdout),
     report(result),
