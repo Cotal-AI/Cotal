@@ -329,7 +329,7 @@ const SEAMS: Seam[] = [
   // daemon's own report of whether it is still serving. A starved daemon's account of itself is
   // exactly what that suite exists to doubt.
   // 147/107 -> 150/110: delivery-starvation.smoke.ts grows three more smoke-side connections
-  // (tls: false), all for the same reason as the one above — the suite refuses to take the daemon's
+  // (tls: false), all for the same reason as the one above, the suite refuses to take the daemon's
   // word for what it is doing. One deletes the lease row to stage a handover, one asks the broker
   // how many pull requests each Plane-3 durable has parked, and one is a $SYS observer that counts
   // ctl.delivery subscribers PER CONNECTION, which is what makes "two daemons were bound at once"

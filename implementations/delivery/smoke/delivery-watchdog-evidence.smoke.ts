@@ -1,11 +1,11 @@
 /**
- * delivery watchdog-evidence smoke — the decision that separates "the broker is gone" from "this
+ * delivery watchdog-evidence smoke, the decision that separates "the broker is gone" from "this
  * process did not get scheduled" (#1318), graded branch by branch.
  *
  * WHY A PURE SUITE EXISTS ALONGSIDE THE LIVE ONE. `delivery-broker-coupling` spawns a real daemon
  * against a real broker and is the right place to prove the two end-to-end outcomes. It is the
  * wrong place to prove COVERAGE, because each cell there costs seconds of wall clock and depends on
- * the host being able to schedule a process — the very condition under test. So the end-to-end
+ * the host being able to schedule a process, the very condition under test. So the end-to-end
  * suite grades the two outcomes and this one grades every branch of the predicate behind them, from
  * literals, in milliseconds, on any host.
  *
@@ -53,7 +53,7 @@ const evidence = (over: Partial<BrokerWatchEvidence> = {}): BrokerWatchEvidence 
   ...over,
 });
 
-console.log("\nA. the exit branch — a genuinely dead broker still ends the daemon");
+console.log("\nA. the exit branch, a genuinely dead broker still ends the daemon");
 // ACCEPTING: unstarved time past the window AND enough probes that ran and refused.
 check(
   "A1 exits: 20s unstarved with 4 completed negatives is broker-gone",
@@ -70,7 +70,7 @@ check(
   brokerGoneVerdict(evidence({ msSinceLastReachable: WINDOW + 1, completedNegatives: NEEDED })).exit === true,
 );
 
-console.log("\nB. the starvation branch — measured local lag is credited, and does NOT exit");
+console.log("\nB. the starvation branch, measured local lag is credited, and does NOT exit");
 // REFUSING case for A, differing ONLY in starvedMs. Same elapsed time, same completed negatives.
 // This is the reported incident: load 311 on 12 cores, broker up continuously for 7.3 days.
 const starved = brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, starvedMs: 19_000, completedNegatives: 4 }));
@@ -87,7 +87,7 @@ check(
   brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, starvedMs: 5_000, completedNegatives: 9 })).exit === false,
 );
 
-console.log("\nC. the evidence branch — elapsed time alone is never a verdict");
+console.log("\nC. the evidence branch, elapsed time alone is never a verdict");
 // REFUSING case for A, differing ONLY in completedNegatives. THIS IS THE DEFECT IN ITS PUREST
 // FORM: the window aged while no probe completed, because the process was not scheduled to run one.
 const thin = brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, completedNegatives: 0 }));
@@ -98,11 +98,11 @@ check(
   brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, completedNegatives: NEEDED - 1 })).exit === false,
 );
 check(
-  "C3 DOES exit on the requirement exactly (4 of 4) — the counter is a floor, not a moving target",
+  "C3 DOES exit on the requirement exactly (4 of 4), the counter is a floor, not a moving target",
   brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, completedNegatives: NEEDED })).exit === true,
 );
 
-console.log("\nD. the reachable branch — positive evidence outranks every other signal");
+console.log("\nD. the reachable branch, positive evidence outranks every other signal");
 check(
   "D1 does NOT exit inside the window, however many probes failed",
   brokerGoneVerdict(evidence({ msSinceLastReachable: 1_000, completedNegatives: 99 })).exit === false,
@@ -121,7 +121,7 @@ check(
   brokerGoneVerdict(evidence({ msSinceLastReachable: WINDOW, completedNegatives: 99 })).reason === "reachable",
 );
 
-console.log("\nE. the transport branch — an open socket to that broker is evidence the broker is there");
+console.log("\nE. the transport branch, an open socket to that broker is evidence the broker is there");
 // ACCEPTING: the probe cannot complete a fresh handshake, but our standing connection to the same
 // address is open. That is a statement about this process's ability to ask.
 const transportLive = brokerGoneVerdict(evidence({
@@ -145,7 +145,7 @@ check(
 // THE BACKSTOP OUTRANKS THE TRANSPORT, AND THIS CELL USED TO ASSERT THE OPPOSITE. Two reviewers
 // independently found it: `transportConnected` is not an observation of the broker, it is this
 // client's cached socket state, refreshed only when nats.js decides the peer is gone. Under a
-// SILENT death — OOM kill, hypervisor pause, a firewall that starts dropping instead of refusing —
+// SILENT death, OOM kill, hypervisor pause, a firewall that starts dropping instead of refusing ,
 // no FIN and no RST arrive, the kernel holds the connection ESTABLISHED, and with shipped defaults
 // nats.js does not notice for roughly six minutes (ping every 120s, two outstanding allowed). While
 // that flag was ranked above the backstop, a stale `true` suspended the exit for the whole of that
@@ -154,7 +154,7 @@ check(
 // A bound that any single stale flag can defer is not a bound. Past the backstop the daemon exits,
 // whatever it believes about its socket.
 check(
-  "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
+  "E3 past the backstop the daemon exits EVEN WITH a live transport, a cached socket cannot defer the bound",
   brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, completedNegatives: 99, transportConnected: true })).exit === true,
 );
 // ACCEPTING, one millisecond earlier: inside the backstop the open transport still carries, because
@@ -168,10 +168,10 @@ check(
   brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, completedNegatives: 99, transportConnected: false })).exit === true,
 );
 
-console.log("\nF. the backstop branch — the starvation credit can never become an unbounded excuse");
+console.log("\nF. the backstop branch, the starvation credit can never become an unbounded excuse");
 // ACCEPTING: with the transport down, past the backstop nothing excuses the absence of positive
-// evidence. This guards against the failure mode the fix could otherwise introduce — a daemon that
-// outlives its broker — which is worse than the defect being repaired.
+// evidence. This guards against the failure mode the fix could otherwise introduce, a daemon that
+// outlives its broker, which is worse than the defect being repaired.
 check(
   "F1 exits past the backstop even with zero completed probes and full starvation credit",
   brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, starvedMs: BACKSTOP, completedNegatives: 0 })).exit === true,
@@ -197,7 +197,7 @@ const byEvidence = brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, co
 check("F4 REFUSING CASE: an exit reached ON EVIDENCE is still reported as a broker-gone verdict",
   byEvidence.exit === true && byEvidence.reason === "broker-gone", byEvidence);
 
-console.log("\nJ. the probe classifier — what a single answer established, given when it arrived");
+console.log("\nJ. the probe classifier, what a single answer established, given when it arrived");
 // This is the signal that makes the third mechanism visible: `isReachable` flattens a starved
 // client and a dead server to the same `false`, but they differ in WHEN the answer arrives relative
 // to the probe's own deadline.
@@ -218,7 +218,7 @@ check("J4b and it reports how late it was, so the lag can be credited",
   late.counts === "starved" && late.lateBy === 2554 - PROBE_BUDGET_MS, late);
 // REFUSING case for the positive branch: lateness must NEVER weaken a yes. A slow yes still needed
 // a server to say it, and refusing late positives would leave a starved daemon unable to ever clear
-// its own window — the defect again with the sign flipped.
+// its own window, the defect again with the sign flipped.
 check("J5 a POSITIVE is believed however late it arrives", classifyProbe(true, 60_000).counts === "positive");
 check("J5b and an on-time positive is the same reading", classifyProbe(true, 5).counts === "positive");
 // A probe that rejected is an unanswered question, distinct from every answer above.
@@ -231,7 +231,7 @@ console.log("\nK. the probe classifier, given what the process measured about it
 // not hold. It cannot catch the quiet form, and cell E of the live suite is what established that.
 // A process getting short slices of CPU issues a connect, is descheduled, and its deadline timer
 // fires the moment it is scheduled again. Wall-clock elapsed then looks like an ordinary, prompt
-// timeout — well inside the late ceiling — while almost none of it was time the server was given.
+// timeout, well inside the late ceiling, while almost none of it was time the server was given.
 // Read by the clock alone that is indistinguishable from a dead server, which is the confusion this
 // whole repair is about. So the classifier is told what the process measured about itself.
 //
@@ -243,7 +243,7 @@ check("K2 a dead port answers in ~1ms, and that is a negative however starved th
 check("K3 and a mostly-scheduled probe is still a negative: the server had nearly all of it",
   classifyProbe(false, PROBE_BUDGET_MS + 50, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 20).counts === "negative");
 // REFUSING, differing ONLY in what the process measured about itself: same verdict, same elapsed
-// time, same live server — but 960ms of that second was spent off the runqueue, so the server was
+// time, same live server, but 960ms of that second was spent off the runqueue, so the server was
 // given 40ms and refusing it a verdict is the only honest reading.
 const quiet = classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 960);
 check("K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative", quiet.counts === "starved", quiet);
@@ -276,14 +276,14 @@ check("K8 the late-ceiling rule still applies with no deschedule measurement at 
 check("K9 a late POSITIVE is still believed however starved the host was",
   classifyProbe(true, 9_000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 8_900).counts === "positive");
 
-console.log("\nL. the deschedule sampler — a timer's own lateness measures being off the runqueue");
+console.log("\nL. the deschedule sampler, a timer's own lateness measures being off the runqueue");
 // The sampler is how K's argument is obtained at runtime. A timer asked for 25ms that fires at 25ms
 // reports nothing; the same timer firing at 500ms reports 475ms this process was not running.
 const idle = new DescheduleSampler(25);
 idle.start(1_000);
 check("L1 a span with no firings and no elapsed time measures nothing", idle.stop(1_000) === 0);
 // ACCEPTING: a span longer than one sample interval charges the gap the process could not account
-// for. Driven on the CLOCK rather than on real time so the cell is deterministic under CI load —
+// for. Driven on the CLOCK rather than on real time so the cell is deterministic under CI load ,
 // a sampler graded by sleeping would be measuring the test runner's own starvation.
 const stalled = new DescheduleSampler(25);
 stalled.start(0);
@@ -305,7 +305,7 @@ reused.start(0);
 reused.stop(5_000);
 reused.start(0);
 check("L5 a restart clears the previous span's accumulation", reused.stop(25) === 0, reused);
-// L1–L5 drive `stop` directly, which is what makes them deterministic — and it also means the
+// L1 to L5 drive `stop` directly, which is what makes them deterministic, and it also means the
 // TIMER CALLBACK never runs in any of them. A mutation that made the callback charge the whole gap
 // instead of the excess over its own interval survived all five, so the callback needs a cell that
 // actually lets it fire. These two are the only cells in this suite that pass real time.
@@ -324,7 +324,7 @@ check("L6 an idle real-time span charges only the excess, not the whole gap",
   idleCharged < idleElapsed / 2, { idleCharged, idleElapsed });
 // ACCEPTING, through the same callback: a loop that is genuinely blocked IS the condition, and the
 // sampler must see it. Blocking synchronously is the honest local stand-in for being off the
-// runqueue — from a timer's point of view they are the same event, which is precisely why a late
+// runqueue, from a timer's point of view they are the same event, which is precisely why a late
 // timer can measure descheduling at all.
 const BLOCK_MS = 300;
 const blocked = new DescheduleSampler(25);
@@ -340,7 +340,7 @@ console.log("\nM. the material-share line: ordinary jitter is not starvation, an
 // BOTH CELLS IN THIS SECTION EXIST BECAUSE A REVIEWER MEASURED WHAT THE CODE ACTUALLY DID, and in
 // both cases the bug had the same shape: a refusal that was honest evidence about the server got
 // filed as this process's starvation, so the completed-negative count could never rise and a
-// genuinely dead broker would be ended only by the backstop — four times slower than the shipped
+// genuinely dead broker would be ended only by the backstop, four times slower than the shipped
 // window, with the wrong reason in the operator's log. Neither broke the exit guarantee. Both made
 // the evidence path unreachable in production, which is most of the point of the repair.
 //
@@ -384,7 +384,7 @@ check("M8 and the identical answer against a 1s budget would be misread as starv
 check("M9 a ws refusal past its OWN late ceiling is still starvation",
   classifyProbe(false, 11_000, WS_BUDGET, PROBE_LATE_FACTOR, 0).counts === "starved");
 
-console.log("\nG. the lease decision — a failed renew is a question, not a verdict");
+console.log("\nG. the lease decision, a failed renew is a question, not a verdict");
 const readings: Array<[string, LeaseReading, "keep-serving" | "reacquire" | "exit"]> = [
   ["held: the key is still ours", { kind: "held", revision: 7 }, "keep-serving"],
   ["gone: the key expired under us", { kind: "gone" }, "reacquire"],
@@ -394,15 +394,15 @@ const readings: Array<[string, LeaseReading, "keep-serving" | "reacquire" | "exi
 for (const [name, reading, expected] of readings)
   check(`G1 ${name} -> ${expected}`, leaseAction(reading) === expected, leaseAction(reading));
 // The pairs that matter, stated as refusals rather than inferred from the table above.
-check("G2 REFUSES to exit on `gone` — an expired key with no other holder is repairable", leaseAction({ kind: "gone" }) !== "exit");
-check("G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer", leaseAction({ kind: "unknown", why: "no responders" }) !== "exit");
-check("G4 REFUSES to exit on `held` — our own key at a moved revision is not a takeover", leaseAction({ kind: "held", revision: 0 }) !== "exit");
-check("G5 STILL exits on `taken` — the single-holder guarantee is preserved", leaseAction({ kind: "taken", by: "x" }) === "exit");
+check("G2 REFUSES to exit on `gone`, an expired key with no other holder is repairable", leaseAction({ kind: "gone" }) !== "exit");
+check("G3 REFUSES to exit on `unknown`, an unanswerable question is not a negative answer", leaseAction({ kind: "unknown", why: "no responders" }) !== "exit");
+check("G4 REFUSES to exit on `held`, our own key at a moved revision is not a takeover", leaseAction({ kind: "held", revision: 0 }) !== "exit");
+check("G5 STILL exits on `taken`, the single-holder guarantee is preserved", leaseAction({ kind: "taken", by: "x" }) === "exit");
 // The measured incident's exact message shape: the renew failed with `wrong last sequence: 0`,
 // which means the key was GONE, not held by anyone. Under the shipped code that exited.
 check("G6 the incident's own case (wrong last sequence: 0 -> key gone) does not exit", leaseAction({ kind: "gone" }) === "reacquire");
 
-console.log("\nH. the lag meter — it measures scheduling, and only scheduling");
+console.log("\nH. the lag meter, it measures scheduling, and only scheduling");
 const meter = new LoopLagMeter(PROBE_INTERVAL_MS);
 check("H1 the first firing has no gap to measure and contributes nothing", meter.tick(1_000) === 0 && meter.starvedMs === 0);
 check("H2 an on-time firing contributes no lag", meter.tick(1_000 + PROBE_INTERVAL_MS) === 0 && meter.starvedMs === 0);
@@ -509,14 +509,14 @@ const deadBroker = brokerGoneVerdict(evidence({
 check("I2 CONTROL: the same window on an unstarved host DOES exit", deadBroker.exit === true, deadBroker);
 check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, healthy.starvedMs);
 
-// ── N. MAY THIS PROCESS SERVE? — the quiesce gate, which is NOT the stay-alive gate ─────────────
+// ── N. MAY THIS PROCESS SERVE?, the quiesce gate, which is NOT the stay-alive gate ─────────────
 //
 // A REVIEWER'S FINDING, AND A REGRESSION THIS BRANCH INTRODUCED. Turning a failed renew from a
 // verdict into a question is right, but the daemon asked the question while still bound: fan-out,
 // the inbox reader and both delivery control responders stayed up across the read-then-create
 // arbitration. Pre-fix there was no such window, because a failed renew went straight to shutdown.
-// So the repair traded an availability bug for a correctness one — two daemons briefly serving one
-// durable — and that trade is not acceptable.
+// So the repair traded an availability bug for a correctness one, two daemons briefly serving one
+// durable, and that trade is not acceptable.
 //
 // `mayServeOn` is the second gate. Every cell below is stated against `leaseAction` on the SAME
 // reading, because the whole content of this seam is that the two disagree: the process may live on
@@ -524,13 +524,13 @@ check("I2b and an unstarved host measures zero lag", healthy.starvedMs === 0, he
 console.log("\nN. may this process serve on this reading, which is a stricter question than may it live");
 check("N1 `held` is the one reading that is proof of ownership: serve",
   mayServeOn({ kind: "held", revision: 7 }) === true);
-check("N2 `unknown` REFUSES to serve — not being able to ask is not permission to act",
+check("N2 `unknown` REFUSES to serve, not being able to ask is not permission to act",
   mayServeOn({ kind: "unknown", why: "no responders" }) === false);
-check("N3 and `unknown` nonetheless keeps the PROCESS alive — the two gates differ here on purpose",
+check("N3 and `unknown` nonetheless keeps the PROCESS alive, the two gates differ here on purpose",
   leaseAction({ kind: "unknown", why: "no responders" }) === "keep-serving");
-check("N4 `gone` REFUSES to serve — the arbitrating create has not happened yet",
+check("N4 `gone` REFUSES to serve, the arbitrating create has not happened yet",
   mayServeOn({ kind: "gone" }) === false);
-check("N5 and `gone` still repairs rather than exits — again the gates differ",
+check("N5 and `gone` still repairs rather than exits, again the gates differ",
   leaseAction({ kind: "gone" }) === "reacquire");
 check("N6 `taken` REFUSES to serve, and here the two gates agree",
   mayServeOn({ kind: "taken", by: "other" }) === false && leaseAction({ kind: "taken", by: "other" }) === "exit");

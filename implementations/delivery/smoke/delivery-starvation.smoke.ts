@@ -1,5 +1,5 @@
 /**
- * delivery starvation-vs-broker-gone smoke — the live half of #1318.
+ * delivery starvation-vs-broker-gone smoke, the live half of #1318.
  *
  * The daemon must exit when the broker is GONE and must NOT exit when its own process was merely
  * prevented from asking. Those two produced the same signal, and on 2026-09-05 the second one cost
@@ -9,14 +9,14 @@
  * HOW THE STARVATION CELL MAKES THE DAEMON UNABLE TO ASK WITHOUT MAKING THE BROKER UNAVAILABLE.
  * SIGSTOP on the daemon process. That is a faithful model of the reported condition rather than a
  * replica of it: the process is on no runqueue, so its 2s interval does not fire, its probes do not
- * complete, and its wall clock advances anyway — which is precisely the state the pre-fix predicate
+ * complete, and its wall clock advances anyway, which is precisely the state the pre-fix predicate
  * misread. The broker is untouched and is confirmed reachable from THIS process throughout, so
  * anything the daemon concludes about it is a conclusion about itself. A CPU-burn model was
  * considered and rejected: it starves the runner too, so a green result would be indistinguishable
  * from a host that happened to schedule everything anyway.
  *
  * WHAT THIS SUITE REFUSES TO CALL A PASS. Its predecessor observed only `daemonExited`, so a daemon
- * that never started graded its exit cell green — "exited because the broker went away" and "was
+ * that never started graded its exit cell green, "exited because the broker went away" and "was
  * never running" were the same observation. Every cell here therefore asserts the daemon was ALIVE
  * immediately before the stimulus, and the exit cells additionally require the daemon's own
  * stderr to carry the broker-gone reason. The daemon is spawned with piped stderr for exactly that.
@@ -83,7 +83,7 @@ const LEASE_RENEW_OBSERVE_MS = 18_000;
  *  multiples of the broker-gone window so a predicate reading elapsed time cannot avoid tripping. */
 const DUTY_CYCLE_MS = 20_000;
 
-/** Last few lines of a daemon's output — enough to diagnose a red without printing its whole life. */
+/** Last few lines of a daemon's output, enough to diagnose a red without printing its whole life. */
 const tail = (d: Daemon): string => d.stderr.trimEnd().split("\n").slice(-4).join("\n");
 /** The daemon has CONCLUDED it does not own the shard. Every such path ends by exiting to keep the
  *  holder single and says so in this clause, which is why the clause is the marker rather than any
@@ -107,7 +107,7 @@ const spaceE = `delivery-late-${randomUUID().slice(0, 8)}`;
 // Cell F needs a sixth: it runs TWO daemons in one space on purpose, which is the point of it.
 const spaceF = `delivery-hand-${randomUUID().slice(0, 8)}`;
 // ONE broker, TWO accounts under its single operator. Two independently created brokers would be
-// two operators, and `serverConfig` refuses to compose trust across them — correctly, and that
+// two operators, and `serverConfig` refuses to compose trust across them, correctly, and that
 // refusal is what pins the shape here rather than a second server on a second port.
 const broker = await createBrokerAuth(space);
 const accountA = await createSpaceAccountAuth(broker, space);
@@ -136,7 +136,7 @@ const credsPathF = join(dir, "delivery-f.creds");
 // Cells G and H REUSE earlier cells' spaces rather than adding a seventh and an eighth, and the
 // reason is a hard resource ceiling rather than tidiness: `setupSpaceStreams` gives every space a
 // 4 GiB-capped artifact Object Store, JetStream RESERVES that against the server's store, and eight
-// of them exceed what one test broker can promise — the suite fails to provision with "insufficient
+// of them exceed what one test broker can promise, the suite fails to provision with "insufficient
 // storage resources available" before a single cell runs. Measured, not predicted.
 //
 // SO THE RUNNING COST IS SIX, NOT EIGHT: `setupSpaceStreams` is called six times, and spaceG/spaceH
@@ -167,7 +167,7 @@ type Daemon = {
   exited: boolean;
   code: number | null;
   stderr: string;
-  /** Called synchronously from the stderr data event — see the sink in `spawnDaemon`. */
+  /** Called synchronously from the stderr data event, see the sink in `spawnDaemon`. */
   onLine?: (chunk: string, d: Daemon) => void;
 };
 const daemons: Daemon[] = [];
@@ -181,7 +181,7 @@ const daemons: Daemon[] = [];
  *  which is the worst kind of green. Its own group means `kill(-pgid)` reaches everything in the
  *  pipeline. The child's operator surfaces are isolated the way the other daemon-spawning suites do
  *  it: scratch XDG_CONFIG_HOME/COTAL_HOME keep it off the operator's real seed store and mesh
- *  registry, and a scratch workspace root WITH a `.cotal` pins findCotalRoot's cwd walk — without
+ *  registry, and a scratch workspace root WITH a `.cotal` pins findCotalRoot's cwd walk, without
  *  it the walk climbs out of the repo, adopts a developer's live workspace, and the daemon's
  *  tenancy guard correctly refuses the foreign account before it ever reaches the code under test. */
 function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extraEnv: NodeJS.ProcessEnv = {}): Daemon {
@@ -233,7 +233,7 @@ function signalGroup(d: Daemon, signal: NodeJS.Signals): void {
 
 /** Wait for the daemon to be SERVING, not merely spawned: its own readiness line. Returns false on
  *  timeout, and the caller fails the cell rather than proceeding against a daemon that never came
- *  up — which is how the predecessor suite graded a corpse green. */
+ *  up, which is how the predecessor suite graded a corpse green. */
 async function untilUp(d: Daemon, timeoutMs = 30_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -265,7 +265,7 @@ const proxies: Proxy[] = [];
  * A TCP proxy in front of the broker that can be switched to blackhole NEW connections only.
  *
  * THE ASYMMETRY IS THE ENTIRE POINT. Already-established sockets keep flowing, so the daemon's
- * standing connection — the one it actually serves on — is untouched and it goes on renewing its
+ * standing connection, the one it actually serves on, is untouched and it goes on renewing its
  * lease. New connections are ACCEPTED and then never forwarded, so they hang: a SYN that completes
  * and a handshake that never does. That is what a client which cannot get scheduled looks like from
  * the inside, and it is what the triage for #1318 built to reproduce the daemon's exit on a live
@@ -332,7 +332,7 @@ function startFreshConnectBlackholeProxy(): {
 
 /** Remove this shard's lease row on a connection of the suite's OWN, so cell F can stage a handover
  *  the way an operator-driven replacement does: the row goes, and the next daemon wins the create.
- *  Done from outside rather than by stopping the holder, because the holder must stay RUNNING — the
+ *  Done from outside rather than by stopping the holder, because the holder must stay RUNNING, the
  *  whole question is what its shutdown does to a row it no longer owns. */
 async function deleteLease(inSpace: string, credsFile: string): Promise<void> {
   const creds = readFileSync(credsFile, "utf8");
@@ -358,7 +358,7 @@ async function deleteLease(inSpace: string, credsFile: string): Promise<void> {
  *  stopped the parked pulls drain to zero and stay there.
  *
  *  Read with the DELIVERY cred (the same one the daemons use) because consumer info is account
- *  state, not $SYS state — no observer cred is needed to ask. */
+ *  state, not $SYS state, no observer cred is needed to ask. */
 async function pendingPulls(inSpace: string, credsFile: string): Promise<{ fanout: number; reader: number } | undefined> {
   const creds = readFileSync(credsFile, "utf8");
   const nc = await connect({
@@ -379,7 +379,7 @@ async function pendingPulls(inSpace: string, credsFile: string): Promise<{ fanou
 /** A REUSABLE $SYS observer: one connection, many CONNZ rounds.
  *
  *  Opening a fresh connection per reading costs 20-40ms, and cell G has to resolve a window that is
- *  only a few hundred milliseconds wide — the interval between the loser unbinding and the loser
+ *  only a few hundred milliseconds wide, the interval between the loser unbinding and the loser
  *  exiting. Measured, the per-call version managed five readings across an entire arbitration and
  *  could not see the transition at all. Holding the connection open makes a round a few
  *  milliseconds, which is what makes the observation possible rather than merely intended. */
@@ -422,7 +422,7 @@ async function openObserver(inSpace: string): Promise<{
           if ((c.subscriptions_list ?? []).some((x) => /\.ctl\.delivery\.\*\.\*$/.test(x))) bound += 1;
         }
         // A reply with NO subscription lists anywhere is a FAILED question, never "nothing is bound"
-        // — the same unknown-is-not-a-negative rule the daemon itself is graded on.
+        //, the same unknown-is-not-a-negative rule the daemon itself is graded on.
         return sawAnyList ? bound : undefined;
       } catch { return undefined; }
     },
@@ -487,7 +487,7 @@ try {
   if (!starvedUp) throw new Error("the starvation cell needs a daemon that was running; it never came up");
 
   // Take it off the runqueue entirely. Its interval cannot fire, its probes cannot complete, and
-  // its wall clock runs on regardless — the exact state the pre-fix predicate read as a dead server.
+  // its wall clock runs on regardless, the exact state the pre-fix predicate read as a dead server.
 
   signalGroup(starved, "SIGSTOP");
   const stoppedAt = Date.now();
@@ -512,7 +512,7 @@ try {
   // clears it, which is what "report degraded and recover" means.
   check("A6 the daemon never printed a broker-gone exit line",
     !starved.stderr.includes("exiting (coupled to the broker)"), tail(starved));
-  // NOT MERELY UN-EXITED — STILL SERVING. "The process is alive" is also true of a daemon wedged
+  // NOT MERELY UN-EXITED, STILL SERVING. "The process is alive" is also true of a daemon wedged
   // in a reconnect loop with its lease long expired, which would be a different defect wearing this
   // cell's green. So the lease is read from the broker: it must still be HELD BY THIS DAEMON and
   // still be advancing, which only a daemon whose renew loop survived the stall can produce.
@@ -521,7 +521,7 @@ try {
     first !== undefined && first.info.ready === true, first);
   await wait(LEASE_RENEW_OBSERVE_MS);
   const second = await readLease(space, credsPath);
-  check("A8 and it is still RENEWING that lease — the revision advances and the holder is unchanged",
+  check("A8 and it is still RENEWING that lease, the revision advances and the holder is unchanged",
     first !== undefined && second !== undefined
       && second.revision > first.revision
       && second.info.holder === first.info.holder,
@@ -547,14 +547,14 @@ try {
   // WHAT SAVES THE DAEMON HERE IS THE OPEN TRANSPORT, AND ONLY THAT. An earlier draft of this
   // comment also claimed the probe answers were "far past their own budget" and therefore read as
   // starvation. That was wrong, and a reviewer's measurement is what showed it: a blackholed probe
-  // is ended BY its own deadline, so it arrives AT the budget, not past it — and on an unstarved
+  // is ended BY its own deadline, so it arrives AT the budget, not past it, and on an unstarved
   // host the server genuinely had that whole second and genuinely failed to complete a handshake.
   // Those are honest negatives about this address, and they are counted as such. The daemon stays
   // only because its existing connection to that same broker is open and serving, which is real
   // evidence that the broker is there and this process merely cannot open a NEW socket to it.
   //
   // The blackhole therefore runs INSIDE the hard backstop. Past the backstop this daemon SHOULD
-  // exit even with a live transport — that is the bound, and cell D grades it.
+  // exit even with a live transport. That is the bound, and cell D grades it.
   //
   // The pre-fix predicate cannot tell this from a dead server: it sees `false` and a window that has
   // elapsed, and it exits.
@@ -578,7 +578,7 @@ try {
     // satisfied by a broker that quietly stopped answering.
     if (!(await isReachable(SERVERS))) brokerStayedUp = false;
     // Do NOT break on an exit. The remaining cells are the ones that report it, and leaving the loop
-    // early would additionally red C4 on a duration the daemon's own exit cut short — a second,
+    // early would additionally red C4 on a duration the daemon's own exit cut short, a second,
     // misleading failure attached to the same event.
     if (chopped.exited) exitedDuringBlackhole = true;
   }
@@ -614,13 +614,13 @@ try {
   // greens on a broken implementation grades nothing about it, so the signal needed a case where it
   // is the only evidence in play. This is that case, and it is also the refusing side of the
   // guarantee: the blackhole is exactly C's, but every established socket is CUT as well. The
-  // daemon now holds no standing evidence and can obtain none — it is not starved, it is genuinely
-  // cut off from that address by every means available to it — so the honest answer is to exit.
+  // daemon now holds no standing evidence and can obtain none, it is not starved, it is genuinely
+  // cut off from that address by every means available to it, so the honest answer is to exit.
   //
   // C and D therefore pin the distinction from both sides. Same failing side-probes, same live
   // server, opposite required outcomes, and the ONLY difference between them is the evidence the
   // daemon holds about its own connection. That difference is the entire claim of this repair.
-  console.log("\nD. the transport is cut AND new connections are blackholed — no evidence is obtainable");
+  console.log("\nD. the transport is cut AND new connections are blackholed, no evidence is obtainable");
   const cutProxy = startFreshConnectBlackholeProxy();
   const cutPort = await cutProxy.listening;
   const cut = spawnDaemon(spaceD, credsPathD, `nats://127.0.0.1:${cutPort}`);
@@ -638,7 +638,7 @@ try {
   check("D4 and the exit names the broker-gone reason rather than being any exit at all",
     cut.stderr.includes("exiting (coupled to the broker)"), tail(cut));
   // The prompt exit is the POINT of the coupling. A repair that keeps the exit but defers it for
-  // minutes has traded the defect for a quieter version of itself, so the latency is graded too —
+  // minutes has traded the defect for a quieter version of itself, so the latency is graded too ,
   // and graded against the BACKSTOP, because the claim is that gathered negatives end this daemon
   // before the hard bound has to. An exit that only ever arrived at the backstop would mean the
   // evidence path is unreachable, which is the failure a reviewer measured in two other shapes.
@@ -654,7 +654,7 @@ try {
   // late; under D every blackholed probe is cut off by its own deadline ON TIME, at ~1000ms of a
   // 1000ms budget, so it is an honest negative. Deleting the lateness rule left both green. The
   // condition it exists for is neither: it is load 311 on 12 cores, where the process DOES run, just
-  // not when it meant to. A probe issued there completes — and its own deadline timer fires seconds
+  // not when it meant to. A probe issued there completes, and its own deadline timer fires seconds
   // after the deadline it was supposed to enforce, so the `false` it returns was decided by this
   // host's runqueue rather than by the server. That is the third mechanism in #1318, and the
   // measured incident is full of it.
@@ -715,7 +715,7 @@ try {
   //
   // THIS CELL EXISTS BECAUSE A REVIEWER FOUND THE HOLE, and it is the refusing case for the exit
   // this whole issue is about. Every takeover path ends in `shutdown(1)`, and shutdown released the
-  // lease — with an unconditional KV delete, which removes whatever row is present rather than the
+  // lease, with an unconditional KV delete, which removes whatever row is present rather than the
   // row this process owned. By the time a daemon exits BECAUSE another daemon took the shard, the
   // row is the replacement's. So the old daemon's polite release deleted the new holder's lease and
   // left the shard with nobody serving it: a cleaner, quieter version of exactly the outage #1318
@@ -743,7 +743,7 @@ try {
   const winnerLease = await readLease(spaceF, credsPathF);
   check("F4 the replacement's lease is live and ready", winnerLease?.info.ready === true, winnerLease);
 
-  // The loser must now exit on its own — that is the single-holder guarantee, and it is preserved.
+  // The loser must now exit on its own. That is the single-holder guarantee, and it is preserved.
   const loserExited = await untilExit(holder, 45_000);
   check("F5 the displaced daemon exits so the holder is single", loserExited, tail(holder));
   check("F6 and it says the shard is held by another daemon rather than claiming a broker loss",
@@ -768,7 +768,7 @@ try {
   // handover was in progress, and this branch widened exactly that. Pre-fix, a failed renew went
   // straight to shutdown: wrong, because starvation produced failed renews, but it did mean the
   // daemon stopped serving immediately. Post-fix the daemon treats a failed renew as a question and
-  // re-reads the key — and across that read, and across the atomic create that may follow it, it
+  // re-reads the key, and across that read, and across the atomic create that may follow it, it
   // was still consuming the fan-out durable, still running the inbox reader, and still answering
   // ctl.delivery. A replacement that won the shard in that window shared the durables with it.
   //
@@ -787,7 +787,7 @@ try {
   const incumbentUp = await untilUp(incumbent);
   check("G1 the incumbent daemon comes up and holds the shard", incumbentUp, tail(incumbent));
   if (!incumbentUp) throw new Error("the arbitration cell needs a daemon that was running; it never came up");
-  // ALIVE AND SERVING IMMEDIATELY BEFORE THE STIMULUS — the positive control. Without this, "the
+  // ALIVE AND SERVING IMMEDIATELY BEFORE THE STIMULUS, the positive control. Without this, "the
   // loser held no bindings" is satisfied by a daemon that never bound any.
   const servingBefore = await pendingPulls(spaceG, credsPathG);
   check("G2 it is SERVING before anything happens: both durables have parked pulls on the broker",
@@ -800,14 +800,14 @@ try {
   // HAND THE SHARD OVER DETERMINISTICALLY. Cell F takes the row away and races a fresh daemon
   // against the incumbent's next renew, which works there because F only needs the handover to
   // happen at all. It is not good enough here: this cell grades the incumbent's behaviour DURING
-  // the arbitration, so the incumbent must actually lose, and on its first run it did not — it
+  // the arbitration, so the incumbent must actually lose, and on its first run it did not, it
   // noticed the empty key and re-acquired before the replacement finished booting, which is the
   // correct behaviour (it is cell H) but the wrong scenario. That is a real race, not a flake, and
   // leaving it in would make this cell grade whichever daemon happened to be scheduled first.
   //
   // SIGSTOP pins the order without faking anything: the incumbent is off the runqueue while the row
   // is removed and the replacement wins the create, then SIGCONT wakes it into precisely the state
-  // under test — a live process that still believes it owns a shard somebody else now holds. It is
+  // under test, a live process that still believes it owns a shard somebody else now holds. It is
   // also the incident's own condition, which is the point of the whole issue.
   signalGroup(incumbent, "SIGSTOP");
   await deleteLease(spaceG, credsPathG);
@@ -815,20 +815,20 @@ try {
   const replacementUp = await untilUp(replacement);
   // OBSERVE THE OVERLAP WHILE IT IS HELD STILL. The replacement is bound and ready; the incumbent is
   // frozen and still bound. That is the two-responder state, and it is stationary because one of the
-  // two processes cannot run — so it is read here, deliberately, rather than chased later.
+  // two processes cannot run, so it is read here, deliberately, rather than chased later.
   const boundDuringOverlap = await obsG.controlSubs(accountG.account.pub);
   // Wake it only once the replacement is READY. Sol's boundary is stated exactly this way: the
   // replacement is already serving before the loser's create is refused.
   signalGroup(incumbent, "SIGCONT");
   check("G4 the replacement acquires the shard and becomes ready", replacementUp, tail(replacement));
   const replacementLease = await readLease(spaceG, credsPathG);
-  check("G5 the replacement's lease is live and ready — the winner is SERVING",
+  check("G5 the replacement's lease is live and ready, the winner is SERVING",
     replacementLease?.info.ready === true, replacementLease);
 
   // THE CELL, and the claim needs stating precisely, because the obvious one is not true.
   //
   // AN OVERLAP EXISTS AND CANNOT BE ABOLISHED. The instant the replacement binds, the frozen
-  // incumbent is still bound — it is off the runqueue and cannot act, which is the whole condition
+  // incumbent is still bound, it is off the runqueue and cannot act, which is the whole condition
   // #1318 is about. A cell demanding "never two responders" would be demanding that a descheduled
   // process do something, and the only way to pass it would be to weaken the stimulus.
   //
@@ -855,7 +855,7 @@ try {
   // A PIPE DATA EVENT IS NOT AN EXECUTION FENCE. By the time this process is scheduled to handle the
   // quiesce bytes, the child may already have run on and printed its verdict, and SIGSTOP after the
   // fact does not unspeak it. The old text here asserted that the signal "lands before this process
-  // yields, so the daemon cannot get another slice" — that is false about a different process on a
+  // yields, so the daemon cannot get another slice". That is false about a different process on a
   // loaded box, and it was the reasoning behind a cell that reddened on CI for the wrong reason.
   //
   // The freeze is still worth keeping: when it does win it holds the quiesced state still and makes
@@ -915,12 +915,12 @@ try {
       if (subs > 1) {
         sawOverlap = true;
         // Coming BACK after it had resolved would mean the daemon re-armed without proving
-        // ownership — the exact thing `mayServeOn` refuses. Distinct from never resolving.
+        // ownership, the exact thing `mayServeOn` refuses. Distinct from never resolving.
         if (overlapEndedAlive) overlapReturned = true;
       } else if (subs === 1) {
         // ALIVE IS NOT ENOUGH, and this is the distinction the first version of the cell missed.
         // `shutdown()` unbinds through `ep.stop()` and only then exits, so there is a window in
-        // which a SHUTTING-DOWN daemon is unbound and still running — which means "the overlap
+        // which a SHUTTING-DOWN daemon is unbound and still running, which means "the overlap
         // ended while the loser was alive" is satisfied by the pre-fix behaviour too, and a mutation
         // that disabled quiescing entirely still passed. Measured, not reasoned about.
         //
@@ -940,19 +940,19 @@ try {
   // it was trying to resolve (measured: five readings across an entire arbitration).
   const peakPulls = await pendingPulls(spaceG, credsPathG);
 
-  check("G6 the loser was still RUNNING during the arbitration — the window this cell grades exists",
+  check("G6 the loser was still RUNNING during the arbitration, the window this cell grades exists",
     sawLoserAlive, { exited: incumbent.exited });
-  check("G7 the responder count was actually readable throughout — the observable is not vacuous",
+  check("G7 the responder count was actually readable throughout, the observable is not vacuous",
     answeredSubs > 0, { answeredSubs });
   check("G7b the overlap this cell is about genuinely occurred: two daemons were bound at once",
     boundDuringOverlap === 2, { boundDuringOverlap, peakBound, answeredSubs, sawOverlap });
-  check("G7c and never more than two — no third party is involved in this measurement",
+  check("G7c and never more than two, no third party is involved in this measurement",
     peakBound <= 2 && (boundDuringOverlap ?? 0) <= 2, { peakBound, boundDuringOverlap });
   // THE DISCRIMINATING ASSERTION. Pre-fix this is only reachable by dying.
   check("G7d the overlap ENDED while the loser was still alive, not by the loser exiting",
     overlapEndedAlive, { peakBound, answeredSubs, loserExited: incumbent.exited });
   // THE DISCRIMINATING ASSERTION. Unbinding inside `shutdown()` also happens while the process is
-  // alive, so G7d alone is satisfied by the pre-fix behaviour — verified by disabling the quiesce
+  // alive, so G7d alone is satisfied by the pre-fix behaviour, verified by disabling the quiesce
   // call and watching every G cell stay green. What only the repair can do is stop serving BEFORE
   // the ownership question has been answered at all, and G8/G9 below grade exactly that on the
   // daemon's own transcript rather than on a sampled instant.
@@ -978,7 +978,7 @@ try {
   // loses it says nothing at all. A cell whose truth depends on which process the scheduler favoured
   // grades nothing, so it asserts nothing and is printed for whoever reads a future failure here.
   console.log(`    · sampled-undecided reading: ${overlapEndedUndecided} (context only: races the daemon's own output; G8/G9 carry this claim on the transcript)`);
-  check("G7f and serving never resumed during the arbitration — no re-arm without proof",
+  check("G7f and serving never resumed during the arbitration, no re-arm without proof",
     !overlapReturned, { overlapReturned });
   // REQUIRES A READING. `peakPulls === undefined` means the sampler could not get an answer off the
   // broker, and scoring that as a pass would be the unknown-is-a-negative rule this whole suite
@@ -1004,7 +1004,7 @@ try {
   check("G11 the winner still holds a live, ready lease afterwards",
     afterArb?.info.ready === true && afterArb?.info.holder === replacementLease?.info.holder, { afterArb, replacementLease });
   const boundAfter = await obsG.controlSubs(accountG.account.pub);
-  check("G12 and exactly one connection serves ctl.delivery afterwards — the winner's, alone",
+  check("G12 and exactly one connection serves ctl.delivery afterwards, the winner's, alone",
     boundAfter === 1, boundAfter);
   await obsG.close();
   signalGroup(replacement, "SIGKILL");
@@ -1014,8 +1014,8 @@ try {
   //
   // THE ANTI-BAND-AID CELL, and the refusing case for cell G's accepting branch. Going quiet on a
   // failed renew is only a repair if the daemon comes BACK when the question is answered in its
-  // favour. A daemon that quiesced and stayed quiet would pass every cell in G — it holds no
-  // bindings, it splits no durable — while delivering nothing, which is #1318's outage with better
+  // favour. A daemon that quiesced and stayed quiet would pass every cell in G, it holds no
+  // bindings, it splits no durable, while delivering nothing, which is #1318's outage with better
   // manners. So: make the renew fail with NOBODY else in the race, and require the daemon to go
   // quiet, re-acquire, and SERVE AGAIN, under its own power and with no second process involved.
   console.log("\nH. a daemon that went quiet on a failed renew comes back when it re-proves ownership");
@@ -1029,7 +1029,7 @@ try {
     soloBefore !== undefined && soloBefore.fanout > 0 && soloBefore.reader > 0, soloBefore);
 
   // Delete the row out from under it and leave the slot EMPTY. This is the measured incident's own
-  // shape — `wrong last sequence: 0`, a key that expired with nobody else holding it — reproduced
+  // shape, `wrong last sequence: 0`, a key that expired with nobody else holding it, reproduced
   // without starving anything. The next renew fails, the daemon quiesces, re-reads, finds the key
   // gone, and its atomic create is uncontested.
   await deleteLease(spaceH, credsPathH);
@@ -1039,7 +1039,7 @@ try {
     if (/serving shard \d+ again/.test(solo.stderr)) { resumed = true; break; }
     await wait(500);
   }
-  check("H3 the daemon did NOT exit when its lease vanished with no rival — the #1318 case", !solo.exited, tail(solo));
+  check("H3 the daemon did NOT exit when its lease vanished with no rival, the #1318 case", !solo.exited, tail(solo));
   check("H4 it announced going quiet while it checked", solo.stderr.includes("stopped serving shard"), tail(solo));
   check("H5 and it announced serving again, under its own power", resumed, tail(solo));
   check("H6 the re-arm is attributed to the evidence that permitted it, not merely to time passing",
@@ -1048,7 +1048,7 @@ try {
   const soloLease = await readLease(spaceH, credsPathH);
   check("H7 it holds a live, ready lease again", soloLease?.info.ready === true, soloLease);
   const soloAfter = await pendingPulls(spaceH, credsPathH);
-  check("H8 and both durables have parked pulls again — it is genuinely serving, not merely alive",
+  check("H8 and both durables have parked pulls again, it is genuinely serving, not merely alive",
     soloAfter !== undefined && soloAfter.fanout > 0 && soloAfter.reader > 0, { soloAfter, soloBefore });
   const obsH = await openObserver(spaceH);
   const boundAgain = await obsH.controlSubs(accountH.account.pub);
@@ -1060,18 +1060,18 @@ try {
 
   // ── R. THE SURVIVABLE RENEW FAILURE: the daemon must recognise its OWN row ──────────────────────
   //
-  // The `held` reading is the one that says "your renew failed and the shard is STILL YOURS" — the
+  // The `held` reading is the one that says "your renew failed and the shard is STILL YOURS", the
   // only survivable verdict in the whole re-read. Cells F and G stage a real takeover (`taken`) and
   // cell H deletes the row (`gone`), so nothing above drives the re-read to `held`, and a comparison
   // that could never return it would pass every one of them. That is exactly the hole this cell
   // fills: it was a live defect (the row carries the principal dot-form `local.U…` while the
-  // comparison used the bare nkey `U…`), and its symptom is this suite's own subject — the daemon
+  // comparison used the bare nkey `U…`), and its symptom is this suite's own subject, the daemon
   // read its own row, failed to recognise itself, exited naming ITSELF as the thief, and left the
   // shard with a not-ready row and no process.
   //
   // THE STIMULUS MOVES THE REVISION WHILE KEEPING THE HOLDER BYTE-IDENTICAL: the row's own bytes are
   // read and written straight back. That is precisely the "renew whose write landed but whose reply
-  // was lost" case — the daemon's cached revision goes stale, its next CAS is refused, and it must
+  // was lost" case, the daemon's cached revision goes stale, its next CAS is refused, and it must
   // re-read. One daemon, no rival anywhere in the space, so a takeover verdict cannot be true.
   console.log("\nR. a renew fails while the row is still ours (the survivable case)");
   await deleteLease(spaceH, credsPathH); // H's killed daemon left a row behind; clear the slot
@@ -1099,7 +1099,7 @@ try {
     && afterBump.revision > beforeBump.revision, { before: beforeBump?.revision, after: afterBump?.revision });
   // THE PRECONDITION THAT MAKES THE REST MEAN ANYTHING. If the holder bytes had changed, a `taken`
   // verdict would be CORRECT and R5 would be grading the wrong thing.
-  check("R3 and the holder is byte-identical — the row is STILL this daemon's",
+  check("R3 and the holder is byte-identical, the row is STILL this daemon's",
     afterBump !== undefined && beforeBump !== undefined && afterBump.info.holder === beforeBump.info.holder,
     { before: beforeBump?.info.holder, after: afterBump?.info.holder });
   // Give the renew ticker time to fail its CAS, re-read, and act on what it read.
@@ -1115,7 +1115,7 @@ try {
     ownResumed && /serving shard \d+ again .*still its own/.test(own.stderr), tail(own));
   // PROVEN ON THE BROKER. The daemon's log says it resumed; the durables say whether it did.
   const ownPulls = await pendingPulls(spaceH, credsPathH);
-  check("R7 and both durables have parked pulls — genuinely serving, not merely alive",
+  check("R7 and both durables have parked pulls, genuinely serving, not merely alive",
     ownPulls !== undefined && ownPulls.fanout > 0 && ownPulls.reader > 0, ownPulls);
   // THE REFUSING HALF, and the reason the ownership test is not just a principal comparison. Cells
   // F and G already run two daemons from ONE creds file, because that is what the product does: the
@@ -1140,7 +1140,7 @@ try {
     const e = await kv.get(leaseKey(0));
     if (!e) throw new Error("the successor cell needs the daemon's lease row; it was not there");
     const mine = e.json<DeliveryLeaseInfo>();
-    // Same holder, different run — exactly a restarted daemon's row.
+    // Same holder, different run, exactly a restarted daemon's row.
     await kv.put(leaseKey(0), new TextEncoder().encode(JSON.stringify({ ...mine, incarnation: randomUUID() })));
   } finally { try { await succNc.drain(); } catch { /* already gone */ } }
   let succDecided = false;
@@ -1217,7 +1217,7 @@ try {
   check("W3 and the daemon exited", await untilExit(edge!, 15_000), tail(edge!));
   // THE CLAIM, off the BROKER rather than the daemon's log: an ordinary stop gives the shard back.
   const edgeRow = await readLease(spaceH, credsPathH);
-  check("W4 the lease row is GONE \u2014 not stranded for the bucket TTL", edgeRow === undefined, edgeRow);
+  check("W4 the lease row is GONE, not stranded for the bucket TTL", edgeRow === undefined, edgeRow);
   // THE CONSEQUENCE an operator actually meets, through the REAL acquire path of a REAL daemon.
   const afterEdge = spawnDaemon(spaceH, credsPathH);
   const afterEdgeUp = await untilUp(afterEdge);
@@ -1272,7 +1272,7 @@ try {
   check("X3 and it exits NON-ZERO, so cleaning up the lease did not swallow the failure", xd.code !== 0, xd.code);
   // THE CLAIM, read off the BROKER rather than the daemon's log.
   const xRow = await readLease(spaceH, credsPathH);
-  check("X4 the lease row is GONE \u2014 a caught start-up rejection still released the shard", xRow === undefined, xRow);
+  check("X4 the lease row is GONE, a caught start-up rejection still released the shard", xRow === undefined, xRow);
   // Repair the durable so the replacement has a broker it can actually bind against: the question
   // here is whether the SHARD was given back, not whether the conflict is permanent.
   const xFixNc = await connect({

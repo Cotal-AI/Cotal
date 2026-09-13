@@ -41,7 +41,7 @@ export interface DeliveryLeaseInfo {
    *  (`delivery-proc.ts` mints it once and re-launches against it), so a replacement daemon in the same
    *  space authenticates as the same nkey and presents the same principal as the process it replaced.
    *  A daemon asking "is this row still mine?" therefore cannot get a truthful answer from `holder`
-   *  alone — it would recognise its own SUCCESSOR's row as its own, keep serving a shard it had lost,
+   *  alone, it would recognise its own SUCCESSOR's row as its own, keep serving a shard it had lost,
    *  and CAS-release the row out from under the live holder. Minted per endpoint instance, so it
    *  changes on every restart even when the credential does not.
    *

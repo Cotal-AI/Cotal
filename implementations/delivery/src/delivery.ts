@@ -385,7 +385,7 @@ async function runStartedDelivery(
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
   // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
   // what `card.id` must carry at construction (a creds SOURCE has no cred to derive it from yet).
-  // It is NOT what the lease record carries as `holder` — see readOwnLease, which compares against
+  // It is NOT what the lease record carries as `holder`, see readOwnLease, which compares against
   // `ep.card.id`, the value the endpoint actually stamps.
   const ownId = idFromCreds(creds.initial);
 
@@ -430,7 +430,7 @@ async function runStartedDelivery(
     return;
   }
 
-  // SIGNAL HANDLING IS ARMED HERE, THE STATEMENT AFTER THE SHARD BECOMES OURS — not at the end of
+  // SIGNAL HANDLING IS ARMED HERE, THE STATEMENT AFTER THE SHARD BECOMES OURS, not at the end of
   // start-up, and not merely before the readiness flip. From this line on there is a row on the
   // broker with this daemon's name on it, and every instant until a handler exists is an instant in
   // which SIGTERM takes Node's DEFAULT action: immediate death, no release, the shard claimed by a
@@ -458,7 +458,7 @@ async function runStartedDelivery(
       try {
         const own = await ep.readDeliveryLeaseEntry(shard);
         if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-      } catch { /* broker may be gone — the bucket TTL is the crash-safe release authority */ }
+      } catch { /* broker may be gone, the bucket TTL is the crash-safe release authority */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();
@@ -680,7 +680,7 @@ async function runStartedDelivery(
   // A SIGTERM landing in that window hit Node's DEFAULT handler and killed the process outright:
   // no release, no CAS, the row left behind for the rest of the 30s bucket TTL. The daemon had
   // already announced itself up, so from outside it was a fully started daemon that died silently
-  // holding the shard, and the next `cotal up` was refused with "a live lease already exists" — the
+  // holding the shard, and the next `cotal up` was refused with "a live lease already exists", the
   // shard unservable for 30s after a perfectly ordinary stop-and-restart.
   //
   // Measured, not reasoned: with a diagnostic on the handler, the failing run's daemon log shows
@@ -704,7 +704,7 @@ async function runStartedDelivery(
   process.off("unhandledRejection", earlyRejection);
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
-  /** What the broker says about THIS shard's lease key right now — the verdict a failed renew does
+  /** What the broker says about THIS shard's lease key right now, the verdict a failed renew does
    *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
    *  looking and finding nothing (#1318).
    *
@@ -715,7 +715,7 @@ async function runStartedDelivery(
    *  1. Comparing against `ownId` (the bare connection nkey `U…`) is comparing across NAMESPACES:
    *     the endpoint rewrites `card.id` in its constructor to the wire PRINCIPAL dot-form
    *     `${owner}.${actor}` (`local.U…`), and that is what `encodeLease` stamps. That mismatch made
-   *     `held` UNREACHABLE — the daemon read its own row, failed to recognise itself, took the
+   *     `held` UNREACHABLE, the daemon read its own row, failed to recognise itself, took the
    *     `taken` branch and exited naming ITSELF as the thief, leaving a not-ready row and no
    *     process. `held` is the one survivable reading ("your renew failed but the shard is still
    *     yours"), so making it unreachable turned every recoverable renew failure into a permanent
@@ -739,7 +739,7 @@ async function runStartedDelivery(
     // reply was lost, in which case the cached revision is permanently one behind and every later
     // CAS is refused over a sequence this daemon moved itself. Adopting the read revision is what
     // lets a survivable renew failure actually be survived. (An earlier comment here claimed the
-    // record carries no revision; it does — the KV entry's own `revision` — and that claim was
+    // record carries no revision; it does, the KV entry's own `revision`, and that claim was
     // wrong, which is why the stale token went unnoticed.)
     return { kind: "held", revision: current.revision };
   };
@@ -771,7 +771,7 @@ async function runStartedDelivery(
     catch (e) { console.error(`! delivery: ${why} but could not resume Plane-3 (${(e as Error).message})`); return; }
     // `ready` MEANS "THE RESPONDER IS UP", and it is what `ensureDelivery` waits on and what the
     // `cotal_channels` health surface reports. Startup flips it only after binding, for exactly that
-    // reason — and a re-acquire creates the row afresh, which `acquireDeliveryLease` deliberately
+    // reason, and a re-acquire creates the row afresh, which `acquireDeliveryLease` deliberately
     // makes NOT-ready. Without this flip a daemon that recovered would serve correctly while every
     // readiness waiter in the space timed out against a permanently not-ready lease: the outage
     // #1318 is about, surviving the repair by hiding in the readiness flag instead of the exit path.
@@ -782,14 +782,14 @@ async function runStartedDelivery(
     }
     if (!quiesced) return;
     quiesced = false;
-    console.error(`\u2713 delivery: serving shard ${shard} again \u2014 ${why} (space ${space})`);
+    console.error(`\u2713 delivery: serving shard ${shard} again, ${why} (space ${space})`);
   };
 
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
   //
   // A FAILED RENEW IS A QUESTION, NOT A VERDICT (#1318). The shipped code exited on ANY renew
-  // error, so a key that had EXPIRED under local CPU starvation — with nobody else holding it,
-  // reported as `wrong last sequence: 0` — was indistinguishable from a genuine takeover, and the
+  // error, so a key that had EXPIRED under local CPU starvation, with nobody else holding it,
+  // reported as `wrong last sequence: 0`, was indistinguishable from a genuine takeover, and the
   // only holder there was ended itself. The verdict comes from RE-READING the key: `taken` exits so
   // the holder stays single, `gone` is repaired by an ATOMIC create (which arbitrates: if a
   // replacement got there first the create fails and THAT is the genuine loss), and `held`/`unknown`
@@ -829,13 +829,13 @@ async function runStartedDelivery(
           // leaving it set would tell every `ensureDelivery` waiter in the space to keep waiting on a
           // daemon that is deliberately not answering. Best-effort: the renew that just failed means
           // the CAS may fail too, and staying quiet matters more than the flag being tidy. The row
-          // itself is kept — the shard is still claimed, only the answering claim is withdrawn.
+          // itself is kept, the shard is still claimed, only the answering claim is withdrawn.
           if (revision !== undefined) {
             try { revision = await ep.markDeliveryLeaseNotReady(shard, revision); }
             catch { /* the row may have moved on; the ownership read below is what decides */ }
           }
           // ANNOUNCED, because an operator watching a stall needs to know the daemon stopped serving
-          // on purpose rather than silently wedged — and because the live cell anchors on this line
+          // on purpose rather than silently wedged, and because the live cell anchors on this line
           // to know when to start demanding that this process holds no Plane-3 bindings.
           noteQuiesce();
         }
@@ -849,7 +849,7 @@ async function runStartedDelivery(
               // ADOPT THE BROKER'S REVISION before serving again. The failed renew may have landed
               // with its reply lost, so the cached token can be stale; re-arming on it would leave
               // every later CAS refused over this daemon's own write and manufacture the takeover
-              // it is trying to rule out. The read just told us the sequence — use it.
+              // it is trying to rule out. The read just told us the sequence, use it.
               // Narrowed by the guard above: `mayServeOn` admits only `held`, which is the one
               // reading that carries a revision. Stated as an assert rather than a cast so a future
               // widening of `mayServeOn` fails here loudly instead of serving without a CAS token.
@@ -875,11 +875,11 @@ async function runStartedDelivery(
               noteLease("held", `found its lease key gone (renew: ${why}) and re-acquired it at revision ${revision}`);
             } catch (e) {
               // Refused: a live lease exists that is not ours, so a replacement daemon holds this
-              // shard. THIS is the genuine loss, and it exits — WITHOUT a revision to release, or
+              // shard. THIS is the genuine loss, and it exits, WITHOUT a revision to release, or
               // the exit would delete the replacement's row.
               revision = undefined;
               console.error(
-                `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}) — exiting so the holder is single`,
+                `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`,
               );
               shutdown(1);
             }
@@ -889,7 +889,7 @@ async function runStartedDelivery(
             // the holder's lease and turn a clean handover into an unheld shard.
             revision = undefined;
             console.error(
-              `✗ delivery: the lease for shard ${shard} is held by ${reading.kind === "taken" ? reading.by : "another daemon"}, not by this process (renew: ${why}) — exiting so the holder is single`,
+              `✗ delivery: the lease for shard ${shard} is held by ${reading.kind === "taken" ? reading.by : "another daemon"}, not by this process (renew: ${why}), exiting so the holder is single`,
             );
             shutdown(1);
             return;
@@ -901,7 +901,7 @@ async function runStartedDelivery(
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
   // Coupled to the broker: POLL its reachability. Survive brief blips (the endpoint reconnects on its
-  // own), but EXIT if the broker is GONE — the endpoint would otherwise retry reconnect forever (its
+  // own), but EXIT if the broker is GONE, the endpoint would otherwise retry reconnect forever (its
   // terminal-close never fires), so this is what stops the daemon outliving the server it serves.
   // (`cotal up`/`down` teardown stops it too.) The window is env-overridable for tests.
   //
@@ -918,7 +918,7 @@ async function runStartedDelivery(
   //   • COMPLETED NEGATIVE PROBES. Only a probe that RAN TO COMPLETION and returned false is
   //     evidence about the server. A probe that never ran contributes nothing (that was the whole
   //     defect: the window aged with no probe having failed), and one that REJECTED is an
-  //     unanswered question — it now resets the counter and logs, where it used to be swallowed by
+  //     unanswered question, it now resets the counter and logs, where it used to be swallowed by
   //     `.catch(() => {})` and silently age the window.
   //   • TRANSPORT-LEVEL LIVENESS. A `transport: connected` edge from the endpoint's own connection
   //     cannot happen without a server on the other end, so it is positive evidence obtained for
@@ -956,7 +956,7 @@ async function runStartedDelivery(
     lag.reset();
     if (degraded) {
       degraded = false;
-      console.error(`✓ delivery: the broker is answering again — Plane-3 is serving normally (space ${space})`);
+      console.error(`✓ delivery: the broker is answering again, Plane-3 is serving normally (space ${space})`);
     }
   };
   // The endpoint's OWN transport edge. This is evidence the daemon gets without being scheduled to
@@ -1003,7 +1003,7 @@ async function runStartedDelivery(
         // silently aged the daemon toward an exit it had gathered no evidence for.
         (e: Error) => {
           sampler.stop();
-          console.error(`! delivery: the broker probe did not complete (${e.message}) — no verdict from it; serving, retrying`);
+          console.error(`! delivery: the broker probe did not complete (${e.message}), no verdict from it; serving, retrying`);
           return classifyProbe(undefined, Date.now() - probeStarted);
         },
       )
@@ -1056,12 +1056,12 @@ async function runStartedDelivery(
           // confident evidentiary claim the daemon had not established.
           console.error(
             verdict.reason === "backstop"
-              ? `✗ delivery: giving up on elapsed time alone — ${Math.round(BROKER_GONE_BACKSTOP_MS / 1000)}s since the last ` +
+              ? `✗ delivery: giving up on elapsed time alone, ${Math.round(BROKER_GONE_BACKSTOP_MS / 1000)}s since the last ` +
                   `confirmed reachability with no sufficient evidence either way (${completedNegatives} completed probes refused, ` +
                   `${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited). This is a BOUND, not a diagnosis: the ` +
-                  `broker may be gone or this process may have been starved past the bound — exiting (coupled to the broker)`
-              : `✗ delivery: broker unreachable — ${completedNegatives} completed probes refused within their deadline over ` +
-                  `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited) — exiting (coupled to the broker)`,
+                  `broker may be gone or this process may have been starved past the bound, exiting (coupled to the broker)`
+              : `✗ delivery: broker unreachable, ${completedNegatives} completed probes refused within their deadline over ` +
+                  `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited), exiting (coupled to the broker)`,
           );
           shutdown(1);
           return;
@@ -1073,10 +1073,10 @@ async function runStartedDelivery(
           degraded = true;
           console.error(
             verdict.reason === "starved"
-              ? `! delivery: DEGRADED — cannot reach the broker, but ${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
+              ? `! delivery: DEGRADED, cannot reach the broker, but ${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
               : verdict.reason === "transport-live"
-                ? `! delivery: DEGRADED — a fresh probe cannot complete, but this daemon's own connection to ${server} is still open, so the broker is there and this process cannot ask; serving, retrying`
-                : `! delivery: DEGRADED — the broker has not answered for >${BROKER_GONE_MS / 1000}s but only ${completedNegatives} of ${BROKER_GONE_PROBES} probes have refused within their deadline; serving, retrying`,
+                ? `! delivery: DEGRADED, a fresh probe cannot complete, but this daemon's own connection to ${server} is still open, so the broker is there and this process cannot ask; serving, retrying`
+                : `! delivery: DEGRADED, the broker has not answered for >${BROKER_GONE_MS / 1000}s but only ${completedNegatives} of ${BROKER_GONE_PROBES} probes have refused within their deadline; serving, retrying`,
           );
         }
       })

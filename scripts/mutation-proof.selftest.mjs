@@ -761,7 +761,7 @@ r = runTool(["--config", "buried.json"]);
   // `later green 5` and after fall inside the tail, so they are shown for an unrelated reason; the
   // honest probe is a green that lies in the omitted middle. Getting this wrong once is why the
   // assertion names the line it expects to be absent rather than any convenient nearby string.
-  check("...while the greens in the omitted span stay omitted — the rescue is by failure, not by widening",
+  check("...while the greens in the omitted span stay omitted, the rescue is by failure, not by widening",
     out.includes("middle line(s) omitted") && !out.includes("green cell 12"), out.slice(-1200));
 }
 // MORE BURIED FAILURES THAN THE CAP. The cell above uses ONE buried failure, which cannot tell a

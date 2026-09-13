@@ -3,7 +3,7 @@
     "implementations/delivery/smoke/delivery-watchdog-evidence.smoke.ts",
     "implementations/delivery/smoke/delivery-starvation.smoke.ts"
   ],
-  "guard": "the delivery daemon distinguishes 'the broker is gone' from 'this process did not get scheduled' — it stays up and serves under local starvation, and still exits when the broker is genuinely gone or its lease is genuinely held by another daemon (#1318)",
+  "guard": "the delivery daemon distinguishes 'the broker is gone' from 'this process did not get scheduled', it stays up and serves under local starvation, and still exits when the broker is genuinely gone or its lease is genuinely held by another daemon (#1318)",
   "command": "pnpm smoke:delivery-watchdog-evidence",
   "completionMarker": "DELIVERY-WATCHDOG-EVIDENCE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/delivery-starvation.json",
@@ -39,7 +39,7 @@
     "M9 IS THE CONTROL ON M7, and it is the one that keeps the repair from being a band-aid. Drop the",
     "requirement that the probe actually ran out its budget and a starved host excuses EVERY refusal,",
     "including the ~1ms ECONNREFUSED from a genuinely dead port: a daemon that outlives its broker",
-    "whenever the host is busy. K2 and K5 are the pair that pins it — same measured starvation,",
+    "whenever the host is busy. K2 and K5 are the pair that pins it, same measured starvation,",
     "opposite readings, decided solely by whether the answer beat the budget.",
     "",
     "M8 IS THE CONTROL ON THE MEASUREMENT ITSELF. A sampler that charges the whole timer gap rather",
@@ -49,8 +49,8 @@
     "L7 pass real time specifically to let it fire.",
     "",
     "M4 AND M5 AND M6 ARE THE CONTROLS ON THE GUARANTEES, and they matter more than the rest because",
-    "the failure mode this repair could introduce — a daemon that outlives a dead broker, or two",
-    "daemons serving one shard — is WORSE than the defect it removes. M4 deletes the backstop that",
+    "the failure mode this repair could introduce, a daemon that outlives a dead broker, or two",
+    "daemons serving one shard, is WORSE than the defect it removes. M4 deletes the backstop that",
     "bounds the starvation credit; M5 makes a lease genuinely held by another daemon keep serving; M6",
     "makes an UNANSWERABLE lease question exit, which is the wrong last sequence: 0 line from the",
     "measured incident. Each reddens exactly the cell standing for a preserved guarantee and leaves",
@@ -70,7 +70,7 @@
       "replace": "  return { exit: true, reason: \"broker-gone\" };",
       "expectRed": "C1 does NOT exit: 20s elapsed with zero completed probes",
       "cell": "C1 does NOT exit: 20s elapsed with zero completed probes",
-      "note": "The shipped predicate restored in the place it actually lived: past the window with the transport down, exit on elapsed time alone — no starvation credit, no requirement that any probe completed. Anchored on two contiguous CODE lines rather than on the nearest comment, so a docs commit cannot quietly disarm it."
+      "note": "The shipped predicate restored in the place it actually lived: past the window with the transport down, exit on elapsed time alone, no starvation credit, no requirement that any probe completed. Anchored on two contiguous CODE lines rather than on the nearest comment, so a docs commit cannot quietly disarm it."
     },
     {
       "name": "M1-live the same defect, graded end to end against a real daemon and a real broker",
@@ -82,7 +82,7 @@
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "The shipped predicate restored, graded against a real daemon on a ~10% CPU duty cycle with a live broker: it exits saying \"0 completed probes refused within their deadline\" — it gathered no evidence at all and ended anyway, which is the incident. It reds cell E rather than cell C because C keeps its standing socket and the transport signal carries the verdict there; M1 removes the starvation credit and the evidence requirement, not the transport clause. The broker-killed cells stay green in the same run, which is the asymmetry the issue is about."
+      "note": "The shipped predicate restored, graded against a real daemon on a ~10% CPU duty cycle with a live broker: it exits saying \"0 completed probes refused within their deadline\", it gathered no evidence at all and ended anyway, which is the incident. It reds cell E rather than cell C because C keeps its standing socket and the transport signal carries the verdict there; M1 removes the starvation credit and the evidence requirement, not the transport clause. The broker-killed cells stay green in the same run, which is the asymmetry the issue is about."
     },
     {
       "name": "M2 a probe answer that arrived long past its own deadline counts against the broker again",
@@ -91,7 +91,7 @@
       "replace": "  void ceiling;",
       "expectRed": "J4 a false at 2554ms on a 1000ms budget is STARVED, not a negative",
       "cell": "J4 a false at 2554ms on a 1000ms budget is STARVED, not a negative",
-      "note": "The loud form of the signal, and the one the #1318 triage captured directly: a false at 2554ms against a 1000ms budget, from a broker that answered immediately either side of it. It is an INDEPENDENT safety net rather than a duplicate of M7 rule (2): when the sampler measures nothing — a stall inside a native call, a host where timer resolution hides it — an answer at 2.5x its own budget is still self-evidently not a statement about the server. J4 is where that is graded. It is graded in the PURE suite only, deliberately: the live blackhole ends probes AT their budget rather than past it, so no live cell here reaches this clause, and rather than contrive a live scenario to reach it I state the boundary.  keeps the binding used so the mutant compiles; a mutation that cannot build grades the compiler, not the suite."
+      "note": "The loud form of the signal, and the one the #1318 triage captured directly: a false at 2554ms against a 1000ms budget, from a broker that answered immediately either side of it. It is an INDEPENDENT safety net rather than a duplicate of M7 rule (2): when the sampler measures nothing, a stall inside a native call, a host where timer resolution hides it, an answer at 2.5x its own budget is still self-evidently not a statement about the server. J4 is where that is graded. It is graded in the PURE suite only, deliberately: the live blackhole ends probes AT their budget rather than past it, so no live cell here reaches this clause, and rather than contrive a live scenario to reach it I state the boundary.  keeps the binding used so the mutant compiles; a mutation that cannot build grades the compiler, not the suite."
     },
     {
       "name": "M3 measured local starvation is observed and then ignored",
@@ -116,8 +116,8 @@
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "    case \"taken\": return \"exit\";",
       "replace": "    case \"taken\": return \"keep-serving\";",
-      "expectRed": "G5 STILL exits on `taken` — the single-holder guarantee is preserved",
-      "cell": "G5 STILL exits on `taken` — the single-holder guarantee is preserved",
+      "expectRed": "G5 STILL exits on `taken`, the single-holder guarantee is preserved",
+      "cell": "G5 STILL exits on `taken`, the single-holder guarantee is preserved",
       "note": "Positive control for the guarantee the repair must preserve. Two daemons serving one shard SPLIT a durable's delivery, which is a correctness failure rather than an availability one."
     },
     {
@@ -125,8 +125,8 @@
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "    case \"unknown\": return \"keep-serving\";",
       "replace": "    case \"unknown\": return \"exit\";",
-      "expectRed": "G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer",
-      "cell": "G3 REFUSES to exit on `unknown` — an unanswerable question is not a negative answer",
+      "expectRed": "G3 REFUSES to exit on `unknown`, an unanswerable question is not a negative answer",
+      "cell": "G3 REFUSES to exit on `unknown`, an unanswerable question is not a negative answer",
       "note": "The incident's second exit line, `lost the lease (wrong last sequence: 0)`, in decision form. The genuine-takeover cell stays green in the same run, so the refusing case and the accepting case are graded separately rather than by one assertion."
     },
     {
@@ -148,7 +148,7 @@
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "A real daemon on a ~10% duty cycle against a live broker. Without this clause it exits with \"2 completed probes refused within their deadline\" — the incident, reproduced end to end."
+      "note": "A real daemon on a ~10% duty cycle against a live broker. Without this clause it exits with \"2 completed probes refused within their deadline\", the incident, reproduced end to end."
     },
     {
       "name": "M8 the deschedule sampler charges ordinary timer jitter as starvation",
@@ -157,7 +157,7 @@
       "replace": "      this.accumulated += Math.max(0, t - this.last);",
       "expectRed": "L6 an idle real-time span charges only the excess, not the whole gap",
       "cell": "L6 an idle real-time span charges only the excess, not the whole gap",
-      "note": "CONTROL on the measurement itself. A sampler that counts the whole gap rather than the EXCESS over its own interval reports a healthy host as permanently starved, which would make the daemon slow to exit when the broker really is gone — the failure mode worse than the defect, arriving through the measurement rather than through the predicate. It SURVIVED the first run of this fixture: L1-L5 drive stop() directly for determinism, so the timer callback never fired in any of them and the clause was unreachable. L6 is the cell that actually grades it, by passing real time and letting the callback run."
+      "note": "CONTROL on the measurement itself. A sampler that counts the whole gap rather than the EXCESS over its own interval reports a healthy host as permanently starved, which would make the daemon slow to exit when the broker really is gone, the failure mode worse than the defect, arriving through the measurement rather than through the predicate. It SURVIVED the first run of this fixture: L1-L5 drive stop() directly for determinism, so the timer callback never fired in any of them and the clause was unreachable. L6 is the cell that actually grades it, by passing real time and letting the callback run."
     },
     {
       "name": "M9 CONTROL: measured starvation excuses even a refusal that beat its budget",
@@ -194,19 +194,19 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "    if (revision === undefined) return;\n    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }",
       "replace": "    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }",
-      "expectRed": "a release arguing a STALE revision leaves the row in place — silently",
-      "cell": "a release arguing a STALE revision leaves the row in place — silently",
+      "expectRed": "a release arguing a STALE revision leaves the row in place, silently",
+      "cell": "a release arguing a STALE revision leaves the row in place, silently",
       "command": "pnpm smoke:delivery-lease:auth",
       "completionMarker": "DELIVERY-LEASE SMOKE",
-      "note": "RE-ANCHORED, AND THE MOVE IS ITSELF A MEASUREMENT. This was anchored on F7 of the live suite and it SURVIVED once shutdown began re-reading the row and releasing at the BROKER's revision: the daemon no longer argues a token that could belong to a successor, so no end-to-end cell can feel any more whether that delete is conditional. That is a real coverage gap rather than a defect that went away - the compare-and-swap is the last thing standing between a departing daemon and its replacement's row, and with it removed nothing downstream would notice. So the claim moves to where it can still be argued directly, against the seam itself: a release arguing a stale revision must leave the row ALONE. Drop `previousSeq` and the delete succeeds unconditionally, which is exactly the deletion of somebody else's lease the original anchor described. A REVIEWER FINDING, and the merge blocker. Every takeover path ends in shutdown(1), and shutdown released the lease with an UNCONDITIONAL KV delete. By the time a daemon exits because another daemon took the shard, the row belongs to the replacement — so the polite release deleted the new holder lease and left the shard unserved. That is the #1318 outage again, reached through the lease path instead of the broker watch. Only a live cell can see it: leaseAction was always correct, and the damage happened downstream of the decision."
+      "note": "RE-ANCHORED, AND THE MOVE IS ITSELF A MEASUREMENT. This was anchored on F7 of the live suite and it SURVIVED once shutdown began re-reading the row and releasing at the BROKER's revision: the daemon no longer argues a token that could belong to a successor, so no end-to-end cell can feel any more whether that delete is conditional. That is a real coverage gap rather than a defect that went away - the compare-and-swap is the last thing standing between a departing daemon and its replacement's row, and with it removed nothing downstream would notice. So the claim moves to where it can still be argued directly, against the seam itself: a release arguing a stale revision must leave the row ALONE. Drop `previousSeq` and the delete succeeds unconditionally, which is exactly the deletion of somebody else's lease the original anchor described. A REVIEWER FINDING, and the merge blocker. Every takeover path ends in shutdown(1), and shutdown released the lease with an UNCONDITIONAL KV delete. By the time a daemon exits because another daemon took the shard, the row belongs to the replacement, so the polite release deleted the new holder lease and left the shard unserved. That is the #1318 outage again, reached through the lease path instead of the broker watch. Only a live cell can see it: leaseAction was always correct, and the damage happened downstream of the decision."
     },
     {
       "name": "M13 CONTROL: a stale cached socket can defer the hard bound again",
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"backstop\" };\n",
       "replace": "",
-      "expectRed": "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
-      "cell": "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
+      "expectRed": "E3 past the backstop the daemon exits EVEN WITH a live transport, a cached socket cannot defer the bound",
+      "cell": "E3 past the backstop the daemon exits EVEN WITH a live transport, a cached socket cannot defer the bound",
       "note": "A REVIEWER FINDING, and the one that changed the design. transportConnected is not an observation of the broker: it is this client cached socket state, refreshed only when nats.js decides the peer is gone. Under a silent death (OOM kill, hypervisor pause, a firewall that drops instead of refusing) no FIN and no RST arrive, the kernel holds the connection ESTABLISHED, and with shipped defaults nats.js does not notice for about six minutes. Ranked above the backstop, a stale true deferred the exit for that whole window. A bound any single stale flag can defer is not a bound."
     },
     {
@@ -226,8 +226,8 @@
       "file": "implementations/delivery/src/watchdog.ts",
       "find": "  return reading.kind === \"held\";",
       "replace": "  return reading.kind === \"held\" || reading.kind === \"unknown\";",
-      "expectRed": "N2 `unknown` REFUSES to serve — not being able to ask is not permission to act",
-      "cell": "N2 `unknown` REFUSES to serve — not being able to ask is not permission to act",
+      "expectRed": "N2 `unknown` REFUSES to serve, not being able to ask is not permission to act",
+      "cell": "N2 `unknown` REFUSES to serve, not being able to ask is not permission to act",
       "note": "The seam's own hardest case, and the one most likely to be 'simplified' away by someone noticing that leaseAction already returns keep-serving for `unknown`. It does, and that is correct: the PROCESS must survive a broker it cannot ask, which is the whole of #1318. But surviving is not serving. A daemon that cannot find out who owns the shard has no basis for continuing to act on it, and widening this gate to `unknown` re-opens the split-durable window through the one path where the daemon has the least evidence. N7 catches the same widening structurally (exactly one of the four readings may serve), so the shape is graded as well as the case."
     },
     {
@@ -247,8 +247,8 @@
       "file": "implementations/delivery/src/delivery.ts",
       "find": "  process.on(\"SIGINT\", earlySigint);\n  process.on(\"SIGTERM\", earlySigterm);",
       "replace": "",
-      "expectRed": "W4 the lease row is GONE — not stranded for the bucket TTL",
-      "cell": "W4 the lease row is GONE — not stranded for the bucket TTL",
+      "expectRed": "W4 the lease row is GONE, not stranded for the bucket TTL",
+      "cell": "W4 the lease row is GONE, not stranded for the bucket TTL",
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
@@ -259,8 +259,8 @@
       "file": "implementations/delivery/src/delivery.ts",
       "find": "    if (releaseOnStartupFailure !== undefined) {\n      console.error(`\\u2717 delivery: start-up failed - releasing the shard before exiting`);\n      try { await releaseOnStartupFailure(); } catch { /* the throw below is the report */ }\n    }\n    throw e;",
       "replace": "    throw e;",
-      "expectRed": "X4 the lease row is GONE — a caught start-up rejection still released the shard",
-      "cell": "X4 the lease row is GONE — a caught start-up rejection still released the shard",
+      "expectRed": "X4 the lease row is GONE, a caught start-up rejection still released the shard",
+      "cell": "X4 the lease row is GONE, a caught start-up rejection still released the shard",
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",

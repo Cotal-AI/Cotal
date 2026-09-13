@@ -93,7 +93,7 @@ const excerpt = (output) => {
   const headEnd = EXCERPT_HEAD, tailStart = lines.length - EXCERPT_TAIL;
   // Scan the WHOLE discarded span before applying the cap, so the count of what is left behind is
   // measured rather than assumed. Rescuing inside the scan loop would stop at the cap and leave the
-  // reporter unable to distinguish "nothing else failed" from "I stopped looking" — and it then
+  // reporter unable to distinguish "nothing else failed" from "I stopped looking", and it then
   // printed the former. Found by a reviewer with twelve buried failures against a cap of eight: four
   // were dropped and the footer still said the remainder carried no failure markers. That is the
   // exact sin this whole change exists to remove, a tool stating something false about what it hid,
@@ -657,7 +657,7 @@ for (const r of results) {
         // lines and is only safe to print when the whole span was scanned and nothing else failed.
         const hidden = t.hiddenFailures ?? 0;
         say(hidden > 0
-          ? `  ${C.dim}  … ${t.omitted} middle line(s) omitted, INCLUDING ${hidden} more failure(s) beyond the first ${EXCERPT_FAILURES} shown — rerun and read the full log${C.off}`
+          ? `  ${C.dim}  … ${t.omitted} middle line(s) omitted, INCLUDING ${hidden} more failure(s) beyond the first ${EXCERPT_FAILURES} shown, rerun and read the full log${C.off}`
           : `  ${C.dim}  … ${t.omitted} middle line(s) omitted (no failure markers)${C.off}`);
       }
       for (const l of t.tail) say(`  ${C.dim}  | ${l}${C.off}`);

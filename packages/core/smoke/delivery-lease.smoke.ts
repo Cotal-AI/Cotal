@@ -130,7 +130,7 @@ try {
       { acquired: stAcquired, afterReady: stReady });
     // THE DEFECT: release with the pre-markReady token, exactly what the swallowed catch leaves.
     await st.releaseDeliveryLease(2, stAcquired);
-    check("a release arguing a STALE revision leaves the row in place — silently",
+    check("a release arguing a STALE revision leaves the row in place, silently",
       (await st.readDeliveryLease(2)) !== undefined);
     // ACCEPT CONTROL: the same call with the broker's current revision does free it, so the failure
     // above is the token rather than the release being broken for every input.
@@ -147,7 +147,7 @@ try {
     } finally { await stNext.stop(); }
   } finally { await st.stop(); }
 
-  // RELEASE ARGUES THE REVISION IT LAST OWNED, and `markDeliveryLeaseReady` moved it — a release
+  // RELEASE ARGUES THE REVISION IT LAST OWNED, and `markDeliveryLeaseReady` moved it, a release
   // offering the stale `rev1` is refused, which is the correct outcome for a row that has moved on
   // and the wrong one here, where this daemon genuinely still holds the shard.
   await d1.releaseDeliveryLease(0, readyRev);

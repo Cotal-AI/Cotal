@@ -3545,7 +3545,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** This endpoint instance's LEASE INCARNATION: which run of this principal a lease row was written
-   *  by. Minted per construction and never re-derived, because the credential cannot supply it — the
+   *  by. Minted per construction and never re-derived, because the credential cannot supply it, the
    *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
    *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
   private readonly leaseIncarnation = randomUUID();
@@ -3559,7 +3559,7 @@ export class CotalEndpoint extends EventEmitter {
    *
    *  Both halves are required. `holder` alone is not sufficient (a successor daemon re-reading the
    *  same creds file presents the same principal, so its row would read as ours), and `incarnation`
-   *  alone is not sufficient either — it is a bare uuid with no claim to the principal, so a row
+   *  alone is not sufficient either, it is a bare uuid with no claim to the principal, so a row
    *  bearing ours but a foreign holder is not something we should ever adopt. A row with NO
    *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
    *  to the takeover path rather than to serving on someone else's claim. */
@@ -3583,13 +3583,13 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(true), revision);
   }
 
-  /** Flip the held lease back to NOT-ready — the counterpart to {@link markDeliveryLeaseReady}, for a
+  /** Flip the held lease back to NOT-ready, the counterpart to {@link markDeliveryLeaseReady}, for a
    *  holder that has UNBOUND its loops and control responder but has not given up the shard.
    *
    *  `ready` is a claim about the RESPONDER, not about the row's existence: `ensureDelivery` waits on
    *  it and the channel-health surface reports it. A daemon that goes quiet to re-check its ownership
    *  still holds the key, so without this the space would be told a responder is up while nothing is
-   *  bound — a readiness lie of exactly the kind #1318 is about, just pointed the other way. Keeping
+   *  bound, a readiness lie of exactly the kind #1318 is about, just pointed the other way. Keeping
    *  the row (rather than deleting it) is deliberate: the shard is still claimed, so no third daemon
    *  should be invited in; what is being withdrawn is only the claim to be answering. */
   async markDeliveryLeaseNotReady(shardIndex: number, revision: number): Promise<number> {
@@ -3604,7 +3604,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort — a crash just lets the bucket TTL expire it).
+   *  effort, a crash just lets the bucket TTL expire it).
    *
    *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
    *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
@@ -3616,10 +3616,10 @@ export class CotalEndpoint extends EventEmitter {
    *
    *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
    *  process no longer holds a revision it can argue for", which is the takeover paths' honest
-   *  answer and correctly releases nothing — the bucket TTL is the crash-safe authority and expires
+   *  answer and correctly releases nothing, the bucket TTL is the crash-safe authority and expires
    *  a genuinely stale row. But if that were the DEFAULT, every existing `releaseDeliveryLease(0)`
    *  call site would keep compiling and silently stop releasing: the same omission hole
-   *  `standaloneConnectOpts` closed by deleting its `= {}`. Measured, not theorised — this landed as
+   *  `standaloneConnectOpts` closed by deleting its `= {}`. Measured, not theorised, this landed as
    *  a red in `smoke:delivery-lease`, where a caller that genuinely held the lease released nothing
    *  and the next acquire was refused. A caller must now say which it means. */
   async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
@@ -3628,7 +3628,7 @@ export class CotalEndpoint extends EventEmitter {
     catch {
       // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
       // and clean shutdown must continue even when the broker is already gone or draining. A refused
-      // CAS lands here too, which is the correct outcome — someone else owns the row.
+      // CAS lands here too, which is the correct outcome, someone else owns the row.
     }
   }
 
@@ -3643,7 +3643,7 @@ export class CotalEndpoint extends EventEmitter {
    *  CAS release are argued against, so a caller re-establishing ownership after a failed renew
    *  needs the BROKER's sequence, not the one it last cached: a renew can fail with its write
    *  already applied (a lost reply, a reconnect mid-request), which leaves the cached revision one
-   *  behind forever and every subsequent CAS refused over a sequence this process itself moved —
+   *  behind forever and every subsequent CAS refused over a sequence this process itself moved ,
    *  read as somebody else's takeover, which is the #1318 misreading in a second costume. */
   async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
     const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
@@ -4043,7 +4043,7 @@ export class CotalEndpoint extends EventEmitter {
     return { ok: false, error: `op "${req.op}" not supported on the delivery control service` };
   }
 
-  /** Validate the channel ARG shape only — non-blank, valid, concrete (NO ACL check, that is op-specific).
+  /** Validate the channel ARG shape only: non-blank, valid, concrete (NO ACL check, that is op-specific).
    *  Returns the channel on success or a ControlReply error to short-circuit. */
   private checkDurableChannelArg(args: Record<string, unknown>, op: string): string | ControlReply {
     const channel = typeof args.channel === "string" ? args.channel.trim() : "";
@@ -4208,7 +4208,7 @@ export class CotalEndpoint extends EventEmitter {
    *
    *  A COMPARE-AND-SWAP KEEPS ONE LEASE ROW; IT DOES NOT KEEP ONE SERVER. That distinction is the
    *  reason this exists, and it was a review finding. When a renew fails, the daemon re-reads the
-   *  key and may then re-acquire it — and across that read-then-create it was still consuming the
+   *  key and may then re-acquire it, and across that read-then-create it was still consuming the
    *  fan-out durable, still running the inbox reader, and still answering ctl.delivery. If a
    *  replacement acquired the shard in that window, both processes served the same durables until
    *  the loser's create was refused and its teardown finished. The old code did not have this
@@ -4216,7 +4216,7 @@ export class CotalEndpoint extends EventEmitter {
    *  question instead of a verdict is right, but asking the question while still serving is not.
    *
    *  So the daemon goes quiet FIRST and re-arms only once it has proof: `held` on a re-read, or a
-   *  won atomic create. `unknown` stays quiet — the whole point is that not being able to ask is not
+   *  won atomic create. `unknown` stays quiet, the whole point is that not being able to ask is not
    *  permission to keep acting. Quiescing costs delivery latency for a few seconds; the alternative
    *  costs a SPLIT durable, which is a correctness failure rather than an availability one.
    *
@@ -4255,7 +4255,7 @@ export class CotalEndpoint extends EventEmitter {
    *  responders, the fan-out consumer, the reader), so a failure at any one leaves the endpoint recorded
    *  as un-quiesced while some of those are missing. From there every later `rearmPlane3` returns at the
    *  `!plane3Quiesced` guard WITHOUT attempting to bind, and the caller goes on to flip the lease READY.
-   *  That is a readiness lie surviving a transient broker error — the daemon claims a responder it does
+   *  That is a readiness lie surviving a transient broker error, the daemon claims a responder it does
    *  not have, which is the #1318 outage wearing the readiness flag instead of the exit path. */
   async rearmPlane3(): Promise<void> {
     if (!this.plane3Quiesced) return;

@@ -56,7 +56,7 @@ try {
   writeFileSync(credsPath, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
 
   // PROVISION THE $SYS OBSERVER CRED AND PIN THE WORKSPACE THE DAEMON WILL ADOPT. Without both of
-  // these the daemon refuses during startup — before endpoint construction, before lease admission,
+  // these the daemon refuses during startup, before endpoint construction, before lease admission,
   // and so before any of the broker-coupling behaviour this suite exists to grade. That refusal was
   // ALSO an exit, so cell 2 kept reporting green while the daemon it was meant to observe had been
   // dead since startup and had never once been coupled to the broker it was asked to outlive. A

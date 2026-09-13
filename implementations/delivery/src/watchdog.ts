@@ -24,7 +24,7 @@ export const PROBE_BUDGET_MS = 1000;
 
 /** How far past its own budget an answer may arrive and still be believed as a statement about the
  *  server. A probe that answers at its deadline is a normal timeout; one that answers at twice its
- *  deadline did not have that deadline enforced against the SERVER at all — it had it enforced
+ *  deadline did not have that deadline enforced against the SERVER at all. It had it enforced
  *  against a process that was not running when it expired. Two rather than something larger because
  *  the measured case is 2554ms on a 1000ms budget (#1318's triage), and rather than something
  *  smaller because it must never reclassify an honest timeout on a merely busy host as starvation,
@@ -46,13 +46,13 @@ export const STARVED_SHARE = 0.5;
  * What a single probe actually established, given how long its answer took to arrive.
  *
  * THIS IS THE SIGNAL THAT MAKES THE DISTINCTION CHEAP AND LOCAL. `isReachable` flattens every
- * failure to `false`, so a starved client reads exactly like a dead server — that is the issue's
+ * failure to `false`, so a starved client reads exactly like a dead server. That is the issue's
  * third mechanism and the one a wall clock cannot touch. But the two differ in a quantity the
  * daemon already has: WHEN the answer arrived relative to the deadline the probe itself set.
  *
  *   • A dead port answers ECONNREFUSED in about a millisecond.
  *   • A blackholed address answers at the budget, because the budget is what ended it.
- *   • A starved process answers whenever it is next scheduled, which is arbitrarily later — the
+ *   • A starved process answers whenever it is next scheduled, which is arbitrarily later, the
  *     triage for #1318 measured a false at 2554ms against a 1000ms budget with `nats-server` alive
  *     and reachable immediately before and after.
  *
@@ -97,7 +97,7 @@ export function classifyProbe(
   //   - a genuinely dead port answers ECONNREFUSED in about a millisecond, so `elapsed` never
   //     reaches the budget at all and this clause does not apply. That is a prompt, honest negative
   //     and it must stay one, or the repair would buy availability by making a dead broker
-  //     survivable — which is the failure mode worse than the defect.
+  //     survivable, which is the failure mode worse than the defect.
   //   - a process getting short slices of CPU issues a connect, is descheduled, and its deadline
   //     timer fires the instant it is scheduled again. Wall-clock elapsed looks like a normal,
   //     prompt timeout; almost none of it was time the server was given. Judged by the clock alone
@@ -107,7 +107,7 @@ export function classifyProbe(
   // finding: requiring merely `attributable < budget` meant ANY non-zero measurement disqualified an
   // honest budget-ended refusal, and ordinary Node timer jitter on a healthy host measures 10-30ms.
   // Every blackholed probe everywhere then read as starvation, the completed-negative count could
-  // never rise, and a genuinely dead broker would be exited only by the backstop — four times slower
+  // never rise, and a genuinely dead broker would be exited only by the backstop, four times slower
   // than the shipped window, with the wrong reason in the log. So the server must have been denied a
   // MATERIAL share of its budget, not merely an instant of it. Half is the line: a server given more
   // than half the time it was promised and still refusing is refusing on its own account.
@@ -126,7 +126,7 @@ export function classifyProbe(
  *
  * A timer asked to fire every `sampleMs` that instead fires `sampleMs + d` later reports `d` of
  * delay this process could not avoid: the event loop was ready and the process was not running.
- * Summed across a probe, that is the part of the probe's wall-clock that the server was never
+ * Summed across a probe. That is the part of the probe's wall-clock that the server was never
  * actually given, which is the difference between "the server did not answer in a second" and "a
  * second passed, and the server had 40ms of it".
  *
@@ -182,14 +182,14 @@ export interface BrokerWatchEvidence {
    *  direct evidence that THIS PROCESS was starved, and that time must not be counted against the
    *  broker. */
   starvedMs: number;
-  /** Probes that ran to completion, answered WITHIN their own deadline, and said no — consecutively.
+  /** Probes that ran to completion, answered WITHIN their own deadline, and said no, consecutively.
    *  A probe that never ran contributes nothing; one that rejected is an unanswered question; one
    *  whose answer arrived far past its own budget is a statement about this process. Each of those
    *  resets this to 0, because the claim it encodes is a run of credible refusals. */
   completedNegatives: number;
   /** Whether THIS daemon's own established connection to that same broker is still open, as the
    *  connection object reports it. A live socket to the server is positive evidence the server is
-   *  there that costs no probe and needs no scheduling — and it is exactly the signal that separates
+   *  there that costs no probe and needs no scheduling, and it is exactly the signal that separates
    *  a transport-level CLOSE from SILENCE. A side probe that cannot complete a fresh handshake while
    *  our standing connection to the same address is open is telling us about this process's ability
    *  to ask, not about the server. */
@@ -203,12 +203,12 @@ export interface BrokerWatchEvidence {
    *  reconnect attempts forever and nothing recovers it, whereas the reported defect costs a
    *  restart. So measured lag can only excuse so much, and the failure direction is toward exiting.
    *  It deliberately does not bound {@link transportConnected}, which is not an absence of evidence
-   *  at all — see {@link brokerGoneVerdict}. */
+   *  at all, see {@link brokerGoneVerdict}. */
   backstopMs: number;
 }
 
 /**
- * The verdict, with the reason it was reached — so an operator reads WHY the daemon stayed up.
+ * The verdict, with the reason it was reached, so an operator reads WHY the daemon stayed up.
  *
  * `starved` and `insufficient-evidence` are deliberately distinct non-exits. They are the two
  * conditions #1318 collapsed into "broker unreachable": the first is "I could not ask", the second
@@ -232,18 +232,18 @@ export type BrokerVerdict =
  *
  * EXIT REQUIRES BOTH CONJUNCTS, and each exists because the other cannot cover its case:
  *
- *   1. `completedNegatives >= requiredNegatives` — probes that actually RAN and actually said no.
+ *   1. `completedNegatives >= requiredNegatives`, probes that actually RAN and actually said no.
  *      Without this, a window that expired while the process was descheduled is read as a server
  *      failure, which is the reported defect in its purest form.
- *   2. `msSinceLastReachable - starvedMs > windowMs` — the UNSTARVED part of the window. Without
+ *   2. `msSinceLastReachable - starvedMs > windowMs`, the UNSTARVED part of the window. Without
  *      this, a host that schedules the daemon just often enough to fire two probes into a
  *      momentarily-saturated loopback exits on two negatives that a healthy host would never have
  *      produced.
  *
  * THIS IS NOT A WIDER TIMEOUT. `windowMs` is unchanged from the shipped default; what changed is
  * that the quantity compared against it is now evidence rather than the passage of time. A daemon
- * whose broker is genuinely dead produces completed negatives as fast as it is scheduled — a dead
- * port answers ECONNREFUSED immediately and a blackholed one answers inside the probe deadline —
+ * whose broker is genuinely dead produces completed negatives as fast as it is scheduled, a dead
+ * port answers ECONNREFUSED immediately and a blackholed one answers inside the probe deadline ,
  * AND loses its standing connection, so the true-positive path is not delayed by this at all, which
  * is the property that separates a repair from a band-aid. A process so starved that it produces NO
  * completed probe also cannot deliver anything, and ending it would not make Plane-3 more
@@ -259,9 +259,9 @@ export function brokerGoneVerdict(e: BrokerWatchEvidence): BrokerVerdict {
   // which made the backstop conditional on the very signal most likely to be stale.
   //
   // `transportConnected` is not an observation of the broker. It is this client's cached socket
-  // state, and it is only refreshed when nats.js decides the peer is gone. Under a SILENT death —
+  // state, and it is only refreshed when nats.js decides the peer is gone. Under a SILENT death ,
   // an OOM kill, a hypervisor pause, a firewall that starts dropping rather than refusing, anything
-  // that produces no FIN and no RST — the kernel keeps the connection ESTABLISHED and nats.js does
+  // that produces no FIN and no RST, the kernel keeps the connection ESTABLISHED and nats.js does
   // not notice until its own ping cycle expires. With the shipped defaults that is roughly six
   // minutes. Ranked above the backstop, a stale `true` suspended the exit for that entire window no
   // matter how much elapsed time and how many completed refusals had piled up behind it, which is
@@ -278,7 +278,7 @@ export function brokerGoneVerdict(e: BrokerWatchEvidence): BrokerVerdict {
   // statement about this process's ability to open a new socket, not about the server.
   //
   // Inside the backstop this is still the strongest thing the daemon knows: when the broker really
-  // dies the flag goes false — the client detects the loss, the endpoint's status watcher turns it
+  // dies the flag goes false, the client detects the loss, the endpoint's status watcher turns it
   // into `transport: connected=false`, and every clause below is live again from that instant. What
   // the flag CANNOT do any more is defer the exit indefinitely while it is stale, because the bound
   // above it has already been decided.
@@ -287,7 +287,7 @@ export function brokerGoneVerdict(e: BrokerWatchEvidence): BrokerVerdict {
   // statement about the server.
   const unstarvedMs = e.msSinceLastReachable - e.starvedMs;
   if (unstarvedMs <= e.windowMs) return { exit: false, reason: "starved" };
-  // "I asked and was told no" — but not yet often enough to be a verdict.
+  // "I asked and was told no", but not yet often enough to be a verdict.
   if (e.completedNegatives < e.requiredNegatives) return { exit: false, reason: "insufficient-evidence" };
   return { exit: true, reason: "broker-gone" };
 }
@@ -308,7 +308,7 @@ export type LeaseAction = "keep-serving" | "reacquire" | "exit";
 /**
  * Turn a lease reading into an action.
  *
- * A FAILED RENEW IS A QUESTION, NOT A VERDICT — the same split #1301 made for `down` and the
+ * A FAILED RENEW IS A QUESTION, NOT A VERDICT, the same split #1301 made for `down` and the
  * manager's liveness lease already makes. The shipped code exited on ANY renew error, so the
  * measured incident's `wrong last sequence: 0` (the key had EXPIRED during the stall, with nobody
  * else holding it) read identically to a genuine takeover and ended a daemon that was still the
@@ -341,7 +341,7 @@ export function leaseAction(reading: LeaseReading): LeaseAction {
  * a review finding. `leaseAction` decides whether the PROCESS lives; this decides whether it may
  * SERVE. They agree on `taken` and disagree everywhere else that matters:
  *
- *   • `gone` is `reacquire` — the process lives — but it must NOT serve on it. The create has not
+ *   • `gone` is `reacquire`, the process lives, but it must NOT serve on it. The create has not
  *     been attempted yet, and a replacement may already hold the shard; serving through the
  *     arbitration is how two daemons end up on one durable.
  *   • `unknown` is `keep-serving` for the PROCESS, and a refusal here. Surviving an unanswerable
@@ -400,7 +400,7 @@ export class LoopLagMeter {
     return lag;
   }
 
-  /** Add lag measured somewhere OTHER than the interval gap — in practice, a probe answer that
+  /** Add lag measured somewhere OTHER than the interval gap, in practice, a probe answer that
    *  arrived past its own deadline. Interval gaps alone miss the case where the process IS being
    *  scheduled often enough to fire the timer but not often enough to finish a handshake, which is
    *  the third of the issue's three mechanisms and the one that produces a completed `false` from a
