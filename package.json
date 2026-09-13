@@ -230,6 +230,7 @@
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
     "smoke:mesh-attach-plane": "tsx implementations/manager/smoke/mesh-attach-plane.smoke.ts",
     "smoke:attach-auth-root": "tsx bin/smoke/attach-auth-root.smoke.ts",
+    "smoke:attach-open-mode": "tsx bin/smoke/attach-open-mode.smoke.ts",
     "smoke:manager-two-root-renewal": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-two-root-renewal.smoke.ts",
     "smoke:manager-stop-reap": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-stop-reaps-agents.smoke.ts",
     "smoke:manager-stop-spare-guard": "tsx bin/smoke/manager-stop-spare-guard.smoke.ts",
