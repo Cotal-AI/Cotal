@@ -233,7 +233,13 @@ async function readResponderAxis(selected: Selected): Promise<DeliveryResponderS
       card: { id: id.id, name: "status-responder", kind: "endpoint" },
     });
     ep.on("error", () => {});
-    ep.on("warning", () => {});
+    // NAMED, not anonymous, because the warning census requires every registration in this tree to
+    // declare its disposition and be findable by name (`bin/smoke/endpoint-warning-consumers`). An
+    // anonymous handler is an unnamed consumer, which is the thing that census exists to refuse.
+    // This probe is a one-shot lease read whose own result is the verdict: a recoverable side-channel
+    // warning would add noise to a row that already says `unchecked` when the read does not land.
+    const ignoreResponderWarning = () => {};
+    ep.on("warning", ignoreResponderWarning);
     await ep.start();
     try {
       // The holder is resolved BEFORE the read so a dead daemon's surviving `ready:true` cannot be
