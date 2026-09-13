@@ -91,12 +91,12 @@
     {
       "name": "M9 acceptance is attributed by session alone, so a concurrent send settles another handover",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    const previous = sessionDispatch;\n    let release!: () => void;\n    sessionDispatch = new Promise<void>((resolve) => { release = resolve; });\n",
-      "replace": "    const previous = Promise.resolve();\n    let release!: () => void;\n    void previous;\n",
+      "find": "    await previous.catch(() => {});\n",
+      "replace": "    void previous;\n",
       "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback-loss",
-      "note": "Severs the mutual exclusion while keeping every export, signature and call site, so the only thing removed is the property that makes an acknowledgement attributable. The release callback still runs and the gate still awaits, it simply never queues behind the previous handover. Verified by hand before committing: the cell reds with lost=true, aRuns=0 and unrelatedRan=true, so the unrelated message genuinely executed and its acknowledgement settled a batch that never ran. The precondition assertion is what keeps this honest, since a version of this cell without it passes vacuously whenever the two messages batch into one injection."
+      "note": "Severs ONLY the queueing: the gate still publishes its promise and still releases it, it simply never waits for the previous handover, so two acceptance-listening sends can be outstanding at once. An earlier version of this mutant also removed the promise assignment, which left the release callback unassigned and crashed the host. mutation-proof called that a WRONG-RED rather than a kill, correctly: the suite reddened on a different cell (a duplicate, aRuns=6) while the named assertion still printed green. A red that names something else is not a kill, and the tool refusing to credit it is the reason this mutant now severs the property instead of breaking the function."
     }
   ]
 }
