@@ -92,8 +92,8 @@
       "file": "scripts/mutation-reproof.mjs",
       "find": "      else if (transition.kind === \"inherited\") preRed.push(finding);",
       "replace": "      else if (transition.kind === \"inherited\") fatal.push(path);",
-      "expectRed": "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal",
-      "cell": "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal"
+      "expectRed": "an unchanged pre-red suite selected only by a guarded-source change remains PRE-RED and fails the zero-discrimination floor",
+      "cell": "an unchanged pre-red suite selected only by a guarded-source change remains PRE-RED and fails the zero-discrimination floor"
     },
     {
       "name": "pre-red attribution ignores the same command's base-to-head transition",
@@ -148,16 +148,16 @@
       "file": "scripts/mutation-reproof.mjs",
       "find": "  for (const line of output.replace(ANSI, \"\").split(\"\\n\")) {",
       "replace": "  for (const line of output.split(\"\\n\")) {",
-      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
-      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED"
     },
     {
       "name": "an INCONCLUSIVE run is collapsed into a fatal finding instead of its own non-fatal state",
       "file": "scripts/mutation-reproof.mjs",
       "find": "inconclusive.push(path);",
       "replace": "fatal.push(path);",
-      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
-      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED"
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED"
     },
     {
       "name": "root contamination comparison checks only exit status and ignores the exact refused failure signature",
@@ -254,6 +254,46 @@
       "replace": "    cwd, encoding: \"utf8\", maxBuffer: 64 * 1024 * 1024,\n    env,",
       "expectRed": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
       "cell": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)"
+    },
+    {
+      "name": "the zero-discrimination floor is skipped so a vacuous run still prints OK",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "const floor = discriminationFloor(prove.length, discriminated.length);\nif (!floor.pass) {",
+      "replace": "const floor = discriminationFloor(prove.length, discriminated.length);\nif (false && !floor.pass) {",
+      "expectRed": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED",
+      "cell": "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED"
+    },
+    {
+      "name": "the discrimination floor is a corpus-size constant instead of following the selected configs",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  if (provenCount === 0) return { pass: true, required: 0 };\n  return { pass: discriminatedCount > 0, required: 1 };",
+      "replace": "  if (provenCount === 0) return { pass: true, required: 0 };\n  return { pass: discriminatedCount >= 50, required: 50 };",
+      "expectRed": "a genuinely discriminating fixture reaches the OK summary with counts distinct from pre-red/inconclusive",
+      "cell": "a genuinely discriminating fixture reaches the OK summary with counts distinct from pre-red/inconclusive"
+    },
+    {
+      "name": "mixed KILLED+INCONCLUSIVE is bucketed as inconclusive and not counted as discriminated",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  else if (verdicts.every((v) => v === \"INCONCLUSIVE\")) inconclusive.push(path);\n  else if (verdicts.includes(\"INCONCLUSIVE\") && verdicts.every((v) => v === \"KILLED\" || v === \"INCONCLUSIVE\")) {\n    discriminated.push(path);\n  }",
+      "replace": "  else if (verdicts.includes(\"INCONCLUSIVE\") && verdicts.every((v) => v === \"KILLED\" || v === \"INCONCLUSIVE\")) inconclusive.push(path);",
+      "expectRed": "a mixed KILLED+INCONCLUSIVE fixture reaches the OK summary with a non-zero discriminated count",
+      "cell": "a mixed KILLED+INCONCLUSIVE fixture reaches the OK summary with a non-zero discriminated count"
+    },
+    {
+      "name": "a --all pre-red corpus still prints OK despite zero kills",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "const floor = discriminationFloor(prove.length, discriminated.length);\nif (!floor.pass) {",
+      "replace": "const floor = discriminationFloor(prove.length, discriminated.length);\nif (!a.all && !floor.pass) {",
+      "expectRed": "--all keeps every pre-red as PRE-RED (not attributable) and reds the zero-discrimination floor naming the config",
+      "cell": "--all keeps every pre-red as PRE-RED (not attributable) and reds the zero-discrimination floor naming the config"
+    },
+    {
+      "name": "no applicable fixtures is collapsed into a silent non-zero instead of the distinct all-clear",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "        : \"No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.\");\n  process.exit(0);",
+      "replace": "        : \"No mutation fixtures to re-prove: no fixture config, suite, or guarded source intersects the diff.\");\n  process.exit(1);",
+      "expectRed": "the gate PASSES an unrelated change and prints the evidence of a real all-clear",
+      "cell": "the gate PASSES an unrelated change and prints the evidence of a real all-clear"
     }
   ]
 }
