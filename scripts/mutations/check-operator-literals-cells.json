@@ -107,8 +107,8 @@
     {
       "name": "the production-short-token-guard cell reports the guard's reason regardless of what main() emitted",
       "file": "scripts/check-operator-literals.mjs",
-      "find": "      const reasonRows = errors.filter(\n        (row) => row.includes('reason=\"host token is shorter than minimum\"'),\n      ).length;\n      const tokenLength = Number(/ token_length=(\\d+)\\//.exec(errors[0] ?? '')?.[1] ?? 0);",
-      "replace": "      const reasonRows = 1;\n      const tokenLength = Number(/ token_length=(\\d+)\\//.exec(errors[0] ?? '')?.[1] ?? 0);",
+      "find": "      const reasonRows = errors.filter(\n        (row) => row.includes('reason=\"host token is shorter than minimum\"'),\n      ).length;",
+      "replace": "      const reasonRows = 1;",
       "expectRed": "destroying the planted subject drives this cell's reason_rows to 0, so its ERROR_ROW reason text from the real main() still discriminates",
       "cell": "production-short-token-guard: destroying the planted subject drives this cell's reason_rows to 0, so its ERROR_ROW reason text from the real main() still discriminates"
     },
@@ -139,8 +139,8 @@
     {
       "name": "a cell tamper that changes nothing is accepted as a tamper that was applied",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  const tamperedBlock = block.split(find).join(replace);\n  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);\n  return source.slice(0, from) + tamperedBlock + source.slice(to);\n};\n\n/**\n * Tamper inside a named HELPER FUNCTION",
-      "replace": "  return source;\n};\n\n/**\n * Tamper inside a named HELPER FUNCTION",
+      "find": "  const block = source.slice(from, to);\n  const occurrences = block.split(find).length - 1;\n  if (occurrences !== 1) {\n    throw new Error(`cell ${id}: tamper text occurs ${occurrences} time(s) in the block, expected exactly 1`);\n  }\n  const tamperedBlock = block.split(find).join(replace);\n  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);\n  return source.slice(0, from) + tamperedBlock + source.slice(to);",
+      "replace": "  return source;",
       "expectRed": "the tamper lands inside the named cell block",
       "cell": "host-planted: the tamper lands inside the named cell block"
     }
