@@ -132,6 +132,27 @@ export function deferralExhausted(unsettledRunDispatches: number, blockedForMs: 
   return unsettledRunDispatches > 0 && blockedForMs >= DEFERRAL_MAX_MS;
 }
 
+/**
+ * What an EXHAUSTED deferral should do, which is a three-way decision and not a two-way one.
+ *
+ * Both obvious answers were measured harmful by reviewers, one of them after I had already written
+ * it. Forcing the boundary when the one-shot recovery is spent does not replace anything: it calls
+ * `shutdown(1)` and the seat exits, so a starvation report is answered by killing the seat. And
+ * continuing to WRITE is the same defect as doing nothing: the send is refused as unattributable,
+ * the batch stays owed, and the loop re-sends once a minute while the Harness accepts and RUNS each
+ * copy, bounded only by how long the run stays open, which is to say not bounded.
+ *
+ * So the third outcome is the #790 give-up's: STOP ATTEMPTING, leave the batch owed and un-acked. No
+ * frame is written so the instruction cannot execute again, nothing is acked so the durable copy
+ * redelivers elsewhere, and the reported connection state stops calling the seat `ready`. Terminal
+ * for the SEAT's queued-turn tier, never for the MESSAGE.
+ */
+export type ExhaustedDeferralAction = "replace-bridge" | "stop-attempting";
+
+export function exhaustedDeferralAction(bridgeRecoveryAvailable: boolean): ExhaustedDeferralAction {
+  return bridgeRecoveryAvailable ? "replace-bridge" : "stop-attempting";
+}
+
 /** First delay after work is owed. Short, because most stalls clear on the next attempt. */
 export const FALLBACK_INITIAL_MS = 1_000;
 /** Ceiling on the delay. One attempt a minute against a session that is not accepting. */

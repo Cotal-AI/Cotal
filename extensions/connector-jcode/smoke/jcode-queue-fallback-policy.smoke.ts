@@ -32,6 +32,7 @@ import {
   attributionBlockedByOpenRun,
   DEFERRAL_MAX_MS,
   deferralExhausted,
+  exhaustedDeferralAction,
   refusalNeedsBoundary,
   type FallbackState,
 } from "../src/queue-fallback.js";
@@ -300,9 +301,32 @@ console.log("\n13. the two measured failure modes, and the state that separates 
     ),
     { ages: [0, 1, 1_000, DEFERRAL_MAX_MS - 1, DEFERRAL_MAX_MS, DEFERRAL_MAX_MS + 60_000] },
   );
+  // THE THIRD OUTCOME, and it exists because BOTH two-way answers were measured harmful. A reviewer
+  // ran "force the boundary always" and got 0 executions (silent loss). I then proposed "keep
+  // delivering when recovery is spent" and the same reviewer showed it is the 4-execution duplicate
+  // through the last door, since nothing caps the resend while the run stays open.
+  check(
+    "an exhausted deferral with recovery available replaces the bridge",
+    exhaustedDeferralAction(true) === "replace-bridge",
+    { bridgeRecoveryAvailable: true, action: exhaustedDeferralAction(true) },
+  );
+  // The refusing half, and the one that keeps the boundary from calling into a spent one-shot
+  // `recoverBridge`, which does not replace anything: it calls shutdown(1) and the seat EXITS.
+  check(
+    "and with the one recovery already spent it STOPS ATTEMPTING rather than killing the seat",
+    exhaustedDeferralAction(false) === "stop-attempting",
+    { bridgeRecoveryAvailable: false, action: exhaustedDeferralAction(false) },
+  );
+  // Neither outcome may be "write anyway": that is the resend loop the reviewer measured, so if a
+  // future edit adds a delivering branch here this cell reddens.
+  check(
+    "neither exhausted outcome writes another frame, so the instruction cannot re-execute",
+    [true, false].every((a) => exhaustedDeferralAction(a) === "replace-bridge" || exhaustedDeferralAction(a) === "stop-attempting"),
+    { outcomes: [exhaustedDeferralAction(true), exhaustedDeferralAction(false)] },
+  );
 }
 
-const EXPECTED_CELLS = 45;
+const EXPECTED_CELLS = 48;
 console.log(`\nSUITE COMPLETE: ${pass + failures.length} cells`);
 console.log(`jcode queue fallback policy: ${pass} cells OK, ${failures.length} failed`);
 if (pass + failures.length !== EXPECTED_CELLS) {

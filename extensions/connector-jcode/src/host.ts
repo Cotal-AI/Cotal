@@ -33,6 +33,7 @@ import {
   nextFallbackAction,
   attributionBlockedByOpenRun,
   deferralExhausted,
+  exhaustedDeferralAction,
   nextFallbackDelay,
   refusalNeedsBoundary,
   type FallbackState,
@@ -460,6 +461,10 @@ export async function runJcodeHost(): Promise<void> {
   /** When the current run-debt deferral began, so it can be bounded. Cleared whenever no run debt is
    *  outstanding, so an ordinary sequence of turns never accumulates a deferral age across them. */
   let deferralStartedAt: number | undefined;
+  /** The queued-turn tier has stopped attempting: an unsettleable run with no recovery left. Latched
+   *  so the terminal diagnostic is written once rather than on every fallback tick. Cleared on bridge
+   *  replacement, where attribution and the recovery budget are both restored. */
+  let queuedTurnTierStopped = false;
   /** One boundary request per suspicion, so a lapsing Harness cannot become a reconnect loop. */
   let bridgeReplacementRequestedForSuspicion = false;
   const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -1107,7 +1112,7 @@ export async function runJcodeHost(): Promise<void> {
         // stays unacked and may be delivered again -- late and possibly twice, which is the stance
         // this tier already takes everywhere else: late delivery beats loss, and a live seat that
         // repeats beats a dead seat that cannot be steered at all.
-        if (!bridgeRecoveryUsed) {
+        if (exhaustedDeferralAction(!bridgeRecoveryUsed) === "replace-bridge") {
           acceptanceSuspectUntilBridgeReplaced = true;
           writeJcodeDiagnostic(
             `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
@@ -1116,11 +1121,35 @@ export async function runJcodeHost(): Promise<void> {
           );
           return;
         }
-        writeJcodeDiagnostic(
-          `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
-            `and the one bridge recovery is already spent, so ${items.length} queued automatic ` +
-            `message(s) are delivered without attributable acceptance rather than stranded\n`,
-        );
+        // NO RECOVERY LEFT, AND NEITHER OBVIOUS ANSWER IS SAFE. Forcing the boundary calls into a
+        // spent `recoverBridge`, which does not replace anything: it calls `shutdown(1)` and the
+        // seat exits, answering a starvation report by killing the seat. Continuing to WRITE is no
+        // better, and a reviewer corrected me when I claimed it was: the send is refused as
+        // unattributable exactly as before, the batch stays owed, and the level-triggered loop
+        // re-sends once a minute for as long as the run stays open, while the Harness accepts and
+        // RUNS each copy. Nothing caps that at two. It is the measured 4-executions defect reached
+        // through the last remaining door.
+        //
+        // So this takes the #790 give-up's answer, which is the precedent already in this module for
+        // "cannot serve, must not pretend, must not discard": STOP ATTEMPTING, and leave the batch
+        // OWED AND UN-ACKED. No frame is written, so the instruction cannot execute again. Nothing
+        // is acked, so the durable copy survives and redelivers to a replacement seat. And the
+        // connection state stops reporting `ready`, so a seat in this condition is visible as stalled
+        // rather than silently healthy, which is the whole point of #1233's status work.
+        //
+        // This is a terminal state for the SEAT, not for the MESSAGE. That distinction is the one
+        // the reviewer asked for: seat liveness is preserved (the process stays up, DMs still land,
+        // the steer and drive tiers are untouched) while the queue's ownership passes on rather than
+        // being executed repeatedly here.
+        if (!queuedTurnTierStopped) {
+          queuedTurnTierStopped = true;
+          writeJcodeDiagnostic(
+            `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
+              `and the one bridge recovery is already spent, so the queued-turn tier stops attempting; ` +
+              `${items.length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
+          );
+        }
+        return;
       }
     } else deferralStartedAt = undefined;
     const injection = formatInjection(items);
@@ -1378,6 +1407,7 @@ export async function runJcodeHost(): Promise<void> {
           // connection is gone, so a stale age must not make the replacement's first deferral look
           // already exhausted and force a second boundary on arrival.
           deferralStartedAt = undefined;
+          queuedTurnTierStopped = false;
           watchClient(replacement);
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
           void agent.setStatus("idle").catch(() => {});
