@@ -835,6 +835,25 @@ export async function runJcodeHost(): Promise<void> {
     // Reserving makes the batch unselectable; only verified acceptance promotes it to the ledger the
     // turn boundary acks. Any other outcome releases, leaving the delivery owed and un-acked.
     const release = reserveForHandover(keys);
+    // Observe `message_accepted` OURSELVES rather than inferring acceptance from the await.
+    //
+    // Found in review, and it is the difference between a late delivery and a lost one. The SDK's
+    // acceptance wait RESOLVES on its own timeout rather than rejecting ("the stream is the source of
+    // truth", jcode-sdk client.js), so `await sendMessage(...)` returning proves only that the frame
+    // was written and that we waited. A busy Harness that takes the frame and never acknowledges it
+    // therefore looked, to the old code, exactly like a successful delivery: the batch was recorded
+    // as accepted and the next clean turn boundary ACKED it, so a peer message the session never
+    // accepted and never ran was dropped from the durable inbox. Measured by a reviewer as
+    // swallowedSends=1, acceptedSends=0, turnsRunCarryingA=0, LOST=true.
+    //
+    // So acceptance is proved by the acknowledgement, not by the resolve. Without it the reservation
+    // is released and the batch stays un-acked, which keeps it owed: the level-triggered loop will
+    // re-attempt, and late delivery beats loss.
+    let acknowledged = false;
+    const onAccepted = (event: ApiEvent): void => {
+      if ("session_id" in event && event.session_id === session) acknowledged = true;
+    };
+    current.on("message_accepted", onAccepted);
     try {
       writeJcodeDiagnostic(
         `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
@@ -848,12 +867,24 @@ export async function runJcodeHost(): Promise<void> {
         release();
         return;
       }
+      if (!acknowledged) {
+        // Written but never acknowledged. Recording this as accepted is what turned a stall into
+        // LOSS, so it is refused: released, un-acked, still owed, retried by the loop.
+        release();
+        writeJcodeDiagnostic(
+          `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
+            `automatic message(s) remain queued for redelivery\n`,
+        );
+        return;
+      }
       surfacedIds.push(...keys);
       release();
       publishInboundHealth();
     } catch (error) {
       release();
       writeJcodeDiagnostic(`[cotal-jcode] queued-turn fallback failed: ${(error as Error).message}\n`);
+    } finally {
+      current.off("message_accepted", onAccepted);
     }
   };
 

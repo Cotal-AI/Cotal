@@ -168,8 +168,15 @@ const persistSession = (sessionId, workingDir) => {
 // happens to be current.
 function runTurn(frame, socket) {
   const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
+  // A turn that is actually EXECUTED, as distinct from a frame that merely arrived. Every frame is
+  // logged on arrival, so the request log alone cannot tell "the session ran this" from "the session
+  // was handed this and dropped it" — which is exactly the distinction between a late delivery and a
+  // lost one. Carries the content so a fixture can ask whether ITS message ever ran.
+  log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? "") });
   // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
-  // point, fails to persist the session close state, and the session dies under the turn.
+  // point, fails to persist the session close state, and the session dies under the turn. Ordered
+  // after turn_run deliberately: the real seat does execute the turn before the persistence of its
+  // close state fails, so a fixture asking "did my message run" must still see it run here.
   if (sessionPersistenceError) {
     log({ ev: "session_persistence_error", code: sessionPersistenceError.code ?? "unknown" });
     process.stderr.write(
@@ -504,6 +511,20 @@ const server = createServer((socket) => {
             // The frame is logged when it ARRIVES either way, so a delayed acknowledgement never
             // hides a delivery — it only makes the host's post-await window observable.
             const acceptDelayMs = Number(process.env.FAKE_JCODE_ACCEPT_DELAY_MS ?? "0");
+            // The measured loss shape: the frame is TAKEN and never acknowledged. No error, no
+            // refusal, no `message_accepted`, and the turn is never queued — which is exactly what a
+            // busy Harness can do, and what the SDK's accept wait cannot distinguish from success
+            // because it resolves on its own timeout. A host that treats its send as delivered here
+            // acks a message the session never saw.
+            //
+            // Scoped BY CONTENT to the delivery under test. Swallowing every busy send would also eat
+            // the host's own readiness and post-join traffic, so the seat would never reach the mesh
+            // and the fixture would grade a boot failure instead of the loss.
+            const swallowMatch = process.env.FAKE_JCODE_SWALLOW_QUEUED_SEND;
+            if (swallowMatch && String(frame.content).includes(swallowMatch)) {
+              log({ ev: "queued_send_swallowed", session_id: frame.session_id });
+              break;
+            }
             const accept = () => {
               event({ ev: "message_accepted", session_id: frame.session_id });
               queuedTurns.push(() => runTurn(frame, socket));
