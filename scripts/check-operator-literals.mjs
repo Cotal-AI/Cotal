@@ -45,7 +45,7 @@ const RULES = new Map([
 ]);
 
 const IPV4_CANDIDATE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g;
-const CIDR_SUFFIX = /^\/(?:[0-9]|[12][0-9]|3[0-2])(?![0-9])/;
+const CIDR_SUFFIX = /^\/(?:[0-9]|[12][0-9]|3[0-2])(?![A-Za-z0-9_/])/;
 const HOME_PATH = /(?<![A-Za-z0-9._~-])\/(?:home|Users)\/(?!\.\.?\/?(?:$|[^A-Za-z0-9._-]))[A-Za-z0-9_][A-Za-z0-9._-]*(?=\/|$|[^A-Za-z0-9._-])/g;
 
 const NON_PUBLIC_CIDRS = [
@@ -163,13 +163,28 @@ function excludesHostNames(path) {
   return String(path).startsWith('.github/workflows/');
 }
 
+const CONFIGURED_HOST_TOKEN_SOURCES = new Set(['repository-variable', 'argument']);
+
+function assertConfiguredHostTokenSources(hostTokens, guard) {
+  for (const entry of hostTokens) {
+    if (!CONFIGURED_HOST_TOKEN_SOURCES.has(entry.source)) {
+      throw hostConfigurationError(
+        entry.source ?? 'unknown',
+        `${guard} guard requires configured tokens; received source=${entry.source ?? 'unknown'}`,
+      );
+    }
+  }
+}
+
 function hostTokenLengthFailures(hostTokens) {
+  assertConfiguredHostTokenSources(hostTokens, 'length');
   return hostTokens
     .filter((entry) => entry.token.length < MIN_HOST_TOKEN_LENGTH)
     .map((entry) => ({ tokenLength: entry.token.length, source: entry.source }));
 }
 
 function hostTokenCeilingFailures(entries, hostTokens) {
+  assertConfiguredHostTokenSources(hostTokens, 'ceiling');
   const failures = [];
   for (const { token, source } of hostTokens) {
     const pattern = hostPatterns([token])[0];
@@ -244,13 +259,13 @@ function git(args, cwd) {
   });
 }
 
-function runContext(root) {
+function runContext(root, writeLine = (line) => console.log(line)) {
   const sha = git(['rev-parse', 'HEAD'], root).trim();
-  return { sha, utc: new Date().toISOString() };
+  return { sha, utc: new Date().toISOString(), writeLine };
 }
 
 function emit(context, kind, fields) {
-  console.log(`${kind} sha=${context.sha} utc=${context.utc} ${fields}`);
+  context.writeLine(`${kind} sha=${context.sha} utc=${context.utc} ${fields}`);
 }
 
 function parseStageRow(row) {
@@ -474,9 +489,13 @@ const CELL_EXPECTATIONS = new Map([
   ['ip-private', 'primary=0/1 secondary=1/1'],
   ['ip-documentation', 'primary=0/1 secondary=1/1'],
   ['ip-network', 'primary=0/1 secondary=1/1'],
+  ['public-cidr-alpha-tail', 'primary=1/1 zero_control=0/1 planted=1/1'],
+  ['public-cidr-slash-tail', 'primary=1/1 zero_control=0/1 planted=1/1'],
   ['shared-ip-planted', 'primary=1/1 secondary=1/1'],
   ['shared-ip-private', 'primary=0/1 secondary=1/1'],
   ['shared-ip-network', 'primary=0/1 secondary=1/1'],
+  ['shared-cidr-alpha-tail', 'primary=1/1 zero_control=0/1 planted=1/1'],
+  ['shared-cidr-slash-tail', 'primary=1/1 zero_control=0/1 planted=1/1'],
   ['shared-ip-url-host', 'primary=1/1 secondary=1/1'],
   ['shared-ip-url-userinfo', 'primary=1/1 secondary=1/1'],
   ['shared-ip-url-path', 'primary=0/1 secondary=1/1'],
@@ -487,6 +506,7 @@ const CELL_EXPECTATIONS = new Map([
   ['short-host-token', `scanner=broken runtime_scanned=1/1 runtime_guard_errors=0/2 source=argument token_length=5/${MIN_HOST_TOKEN_LENGTH}_minimum configured_errors=1/1`],
   ['host-token-ceiling', `scanner=broken source=repository-variable matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${SELFTEST_HOST.length}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
   ['binary-skip', 'files_scanned=1/1 binary_skipped=1/1'],
+  ['production-main-wiring', 'exit=0/0 configuration_errors=0/0 machine_source_errors=0/0 skip_accounting_errors=0/0 skip_rows=1/1 unique_skip_paths=1/1 binary_skipped=1/1'],
   ['allowlisted-fixture', 'scanner=clean allowed=1/1'],
   ['same-token-elsewhere', 'scanner=dirty findings=1/1'],
   ['allowlist-fixture-deleted', 'scanner=broken errors=1/1'],
@@ -529,6 +549,71 @@ function scanCell(id, expectedStatus, metric, expectedCount, measure) {
       };
     },
   };
+}
+
+function cidrBoundaryCell(id, positive, control, rule) {
+  return {
+    id,
+    measure: () => {
+      const primary = findings(positive, 'fixture', [SELFTEST_HOST]).filter(
+        (finding) => finding.rule === rule,
+      ).length;
+      const zeroControl = findings(control, 'fixture', [SELFTEST_HOST]).filter(
+        (finding) => finding.rule === rule,
+      ).length;
+      const planted = Number(
+        positive.includes(rule === 'shared-ipv4' ? SELFTEST_SHARED_IP : SELFTEST_PUBLIC_IP),
+      );
+      return {
+        actual: `primary=${primary}/1 zero_control=${zeroControl}/1 planted=${planted}/1`,
+        pass: primary === 1 && zeroControl === 0 && planted === 1,
+      };
+    },
+  };
+}
+
+function productionPathFixtureResult() {
+  const dir = mkdtempSync(join(tmpdir(), 'operator-literal-production-selftest-'));
+  try {
+    git(['init', '-q'], dir);
+    writeFileSync(join(dir, 'fixture.txt'), 'clean fixture\n');
+    writeFileSync(join(dir, 'fixture.bin'), Buffer.from([0x66, 0x69, 0x78, 0x00]));
+    writeFileSync(join(dir, 'allowlist.json'), '{}\n');
+    git(['add', '--', 'fixture.txt', 'fixture.bin', 'allowlist.json'], dir);
+    git(
+      [
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-qm',
+        'fixture',
+      ],
+      dir,
+    );
+
+    const rows = [];
+    const exitCode = main(
+      [
+        'node',
+        'scripts/check-operator-literals.mjs',
+        '--root',
+        dir,
+        '--allowlist',
+        join(dir, 'allowlist.json'),
+      ],
+      {
+        runtimeHostname: 'runner',
+        repositoryHostTokens: '',
+        skipSelftest: true,
+        writeLine: (line) => rows.push(line),
+      },
+    );
+    return { exitCode, rows };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function binaryFixtureResult() {
@@ -614,6 +699,22 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL ip-network START
   matchCell('ip-network', `${SELFTEST_PUBLIC_IP}/8`, 'public-ipv4', 0, shapeIPv4Count, 1),
   // SELFTEST_CELL ip-network END
+  // SELFTEST_CELL public-cidr-alpha-tail START
+  cidrBoundaryCell(
+    'public-cidr-alpha-tail',
+    `${SELFTEST_PUBLIC_IP}/8suffix`,
+    `${SELFTEST_PUBLIC_IP}/8 suffix`,
+    'public-ipv4',
+  ),
+  // SELFTEST_CELL public-cidr-alpha-tail END
+  // SELFTEST_CELL public-cidr-slash-tail START
+  cidrBoundaryCell(
+    'public-cidr-slash-tail',
+    `${SELFTEST_PUBLIC_IP}/8/more`,
+    `${SELFTEST_PUBLIC_IP}/8`,
+    'public-ipv4',
+  ),
+  // SELFTEST_CELL public-cidr-slash-tail END
   // SELFTEST_CELL shared-ip-planted START
   matchCell('shared-ip-planted', SELFTEST_SHARED_IP, 'shared-ipv4', 1, shapeIPv4Count, 1),
   // SELFTEST_CELL shared-ip-planted END
@@ -623,6 +724,22 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL shared-ip-network START
   matchCell('shared-ip-network', `${SELFTEST_SHARED_IP}/10`, 'shared-ipv4', 0, shapeIPv4Count, 1),
   // SELFTEST_CELL shared-ip-network END
+  // SELFTEST_CELL shared-cidr-alpha-tail START
+  cidrBoundaryCell(
+    'shared-cidr-alpha-tail',
+    `${SELFTEST_SHARED_IP}/10suffix`,
+    `${SELFTEST_SHARED_IP}/10 suffix`,
+    'shared-ipv4',
+  ),
+  // SELFTEST_CELL shared-cidr-alpha-tail END
+  // SELFTEST_CELL shared-cidr-slash-tail START
+  cidrBoundaryCell(
+    'shared-cidr-slash-tail',
+    `${SELFTEST_SHARED_IP}/10/more`,
+    `${SELFTEST_SHARED_IP}/10`,
+    'shared-ipv4',
+  ),
+  // SELFTEST_CELL shared-cidr-slash-tail END
   // SELFTEST_CELL shared-ip-url-host START
   matchCell('shared-ip-url-host', `http://${SELFTEST_SHARED_IP}/8`, 'shared-ipv4', 1, shapeIPv4Count, 1),
   // SELFTEST_CELL shared-ip-url-host END
@@ -711,6 +828,47 @@ const SELFTEST_CELLS = [
     },
   },
   // SELFTEST_CELL binary-skip END
+  // SELFTEST_CELL production-main-wiring START
+  {
+    id: 'production-main-wiring',
+    measure: () => {
+      const result = productionPathFixtureResult();
+      const configurationErrors = result.rows.filter(
+        (row) => row.startsWith('ERROR_ROW ') && row.includes('subject=host-configuration'),
+      );
+      const machineSourceErrors = configurationErrors.filter(
+        (row) =>
+          row.includes('source=machine-hostname status=broken') &&
+          row.includes('received source=machine-hostname'),
+      ).length;
+      const skipAccountingErrors = result.rows.filter(
+        (row) =>
+          row.startsWith('ERROR_ROW ') &&
+          row.includes('subject=tree status=broken') &&
+          row.includes('binary skip reporting mismatch'),
+      ).length;
+      const skipRows = result.rows.filter((row) => row.startsWith('SKIP_ROW '));
+      const skipPaths = new Set(
+        skipRows.map((row) => / path=(.+) reason=nul-byte$/.exec(row)?.[1]).filter(Boolean),
+      );
+      const scanRow = result.rows.find(
+        (row) => row.startsWith('SCAN_ROW ') && row.includes('subject=tree '),
+      );
+      const binarySkipped = Number(/ binary_skipped=(\d+)\//.exec(scanRow ?? '')?.[1] ?? 0);
+      return {
+        actual: `exit=${result.exitCode}/0 configuration_errors=${configurationErrors.length}/0 machine_source_errors=${machineSourceErrors}/0 skip_accounting_errors=${skipAccountingErrors}/0 skip_rows=${skipRows.length}/1 unique_skip_paths=${skipPaths.size}/1 binary_skipped=${binarySkipped}/1`,
+        pass:
+          result.exitCode === 0 &&
+          configurationErrors.length === 0 &&
+          machineSourceErrors === 0 &&
+          skipAccountingErrors === 0 &&
+          skipRows.length === 1 &&
+          skipPaths.size === 1 &&
+          binarySkipped === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL production-main-wiring END
   // SELFTEST_CELL allowlisted-fixture START
   scanCell('allowlisted-fixture', 'clean', 'allowed', 1, () => scanEntries([{ path: 'fixtures/scrubber.txt', text: SELFTEST_HOME }], [SELFTEST_HOST], SELFTEST_ALLOWLIST)),
   // SELFTEST_CELL allowlisted-fixture END
@@ -777,6 +935,20 @@ export function selftest(context) {
   return failed === 0;
 }
 
+function emitBinarySkipRows(context, tracked) {
+  let emitted = 0;
+  const uniquePaths = new Set(tracked.binarySkippedPaths);
+  for (const path of tracked.binarySkippedPaths) {
+    emit(context, 'SKIP_ROW', `path=${JSON.stringify(path)} reason=nul-byte`);
+    emitted += 1;
+  }
+  if (emitted !== tracked.binarySkipped || uniquePaths.size !== tracked.binarySkipped) {
+    throw new Error(
+      `binary skip reporting mismatch: emitted=${emitted}/${tracked.binarySkipped} unique=${uniquePaths.size}/${tracked.binarySkipped}`,
+    );
+  }
+}
+
 function treeAccountingFields(tracked) {
   const trackedFiles = tracked.stageRows - tracked.gitlinks;
   const eligibleFiles = trackedFiles - tracked.binarySkipped;
@@ -839,12 +1011,12 @@ function parseArgs(argv) {
   return parsed;
 }
 
-function main(argv) {
+function main(argv, runtime = {}) {
   let args;
   let context;
   try {
     args = parseArgs(argv);
-    context = runContext(args.root);
+    context = runContext(args.root, runtime.writeLine);
   } catch (error) {
     console.error(`operator literal check: ${error.message}`);
     return 2;
@@ -852,8 +1024,14 @@ function main(argv) {
 
   let hostConfiguration;
   try {
-    const configured = (process.env.COTAL_PRIVACY_HOST_TOKENS ?? '').split(/\r?\n/);
-    hostConfiguration = hostTokenConfiguration(hostname(), configured, args.hostTokens);
+    const configured = (
+      runtime.repositoryHostTokens ?? process.env.COTAL_PRIVACY_HOST_TOKENS ?? ''
+    ).split(/\r?\n/);
+    hostConfiguration = hostTokenConfiguration(
+      runtime.runtimeHostname ?? hostname(),
+      configured,
+      args.hostTokens,
+    );
   } catch (error) {
     emit(
       context,
@@ -870,10 +1048,20 @@ function main(argv) {
     `subject=operator-literal-check source=current-git-head host_tokens=${hostTokens.length} machine_host_tokens=${machineHostTokens.length} configured_host_tokens=${configuredHostTokens.length}`,
   );
 
-  if (!selftest(context)) return 2;
+  if (!runtime.skipSelftest && !selftest(context)) return 2;
   if (args.selftestOnly) return 0;
 
-  const lengthFailures = hostTokenLengthFailures(configuredHostTokens);
+  let lengthFailures;
+  try {
+    lengthFailures = hostTokenLengthFailures(configuredHostTokens);
+  } catch (error) {
+    emit(
+      context,
+      'ERROR_ROW',
+      `subject=host-configuration source=${error.hostSource ?? 'unknown'} status=broken reason=${JSON.stringify(error.message)}`,
+    );
+    return 2;
+  }
   if (lengthFailures.length > 0) {
     for (const failure of lengthFailures) {
       emit(
@@ -886,28 +1074,49 @@ function main(argv) {
   }
 
   let tracked;
-  let treeResult;
   try {
     tracked = trackedEntries(args.root);
-    for (const path of tracked.binarySkippedPaths) {
-      emit(context, 'SKIP_ROW', `path=${JSON.stringify(path)} reason=nul-byte`);
-    }
-    const ceilingFailures = hostTokenCeilingFailures(tracked.entries, configuredHostTokens);
-    if (ceilingFailures.length > 0) {
-      for (const failure of ceilingFailures) {
-        emit(
-          context,
-          'ERROR_ROW',
-          `subject=host-configuration source=${failure.source} status=broken reason="host token matches too many files" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum matching_files=${failure.matchingFiles}/${HOST_TOKEN_FILE_CEILING}_ceiling`,
-        );
-      }
+    emitBinarySkipRows(context, tracked);
+  } catch (error) {
+    emit(context, 'ERROR_ROW', `subject=tree status=broken reason=${JSON.stringify(error.message)}`);
+    return 2;
+  }
+
+  let ceilingFailures;
+  try {
+    ceilingFailures = hostTokenCeilingFailures(tracked.entries, configuredHostTokens);
+  } catch (error) {
+    emit(
+      context,
+      'ERROR_ROW',
+      `subject=host-configuration source=${error.hostSource ?? 'unknown'} status=broken reason=${JSON.stringify(error.message)}`,
+    );
+    emit(
+      context,
+      'SCAN_ROW',
+      `subject=tree ${treeAccountingFields(tracked)} findings=0/${tracked.entries.length}_files status=broken`,
+    );
+    return 2;
+  }
+
+  if (ceilingFailures.length > 0) {
+    for (const failure of ceilingFailures) {
       emit(
         context,
-        'SCAN_ROW',
-        `subject=tree ${treeAccountingFields(tracked)} findings=0/${tracked.entries.length}_files status=broken`,
+        'ERROR_ROW',
+        `subject=host-configuration source=${failure.source} status=broken reason="host token matches too many files" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum matching_files=${failure.matchingFiles}/${HOST_TOKEN_FILE_CEILING}_ceiling`,
       );
-      return 2;
     }
+    emit(
+      context,
+      'SCAN_ROW',
+      `subject=tree ${treeAccountingFields(tracked)} findings=0/${tracked.entries.length}_files status=broken`,
+    );
+    return 2;
+  }
+
+  let treeResult;
+  try {
     treeResult = scanEntries(tracked.entries, hostTokens, readAllowlist(args.allowlist));
   } catch (error) {
     emit(context, 'ERROR_ROW', `subject=tree status=broken reason=${JSON.stringify(error.message)}`);
