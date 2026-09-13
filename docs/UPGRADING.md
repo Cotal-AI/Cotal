@@ -243,16 +243,20 @@ cotal ps > ps.before
 #    managed agent processes whichever order you choose, and the respawn in
 #    step 5 is how they come back. It is recovery, not tidying.
 npm install -g cotal-ai@0.49.0            # install first: see the note
-# A 0.49.0 `down manager` REFUSES to stop a 0.48.2 manager, because that
-# manager published no proof it can release its agents:
+# A 0.49.0 `down manager` REFUSES to stop a 0.48.2 manager whose pid record
+# carries a start token, which is every manager on a platform that can read
+# one (Linux can):
 #   refusing bare manager stop: ... does not prove this manager can detach
 #   its agents; use --with-agents or stop the agents explicitly
-# `--with-agents` is whole-stack only and CANNOT be combined with a
-# component name, so `down manager --with-agents` is itself refused. Stop
-# the agents explicitly first, then the manager stops without the refusal:
-cotal stop <agent> ...                    # or `cotal down --with-agents` if
-                                          # this host runs the whole stack
-cotal down manager
+# The refusal names two remedies and NEITHER clears it for this case. The
+# check reads a capability file that only a 0.49.0 manager writes; it never
+# counts agents, so stopping them first changes nothing. And `--with-agents`
+# is whole-stack only, so `down manager --with-agents` is refused by its own
+# flag rule. See #1592. Two routes do work:
+#   a) stop the manager with the 0.48.2 CLI BEFORE you install 0.49.0, or
+#   b) `cotal down --with-agents` where this host runs the whole stack.
+# Both end the agent processes, which step 5 is there to undo.
+cotal down --with-agents                  # whole-stack host; else use (a)
 cotal supervise --space <space> --server nats://<broker>:4222
 
 # 2. broker host: stop the stack.
@@ -272,15 +276,33 @@ cotal up --detach --host 0.0.0.0 --space <space>
 #     for the log to show the manager is up, then stop it, or you finish the
 #     upgrade with two managers and the one you did not intend is the one
 #     nobody is watching.
-grep -q '✓ manager up' .cotal/manager.<spaceKey>.log   # wait for this first
+#     A bare `grep -q` does NOT wait: it reads once and exits 1 immediately
+#     if the line has not been written yet. Bound the wait instead, so a
+#     manager that never comes up fails loudly rather than reading as ready:
+timeout 60 bash -c \
+  "until grep -q '. manager up' .cotal/manager.<spaceKey>.log; do sleep 1; done"
+#     exit 0 = the line arrived; exit 124 = it never did, so STOP and look.
+#     This manager is 0.49.0 and publishes its own spare-capability file, so
+#     the bare stop below is NOT the refusal case from step 1.
 cotal down manager                                      # broker + delivery remain
 
-# 4. verify the mesh is whole again before touching the fleet
-cotal ps            # compare against ps.before
-cotal channels list # compare against channels.before
+# 4. verify the mesh is whole again before touching the fleet.
+#    Do NOT compare `cotal ps` against ps.before yet: step 1 ended the agent
+#    processes, so at this point it is EXPECTED to be empty, and an empty
+#    `ps` is also the signature of the broker/manager mismatch described
+#    above. The two are indistinguishable here, so compare what the mesh
+#    itself should have carried across instead:
+cotal channels list # compare against channels.before: this SHOULD match now
+cotal ps            # expect it to be EMPTY here; ps.before is the target for
+                    # step 5, not for this step
 
 # 5. the step that is easy to skip: respawn the managed agents so their
-#    credentials are re-minted as issuances and can renew
+#    credentials are re-minted as issuances and can renew. Persona is a
+#    POSITIONAL argument here, unlike `cotal stop`, which requires --name.
+#    One call per agent:
+cotal spawn <persona> --detach --name <n> --space <space>
+#    then the comparison step 4 could not make:
+cotal ps            # NOW compare against ps.before: seat count should match
 ```
 
 The mesh is down from step 2 until step 3 finishes. That is the window. On a split topology there is
