@@ -250,10 +250,17 @@ try {
   const wsTtl = 20;
   const wsIdentity = newIdentity();
   const wsCred = await mintCreds(auth, wsIdentity, "supervisor", { expiresInSeconds: wsTtl });
-  const wsReformatted = wsCred + "\n";
+  // A FRESH envelope per read, byte-distinct but fingerprint-identical. One repeated
+  // string lets a byte-comparison mutant SELF-ARREST: it adopts the reformatted envelope
+  // once, caches it, and the next read matches its own cache, so the storm stops at two
+  // reads against a tolerance of one — a one-read margin that jitter erases whenever the
+  // second read lands before the baseline capture. Growing the whitespace removes the
+  // self-arrest, so the mutant churns the whole window and the cell reds by the full
+  // count instead of by one.
+  const wsReformatted = (read: number) => wsCred + "\n".repeat(read);
   let wsReads = 0;
   const wsWarnings: string[] = [];
-  const wsSource = async (): Promise<string> => { wsReads++; return wsReads === 1 ? wsCred : wsReformatted; };
+  const wsSource = async (): Promise<string> => { wsReads++; return wsReads === 1 ? wsCred : wsReformatted(wsReads); };
   const wsEp = new CotalEndpoint({
     space, servers: SERVERS,
     creds: wsSource,
@@ -265,10 +272,16 @@ try {
   wsEp.on("warning", (e: Error) => { wsWarnings.push(e.message); });
   await wsEp.start();
   check("reformatted-source endpoint starts (source read once)", wsReads === 1, wsReads);
+  // Two samples: the first reformatted read and a later one. Both must differ from the
+  // original AND from each other, or the source has not actually removed the self-arrest.
+  const wsSampleA = wsReformatted(2);
+  const wsSampleB = wsReformatted(3);
   check(
-    "the reformatted envelope really is the same generation (accept control)",
-    wsReformatted !== wsCred && credsFingerprint(wsReformatted) === credsFingerprint(wsCred),
-    { differs: wsReformatted !== wsCred },
+    "every reformatted envelope is the same generation in different bytes (accept control)",
+    wsSampleA !== wsCred && wsSampleB !== wsSampleA
+      && credsFingerprint(wsSampleA) === credsFingerprint(wsCred)
+      && credsFingerprint(wsSampleB) === credsFingerprint(wsCred),
+    { differsFromOriginal: wsSampleA !== wsCred, differsFromEachOther: wsSampleB !== wsSampleA },
   );
   await wait(14_500);  // just past 75% of 20s (15s) minus setup slack - the timer has not fired yet
   const wsBaseline = wsReads;
