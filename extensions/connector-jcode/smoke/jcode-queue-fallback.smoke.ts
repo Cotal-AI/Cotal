@@ -397,23 +397,18 @@ try {
       secondCopies >= 1,
       { firstMarkerDeliveries: firstCopies, secondMarkerDeliveries: secondCopies },
     );
-    // THE DECISIVE ASSERTION for the reviewed defect, and it is about the FIRST marker, the one the
-    // drain already had accepted before this block began. A fresh directed arrival makes the
-    // concurrent path recompute what is unserved; if it does not honour the in-flight reservation it
-    // re-offers that older, already-accepted batch alongside the new one. Measured exactly that way
-    // pre-fix: an accepted `send_message` carrying the drain marker, then a `soft_interrupt` carrying
-    // BOTH the drain marker and this one. Graded on the union of request kinds, because the re-offer
-    // is a soft interrupt and this fixture black-holes those — invisible in delivered turns, a real
-    // double handover on a live bridge that accepts them.
-    check(
-      "once accepted, an earlier batch is never re-offered when a later message arrives (#1233)",
-      !reofferedAfterAcceptance(marker),
-      {
-        drainMarkerHandovers: handoversCarrying(marker).length,
-        drainMarkerDeliveries: turnsCarrying(marker).length,
-        reofferedAfterAcceptance: reofferedAfterAcceptance(marker),
-      },
-    );
+    // NO CELL HERE for "the reservation prevents a re-offer", deliberately, and the reason is worth
+    // recording. A cell asserting it PASSED both with the reservation honoured and with the exclusion
+    // severed by hand, so it graded nothing: `steering` already serialises `steerPending` against
+    // itself, and this fixture cannot get a second selection to run inside the fallback's acceptance
+    // window. The duplicate that WAS reproduced here came from the ledger being written after the
+    // await, which the ordering change fixes and which the cells above do grade.
+    //
+    // The reservation is kept because a reviewer reproduced the double consumption on a RECOVERING
+    // seat, where the recovery steer is a different caller and `steering` does not serialise it. That
+    // path is not reachable from this fixture, so its coverage is stated as absent rather than
+    // implied by a cell that cannot fail. An instrument that passes against the defect it names is
+    // the failure class this repo catalogues; leaving it in would be worse than having no cell.
   }
 
   // --- Cell C: the reported state --------------------------------------------------------------
