@@ -334,7 +334,11 @@ const SEAMS: Seam[] = [
   // how many pull requests each Plane-3 durable has parked, and one is a $SYS observer that counts
   // ctl.delivery subscribers PER CONNECTION, which is what makes "two daemons were bound at once"
   // a count of processes rather than a self-report.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 150, untypecheckedSites: 110 },
+  // 150/110 -> 151/111: delivery-lease.smoke.ts grows one more smoke-side connection (tls: false),
+  // a `delivery`-role JetStream manager that REPLACES the fan-out durable with an incompatible
+  // config so a rearm fails at the real broker. The Q cells then read the durable back off that
+  // same connection, so "the endpoint recovered" is broker state rather than the endpoint's own flag.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 151, untypecheckedSites: 111 },
 ];
 
 /**
