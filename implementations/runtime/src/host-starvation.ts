@@ -229,6 +229,18 @@ export function classifyPauseFailure(error: unknown, window: LoopLagWindow): Pau
 export const STARVED_ATTEMPTS = 6;
 
 /**
+ * A macrotask yield between starved attempts.
+ *
+ * NOT A WIDENED DEADLINE, and the difference is the whole point of this file: the deadline is
+ * unchanged, and this is a pause between re-entries of an operation that already elapsed one. It
+ * earns its place twice. A retry that re-enters synchronously occupies the very loop whose absence
+ * it is reacting to, so it would spin at full CPU during exactly the window the host needs back;
+ * and a starved loop cannot run a timer either, so waiting on one is itself a small measurement of
+ * whether scheduling has returned.
+ */
+export const STARVED_YIELD_MS = 250;
+
+/**
  * Perform a pause-plane operation, and do not let this host's own starvation be recorded as the
  * effect's failure.
  *
@@ -277,6 +289,8 @@ export async function servedDespiteStarvation<T>(
       // can act on this, and "the host is overloaded" is not deducible from a run that is merely
       // taking a while.
       onStarved(`${what}: attempt ${attempt} reached its client deadline while this host was not scheduling the run's process (${evidence}); retrying rather than failing the step`);
+      // Unrefed: a retry loop is not a reason for a finished process to stay alive.
+      await new Promise((r) => setTimeout(r, STARVED_YIELD_MS).unref?.());
     }
   }
 }
