@@ -16,6 +16,7 @@ import {
   CotalEndpoint,
   isReachable,
   createSpaceAuth,
+  credsFingerprint,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -236,6 +237,53 @@ try {
     churnWarnings,
   );
   await churnEp.stop();
+
+  // ── The refusal compares GENERATIONS, not envelope bytes (review of #1525) ────────────────────
+  // `EndpointOptions.creds` takes opaque file content and promises no canonical whitespace, and
+  // `jwtFromCreds` pads with `\s*` and trims - so a store, editor or filesystem round trip can
+  // re-serve the SAME credential in bytes `===` calls different. The cell above serves one exact
+  // string, where byte equality and generation equality agree, so it cannot reach this at all.
+  //
+  // The extra newline is deliberately a difference the BROKER still accepts: a CRLF envelope also
+  // differs in bytes, but the broker refuses it, and the preflight would then block the adoption for
+  // an unrelated reason and hide the defect.
+  const wsTtl = 20;
+  const wsIdentity = newIdentity();
+  const wsCred = await mintCreds(auth, wsIdentity, "supervisor", { expiresInSeconds: wsTtl });
+  const wsReformatted = wsCred + "\n";
+  let wsReads = 0;
+  const wsWarnings: string[] = [];
+  const wsSource = async (): Promise<string> => { wsReads++; return wsReads === 1 ? wsCred : wsReformatted; };
+  const wsEp = new CotalEndpoint({
+    space, servers: SERVERS,
+    creds: wsSource,
+    card: { id: wsIdentity.id, name: "reformatted-source", kind: "endpoint" },
+    consume: false, lifecycleUid: mintLifecycleUid(),
+    registerPresence: false, watchChannels: false, watchPresence: false,
+  });
+  wsEp.on("error", () => { /* the connection stays alive on the current cred */ });
+  wsEp.on("warning", (e: Error) => { wsWarnings.push(e.message); });
+  await wsEp.start();
+  check("reformatted-source endpoint starts (source read once)", wsReads === 1, wsReads);
+  check(
+    "the reformatted envelope really is the same generation (accept control)",
+    wsReformatted !== wsCred && credsFingerprint(wsReformatted) === credsFingerprint(wsCred),
+    { differs: wsReformatted !== wsCred },
+  );
+  await wait(14_500);  // just past 75% of 20s (15s) minus setup slack - the timer has not fired yet
+  const wsBaseline = wsReads;
+  await wait(3_000);   // the 1s loop would have ticked ~3x by now
+  check(
+    "a reformatted envelope of the SAME generation is refused, so no 1s re-read follows",
+    wsReads - wsBaseline <= 1,
+    { wsReads, wsBaseline },
+  );
+  check(
+    "the refusal names the un-re-signed generation for the reformatted read too",
+    wsWarnings.some((m) => /past its renewal point/.test(m)),
+    wsWarnings,
+  );
+  await wsEp.stop();
 
   // ── Fail-loud edges.
   const other = newIdentity();

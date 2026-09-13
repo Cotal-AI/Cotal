@@ -872,7 +872,12 @@ export class CotalEndpoint extends EventEmitter {
     const { exp } = credsClaims(candidate);
     if (typeof exp === "number" && exp * 1000 <= Date.now())
       throw new Error("the creds source returned an already-expired credential (its `exp` is in the past) - nothing adopted; the renewal owner has not re-signed it, or the store is serving a stale generation");
-    if (candidate === current && delayMs <= 0)
+    // Compared by GENERATION, not by envelope. `EndpointOptions.creds` takes opaque file content and
+    // promises no canonical whitespace: `jwtFromCreds` pads with `\s*` and trims, so a store, editor or
+    // filesystem round trip that adds a newline re-serves the SAME credential in bytes `===` calls
+    // different - and the refusal would be skipped for the one case it exists to catch. The envelope
+    // also carries the nkey seed, which is why `credsFingerprint` hashes the JWT instead.
+    if (current !== undefined && credsFingerprint(candidate) === credsFingerprint(current) && delayMs <= 0)
       throw new Error("the creds source still holds the previous generation past its renewal point (the renewal owner has not re-signed it) - nothing adopted");
   }
 
