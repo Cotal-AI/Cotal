@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 30;
+const EXPECTED_CELLS = 31;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -99,6 +99,22 @@ function runScenario(mode: "subject" | "neutered-reopen" | "deleted-call"): Reco
 
 // ---- THE SUBJECT ------------------------------------------------------------------------------
 const subject = runScenario("subject");
+
+// A SCENARIO THAT CRASHED IS THE DEFECT, NOT A BROKEN HARNESS, so it is judged here before any
+// instrument row can claim it.
+//
+// Restoring the genuine pre-fix plugin files proved this is not hypothetical. There `connect` has
+// no `is_reconnect` and `BridgeClient` has no `reopen`, so the reconnect raises TypeError, every
+// row comes back False, and the first instrument assertion ("the peer must have pushed the
+// pre-disconnect frame") fired first. A real historical defect therefore read as a broken
+// instrument. An adapter that cannot be called on the reconnect path delivers nothing after a
+// reconnect, which is exactly the property under test, so the crash is asserted as the headline
+// failure and carries its cause.
+assert.equal(
+  subject.SCENARIO_CRASHED ?? "none",
+  "none",
+  "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: the reconnect sequence raised instead of delivering (issue #1531)",
+);
 
 // The peer must actually have written the COLD frame. Without this, "not delivered" could mean
 // "never sent", and the headline below would be measuring the test's own plumbing.

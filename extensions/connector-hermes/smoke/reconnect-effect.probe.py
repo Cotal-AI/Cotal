@@ -199,15 +199,47 @@ def main() -> None:
         warm = await _await_delivery(got, "warm")
         return cold, warm, pushed_cold, pushed_warm
 
-    cold, warm, pushed_cold, pushed_warm = asyncio.run(scenario())
+    cold, warm, pushed_cold, pushed_warm = _run_scenario(scenario)
     print("PUSHED_COLD", pushed_cold)
     print("PUSHED_WARM", pushed_warm)
     print("COLD_DELIVERED", cold)
     print("WARM_DELIVERED", warm)
 
     if MODE == "subject":
-        print("RACE_READER_CLEARED", _race_reader_cleared())
-        print("RACE_LIVE_READER_KEPT", _race_live_reader_kept())
+        # A missing or raising `reopen` is a FAILED PROPERTY, not a dead instrument: at the merge
+        # base the method does not exist at all, and letting the AttributeError escape would kill
+        # the probe and redden an instrument row instead of the named cell.
+        print("RACE_READER_CLEARED", _guarded(_race_reader_cleared))
+        print("RACE_LIVE_READER_KEPT", _guarded(_race_live_reader_kept))
+
+
+def _guarded(check) -> bool:
+    try:
+        return check()
+    except BaseException as exc:  # noqa: BLE001 - an unusable reopen fails the property it guards
+        print(f"RACE_CHECK_CRASHED {check.__name__} {type(exc).__name__}: {exc}")
+        return False
+
+
+def _run_scenario(scenario) -> tuple[bool, bool, bool, bool]:
+    """Run the scenario, turning a CRASH into a reported non-delivery rather than a dead probe.
+
+    This matters for attribution, and a real run is what forced it. Restoring the genuine pre-fix
+    plugin files (no ``is_reconnect``, no ``reopen``) makes ``connect(is_reconnect=True)`` raise
+    TypeError, which killed the probe outright. The suite then failed on "the subject probe did not
+    run", an INSTRUMENT row, so a real historical defect read as a broken harness instead of as the
+    bug. That is the same wrong-red shape the mutation harness caught earlier in this suite.
+
+    An adapter that cannot even be called on the reconnect path has, from the operator's point of
+    view, precisely the property this suite exists to measure: no mesh traffic arrives after a
+    reconnect. So it is reported as a non-delivery, with the cause printed for the reader, and the
+    named headline assertion is what goes red.
+    """
+    try:
+        return asyncio.run(scenario())
+    except BaseException as exc:  # noqa: BLE001 - deliberately broad: any crash IS a non-delivery
+        print(f"SCENARIO_CRASHED {type(exc).__name__}: {exc}")
+        return False, False, False, False
 
 
 def _race_reader_cleared() -> bool:
