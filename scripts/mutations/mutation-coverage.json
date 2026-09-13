@@ -295,7 +295,7 @@
       "name": "a read of any file is treated as a read of the mutated one",
       "file": "scripts/mutation-coverage.mjs",
       "find": "      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)\n        && !isSourceModule(file)) hit = true;",
-      "replace": "      if (target && !ts.isSpreadElement(target)) hit = true;",
+      "replace": "      if (target && !ts.isSpreadElement(target)\n        && !isSourceModule(file)) hit = true;",
       "expectRed": "reading some OTHER file is not a witness for the mutated one",
       "cell": "reading some OTHER file is not a witness for the mutated one"
     },
