@@ -109,6 +109,44 @@ try {
     await launched.releaseDeliveryLease(1, (await launched.readDeliveryLeaseEntry(1))?.revision);
   } finally { await launched.stop(); }
 
+  // A STALE REVISION RELEASES NOTHING, AND SAYS SO TO NOBODY. The release is a compare-and-swap,
+  // and `releaseDeliveryLease` swallows every error by design (at shutdown the broker may already be
+  // gone), so a token one step behind frees nothing and reports success. The row then claims the
+  // shard for the rest of the bucket TTL with no process behind it, and the next daemon is refused
+  // outright: "a live lease already exists". That is #1318's outage with no starvation and no broker
+  // fault anywhere, reached by an ordinary stop and restart.
+  //
+  // The token lags on ordinary interleavings, not only on faults. `markDeliveryLeaseReady` MOVES the
+  // row, so between the broker applying that write and the daemon assigning the returned value the
+  // cached revision is still the acquire token; a markReady that rejects after its write landed
+  // leaves the same lag permanently, since the daemon catches it (correctly - the renew loop
+  // repairs it). Either way the launcher can already have seen the row ready. So this grades the
+  // endpoint surface the daemon's shutdown depends on, rather than the daemon's own timing.
+  const st = await mkDaemon(); st.on("error", () => {}); await st.start();
+  try {
+    const stAcquired = await st.acquireDeliveryLease(2);
+    const stReady = await st.markDeliveryLeaseReady(2, stAcquired);
+    check("markReady MOVES the revision, so a token cached before it is stale", stReady !== stAcquired,
+      { acquired: stAcquired, afterReady: stReady });
+    // THE DEFECT: release with the pre-markReady token, exactly what the swallowed catch leaves.
+    await st.releaseDeliveryLease(2, stAcquired);
+    check("a release arguing a STALE revision leaves the row in place — silently",
+      (await st.readDeliveryLease(2)) !== undefined);
+    // ACCEPT CONTROL: the same call with the broker's current revision does free it, so the failure
+    // above is the token rather than the release being broken for every input.
+    await st.releaseDeliveryLease(2, (await st.readDeliveryLeaseEntry(2))?.revision);
+    check("CONTROL: releasing at the BROKER's current revision removes the row",
+      (await st.readDeliveryLease(2)) === undefined);
+    // THE CONSEQUENCE an operator feels: a replacement can claim the shard again.
+    const stNext = await mkDaemon(); stNext.on("error", () => {}); await stNext.start();
+    try {
+      let claimed = -1;
+      try { claimed = await stNext.acquireDeliveryLease(2); } catch { /* refused */ }
+      check("and a replacement daemon can then ACQUIRE the shard", claimed > 0, { claimed });
+      await stNext.releaseDeliveryLease(2, claimed > 0 ? claimed : undefined);
+    } finally { await stNext.stop(); }
+  } finally { await st.stop(); }
+
   // RELEASE ARGUES THE REVISION IT LAST OWNED, and `markDeliveryLeaseReady` moved it — a release
   // offering the stale `rev1` is refused, which is the correct outcome for a row that has moved on
   // and the wrong one here, where this daemon genuinely still holds the shard.

@@ -400,6 +400,71 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     return;
   }
 
+  // SIGNAL HANDLING IS ARMED HERE, THE STATEMENT AFTER THE SHARD BECOMES OURS — not at the end of
+  // start-up, and not merely before the readiness flip. From this line on there is a row on the
+  // broker with this daemon's name on it, and every instant until a handler exists is an instant in
+  // which SIGTERM takes Node's DEFAULT action: immediate death, no release, the shard claimed by a
+  // process that no longer exists for the rest of the 30s bucket TTL. The next `cotal up` is then
+  // refused outright with "a live lease already exists".
+  //
+  // THE WINDOW WAS REACHABLE FROM THE PUBLIC CLI, and reviewers reproduced it deterministically:
+  // SIGTERM at the instant the lease row turns ready killed the daemon 6/6 times with the row left
+  // behind and a real replacement refused, while the same signal 1500ms later released cleanly 2/2.
+  // Registration used to sit ~460 lines below, past the readiness flip and the awaited membership
+  // and timer-writer starts, so `cotal up` could return on a ready row while the daemon was still
+  // defenceless. Moving it merely below `shutdown`'s own definition is NOT enough: that still sits
+  // after markReady and after `startMembership`.
+  //
+  // The handler cannot call `shutdown` (defined far below, over state that does not exist yet), so
+  // it does the one thing that is always correct here and never wrong later: give the lease back if
+  // it is provably ours, then exit. Once the real `shutdown` is installed it REPLACES this, and
+  // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both.
+  let stopping = false;
+  const earlyStop = (code: number): void => {
+    if (stopping) return;
+    stopping = true;
+    setTimeout(() => process.exit(code), 2000);
+    void (async () => {
+      try {
+        const own = await ep.readDeliveryLeaseEntry(shard);
+        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+      } catch { /* broker may be gone — the bucket TTL is the crash-safe release authority */ }
+      try { await ep.stop(); } catch { /* broker may be gone */ }
+      process.exit(code);
+    })();
+  };
+  const earlySigint = (): void => earlyStop(0);
+  const earlySigterm = (): void => earlyStop(0);
+  process.on("SIGINT", earlySigint);
+  process.on("SIGTERM", earlySigterm);
+  // A START-UP FAILURE AFTER THE ACQUIRE MUST ALSO GIVE THE SHARD BACK. Between this point and the
+  // handler swap far below, a throw would otherwise propagate out of `runDelivery` with the row
+  // still claiming the shard, stranding it for the bucket TTL exactly as an unhandled signal did -
+  // a different door into the same outage. So the release happens HERE, where the failure is,
+  // rather than being trusted to a caller that may not have one.
+  //
+  // THE FAULT STAYS LOUD, AND STAYS A FAULT. These guards change WHEN the process dies, never
+  // whether it reports why: the original error is printed with its stack, as Node's default handler
+  // would, and the exit code is non-zero. Cleaning up a lease must not turn a crash into a quiet
+  // stop - that would trade this issue's outage for a silent one.
+  //
+  // DISARMED BEFORE THEY CAN RECURSE. `earlyStop`'s own async body can itself reject (the broker may
+  // be mid-teardown), which would re-enter these listeners while cleanup is in flight. They are
+  // removed on first use, so a cleanup fault falls through to the default handler and the 2s
+  // hard-exit timer remains the backstop. `stopping` already makes a second entry a no-op; this
+  // makes the recursion impossible rather than merely harmless.
+  const earlyFault = (what: string, err: unknown): void => {
+    process.off("uncaughtException", earlyUncaught);
+    process.off("unhandledRejection", earlyRejection);
+    console.error(`\u2717 delivery: start-up ${what} - releasing shard ${shard} before exiting`);
+    console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+    earlyStop(1);
+  };
+  const earlyUncaught = (e: Error): void => earlyFault("faulted", e);
+  const earlyRejection = (e: unknown): void => earlyFault("rejected a promise", e);
+  process.on("uncaughtException", earlyUncaught);
+  process.on("unhandledRejection", earlyRejection);
+
   // Broker-sourced graph membership handle — declared BEFORE Plane-3 so the delivery-admin reload
   // hook below can close over it (it starts further down; the closure reads it live).
   let membership: MembershipFeedHandle | undefined;
@@ -466,8 +531,6 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
   }
 
-  let stopping = false;
-
   // The TIMER WRITER (SPEC 13.2): the pump that turns workflow `.schedule` requests into armed
   // broker schedules. Hosted here because this daemon is the space's standing server-side process;
   // without a running writer no pause on the space ever expires. Its OWN connection under the same
@@ -516,14 +579,82 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.
     setTimeout(() => process.exit(code), 2000);
     void (async () => {
+      // THE LEASE GOES FIRST. Everything else here is this process's own teardown, which nobody is
+      // waiting on; the lease row is the one piece of SHARED state, and while it survives no
+      // replacement daemon can acquire the shard at all (the acquire is an atomic create, so it is
+      // refused outright and the row blocks the slot for the rest of the 30s bucket TTL). Behind
+      // three awaits it was reachable only if all three finished inside the 2s hard-exit above, and
+      // membership.stop() and the timer writer's stop+drain each talk to the broker on their own
+      // connections.
+      //
+      // RELEASE AGAINST THE BROKER'S REVISION, NOT THE ONE THIS PROCESS HAPPENS TO HOLD.
+      //
+      // The release is a compare-and-swap, so a token one step behind frees NOTHING, and it fails
+      // SILENTLY: `releaseDeliveryLease` swallows every error by design, because at shutdown the
+      // broker may already be gone. A daemon can therefore stop cleanly, believe it released, and
+      // leave its row claiming the shard for the rest of the 30s bucket TTL - after which the next
+      // `cotal up` is refused with "a live lease already exists" and the shard is unservable by
+      // anyone. That is this issue's outage reached without any starvation or broker fault at all.
+      //
+      // THE CACHED TOKEN CAN LAG THE BROKER, and it does not take a fault to get there. The claim is
+      // deliberately that general, because more than one ordinary interleaving produces it and the
+      // trace does not distinguish them: `markDeliveryLeaseReady` MOVES the row, so between the
+      // broker applying that write and the daemon assigning the returned value, `revision` still
+      // holds the acquire token - and a shutdown running in that interval argues it. A markReady
+      // that rejects AFTER its write landed leaves the same lag permanently, since the failure is
+      // caught (correctly: the renew loop repairs it). The launcher can already have observed the
+      // row ready in either case, so from outside this is a started daemon. Measured, with both
+      // controls in one run: release at the acquire revision left the row in place, release at the
+      // current revision removed it, and a replacement endpoint could then acquire.
+      //
+      // So: re-read, and release only what is PROVABLY ours. `ownsDeliveryLease` is the same test
+      // the renew path uses, so a row belonging to a successor is left alone - which is the property
+      // the CAS was protecting in the first place, now argued from evidence rather than from a
+      // token that may be out of date. No row, or not ours: nothing to release, and the TTL remains
+      // the crash-safe authority for anything this path cannot reach.
+      try {
+        const own = await ep.readDeliveryLeaseEntry(shard);
+        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+      } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
-      try { await ep.releaseDeliveryLease(shard, revision); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();
   };
+
+  // SIGNAL HANDLERS GO UP THE MOMENT `shutdown` EXISTS, NOT AFTER STARTUP FINISHES.
+  //
+  // The lease is acquired long before this point, and registration used to sit at the very end of
+  // start-up, past 22 further `await`s (Plane-3 bind, membership feed, timer writer, broker watch).
+  // A SIGTERM landing in that window hit Node's DEFAULT handler and killed the process outright:
+  // no release, no CAS, the row left behind for the rest of the 30s bucket TTL. The daemon had
+  // already announced itself up, so from outside it was a fully started daemon that died silently
+  // holding the shard, and the next `cotal up` was refused with "a live lease already exists" — the
+  // shard unservable for 30s after a perfectly ordinary stop-and-restart.
+  //
+  // Measured, not reasoned: with a diagnostic on the handler, the failing run's daemon log shows
+  // the up line and NO `SIGTERM received`, while the two roots that passed in the same run show it.
+  // That is what reddened `delivery-refresh-keeps-tls`, which stops the daemon and relaunches at
+  // once. Registering here closes the window to the span before the lease exists, where there is
+  // nothing to release.
+  //
+  // HAND OVER FROM `earlyStop`. The early handlers armed at the lease acquire are REMOVED rather
+  // than left alongside these: `process.on` appends, so both would fire and the early one - which
+  // knows nothing of the renew timer, the membership feed or the timer writer - would run first and
+  // set `stopping`, making the full teardown a no-op. `stopping` still guards the swap itself, so a
+  // signal delivered between these two statements is handled exactly once.
+  process.off("SIGINT", earlySigint);
+  process.off("SIGTERM", earlySigterm);
+  // The start-up fault guards go too, and BY REFERENCE: `removeAllListeners` here would strip
+  // listeners this daemon does not own. They exist to cover the window where no `shutdown` exists;
+  // past this line a fault should surface normally rather than become a quiet exit that skips the
+  // full teardown.
+  process.off("uncaughtException", earlyUncaught);
+  process.off("unhandledRejection", earlyRejection);
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
   /** What the broker says about THIS shard's lease key right now — the verdict a failed renew does
    *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
    *  looking and finding nothing (#1318).
@@ -884,7 +1015,5 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
       });
   }, PROBE_INTERVAL_MS);
 
-  process.on("SIGINT", () => shutdown(0));
-  process.on("SIGTERM", () => shutdown(0));
   await new Promise<void>(() => {}); // run until signalled
 }
