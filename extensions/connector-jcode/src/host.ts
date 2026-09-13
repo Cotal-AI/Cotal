@@ -1149,6 +1149,13 @@ export async function runJcodeHost(): Promise<void> {
               `and the one bridge recovery is already spent, so the queued-turn tier stops attempting; ` +
               `${items.length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
           );
+          // AND SAY SO WHERE AN OPERATOR LOOKS, not only in a log nobody tails. A reviewer accepted
+          // that terminalization is not itself a `stalled` state (that verdict belongs to the queue's
+          // own no-progress clock) ON THE CONDITION that queued depth and age stay visible meanwhile.
+          // This is the one path that stops serving the queue without an ack, so it is exactly where
+          // a silent roster row would misrepresent the seat: the depth is real, it is not moving, and
+          // the seat must carry that in its presence rather than in a diagnostic.
+          publishInboundHealth();
         }
         return;
       }
