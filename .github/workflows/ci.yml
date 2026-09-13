@@ -79,6 +79,33 @@ jobs:
           exit "$rc"
       - name: Typecheck
         run: pnpm typecheck
+      # THE SELF-TEST PROVES THE GATE WORKS; THIS RUNS IT ON THE COMMITS ACTUALLY BEING MERGED,
+      # and only the second one can keep docs/UPGRADING.md true (#1578). Measured during review:
+      # the suite registry ran `--self-test` alone, which grades two FIXED historical ranges, so
+      # tomorrow's breaking change with no upgrade section was examined by nothing. A gate that
+      # exists and is never pointed at the change is decoration, and worse than absent, because
+      # a green check tells a reviewer somebody looked.
+      - name: Upgrade section present for breaking changes
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -eu
+          base="$BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
+            echo "no base commit on this event; using first parent $base"
+          fi
+          # The range must be REACHABLE before it can be graded. An unreachable base makes the
+          # gate misuse-exit, and a misuse must never be mistaken for "no breaking change here".
+          git cat-file -e "$base^{commit}" || { echo "base $base is not in this checkout"; exit 2; }
+          out="$(node scripts/upgrade-section-gate.mjs --range "$base..$(git rev-parse HEAD)" 2>&1)" && rc=0 || rc=$?
+          printf '%s\n' "$out"
+          # EXIT 2 IS THE GATE SAYING IT COULD NOT GRADE. Treating it as a pass is the whole
+          # defect class this gate was written to catch, so it fails the job loudly instead.
+          if [ "$rc" = 2 ]; then echo "gate could not grade this range; failing rather than assuming a pass"; exit 2; fi
+          # A verdict line must be present, or an empty stdout with rc=0 would read as a pass.
+          printf '%s\n' "$out" | grep -qE 'REFUSED|OK' || { echo "gate printed no verdict"; exit 2; }
+          exit "$rc"
       - name: Build
         run: pnpm build
       - name: Docs bundle in sync
