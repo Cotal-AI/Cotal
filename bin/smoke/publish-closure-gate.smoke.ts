@@ -129,7 +129,12 @@ function shellStatus(body: string): number {
   const cached = statusCache.get(body);
   if (cached !== undefined) return cached;
   const result = spawnSync("bash", ["-e", "-c", body], {
-    env: { ...process.env, rc: "2", GITHUB_OUTPUT: GITHUB_OUTPUT_SCRATCH },
+    // Built, not inherited. `{ ...process.env }` would hand a runner's live
+    // COTAL_ credentials to the child (`suite-ambient-env`), and it would also
+    // make a recorded status depend on the machine: `LC_ALL`, `BASH_ENV` or a
+    // stray `rc` in the runner's environment could move a row. PATH is the one
+    // thing the bodies need, for `grep`, `env` and `bash` itself.
+    env: { PATH: process.env["PATH"] ?? "", rc: "2", GITHUB_OUTPUT: GITHUB_OUTPUT_SCRATCH },
     stdio: "ignore",
     timeout: BODY_TIMEOUT_MS,
   });
