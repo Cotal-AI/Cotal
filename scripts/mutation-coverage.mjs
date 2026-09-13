@@ -451,7 +451,6 @@ const evaluated = (node, sf) => {
     scan(sf);
     if (!invoked) return false;
     // The enclosing function is reached; keep walking outward for further nesting.
-    node = cur;
   }
   return true;
 };
