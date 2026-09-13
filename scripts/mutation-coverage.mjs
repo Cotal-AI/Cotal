@@ -12,6 +12,7 @@
  *
  *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still refused)
  *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still refused
+ *   node scripts/mutation-coverage.mjs --gradable-only [config…]    # validate reachability, do not execute
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
@@ -21,9 +22,11 @@ import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
+const FLAG_GRADABLE_ONLY = "--gradable-only";
 const rawArgs = process.argv.slice(2);
 const executeDiscovered = rawArgs.includes(FLAG_EXECUTE_DISCOVERED);
-const args = rawArgs.filter((arg) => arg !== FLAG_EXECUTE_DISCOVERED);
+const gradableOnly = rawArgs.includes(FLAG_GRADABLE_ONLY);
+const args = rawArgs.filter((arg) => arg !== FLAG_EXECUTE_DISCOVERED && arg !== FLAG_GRADABLE_ONLY);
 const discovered = args.length === 0;
 const configs = discovered
   ? execSync("git ls-files '*/mutations/*.json' '*.mutations.json'", { encoding: "utf8" }).split("\n").filter(Boolean)
@@ -51,33 +54,176 @@ const refused = [];
 const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
-const quoted = (s) => `["'\`]${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`;
-const referencesRoot = (source, root) =>
-  new RegExp([quoted(root), root.split("/").map(quoted).join("\\s*,\\s*")].join("|")).test(source);
 const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
-const launcherNames = (source) => {
-  const names = new Set(LAUNCHERS);
-  for (const m of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g)) {
-    for (const part of m[1].split(",")) {
-      const alias = part.match(/^\s*(\w+)\s+as\s+(\w+)\s*$/);
-      if (alias !== null && LAUNCHERS.includes(alias[1])) names.add(alias[2]);
-    }
-  }
-  return [...names];
+const COPIERS = ["cpSync", "copyFileSync"];
+const JOINERS = ["join", "resolve", "dirname", "fileURLToPath"];
+const RELATIVE_SRC = /(?:^|\/)(?:\.\.\/)+src\//;
+
+const calleeText = (expr) => {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr) || ts.isPropertyAccessChain(expr)) return expr.name.text;
+  return "";
 };
-const boundNames = (source, basename) =>
-  [...source.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=[^;\\n]{0,300}${quoted(basename)}`, "g"))].map((m) => m[1]);
-const invokesFile = (source, file) => {
-  const basename = file.split("/").at(-1);
-  if (basename === undefined || !referencesRoot(source, file)) return false;
-  const call = `(?:${launcherNames(source).join("|")})\\s*\\(`;
-  if (new RegExp(`${call}[\\s\\S]{0,500}${quoted(basename)}`).test(source)) return true;
-  const names = boundNames(source, basename);
-  if (names.length === 0) return false;
-  for (const m of source.matchAll(new RegExp(`${call}((?:[^()]|\\([^()]*\\))*)\\)`, "g"))) {
-    if (names.some((name) => new RegExp(`\\b${name}\\b`).test(m[1]))) return true;
+
+const namedAliases = (source, fromSpec, originals) => {
+  const names = new Set(originals);
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const from = node.moduleSpecifier.text;
+      if (from !== fromSpec && from !== `node:${fromSpec}`) return;
+      const named = node.importClause?.namedBindings;
+      if (!named || !ts.isNamedImports(named)) return;
+      for (const el of named.elements) {
+        const orig = (el.propertyName ?? el.name).text;
+        if (originals.includes(orig)) names.add(el.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast("alias.ts", source));
+  return names;
+};
+
+const pathEval = (suite, source) => {
+  const sf = ast(suite, source);
+  const joiners = namedAliases(source, "path", JOINERS);
+  const variables = new Map();
+  const rootish = (node) => {
+    if (ts.isIdentifier(node)) {
+      const n = node.text;
+      return n === "ROOT" || n === "root" || n === "repo" || n === "repoRoot" || n === "pkgRoot"
+        || n === "here" || n === "base" || n.endsWith("Root") || n.endsWith("Clone");
+    }
+    if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === "process.cwd") return true;
+    if (ts.isPropertyAccessExpression(node)) {
+      const t = node.getText();
+      return t === "import.meta.dirname" || t === "import.meta.url" || t === "process.cwd";
+    }
+    return false;
+  };
+  const evalPath = (node) => {
+    if (!node) return undefined;
+    if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
+    const literal = stringValue(node);
+    if (literal !== undefined) return literal;
+    if (ts.isIdentifier(node)) {
+      if (variables.has(node.text)) return variables.get(node.text);
+      if (rootish(node)) return process.cwd();
+      return undefined;
+    }
+    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
+      if (node.name.text === "dirname") return dirname(resolve(suite));
+      if (node.name.text === "url") return resolve(suite);
+    }
+    if (rootish(node)) return process.cwd();
+    if (ts.isCallExpression(node)) {
+      const name = calleeText(node.expression);
+      const parts = [];
+      for (const arg of node.arguments) {
+        if (ts.isSpreadElement(arg)) continue;
+        parts.push(evalPath(arg) ?? (rootish(arg) ? process.cwd() : undefined));
+      }
+      if (name === "dirname" && parts.length === 1 && parts[0] !== undefined) return dirname(parts[0]);
+      if ((name === "join" || name === "resolve") && joiners.has(name) && parts.every((part) => part !== undefined)) {
+        return resolve(...parts);
+      }
+      if (name === "fileURLToPath" && parts.length === 1 && parts[0] !== undefined) return parts[0];
+    }
+    return undefined;
+  };
+  const walk = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const value = evalPath(node.initializer);
+      if (value !== undefined) variables.set(node.name.text, value);
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(sf);
+  return { sf, evalPath };
+};
+
+const coversPath = (got, want) => {
+  if (got === undefined || got === null) return false;
+  const g = resolve(got).replaceAll("\\", "/");
+  const w = resolve(want).replaceAll("\\", "/");
+  return g === w || g.startsWith(w + "/");
+};
+
+const exprCovers = (evalPath, node, want) => {
+  if (coversPath(evalPath(node), want)) return true;
+  if (ts.isArrayLiteralExpression(node)) {
+    return node.elements.some((el) => !ts.isOmittedExpression(el) && !ts.isSpreadElement(el) && exprCovers(evalPath, el, want));
   }
-  return false;
+  let hit = false;
+  ts.forEachChild(node, (child) => { if (exprCovers(evalPath, child, want)) hit = true; });
+  return hit;
+};
+
+const invokesFile = (suite, source, file) => {
+  const { sf, evalPath } = pathEval(suite, source);
+  const launchers = namedAliases(source, "child_process", LAUNCHERS);
+  let hit = false;
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {
+      for (const arg of node.arguments) {
+        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, file)) hit = true;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hit;
+};
+
+const stringsCover = (suite, source, want) => {
+  const { sf, evalPath } = pathEval(suite, source);
+  let hit = false;
+  const visit = (node) => {
+    if (ts.isStringLiteralLike(node) && coversPath(evalPath(node) ?? node.text, want)) hit = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hit;
+};
+
+
+const copiesRoot = (suite, source, root) => {
+  const { sf, evalPath } = pathEval(suite, source);
+  const copiers = namedAliases(source, "fs", COPIERS);
+  let hit = false;
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {
+      for (const arg of node.arguments) {
+        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hit;
+};
+
+const importsSource = (path, source) => {
+  let hit = false;
+  const specOk = (value) => {
+    if (typeof value !== "string") return false;
+    const v = value.replaceAll("\\", "/");
+    return RELATIVE_SRC.test(v) || v.startsWith("./src/");
+  };
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {
+      if (specOk(stringValue(node.moduleSpecifier))) hit = true;
+    }
+    if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier) {
+      if (specOk(stringValue(node.moduleSpecifier))) hit = true;
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      if (specOk(stringValue(node.arguments[0]))) hit = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast(path, source));
+  return hit;
 };
 
 const validStringArray = (value) =>
@@ -221,6 +367,7 @@ const buildsPackage = (command, name) => {
   if (!name) return false;
   for (const segment of command.split(/&&|;/)) {
     const tokens = segment.trim().split(/\s+/);
+    if (tokens.includes("||")) continue;
     if (tokens[0] !== "pnpm") continue;
     if (tokens[1] === "build") return true;
     const filter = tokens.findIndex((token) => token === "--filter" || token.startsWith("--filter="));
@@ -245,10 +392,10 @@ const executedWitness = (suite, source, command, mutation, executes) => {
 const assertGradable = (configPath, cfg, suites, mutation) => {
   for (const suite of suites) {
     const source = readFileSync(suite, "utf8");
-    if (resolve(mutation.file) === resolve(suite) || invokesFile(source, mutation.file)) return;
-    if (packageRoot(mutation.file) === packageRoot(suite) && source.includes("../src/")) return;
+    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;
+    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source)) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
-    if (assembled !== undefined && referencesRoot(source, assembled)) return;
+    if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;
     if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;
   }
   throw new Error(
@@ -329,6 +476,11 @@ for (const path of configs) {
     continue;
   }
 
+  if (gradableOnly) {
+    console.log(`ACCEPTED ${path}`);
+    graded++;
+    continue;
+  }
   if (discovered && !executeDiscovered) {
     fencedDiscovered++;
     console.error(`FENCED ${path}: discovered configs are not executed; pass --execute-discovered to run them`);

@@ -40,6 +40,8 @@ try {
   write("packages/seat/package.json", JSON.stringify({ name: "@cotal-ai/seat" }));
   write("packages/seat/src/index.ts", "export const x = 1;\n");
   write("packages/seat/smoke/local.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  write("packages/seat/smoke/src-import.smoke.ts", 'import { x } from "../src/index.js";\n');
+  write("packages/seat/smoke/comment-src.smoke.ts", 'const note = "see ../src/index.ts for details";\n');
   write("packages/other/package.json", JSON.stringify({ name: "@cotal-ai/other" }));
   write("packages/other/src/index.ts", "export const x = 1;\n");
   write("bin/entry.ts", 'import "@cotal-ai/seat";\n');
@@ -120,6 +122,14 @@ try {
   let result = run("trap");
   check("a by-name same-package import without ../src is refused", result.status !== 0 && /REFUSED trap\.json/.test(result.stderr) && /dist/.test(result.stderr), report(result));
 
+  config("src-import", { suite: ["packages/seat/smoke/src-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("src-import");
+  check("a value import of ../src is gradable for a same-package source file", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("comment-src", { suite: ["packages/seat/smoke/comment-src.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("comment-src");
+  check("a string mentioning ../src is not a source import", result.status !== 0 && /REFUSED comment-src/.test(result.stderr), report(result));
+
   config("assembled", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
   result = run("assembled");
   check("the preserved assembles witness remains gradable", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
@@ -166,11 +176,11 @@ try {
 
   config("unused-root", { suite: ["bin/smoke/unused-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("unused-root");
-  check("an unused root spelling beside a by-name import is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+  check("an unused root spelling beside a by-name import is refused", result.status !== 0 && /REFUSED unused-root/.test(result.stderr), report(result));
 
   config("unrelated-spawn", { suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("unrelated-spawn");
-  check("an unrelated spawn near a quoted path is accepted today (see #1434)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+  check("an unrelated spawn near a quoted path is refused", result.status !== 0 && /REFUSED unrelated-spawn/.test(result.stderr), report(result));
 
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");
@@ -179,7 +189,7 @@ try {
   const skippedBuild = `false && pnpm --filter @cotal-ai/seat build || ${tally}`;
   config("skipped-build", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: skippedBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("skipped-build");
-  check("a package build that never runs is accepted today because buildsPackage is the fourth witness of the class tracked in #1434, alongside ../src/, referencesRoot, and invokesFile (see #1434, #1465)", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+  check("a package build that never runs is refused", result.status !== 0 && /REFUSED skipped-build/.test(result.stderr), report(result));
 
   config("pty-executed", { suite: ["bin/smoke/pty-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("pty-executed");
@@ -454,6 +464,16 @@ try {
   check(
     "a named non-live config still executes without a flag",
     existsSync(sentinelPath("safe-a")) && /graded=1/.test(result.stdout) && /fenced-live=0/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs("--gradable-only", "bin/smoke/mutations/safe-a.json");
+  check(
+    "gradable-only accepts a named config without executing it",
+    !existsSync(sentinelPath("safe-a"))
+      && /ACCEPTED bin\/smoke\/mutations\/safe-a\.json/.test(result.stdout)
+      && /graded=1 refused-with-reason=0/.test(result.stdout),
     report(result),
   );
 } finally {
