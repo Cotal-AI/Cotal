@@ -39,8 +39,33 @@ class CotalAdapter(BasePlatformAdapter):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = get_client()
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Connect the bridge and start receiving.
+
+        ``is_reconnect`` is keyword-only and arrives from the gateway's reconnect watcher, which
+        has passed it at every call site since hermes-agent 0.18. Upstream asks adapters holding a
+        server-side queue to preserve it across a reconnect so messages sent during the outage are
+        delivered rather than dropped.
+
+        This bridge has no server-side queue of its own to preserve, so there is nothing to keep
+        here. What it does have is the mesh stream behind the sidecar, and the redelivery contract
+        that protects it is the ack: ``_maybe_ack`` acks a message only once the inject coroutine
+        has completed, so anything in flight when the platform dropped was never acked and is
+        redelivered by the stream. Preserving outage-time messages is therefore already the
+        behaviour on both paths, and it is the reason this method must not silently discard
+        in-flight state on the reconnect path.
+
+        What the flag does change is the restart. ``disconnect`` calls ``BridgeClient.close``,
+        which latches the stop event and leaves the reader thread terminated. A reconnect that
+        merely called ``start`` again would find ``_reader`` already set, return without starting
+        anything, and produce a platform that reports connected while receiving nothing at all,
+        which is the quiet failure mode this connector exists to avoid. On a reconnect the client
+        is therefore reopened explicitly before the reader is started.
+        """
         self._loop = asyncio.get_running_loop()
+        if is_reconnect:
+            # Clear the latched stop and drop the dead reader, so start() below really starts one.
+            self._client.reopen()
         self._client.start(self._on_incoming)  # reader thread → _on_incoming
         self._mark_connected()
         hooks.relay("gateway_startup")  # present + free
