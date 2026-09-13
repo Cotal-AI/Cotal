@@ -242,21 +242,26 @@ cotal ps > ps.before
 # 1. manager host. READ THE NOTE BELOW THE BLOCK FIRST: this step ends the
 #    managed agent processes whichever order you choose, and the respawn in
 #    step 5 is how they come back. It is recovery, not tidying.
-npm install -g cotal-ai@0.49.0            # install first: see the note
-# A 0.49.0 `down manager` REFUSES to stop a 0.48.2 manager whose pid record
-# carries a start token, which is every manager on a platform that can read
-# one (Linux can):
-#   refusing bare manager stop: ... does not prove this manager can detach
-#   its agents; use --with-agents or stop the agents explicitly
-# The refusal names two remedies and NEITHER clears it for this case. The
-# check reads a capability file that only a 0.49.0 manager writes; it never
-# counts agents, so stopping them first changes nothing. And `--with-agents`
-# is whole-stack only, so `down manager --with-agents` is refused by its own
-# flag rule. See #1592. Two routes do work:
-#   a) stop the manager with the 0.48.2 CLI BEFORE you install 0.49.0, or
-#   b) `cotal down --with-agents` where this host runs the whole stack.
-# Both end the agent processes, which step 5 is there to undo.
-cotal down --with-agents                  # whole-stack host; else use (a)
+#
+#    STOP THE MANAGER WITH THE 0.48.2 CLI, BEFORE INSTALLING 0.49.0. The
+#    order matters and it is not recoverable once you install: a 0.49.0
+#    `down manager` REFUSES to stop a 0.48.2 manager whose pid record carries
+#    a start token, which is every manager on a platform that can read one
+#    (Linux can):
+#      refusing bare manager stop: ... does not prove this manager can detach
+#      its agents; use --with-agents or stop the agents explicitly
+#    The refusal names two remedies and NEITHER clears it for this case. The
+#    check reads a capability file that only a 0.49.0 manager writes; it never
+#    counts agents, so stopping them first changes nothing. And `--with-agents`
+#    is whole-stack only, so `down manager --with-agents` is refused by its own
+#    flag rule. See #1592.
+cotal down manager                        # the 0.48.2 CLI, still installed.
+                                          # 0.48.2 has no --with-agents; this
+                                          # is the whole route. On a host that
+                                          # runs the whole stack, the 0.49.0
+                                          # `cotal down --with-agents` after
+                                          # installing is the alternative.
+npm install -g cotal-ai@0.49.0            # ONLY after the stop above
 cotal supervise --space <space> --server nats://<broker>:4222
 
 # 2. broker host: stop the stack.
