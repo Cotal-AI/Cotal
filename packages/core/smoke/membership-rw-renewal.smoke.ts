@@ -14,7 +14,9 @@
  *   - the 75% timer SELF-HEALS across the initial cred's renewal point and stop() clears it (case 1);
  *   - the whole prove-then-adopt transaction is bounded by an ABSOLUTE deadline < the manager's request
  *     bound, including the single-flight queue wait (case 5 / mirrors the endpoint's reload-deadline-queue);
- *   - a startup that REJECTS after conn A is open leaves no observer connection behind (#1557).
+ *   - a startup that REJECTS after conn A is open leaves no observer connection behind (#1557);
+ *   - the missed-remint refusal compares GENERATIONS, so a reformatted envelope carrying the same JWT is
+ *     still refused and still does not churn (#1563).
  *
  * Run: pnpm smoke:membership-rw-renewal   (needs `nats-server` on PATH; auth/JetStream, local-only; ~20s)
  */
@@ -396,6 +398,67 @@ try {
     drained,
     { observersBefore, observersAfter },
   );
+
+  // ---- Scenario 9: the missed-remint refusal is by GENERATION, not by envelope bytes (#1563) ----
+  // Scenario 5 serves one exact string, so it cannot tell "same generation" from "same bytes". The source
+  // is caller-supplied and opaque - a SecretStore adapter, an editor, a filesystem round trip - and any of
+  // them can hand back the SAME JWT in a differently formatted envelope. The envelope also carries the
+  // nkey seed, which `credsFingerprint` documents as a reason not to hash it. Compared by bytes, such a
+  // read looks like a NEW generation: it is adopted past its own renewal point, `delay <= 0` floors the
+  // next tick to 1s, and the feed re-reads the store every second - the churn scenario 5 exists to stop.
+  //
+  // Same JWT, same seed, different bytes: extra newlines at EOF, the shape a store or an editor adds on
+  // a round trip. `jwtFromCreds` trims them away; `===` does not. Deliberately a difference the BROKER
+  // still accepts - a CRLF envelope also differs in bytes, but the broker refuses it, and the preflight
+  // would then mask the defect by refusing the adoption for an unrelated reason.
+  //
+  // EVERY read is byte-distinct, keyed on the read counter, and that is load-bearing for the grading:
+  // serving one fixed reformatted string lets the byte-comparing mutant ARREST ITSELF. It adopts the
+  // second read, and the 1s tick that follows compares the third read against the adopted second - equal
+  // bytes - so it refuses, restores the 60s backoff, and the read count lands inside the same bound the
+  // fixed code produces. The cell then passes under the mutation and grades nothing.
+  const reformatEnvelope = (creds: string, read: number): string => creds + "\n".repeat(read);
+  const reformatTtl = 20;
+  const reformatCred = await mintCreds(auth, feedId, "membership-rw", { expiresInSeconds: reformatTtl });
+  let reformatReads = 0;
+  const reformatLog: string[] = [];
+  const reformatSource = async (): Promise<string> => {
+    reformatReads++;
+    return reformatReads === 1 ? reformatCred : reformatEnvelope(reformatCred, reformatReads);
+  };
+  const feed6 = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, rwCreds: reformatSource, intervalMs: 60_000,
+    log: (m) => { reformatLog.push(m); },
+  });
+  feed = feed6;
+  check("reformat feed starts (source read once)", reformatReads === 1, reformatReads);
+  // Both halves of the control: consecutive reads differ from the first AND from each other (or the
+  // mutant self-arrests), and all of them carry the same generation (or the refusal proves nothing).
+  const [reform2, reform3] = [reformatEnvelope(reformatCred, 2), reformatEnvelope(reformatCred, 3)];
+  check(
+    "the reformatted envelope really is the same generation (accept control)",
+    reform2 !== reformatCred && reform3 !== reform2
+      && credsFingerprint(reform2) === credsFingerprint(reformatCred)
+      && credsFingerprint(reform3) === credsFingerprint(reformatCred),
+    { differsFromFirst: reform2 !== reformatCred, differsFromPrevious: reform3 !== reform2 },
+  );
+  await wait(14_500);  // just past 75% (15s) minus setup slack — the timer has not fired yet
+  const reformatBaseline = reformatReads;
+  const reformatRefused = await until(
+    () => reformatLog.some((m) => /still holds the previous generation past its renewal point/.test(m)),
+    5_000, 100);
+  // The refusal itself: compared by bytes this read is a NEW generation and is adopted instead.
+  check("a reformatted envelope of the SAME generation is REFUSED as a missed remint (#1563)", reformatRefused, reformatLog);
+  // And the consequence the refusal exists for: adopting it floors the next tick to 1s, so the source is
+  // re-read within the second rather than after the 60s renewal backoff.
+  await wait(2_500);
+  check(
+    "the refusal keeps the 60s backoff — no 1s re-read of the source (#1563)",
+    reformatReads - reformatBaseline <= 1,
+    { reformatReads, reformatBaseline },
+  );
+  await feed6.stop();
+  feed = undefined;
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-RW RENEWAL ${pass}/${pass + fail}`);
   process.exitCode = fail ? 1 : 0;
