@@ -338,6 +338,22 @@
       "replace": "  const flatMap = new Map();\n  const arrays = { get: (name) => flatMap.get(name) ?? [] };\n  const bindAll = (node) => {\n    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {\n      const candidates = argvCandidates(node.initializer, arrays);\n      if (candidates.length > 0) flatMap.set(node.name.text, candidates);\n    }\n    ts.forEachChild(node, bindAll);\n  };\n  bindAll(sf);",
       "expectRed": "a same-named argv array in another scope cannot stand in for the launcher's",
       "cell": "a same-named argv array in another scope cannot stand in for the launcher's"
+    },
+    {
+      "name": "a read is a witness even where control never reaches it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression)) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression))) {",
+      "expectRed": "a read inside a function nobody calls never happens",
+      "cell": "a read inside a function nobody calls never happens"
+    },
+    {
+      "name": "a launcher is a witness even where control never reaches it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression)) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {",
+      "expectRed": "a launch inside a function nobody calls never runs",
+      "cell": "a launch inside a function nobody calls never runs"
     }
   ]
 }

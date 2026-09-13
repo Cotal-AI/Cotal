@@ -356,6 +356,42 @@ const listingIsRead = (call, readers) => {
   return false;
 };
 
+/**
+ * Does control reach this node when the module is loaded?
+ *
+ * Top-level code runs on load. Code inside a function runs only if something calls that function,
+ * so a deferred site is admitted only when its enclosing function is actually reachable: a callback
+ * passed straight to a call, or a binding whose name is used somewhere other than its declaration.
+ */
+const evaluated = (node, sf) => {
+  for (let cur = node.parent; cur !== undefined; cur = cur.parent) {
+    const isFn = ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur)
+      || ts.isArrowFunction(cur) || ts.isMethodDeclaration(cur);
+    if (!isFn) continue;
+    const parent = cur.parent;
+    // Passed directly to a call (a callback) or immediately invoked: it runs.
+    if (parent && (ts.isCallExpression(parent) || ts.isNewExpression(parent))
+      && parent.expression !== cur) return true;
+    if (parent && ts.isParenthesizedExpression(parent) && parent.parent
+      && ts.isCallExpression(parent.parent)) return true;
+    const name = ts.isFunctionDeclaration(cur) || ts.isMethodDeclaration(cur)
+      ? (cur.name && ts.isIdentifier(cur.name) ? cur.name.text : undefined)
+      : (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) ? parent.name.text : undefined);
+    if (name === undefined) return false;
+    let used = false;
+    const scan = (n) => {
+      if (used) return;
+      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !(n.parent && ts.isVariableDeclaration(n.parent) && n.parent.name === n)) used = true;
+      ts.forEachChild(n, scan);
+    };
+    scan(sf);
+    if (!used) return false;
+    // The enclosing function is reached; keep walking outward for further nesting.
+    node = cur;
+  }
+  return true;
+};
+
 const READERS = ["readFileSync", "readFile", "openSync", "createReadStream"];
 /**
  * A recursive directory read is a read of every file under that directory.
@@ -373,11 +409,11 @@ const readsFile = (suite, source, file, env = new Map()) => {
   const listers = namedAliases(source, "fs", READDIRS);
   const want = resolve(file);
   const visit = (node) => {
-    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression))) {
+    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression)) && evaluated(node, sf)) {
       const target = node.arguments[0];
       if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)) hit = true;
     }
-    if (ts.isCallExpression(node) && listers.has(calleeText(node.expression))) {
+    if (ts.isCallExpression(node) && listers.has(calleeText(node.expression)) && evaluated(node, sf)) {
       const dir = evalPath(node.arguments[0]);
       const options = node.arguments[1];
       const recursive = options !== undefined && ts.isObjectLiteralExpression(options)
@@ -429,7 +465,7 @@ const launchedPaths = (suite, source) => {
   };
   const found = [];
   const visit = (node) => {
-    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {
+    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression)) && evaluated(node, sf)) {
       const args = node.arguments.filter((arg) => !ts.isSpreadElement(arg));
       const command = args[0];
       const argv = args[1] && !ts.isObjectLiteralExpression(args[1]) ? args[1] : undefined;
@@ -498,42 +534,6 @@ const copiesRoot = (suite, source, root) => {
  * file's own relative imports, because a suite that imports a barrel does reach what the barrel
  * re-exports. A type-only import is erased before anything runs and is therefore never a load.
  */
-/**
- * Does control reach this node when the module is loaded?
- *
- * Top-level code runs on load. Code inside a function runs only if something calls that function,
- * so a deferred site is admitted only when its enclosing function is actually reachable: a callback
- * passed straight to a call, or a binding whose name is used somewhere other than its declaration.
- */
-const evaluated = (node, sf) => {
-  for (let cur = node.parent; cur !== undefined; cur = cur.parent) {
-    const isFn = ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur)
-      || ts.isArrowFunction(cur) || ts.isMethodDeclaration(cur);
-    if (!isFn) continue;
-    const parent = cur.parent;
-    // Passed directly to a call (a callback) or immediately invoked: it runs.
-    if (parent && (ts.isCallExpression(parent) || ts.isNewExpression(parent))
-      && parent.expression !== cur) return true;
-    if (parent && ts.isParenthesizedExpression(parent) && parent.parent
-      && ts.isCallExpression(parent.parent)) return true;
-    const name = ts.isFunctionDeclaration(cur) || ts.isMethodDeclaration(cur)
-      ? (cur.name && ts.isIdentifier(cur.name) ? cur.name.text : undefined)
-      : (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) ? parent.name.text : undefined);
-    if (name === undefined) return false;
-    let used = false;
-    const scan = (n) => {
-      if (used) return;
-      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !(n.parent && ts.isVariableDeclaration(n.parent) && n.parent.name === n)) used = true;
-      ts.forEachChild(n, scan);
-    };
-    scan(sf);
-    if (!used) return false;
-    // The enclosing function is reached; keep walking outward for further nesting.
-    node = cur;
-  }
-  return true;
-};
-
 const importsSource = (path, source, target) => {
   const want = resolve(target);
   const seen = new Set();
