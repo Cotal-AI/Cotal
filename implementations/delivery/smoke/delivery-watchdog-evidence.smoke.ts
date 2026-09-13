@@ -232,11 +232,21 @@ check("K3 and a mostly-scheduled probe is still a negative: the server had nearl
 const quiet = classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 960);
 check("K4 a 1000ms false of which 960ms was off-CPU is STARVED, not a negative", quiet.counts === "starved", quiet);
 check("K4b and it credits the time the server never got", quiet.counts === "starved" && quiet.lateBy === 960, quiet);
-// K2 and K5 are the SAME measured starvation, differing only in whether the answer beat the budget.
-// This is the pair that keeps the clause from becoming a blanket excuse: a starved host does not
-// make every refusal unbelievable, it makes unbelievable only the refusals it actually decided.
+// K5 IS THE OTHER SIDE OF THE BUDGET LINE FROM K5b, and the two of them are the pair that keeps
+// the starvation clause from becoming a blanket excuse: a starved host does not make every refusal
+// unbelievable, only the refusals that actually ran out the budget. Both carry the SAME 5000ms of
+// measured descheduling, so the deschedule measurement alone cannot be what decides them.
+//
+// A REVIEWER FINDING, and worth recording because the previous version of this comment was wrong in
+// a way that looked right: it claimed K2 and K5 were that pair. They are not. Both fail the
+// `elapsedMs >= budgetMs` leg and never reach the share test, so they are the same side of the line
+// sampled twice - two cells that agree rather than a pair that discriminates. Instrumented rather
+// than argued: K2 and K5 are both decided by the fallthrough, while K5b below is the first input in
+// this group actually decided by the material-share clause.
 check("K5 the identical starvation does NOT excuse a refusal that beat the budget anyway",
   classifyProbe(false, 40, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 5_000).counts === "negative");
+check("K5b but one millisecond further, at the budget, the same starvation IS believed",
+  classifyProbe(false, PROBE_BUDGET_MS, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 5_000).counts === "starved");
 // A measurement larger than the probe itself is nonsense; it must not manufacture credit. Clamped,
 // it reads as a fully-starved probe rather than as a negative lateBy or an exit-blocking absurdity.
 const absurd = classifyProbe(false, 1000, PROBE_BUDGET_MS, PROBE_LATE_FACTOR, 99_000);
@@ -466,7 +476,8 @@ check("N8 the incident's reading keeps the daemon alive AND stops it serving unt
 check("N9 nothing may serve that must exit",
   allReadings.every((r) => !mayServeOn(r) || leaseAction(r) !== "exit"));
 
-const EXPECTED_CELLS = 89;
+// 89 -> 90: K5b, the cell that makes K5 half of a real pair rather than a restatement of K2.
+const EXPECTED_CELLS = 90;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
