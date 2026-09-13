@@ -9,10 +9,20 @@
  * independent instruments. A `primary` (the scanner's real `findings()`) and a `secondary` (a
  * small reader asserting the subject genuinely carries what the cell claims to plant). Hollow a
  * secondary out to a constant, `() => 1`, and the cell still reports `status=PASS`, the summary
- * still reports `cells=34/34 status=PASS`, and the process still exits 0. Measured at
- * fe813fe390d3ef47ac54325f48be816ebaa84148: three separate hollowed readers each survived the
- * scanner's own suite with 34/34 PASS, while a genuine behaviour weakening (CIDR_SUFFIX) went
- * 30/34 FAIL exit 2. A dead discriminator is invisible to the instrument it belongs to.
+ * still reports `cells=34/34 status=PASS`, and the process still exits 0.
+ *
+ * Measured by hollowing three different secondaries one at a time, each inside its own cell block:
+ *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=34/34 status=PASS   SURVIVED
+ *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=34/34 status=PASS   SURVIVED
+ *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=34/34 status=PASS   SURVIVED
+ * against a same-session behaviour control proving the scanner is not simply blind: weakening the
+ * real CIDR_SUFFIX pattern gave exit 2, cells=19/34 status=FAIL. A dead discriminator is invisible
+ * to the instrument it belongs to, while dead behaviour is not.
+ *
+ * These figures are re-derivable at THIS head, which is deliberate. They previously cited a prior
+ * sha, and a reviewer pointed out that a historical claim wearing the same clothes as a live one is
+ * precisely this suite's own subject. Every number in this file should be reproducible from the
+ * file it sits in.
  *
  * THE MEASUREMENT. A discriminator is alive only if it can still say NO. For each subject cell we
  * TAMPER the cell's planted subject so the property the secondary asserts is genuinely destroyed,
@@ -37,6 +47,7 @@
  *
  * Exit 0 all checks passed, 1 a check failed.
  */
+import ts from "typescript";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -156,6 +167,50 @@ const tamperCell = (source, id, find, replace) => {
 };
 
 /**
+ * Tamper inside a named HELPER FUNCTION rather than inside a cell's marker block.
+ *
+ * Some cells build their subject in a shared fixture helper: `binary-skip` gets its NUL-bearing
+ * file from `binaryFixtureResult`, and the three `production-*` cells drive the real `main()`
+ * through `productionPathFixtureResult`. The subject is genuinely outside the marker block, so the
+ * block-scoped tamper above REFUSED them, correctly and by name (`occurs 0 time(s) in the block`).
+ *
+ * The refusal is a feature and is not being relaxed: the containment guarantee is what stops a
+ * tamper from drifting into unrelated code and being mistaken for a reading of this cell. So this
+ * variant keeps the guarantee and moves the boundary to a span that is still exact. The helper's
+ * extent comes from the AST, not from brace counting or a regex, for the same reason the inventory
+ * does: a string or comment containing the helper's name cannot widen the span.
+ *
+ * A shared helper is shared, so a tamper here can legitimately affect several cells at once. The
+ * grading below accounts for that by requiring the NAMED cell's own discriminator to go dead, which
+ * is a per-cell reading regardless of how many neighbours also went red.
+ */
+const tamperHelper = (source, id, helper, find, replace) => {
+  const sf = ts.createSourceFile("scanner.mjs", source, ts.ScriptTarget.Latest, true);
+  const spans = [];
+  const visit = (node) => {
+    const isNamedFunction = ts.isFunctionDeclaration(node) && node.name?.text === helper;
+    const isNamedBinding = ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+      && node.name.text === helper && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer));
+    if (isNamedFunction || isNamedBinding) spans.push([node.getStart(sf), node.getEnd()]);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  if (spans.length !== 1) {
+    throw new Error(`cell ${id}: expected exactly one declaration of helper ${helper}, found ${spans.length}`);
+  }
+  const [from, to] = spans[0];
+  const block = source.slice(from, to);
+  const occurrences = block.split(find).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(`cell ${id}: tamper text occurs ${occurrences} time(s) in helper ${helper}, expected exactly 1`);
+  }
+  const tamperedBlock = block.split(find).join(replace);
+  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);
+  return source.slice(0, from) + tamperedBlock + source.slice(to);
+};
+
+/**
  * Each case names a cell, and an edit that destroys the property the cell's SECONDARY reader
  * asserts while leaving the scanner's matching rules untouched.
  *
@@ -230,27 +285,178 @@ const CASES = [
     find: "[{ path: 'fixtures/scrubber.txt', text: SELFTEST_HOME }], [SELFTEST_HOST], SELFTEST_ALLOWLIST",
     replace: "[{ path: 'fixtures/scrubber.txt', text: 'no literal here' }], [SELFTEST_HOST], SELFTEST_ALLOWLIST",
   },
+
+  // THE SEVEN INLINE CELLS. Each is an object literal with a `measure` of its own and no factory,
+  // so nothing about its reader can be inferred from a sibling and each needs its own case. Two
+  // reviewers independently hollowed one of these discriminators and watched it SURVIVE at a full
+  // green, each with a same-run positive control proving the cell was genuinely reached. These are
+  // those cells, and the census above now refuses to pass until every one of them is named here.
+  {
+    cell: "workflow-host-exclusion",
+    reader: "inline planted-count filter",
+    // The cell's point is that a host token in a workflow file is excluded while the same token in
+    // a source file is reported. `planted` is the separate assertion that the token is really in
+    // the fixture texts at all, which is what stops the exclusion half from passing vacuously.
+    //
+    // It counts BOTH texts, so both must lose the token. Stripping only one drove it 2 -> 1 and
+    // this check went red naming `planted=1/0`: a partial kill correctly refused, because a reader
+    // that merely MOVED is not a reader shown to be alive.
+    find: "const workflowText = `runs-on: ${SELFTEST_HOST}`;\n      const nonWorkflowText = `connect ${SELFTEST_HOST} now`;",
+    replace: "const workflowText = 'runs-on: PLAIN';\n      const nonWorkflowText = 'connect PLAIN now';",
+  },
+  {
+    cell: "short-host-token",
+    reader: "hostTokenLengthFailures on a configured token",
+    // The guard must reject a host token shorter than the minimum. `configured_errors` counts the
+    // rejections it produced for the deliberately short token. Configure a token that is NOT short
+    // and a live guard must find nothing to reject, dropping the count to 0.
+    find: "hostTokenConfiguration(runtimeHostname, [], ['short'])",
+    replace: "hostTokenConfiguration(runtimeHostname, [], ['a-sufficiently-long-token'])",
+  },
+  {
+    cell: "host-token-ceiling",
+    reader: "hostTokenCeilingFailures on an over-ceiling entry set",
+    // The guard must reject a token matching more files than the ceiling allows. `errors` counts
+    // those rejections. Strip the token from the fixture texts so nothing matches, and a live
+    // guard must find no over-ceiling token to report, dropping the count to 0.
+    find: "        text: `connect ${SELFTEST_HOST} now`,\n      }));\n      const failures = hostTokenCeilingFailures(entries, [",
+    replace: "        text: 'connect PLAIN now',\n      }));\n      const failures = hostTokenCeilingFailures(entries, [",
+  },
+  {
+    cell: "binary-skip",
+    reader: "trackedEntries binarySkipped accounting",
+    helper: "binaryFixtureResult",
+    // The scanner must skip a NUL-bearing file rather than scan it. `binary_skipped` counts the
+    // skips. Write a PNG header with no NUL byte and a live accounting must skip nothing.
+    find: "Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])",
+    replace: "Buffer.from('plain text, no nul byte')",
+  },
+  {
+    cell: "production-main-wiring",
+    reader: "SKIP_ROW emission from the real main()",
+    helper: "productionPathFixtureResult",
+    // This drives the REAL main() over a fixture repository and asserts it emits exactly one
+    // SKIP_ROW for the binary file. `skip_rows` counts those rows. Write that fixture without a NUL
+    // byte and a live main() has nothing to skip, so the count must drop to 0.
+    find: "writeFileSync(join(dir, 'fixture.bin'), Buffer.from([0x66, 0x69, 0x78, 0x00]));",
+    replace: "writeFileSync(join(dir, 'fixture.bin'), Buffer.from('fix'));",
+  },
+  {
+    cell: "production-short-token-guard",
+    reader: "ERROR_ROW reason text from the real main()",
+    // The short-token guard must fire END TO END, not just in isolation: this passes `--host-token
+    // short` to the real main() and counts the ERROR_ROWs carrying the too-short reason. Pass a
+    // long token instead and a live guard must emit none.
+    find: "productionPathFixtureResult({ argumentHostTokens: ['short'] })",
+    replace: "productionPathFixtureResult({ argumentHostTokens: ['a-sufficiently-long-token'] })",
+  },
+  {
+    cell: "production-token-ceiling-guard",
+    reader: "ERROR_ROW reason text from the real main() at the ceiling",
+    // The ceiling guard, likewise end to end. `reason_rows` counts ERROR_ROWs carrying the
+    // too-many-files reason. Drop the fixture below the ceiling and a live guard must emit none.
+    find: "matchingFiles: HOST_TOKEN_FILE_CEILING + 1,",
+    replace: "matchingFiles: 0,",
+  },
 ];
 
 /**
- * Every cell-constructing family in the scanner, and the field each one's discriminator reports.
+ * The cells this suite must account for, read from the scanner's own `SELFTEST_CELLS` array.
  *
- * THIS IS THE PART THAT MAKES ABSENCE DETECTABLE. A case list grades what it names and is silent
- * about what it forgot, so on its own it can never report the family it missed, which is exactly
- * how survivors reached review. The census below counts the factories in the SOURCE and requires
- * each to appear here, turning a missing case from an invisible gap into a named failure.
+ * COVERAGE IS OVER CELLS, AND THE FACTORY IS ONLY A GROUPING. An earlier version enumerated cell
+ * FACTORIES and treated a case per factory as covering everything that factory built. That is true
+ * as far as it goes, and it is not far enough: 7 of the scanner's 34 cells are INLINE object
+ * literals with a `measure` of their own and no factory at all, so a census over factories cannot
+ * see them by construction. Two reviewers found that independently, and it is the same defect as
+ * #1580 itself a third time: an enumeration whose denominator silently excludes the thing being
+ * asked about.
  *
- * EVERY FAMILY IS GRADED. An earlier version exempted `scanCell` as a "known limit", claiming it
- * reported no secondary reading. That was WRONG and a reviewer disproved it: `scanCell` reports a
- * `metricCount` under the cell's own metric name, and hollowing that to the expected value
- * SURVIVED. The field is simply not called `secondary`, which is why a reader looking only for that
- * name concluded there was nothing to grade. A limitation asserted rather than measured is just a
- * gap with a label on it, so the exemption is gone and the field name is read per family.
+ * So the denominator is the CELL LIST, parsed from the AST, partitioned into:
+ *   factory cells  built by a call, e.g. matchCell(...). One case per factory grades all of them,
+ *                  since hollowing the factory's discriminator kills every cell it builds.
+ *   inline cells   an object literal carrying its own `measure`. Each has its own reader, so each
+ *                  needs its own case; none can be inferred from another.
+ * Every cell must land in one partition and every partition must be accounted for, so a cell added
+ * in either style fails loudly rather than joining an ungraded remainder.
  */
-const FAMILIES = [
+const readCellInventory = (source) => {
+  const sf = ts.createSourceFile("scanner.mjs", source, ts.ScriptTarget.Latest, true);
+  const factories = new Set();
+  const byFactory = new Map();
+  const inline = [];
+  let total = 0;
+  const literalText = (node) =>
+    node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      ? node.text
+      : undefined;
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+      && node.name.text === "SELFTEST_CELLS"
+      && node.initializer && ts.isArrayLiteralExpression(node.initializer)) {
+      for (const element of node.initializer.elements) {
+        if (ts.isCallExpression(element)) {
+          total += 1;
+          const name = element.expression.getText();
+          factories.add(name);
+          // The first argument is the cell id. Reading it lets the census say which cells a
+          // factory's case actually covers, instead of assuming the mapping.
+          const id = literalText(element.arguments[0]);
+          if (!byFactory.has(name)) byFactory.set(name, []);
+          if (id) byFactory.get(name).push(id);
+        } else if (ts.isObjectLiteralExpression(element)) {
+          total += 1;
+          const id = element.properties.find(
+            (property) => property.name && property.name.getText() === "id",
+          );
+          const text = id && ts.isPropertyAssignment(id) ? literalText(id.initializer) : undefined;
+          inline.push(text ?? "(unnamed inline cell)");
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return { factories: [...factories], byFactory, inline, total };
+};
+
+/**
+ * Cells deliberately left ungraded, each with the reason.
+ *
+ * This list is empty, and that is a measurement rather than a default. The one entry it used to
+ * carry claimed `scanCell` had no gradable discriminator; a reviewer hollowed the field and showed
+ * it did, under the metric's own name. A limitation ASSERTED rather than MEASURED is a gap wearing
+ * a label, and the label makes it less likely anyone looks again. Anything added here needs the
+ * hollowing attempt that justifies it quoted in the reason.
+ */
+const UNGRADED_CELLS = [];
+
+/** The cell factories, and the field each one's discriminator reports. */
+const FACTORIES = [
   { name: "matchCell", secondaryField: "secondary" },
   { name: "cidrBoundaryCell", secondaryField: "planted" },
   { name: "scanCell", secondaryField: "allowed" },
+];
+
+/**
+ * The inline cells, each with the field its own `measure` reports.
+ *
+ * These have no factory, so nothing about them can be inferred from a sibling: each carries its own
+ * reader. A reviewer demonstrated the cost of leaving them out by hollowing
+ * `workflow-host-exclusion`'s inline `planted` computation to a constant and watching it survive at
+ * a full green, with a same-run positive control proving the cell really was reached.
+ *
+ * The FIELD each one reports is a property of that cell's own code and cannot be read off the
+ * array, so this list is written out. It is held to the source rather than trusted: the inventory
+ * check below requires it to match the inline cells actually present, in both directions.
+ */
+const INLINE_CELLS = [
+  { name: "workflow-host-exclusion", secondaryField: "planted" },
+  { name: "short-host-token", secondaryField: "configured_errors" },
+  { name: "host-token-ceiling", secondaryField: "errors" },
+  { name: "binary-skip", secondaryField: "binary_skipped" },
+  { name: "production-main-wiring", secondaryField: "skip_rows" },
+  { name: "production-short-token-guard", secondaryField: "reason_rows" },
+  { name: "production-token-ceiling-guard", secondaryField: "reason_rows" },
 ];
 
 /**
@@ -323,99 +529,130 @@ try {
     `exit=${copyRun.exitCode}/0 cells=${copySummary?.passed}/${copySummary?.total} status=${copySummary?.status}`,
   );
 
-  // THE CENSUS. Enumerate the cell factories the scanner actually defines and require this file to
-  // account for every one. A case list grades what it names and stays silent about what it forgot,
-  // so without this check a factory this file never knew about is ungraded and green. Survivors
-  // found in review were exactly that shape. Reading the SOURCE rather than a hand-maintained list
-  // makes the scanner itself the denominator.
+  // THE CENSUS, over CELLS. The denominator is every cell the scanner declares, not every factory.
   //
-  // The match is deliberately tolerant of formatting: `export`, `async` and whitespace before the
-  // parenthesis are all behaviour-neutral edits that a tidier may make, and a reader that loses a
-  // factory to one of them reports a SMALLER denominator while still saying `unaccounted=0`.
-  const extractFamilies = (source) =>
-    [...source.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w*Cell)\s*\(/gm)].map((m) => m[1]);
-  const definedFamilies = extractFamilies(tracked);
-  const accounted = FAMILIES.map((entry) => entry.name);
-  const findUnaccounted = (defined) => defined.filter((name) => !accounted.includes(name));
-  const unaccounted = findUnaccounted(definedFamilies);
+  // This was pointed at factories for two rounds and it was the wrong denominator. A case list
+  // grades what it names and stays silent about what it forgot, so the census exists to make that
+  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 7 of the
+  // scanner's 34 cells are inline object literals built by no factory at all, so no factory
+  // enumeration, however perfect, can see them. A reviewer proved the cost rather than arguing it:
+  // hollowing `workflow-host-exclusion`'s inline discriminator to a constant left the scanner at
+  // cells=34/34 exit 0 AND this suite at a full green, with a same-run positive control showing the
+  // cell really was reached. Live code that both instruments declined to grade.
+  //
+  // Two earlier readers were defeated here and both failures came from reading TEXT rather than
+  // structure: `function matchCell(` -> `function matchCell (` silently shrank the denominator, and
+  // a declaration-shaped line inside a template literal stood in for a factory that had been
+  // refactored away. Widening a pattern only moves the boundary to the next spelling.
+  //
+  // The fix is not a better pattern, it is the right denominator read by a reader already proven
+  // robust. The `// SELFTEST_CELL <id> START/END` markers are what the tampers themselves key on,
+  // and that reader was probed hard in review: a renamed cell reports `found 0/0`, a reformatted
+  // one reports `occurs 0 time(s)`, and a marker quoted in a comment reports `found 2/2`. It
+  // refuses ambiguity instead of guessing, which is exactly what a denominator needs to do.
+  const readCellIds = (source) =>
+    [...source.matchAll(/^\s*\/\/ SELFTEST_CELL (\S+) START$/gm)].map((match) => match[1]);
+  const declaredCells = readCellIds(tracked);
+  const inventory = readCellInventory(tracked);
+  const factoryCellIds = inventory.byFactory;
+
+  // The two readers must agree on how many cells exist. They are independent (marker comments
+  // versus the parsed SELFTEST_CELLS array), so a disagreement means one of them is wrong and the
+  // denominator is unsafe to quantify over. Catching that here is cheaper than trusting either.
   check(
-    "census: every cell factory the scanner defines is accounted for by this suite",
-    definedFamilies.length > 0 && unaccounted.length === 0,
-    `defined=${definedFamilies.length} [${definedFamilies.join(", ")}] unaccounted=${unaccounted.length}${unaccounted.length ? ` [${unaccounted.join(", ")}]` : ""}`,
+    "census: the marker reader and the parsed cell array agree on how many cells exist",
+    declaredCells.length > 0 && declaredCells.length === inventory.total,
+    `markers=${declaredCells.length} parsed_cells=${inventory.total} (factory=${inventory.total - inventory.inline.length} inline=${inventory.inline.length})`,
   );
 
-  // THE CENSUS MUST BE BIDIRECTIONAL, and this is the half that cost a BLOCK.
-  //
-  // `unaccounted` only asks whether everything FOUND is named. It cannot notice a factory the
-  // extractor FAILED TO FIND, because a name that never enters `definedFamilies` cannot appear in
-  // any difference computed from it. Measured by a reviewer: the behaviour-neutral edit
-  // `function matchCell(` -> `function matchCell (` dropped matchCell from the census entirely and
-  // the suite still reported `defined=2 ... unaccounted=0` and a full green. The denominator
-  // shrank in silence, which is this issue's own defect one more level down.
-  //
-  // So require the reverse containment too: every family this file claims to grade must actually be
-  // located in the source. A factory that is renamed, reformatted beyond the pattern, or deleted
-  // now fails by name instead of quietly reducing what is measured.
-  const findMissingFromSource = (claimed, defined) => claimed.filter((name) => !defined.includes(name));
-  const missingFromSource = findMissingFromSource(accounted, definedFamilies);
+  // EVERY cell must be accounted for: graded by a case, covered by its factory's case, or named in
+  // UNGRADED_CELLS with a reason. There is no fourth category and no silent remainder, which is the
+  // whole point. A cell added in either style lands here rather than in an unmeasured gap.
+  const casesByCell = new Set(CASES.map((entry) => entry.cell));
+  const factoryCovered = new Set(
+    CASES.filter((entry) => entry.family).map((entry) => entry.family),
+  );
+  const inlineNamed = new Set(INLINE_CELLS.map((entry) => entry.name));
+  const ungradedNamed = new Set(UNGRADED_CELLS.map((entry) => entry.cell));
+
+  // Being LISTED in INLINE_CELLS is deliberately NOT a way to be accounted for. That list only
+  // records which field a cell's own reader reports; naming a field is not driving it, and an
+  // inline cell with no case is exactly the survivor two reviewers demonstrated. Treating the list
+  // as coverage would reproduce the defect being fixed, with a tidier denominator on top.
+  const accountFor = (cellId) => {
+    if (casesByCell.has(cellId)) return "case";
+    if (ungradedNamed.has(cellId)) return "named-ungraded";
+    // A factory cell is covered when a case drives that factory's shared discriminator: hollowing
+    // it kills every cell that factory builds, so one case genuinely grades all of them.
+    for (const factory of FACTORIES) {
+      if (factoryCovered.has(factory.name) && factoryCellIds.get(factory.name)?.includes(cellId)) {
+        return "factory";
+      }
+    }
+    return undefined;
+  };
+  const unaccountedCells = declaredCells.filter((cellId) => accountFor(cellId) === undefined);
   check(
-    "census: every family this suite claims to grade is actually found in the scanner source",
+    "census: every declared cell is graded, covered by its factory, or named as ungraded",
+    declaredCells.length > 0 && unaccountedCells.length === 0,
+    `declared=${declaredCells.length} unaccounted=${unaccountedCells.length}${unaccountedCells.length ? ` [${unaccountedCells.join(", ")}]` : ""}`,
+  );
+
+  // The reverse direction. A name this suite claims must actually exist in the scanner, or a cell
+  // that was renamed or deleted quietly reduces what is measured while every count still reads
+  // clean. This is the half whose absence cost a BLOCK when the census was over factories.
+  const claimedCells = [...new Set([...casesByCell, ...inlineNamed, ...ungradedNamed])];
+  const findMissing = (claimed, declared) => claimed.filter((name) => !declared.includes(name));
+  const missingFromSource = findMissing(claimedCells, declaredCells);
+  check(
+    "census: every cell this suite names is actually declared in the scanner",
     missingFromSource.length === 0,
-    `claimed=${accounted.length} located=${accounted.length - missingFromSource.length}${missingFromSource.length ? ` NOT FOUND [${missingFromSource.join(", ")}]` : ""}`,
+    `claimed=${claimedCells.length} located=${claimedCells.length - missingFromSource.length}${missingFromSource.length ? ` NOT FOUND [${missingFromSource.join(", ")}]` : ""}`,
   );
 
-  // Same reasoning as the comparison control below, applied to this direction: with every family
-  // present, a working containment check and a hardcoded empty list print the same `located=3`.
-  const plantedLoss = findMissingFromSource([...accounted, "plantedLostCell"], definedFamilies);
+  // Each reader gets its own planted positive, because a control on one says nothing about another:
+  // the round-3 BLOCK landed precisely because an existing control exercised the set comparison
+  // while the defect was in the reader that built the set. With everything accounted for, a working
+  // comparison and a hardcoded empty list print identical output, so the difference is only visible
+  // against a planted subject.
+  const plantedLoss = findMissing([...claimedCells, "planted-absent-cell"], declaredCells);
   check(
-    "census control: a family absent from the source is reported, so the containment above is a reading",
-    plantedLoss.length === 1 && plantedLoss[0] === "plantedLostCell",
+    "census control: a named cell absent from the scanner is reported, so the containment is a reading",
+    plantedLoss.length === 1 && plantedLoss[0] === "planted-absent-cell",
     `planted_reported=${plantedLoss.length}/1 [${plantedLoss.join(", ")}]`,
   );
 
-  // A CENSUS THAT CANNOT REPORT A MISS IS NOT A CENSUS. Two separate readers are involved and each
-  // needs its own planted positive, because a control on one says nothing about the other: the
-  // BLOCK above landed precisely because the existing control exercised the set comparison while
-  // the defect was in the source extractor.
-  const plantedMiss = findUnaccounted([...definedFamilies, "plantedUnaccountedCell"]);
+  // The marker reader's own planted positive, with a REFUSE half. A reader loose enough to match a
+  // marker mentioned in prose would report cells that do not exist and mask the loss of one that
+  // does, which is the exact shape that defeated the previous source reader.
+  const plantedMarkers = readCellIds([
+    "  // SELFTEST_CELL planted-accept START",
+    "  // SELFTEST_CELL planted-accept END",
+    "  // a comment discussing // SELFTEST_CELL planted-prose START inline",
+    "  const s = `// SELFTEST_CELL planted-string START`;",
+  ].join("\n"));
   check(
-    "census control: a planted unaccounted factory is reported, so the comparison above is a reading",
-    plantedMiss.length === 1 && plantedMiss[0] === "plantedUnaccountedCell",
-    `planted_reported=${plantedMiss.length}/1 [${plantedMiss.join(", ")}]`,
+    "census control: the marker reader finds a real marker and refuses one quoted in prose or a string",
+    plantedMarkers.length === 1 && plantedMarkers[0] === "planted-accept",
+    `found=${plantedMarkers.length}/1 [${plantedMarkers.join(", ")}] (prose and string mentions must be refused)`,
   );
 
-  // The extractor's own planted positive, fed synthetic source rather than the real file. The
-  // REFUSE half matters as much as the accept half: a pattern loose enough to match a call site or
-  // a mention in prose would report factories that do not exist and mask a real loss.
-  const plantedSource = [
-    "function plantedAcceptCell(id) {",
-    "export function plantedExportCell(id) {",
-    "  plantedCallSiteCell('x'),",
-    "// a comment mentioning function plantedCommentCell( in prose",
-  ].join("\n");
-  const plantedExtraction = extractFamilies(plantedSource);
-  check(
-    "census control: the source extractor finds declared factories and refuses call sites and prose",
-    plantedExtraction.length === 2
-      && plantedExtraction.includes("plantedAcceptCell")
-      && plantedExtraction.includes("plantedExportCell"),
-    `extracted=${plantedExtraction.length}/2 [${plantedExtraction.join(", ")}] (call site and prose must be refused)`,
-  );
-
-  // Every family carrying a discriminator must have a case that drives it. Nothing is exempt: the
-  // one family this suite previously exempted turned out to carry a gradable discriminator under a
+  // Every factory carrying a discriminator must have a case that drives it. Nothing is exempt: the
+  // one factory this suite previously exempted turned out to carry a gradable discriminator under a
   // different field name, and a reviewer proved it by hollowing that field out.
-  const gradable = FAMILIES.filter((entry) => entry.secondaryField !== null);
+  const gradable = FACTORIES.filter((entry) => entry.secondaryField !== null);
   const ungraded = gradable.filter((entry) => !CASES.some((c) => c.family === entry.name));
   check(
-    "census: every family carrying a discriminator has a case that drives it",
-    ungraded.length === 0 && gradable.length === FAMILIES.length,
-    `gradable=${gradable.length}/${FAMILIES.length}_families covered=${gradable.length - ungraded.length}${ungraded.length ? ` MISSING [${ungraded.map((e) => e.name).join(", ")}]` : ""}`,
+    "census: every factory carrying a discriminator has a case that drives it",
+    ungraded.length === 0 && gradable.length === FACTORIES.length,
+    `gradable=${gradable.length}/${FACTORIES.length}_factories covered=${gradable.length - ungraded.length}${ungraded.length ? ` MISSING [${ungraded.map((e) => e.name).join(", ")}]` : ""}`,
   );
 
   for (const testCase of CASES) {
-    const { cell, reader, find, replace, family } = testCase;
-    const secondaryField = FAMILIES.find((entry) => entry.name === family)?.secondaryField ?? "secondary";
+    const { cell, reader, find, replace, family, helper } = testCase;
+    const secondaryField = FACTORIES.find((entry) => entry.name === family)?.secondaryField
+      ?? INLINE_CELLS.find((entry) => entry.name === cell)?.secondaryField
+      ?? "secondary";
 
     check(
       `${cell}: the untampered copy reports this cell passing`,
@@ -425,13 +662,15 @@ try {
 
     let tamperedSource;
     try {
-      tamperedSource = tamperCell(tracked, cell, find, replace);
+      tamperedSource = helper
+        ? tamperHelper(tracked, cell, helper, find, replace)
+        : tamperCell(tracked, cell, find, replace);
     } catch (error) {
-      check(`${cell}: the tamper lands inside the named cell block`, false, error.message);
+      check(`${cell}: the tamper lands inside the named ${helper ? `helper ${helper}` : "cell block"}`, false, error.message);
       continue;
     }
     check(
-      `${cell}: the tamper lands inside the named cell block`,
+      `${cell}: the tamper lands inside the named ${helper ? `helper ${helper}` : "cell block"}`,
       tamperedSource !== tracked,
       `reader=${reader}`,
     );
