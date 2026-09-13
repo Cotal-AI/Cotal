@@ -316,8 +316,8 @@
       "file": "scripts/mutation-reproof.mjs",
       "find": "    if (verdictsIn(output).includes(\"KILLED\")) discriminated.push(path);\n    else zeroGraded.push(path);",
       "replace": "    discriminated.push(path);",
-      "expectRed": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing",
-      "cell": "a fixture with an empty mutations array is refused by the corpus instead of grading nothing"
+      "expectRed": "a fixture the corpus admits whose proof exits 0 without a KILLED is named ZERO GRADED and cannot hold the floor up",
+      "cell": "a fixture the corpus admits whose proof exits 0 without a KILLED is named ZERO GRADED and cannot hold the floor up"
     },
     {
       "name": "the COULD NOT split collapses so an all-pre-red shard blames the fixture it named",
@@ -332,8 +332,8 @@
       "file": "scripts/mutation-reproof.mjs",
       "find": "  if (expected.length === 0) {",
       "replace": "  if (true) {",
-      "expectRed": "a ZERO DISCRIMINATED banner names the configs it expected to kill",
-      "cell": "a ZERO DISCRIMINATED banner names the configs it expected to kill"
+      "expectRed": "a floor red naming a fixture that could have killed uses the ordinary arm, not COULD NOT",
+      "cell": "a floor red naming a fixture that could have killed uses the ordinary arm, not COULD NOT"
     },
     {
       "name": "the ordinary floor arm stops naming the fixtures it is not blaming",
@@ -341,7 +341,7 @@
       "file": "scripts/mutation-reproof.mjs",
       "find": "${unable.length ? `; not attributable to (could not discriminate): ${unable.join(\", \")}` : \"\"}",
       "replace": "",
-      "expectRed": "the ordinary arm names the fixtures it is not attributing the miss to"
+      "expectRed": "the ordinary arm names the fixtures it is not attributing the miss to, disjoint from the ones it expected"
     }
   ]
 }
