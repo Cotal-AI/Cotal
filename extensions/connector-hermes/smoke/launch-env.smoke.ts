@@ -7,7 +7,7 @@
  *
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,8 +16,32 @@ import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { ADOPT_HOME_ENV, adoptedHome, assertHermesVersion, setupAdoptedProfile } from "../src/launch.js";
 
+/**
+ * Count every assertion, so the terminal tally is derived from what actually ran.
+ *
+ * `bin/smoke/shard.mjs` refuses a suite whose output carries no cell-count sentinel, and refuses
+ * a zero-cell run, because exit 0 having run nothing is the same false green as an empty chain.
+ * This suite used to satisfy that with a hand-written `4 checks passed`, a literal that was
+ * already wrong (it ran far more than four) and that silently stopped being printed when the
+ * line was edited. Counting the calls means the number cannot drift from the work again.
+ */
+let cells = 0;
+const assert = new Proxy(nodeAssert, {
+  get(target, prop, receiver) {
+    const value = Reflect.get(target, prop, receiver);
+    if (typeof value !== "function") return value;
+    return (...args: unknown[]) => {
+      cells += 1;
+      return (value as (...a: unknown[]) => unknown).apply(target, args);
+    };
+  },
+}) as typeof nodeAssert;
+
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
+  // A skip still has to name a cell count, or the shard reads the silence as a suite that ran
+  // nothing and refuses it.
+  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
   process.exit(0);
 }
 
@@ -299,3 +323,8 @@ console.log(
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +
     `${PER_SESSION.length} per-session names reset, ${OPERATOR_KNOBS.length} operator knobs crossed, both modes held`,
 );
+
+// Terminal sentinel, last line of output, with the count taken from the counting proxy above.
+// Any assertion that threw would have aborted before this line, so reaching it means every
+// counted cell passed.
+console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
