@@ -16,7 +16,9 @@
  * Run: pnpm smoke:publish-closure-gate
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/publish-closure-gate.json
  */
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { join, dirname } from "node:path";
@@ -104,63 +106,71 @@ function rcBranchBody(run: string, code: number): string | null {
   return body.join("\n");
 }
 
-/** Where a command can begin: the start of a line, a separator or opening group, or after a shell
- *  keyword that introduces a command list. The keywords are the half a punctuation-only rule misses:
- *  `; exit 1` is a command position and so is `; then exit 1`, and six reachable failure forms
- *  (`if true; then …`, `else …`, `while/for/until … do …`) hid behind that gap. */
-const COMMAND_START = String.raw`(?:^|[;&|(){}]|\b(?:then|else|do)\b)\s*`;
-/** Where it can end and still be a command of its own: end of line, a separator, a closing group,
- *  or an inline comment. */
-const COMMAND_END = String.raw`\s*(?:$|[;&|)}#])`;
-/** An `exit` whose status is anything but zero. `0`, `00` and `000` are all zero to the shell; a
- *  variable (`exit $rc`) counts as failing, since it is how a captured failure is forwarded and
- *  nothing static can rule out that it carries one. */
-const NONZERO_EXIT = String.raw`exit\s+(?!0+${COMMAND_END})\S+`;
-const FAILING_COMMANDS = [
-  NONZERO_EXIT,
-  String.raw`(?:/(?:usr/)?bin/)?false`,
-  String.raw`return\s+(?!0${COMMAND_END})\d+`,
-  String.raw`!\s*:`,               // negated true
-  String.raw`kill\s+-\w+\s+\$\$`, // signal the shell itself
-].join("|");
-/** `eval` is the one place a QUOTED failure command runs. Matched on the `eval` word against the
- *  RAW body, so `echo "exit 1"` stays prose. */
-const EVAL_FAILURE = String.raw`\beval\s+["']?\s*(?:${NONZERO_EXIT}|(?:/(?:usr/)?bin/)?false)`;
-const FAILS = new RegExp(`${COMMAND_START}(?:${FAILING_COMMANDS})${COMMAND_END}`, "m");
-const EVAL_FAILS = new RegExp(EVAL_FAILURE, "m");
+/** Scratch `$GITHUB_OUTPUT` for {@link shellStatus}: the gate's own arms write to it
+ *  (`echo "closure_ok=true" >> "$GITHUB_OUTPUT"`), so it has to be a real writable path or a
+ *  correct arm would fail for a reason that has nothing to do with the branch. */
+const GITHUB_OUTPUT_SCRATCH = join(mkdtempSync(join(tmpdir(), "closure-gate-")), "github_output");
 
-/** A quoted span is text, not a command list: `echo "a; exit 9"` prints a string and leaves the step
- *  green. Filled with a placeholder rather than deleted so the span still reads as ONE argument,
- *  which is what keeps `exit "$rc"` a failing exit while hiding the separators inside `echo "…"`. */
-function withoutQuotedText(body: string): string {
-  return body.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, (quoted) => "x".repeat(quoted.length));
+/** A hang is not a pass, so a body that neither exits nor is signalled is an error rather than a
+ *  classification. Generous enough that a loaded runner never trips it. */
+const BODY_TIMEOUT_MS = 10_000;
+
+const statusCache = new Map<string, number>();
+
+/** The status the shell actually gives a branch body.
+ *
+ *  Flags and environment mirror the step the gate runs under: GitHub Actions invokes a `run:`
+ *  block as `bash -e {0}`, and the gate binds `rc=$?` before branching, so `-e` is set and `rc`
+ *  holds 2 — the value under which the quiet arms are reached.
+ *
+ *  A body killed by a signal (`kill -TERM $$`) has a null status; the step still fails, so it
+ *  counts as non-zero. */
+function shellStatus(body: string): number {
+  const cached = statusCache.get(body);
+  if (cached !== undefined) return cached;
+  const result = spawnSync("bash", ["-e", "-c", body], {
+    env: { ...process.env, rc: "2", GITHUB_OUTPUT: GITHUB_OUTPUT_SCRATCH },
+    stdio: "ignore",
+    timeout: BODY_TIMEOUT_MS,
+  });
+  if (result.error) {
+    // Includes "bash is not on PATH": failing loudly beats certifying an arm nobody measured.
+    throw new Error(`could not measure branch body ${JSON.stringify(body)}: ${result.error.message}`);
+  }
+  const status = result.status ?? (result.signal ? 128 : 1);
+  statusCache.set(body, status);
+  return status;
 }
 
 /** Whether a branch body leaves the step with a failing status.
  *
  *  Two cells below assert the NEGATIVE of this, so under-detection is worse than an ordinary
  *  coverage gap: a body this cannot read is certified as safe, and that green is indistinguishable
- *  from a correct one. {@link FAILS_THE_JOB_ROWS} is the battery that grades both directions
- *  against statuses measured from `bash -c`, rather than against reasoning about regexes.
- *
- *  The one class it gets wrong, and the reason is structural rather than a missing pattern: it does
- *  not evaluate conditions, so a failure command in a branch that never runs
- *  (`if false; then exit 1; fi`) is reported as failing. Those four shapes are carried in the
- *  battery as `"unevaluable"` and asserted to STILL disagree, so the gap cannot widen unnoticed and
- *  closing it reds the battery instead of passing quietly. */
+ *  from a correct one. Three rounds of review closed evasions by position, by quoting and by verb,
+ *  and a fourth produced eleven more quiet arms — `test 1 -eq 2`, `command false`, `((0))`,
+ *  `trap "exit 1" EXIT` — that carry no failure word at all yet exit 1. The property they keep
+ *  escaping is "the arm's last status is non-zero", which is a fact about execution, so no list of
+ *  verbs decides it and the next list would lose the same way. The body is therefore run, which
+ *  also settles the branches whose condition a static rule could not evaluate
+ *  (`if false; then exit 1; fi` is no longer a known-wrong row; it is simply status 0). */
 function failsTheJob(body: string): boolean {
-  return FAILS.test(withoutQuotedText(body)) || EVAL_FAILS.test(body);
+  return shellStatus(body) !== 0;
 }
 
-/** Literal branch bodies, the status `bash -c` actually gave each one, and whether the matcher is
- *  known to disagree.
+/** Literal branch bodies and the status recorded for each one.
  *
- *  Every call site of {@link failsTheJob} is workflow-derived, so nothing here tested the helper
- *  against a body written by hand, and that is where every evasion lived. Statuses were measured,
- *  not reasoned about: rows naming `rc` were run under `rc=2`, the way the gate's own `rc=$?` binds
- *  it. `/bin/false` is 127 on a mac (the binary lives in `/usr/bin`) and 1 on the Linux runner;
- *  either way it is non-zero, which is all this table claims. */
-const FAILS_THE_JOB_ROWS: ReadonlyArray<readonly [string, number] | readonly [string, number, "unevaluable"]> = [
+ *  Now that {@link failsTheJob} runs the body, this table is no longer a matcher's report card —
+ *  it pins the HARNESS. The statuses were recorded independently, so a change to how the body is
+ *  invoked shows up here as a disagreement: drop `rc=2` and `exit $rc` slides from 2 to 0, drop
+ *  `-e` and `false; echo done` slides from 1 to 0, and either flips a row's pass/fail sign. That
+ *  is the only way those two settings can go wrong silently, since every call site below is
+ *  workflow-derived and happens to use neither.
+ *
+ *  Only the sign is asserted, not the number: `/bin/false` is 127 on a mac (the binary lives in
+ *  `/usr/bin`) and 1 on the Linux runner, and non-zero is all this table claims. The quiet rows —
+ *  `test 1 -eq 2` through `trap "exit 1" EXIT` — are the arms that carry no failure word at all
+ *  and were invisible to every version of the static matcher. */
+const FAILS_THE_JOB_ROWS: ReadonlyArray<readonly [string, number]> = [
   ["exit 1", 1],
   ["exit 2", 2],
   ["exit $rc", 2],
@@ -188,7 +198,7 @@ const FAILS_THE_JOB_ROWS: ReadonlyArray<readonly [string, number] | readonly [st
   ["until false; do exit 1; done", 1],
   ["if [ x = x ]; then exit 1; fi", 1],
   ["if [ -n \"$rc\" ]; then exit 1; fi", 1],
-  ["if false; then exit 1; fi", 0, "unevaluable"],
+  ["if false; then exit 1; fi", 0],
   ["echo \"a; exit 9\"", 0],
   ["exit 00", 0],
   ["exit 0", 0],
@@ -202,30 +212,46 @@ const FAILS_THE_JOB_ROWS: ReadonlyArray<readonly [string, number] | readonly [st
   [":", 0],
   ["echo \"PARTIAL PUBLISH - failing the job.\"", 0],
   ["echo \"UNSETTLED - the registry has not converged. Skipping the Release.\"", 0],
-  ["until true; do exit 1; done", 0, "unevaluable"],
-  ["while false; do exit 1; done", 0, "unevaluable"],
-  ["if true; then : ; else exit 1; fi", 0, "unevaluable"],
+  ["until true; do exit 1; done", 0],
+  ["while false; do exit 1; done", 0],
+  ["if true; then : ; else exit 1; fi", 0],
   ["exit 000", 0],
   ["exit 0x0", 255],
+  // Quiet arms: no failure word anywhere, status 1 all the same.
+  ["test 1 -eq 2", 1],
+  ["[ 1 -eq 2 ]", 1],
+  ["grep -q nomatch /dev/null", 1],
+  ["command false", 1],
+  ["builtin false", 1],
+  ["env false", 1],
+  ["bash -c \"exit 1\"", 1],
+  ["exit 1 2>/dev/null", 1],
+  ["exit 1 >&2", 1],
+  ["exec false", 1],
+  ["((0))", 1],
+  ["trap \"exit 1\" EXIT", 1],
+  // Pins `-e`: without it the body's status is the last command's, and this is 0.
+  ["false; echo done", 1],
+  // A redirect on an otherwise safe line stays safe — the gate's own output writes look like this.
+  ["echo hi > /dev/null", 0],
 ];
 
 
-// The battery runs FIRST: every assertion below reads `failsTheJob`, and a matcher that is wrong
+// The battery runs FIRST: every assertion below reads `failsTheJob`, and a harness that is wrong
 // about a hand-written body is wrong about a workflow-derived one for the same reason.
-const UNEVALUABLE = FAILS_THE_JOB_ROWS.filter((row) => row[2] === "unevaluable").map((row) => row[0]);
 const disagreements = FAILS_THE_JOB_ROWS.filter(([body, status]) => failsTheJob(body) !== (status !== 0))
-  .map(([body]) => body);
+  .map(([body, status]) => ({ body, recorded: status, measured: shellStatus(body) }));
 check(
-  `failsTheJob matches the measured shell status on every evaluable body (${FAILS_THE_JOB_ROWS.length - UNEVALUABLE.length} of them)`,
-  disagreements.every((body) => UNEVALUABLE.includes(body)),
-  disagreements.filter((body) => !UNEVALUABLE.includes(body)),
+  "every battery body still leaves the shell where it was recorded",
+  disagreements.length === 0,
+  { rows: FAILS_THE_JOB_ROWS.length, disagreements },
 );
-// The gap is pinned, not merely documented: it may not widen, and closing it reds this cell rather
-// than passing quietly, which is the only way a reader finds out the comment above went stale.
+// The two settings the call sites below cannot exercise, asserted directly rather than only as a
+// side effect of the table: the gate's arms are reached with `rc` bound and run under `-e`.
 check(
-  "the bodies it is wrong about are exactly the branches whose condition it cannot evaluate",
-  disagreements.length === UNEVALUABLE.length && UNEVALUABLE.every((body) => disagreements.includes(body)),
-  { disagreements, UNEVALUABLE },
+  "bodies are measured the way the workflow runs them: `rc` bound to 2, `-e` set",
+  shellStatus("exit $rc") === 2 && shellStatus("false; echo done") !== 0,
+  { exitRc: shellStatus("exit $rc"), eSet: shellStatus("false; echo done") },
 );
 
 // Vacuity guard FIRST: the two "does not fail" assertions below are only worth anything if this
