@@ -162,12 +162,27 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   // incidental reconnect (broker expiry-close, a network blip) can never present an unproven or
   // broker-refused generation and strand conn B — closing the membership half of the D5 blocker.
   let currentRwCreds = initialRw;
+  // Proven when adopted is not unexpired now. The cache only ever advances through a preflight-proven
+  // adoption, so it cannot hold an UNPROVEN generation, but the clock alone expires a legitimately
+  // proven one. If re-signing has stopped (the manager is down, the store unreachable) and conn B drops
+  // after `exp`, the client's own redial presents the expired credential to the broker: a denial that
+  // still costs the auth round trip, and one that reports the broker's words instead of the local cause.
+  // Refuse here instead, the same pre-dial checkpoint the endpoint raises before its own dial.
+  const refuseExpiredRwCreds = (): void => {
+    const exp = credsClaims(currentRwCreds).exp;
+    if (typeof exp !== "number" || exp * 1000 > Date.now()) return;
+    const why = rwIsSource
+      ? "the membership feed's rw creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
+      : "the membership feed's rw creds have expired and the feed holds no rw creds source to renew them - replace the credential and restart the feed (pass an rw creds FUNCTION for standing renewal)";
+    log(why);
+    throw new Error(why);
+  };
   const connB = await connect({
     servers: opts.servers,
     // Synchronous per (re)connect attempt: presents the last BROKER-PROVEN cred, never a fresh
     // un-preflighted source read. The 75% timer / explicit reload advance `currentRwCreds` only AFTER a
     // disposable preflight proves the broker accepts the candidate.
-    authenticator: (nonce?: string) => credsAuthenticator(enc(currentRwCreds))(nonce),
+    authenticator: (nonce?: string) => { refuseExpiredRwCreds(); return credsAuthenticator(enc(currentRwCreds))(nonce); },
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
