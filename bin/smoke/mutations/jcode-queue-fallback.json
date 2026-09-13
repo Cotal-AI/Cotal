@@ -5,7 +5,7 @@
   ],
   "guard": "a soft-interrupt timeout never leaves the automatic delivery queue unserved, and a seat holding a queue that has made no progress does not report itself ready",
   "command": "pnpm smoke:jcode-queue-fallback-policy && pnpm smoke:jcode-queue-fallback",
-  "progressPattern": "  ✓ ",
+  "progressPattern": "  \u2713 ",
   "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-queue-fallback.json",
   "why": [
@@ -13,7 +13,7 @@
     "The drain cell's DEADLINE is load-bearing and is therefore mutated in its own right (M2). Measured against the pre-fix tree, the message does eventually arrive, because the pre-existing idle-boundary path delivers it once the seat goes idle. A cell that merely waited for arrival was GREEN on the defect. Requiring arrival while the seat is still busy is what makes it a statement about draining.",
     "M1 severs the delivery itself: the level-triggered server is never armed, which is exactly the shipped behaviour. M2 severs the fallback tier in the policy table, so a timed-out handoff resolves to a path that cannot deliver while busy. M3 restores the shipped `connectionState` derivation, under which a bound seat with a live transport is `ready` whatever its queue is doing. M4 counts any inbox drain as automatic progress, which is the specific lie the measured seat would have told: it drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. M5 makes the fallback record acceptance for a batch it did not send, which is the at-most-once failure that would turn a late delivery into a lost one.",
     "M1 and M2 are separate on purpose. M2 alone leaves the server armed and it would still drive at the next idle transition, and M1 alone leaves the policy table correct while nothing consults it. One mutation standing in for both would leave whichever ran second ungraded.",
-    "ORDER IN `command` IS DELIBERATE, and two mutations override it. The default chain runs the policy arm FIRST, because the two are chained with `&&` and whichever reds first short-circuits the other: M2's named cell lives in the policy arm, and with the end-to-end arm first it reddened the drain cell while its own never printed. M1 has the mirror problem — it mutates a predicate the policy arm also reads — so it overrides the command to run the end-to-end arm ALONE, which is the arm whose cell it claims. Each mutation runs the arm that carries the cell it names; mutation-proof graded both arrangements WRONG-RED until they did, which is the check working.",
+    "ORDER IN `command` IS DELIBERATE, and two mutations override it. The default chain runs the policy arm FIRST, because the two are chained with `&&` and whichever reds first short-circuits the other: M2's named cell lives in the policy arm, and with the end-to-end arm first it reddened the drain cell while its own never printed. M1 has the mirror problem \u2014 it mutates a predicate the policy arm also reads \u2014 so it overrides the command to run the end-to-end arm ALONE, which is the arm whose cell it claims. Each mutation runs the arm that carries the cell it names; mutation-proof graded both arrangements WRONG-RED until they did, which is the check working.",
     "The suites import connector-jcode and connector-core source relatively or through the workspace, and the end-to-end arm spawns the host through tsx against src/host-main.ts, so mutation-proof executes the changed source directly. `@cotal-ai/connector-core` is consumed as a workspace package by the end-to-end arm, so its two mutations carry a build command and an afterRestore rebuild; without them the arm would audit the last dist/ rather than the mutant."
   ],
   "mutations": [
@@ -56,16 +56,25 @@
       "cell": "draining pull-only traffic is not automatic progress, so the stall stands",
       "command": "pnpm --filter \"@cotal-ai/connector-jcode...\" build && pnpm smoke:jcode-queue-fallback",
       "afterRestore": "pnpm --filter \"@cotal-ai/connector-jcode...\" build",
-      "note": "The measured seat drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. Under this mutant that pull-only activity resets the progress mark and the seat reports ready throughout — the exact lie, reachable through a one-line conflation of two different queues."
+      "note": "The measured seat drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. Under this mutant that pull-only activity resets the progress mark and the seat reports ready throughout \u2014 the exact lie, reachable through a one-line conflation of two different queues."
     },
     {
       "name": "M5 the fallback delivers without recording what it delivered",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (client !== current) return;\n      surfacedIds.push(...items.map((item) => item.recvKey));\n      publishInboundHealth();",
-      "replace": "      if (client !== current) return;\n      publishInboundHealth();",
+      "find": "      surfacedIds.push(...keys);\n      release();\n      publishInboundHealth();",
+      "replace": "      release();\n      publishInboundHealth();",
       "expectRed": "the fallback delivers the queued batch exactly once, not once per retry tick",
       "cell": "the fallback delivers the queued batch exactly once, not once per retry tick",
-      "note": "The acceptance ledger is what makes the level-triggered server terminate for a given batch. Without the record the items stay `unserved` forever, every tick re-delivers the same messages, and the recipient session receives the same peer message over and over. This is the failure mode a retry loop has when its progress is measured by the attempt rather than by the ledger, and it is the reason the loop resets its pacing on the ledger. Its red is on a DIFFERENT cell from M1's, so the two are not interchangeable: M1 proves delivery happens at all, M5 proves it happens once. A first draft of this mutation moved the record BEFORE the send instead; the fake bridge black-holes only soft_interrupt, so that send succeeded and the reordering changed nothing observable — mutation-proof correctly reported it UNGRADABLE rather than letting it pass as coverage."
+      "note": "The acceptance ledger is what makes the level-triggered server terminate for a given batch. Without the record the items stay `unserved` forever, every tick re-delivers the same messages, and the recipient session receives the same peer message over and over. This is the failure mode a retry loop has when its progress is measured by the attempt rather than by the ledger, and it is why the loop resets its pacing on the ledger. Its red is on a DIFFERENT cell from M1's, so the two are not interchangeable: M1 proves delivery happens at all, M5 proves it happens once. Re-anchored when the handover reservation was added (the ledger write moved below the release); the claim and the cell are unchanged. NOTE it deletes only the LEDGER write and keeps the release, so it is not a disguised copy of M6: M5 removes the record of acceptance, M6 removes the exclusion that makes an in-flight batch unselectable."
+    },
+    {
+      "name": "M6 selection ignores the in-flight reservation, so a concurrent path re-offers the same batch",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    return agent.peekInbox(\"automatic\")\n      .filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey));",
+      "replace": "    return agent.peekInbox(\"automatic\")\n      .filter((item) => !surfaced.has(item.recvKey));",
+      "expectRed": "once accepted, an earlier batch is never re-offered when a later message arrives (#1233)",
+      "cell": "once accepted, an earlier batch is never re-offered when a later message arrives (#1233)",
+      "note": "This is the defect a reviewer found on the first panel head, restored. Both handover paths await acceptance; the reservation is what makes the batch they are writing invisible to every other path during that await. Remove the exclusion from selection and a directed arrival makes the incoming handler's steerPending() recompute `unserved` without the in-flight batch, so it offers those items AGAIN \u2014 measured pre-fix as an accepted send_message carrying the drain marker followed by a soft_interrupt carrying that same marker. Graded on the union of send_message and soft_interrupt frames, because the duplicate arrives as a soft interrupt and this fixture black-holes those: a witness counting only delivered turns cannot see it. Deliberately mutates the SELECTION rather than the reservation write, so the reservation set is still built and still released and only its effect is severed \u2014 the same discipline as the hand-run control, which reds exactly one cell."
     }
   ]
 }
