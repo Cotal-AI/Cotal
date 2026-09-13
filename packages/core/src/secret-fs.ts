@@ -131,7 +131,7 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
  * `O_EXCL` alone does not carry that contract everywhere. On POSIX it refuses a final symlink
  * without following it, so a DANGLING link is EEXIST (measured: file, directory and dangling link
  * all refuse, and nothing is materialised). On Windows the reparse point resolves, the missing
- * target is created, and the bytes land at a name this caller did NOT create — which is precisely
+ * target is created, and the bytes land at a name this caller did NOT create, which is precisely
  * what the contract above forbids. A win32-only `lstatSync` closes that: it reports the LINK rather
  * than its target, so a name that exists in any form is refused before anything is written.
  *
@@ -139,24 +139,24 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
  * case `O_EXCL` already refuses, and an unnecessary one weakens the very property this function
  * exists to provide. Where it does run it is a refusal, never a fallback: it only converts a
  * would-be silent write-through into the EEXIST the caller already handles, and it never decides a
- * concurrent create — two creators that both find the name free still both reach `O_EXCL`, which is
+ * concurrent create: two creators that both find the name free still both reach `O_EXCL`, which is
  * one syscall and is what picks the winner.
  */
 function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {
   // WIN32 ONLY, and deliberately so. Measured on POSIX: `O_EXCL` already refuses a plain file, a
-  // directory AND a dangling symlink with EEXIST, materialising nothing — so a pre-check there
+  // directory AND a dangling symlink with EEXIST, materialising nothing, so a pre-check there
   // would add a check-then-act step that buys nothing and can only weaken the guarantee. Windows
   // is the platform where `O_EXCL` RESOLVES a reparse point and creates its target, which would
   // land bytes at a name the caller never asked for; `lstatSync` reports the link rather than its
   // target, so the name is refused before anything is written.
   //
   // This never decides a concurrent create. Two creators that both see the name free still both
-  // reach `O_EXCL` below, and O_EXCL — one syscall — is what picks the winner. The check only ever
+  // reach `O_EXCL` below, and O_EXCL, one syscall, is what picks the winner. The check only ever
   // converts a would-be write-through into the EEXIST the caller already handles.
   if (isWin) {
     let exists = true;
     try {
-      lstatSync(path); // the NAME exists (file, dir, or dangling link) — never write through it
+      lstatSync(path); // the NAME exists (file, dir, or dangling link), never write through it
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       exists = false;

@@ -25,7 +25,7 @@ if (process.env.COTAL_SECRETFS_RACE_WORKER === "1") {
   const names = Number(process.env.COTAL_SECRETFS_RACE_NAMES);
   const barrier = process.env.COTAL_SECRETFS_RACE_BARRIER!;
   // `link` publishes the destination atomically on its own, so a race there says nothing about the
-  // raw write. Force the link-unavailable path and the raw write becomes the sole decider — which
+  // raw write. Force the link-unavailable path and the raw write becomes the sole decider, which
   // is also the real Windows-side primitive.
   __setPublishLinkForTest(() => {
     const e: NodeJS.ErrnoException = new Error("ENOTSUP: forced fallback");
@@ -68,7 +68,7 @@ const TSX_CLI = join(
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
 // Read for an ASSERTION, never for control flow. A broken implementation can delete or never
 // create the file a cell is about to inspect, and a raw readFileSync would then throw and abort
-// the whole suite — every later cell silently unreported, which reads as a WRONG-RED rather than
+// the whole suite, every later cell silently unreported, which reads as a WRONG-RED rather than
 // as the kill it actually is. A missing file simply is not the expected bytes.
 const readSafe = (p: string): string => { try { return readFileSync(p, "utf8"); } catch { return "\u0000ABSENT"; } };
 let failures = 0;
@@ -266,7 +266,7 @@ check("...and that failure left no .tmp litter",
   // The competitor lands DURING the call, after any pre-check has seen a free name. The publish
   // seam is the seam that runs between the two, so it is where the interleave is injected; it also
   // forces the link-unavailable fallback, making the raw write the only thing deciding the
-  // destination — the Windows-side primitive, and the one place a check-then-write could hide.
+  // destination, the Windows-side primitive, and the one place a check-then-write could hide.
   __setPublishLinkForTest(() => {
     writeFileSync(contested, "incumbent\n", { mode: 0o600 }); // the competitor wins the name here
     const e: NodeJS.ErrnoException = new Error("ENOTSUP: forced fallback");
@@ -336,7 +336,7 @@ check("...and that failure left no .tmp litter",
 // merely queued.
 {
   // Sized by measurement, not taste. At 4 racers x 150 names a check-then-write mutant survived 2
-  // runs in 3; at 6 x 1200 it died 5 times out of 5. The cell above is the deterministic grader —
+  // runs in 3; at 6 x 1200 it died 5 times out of 5. The cell above is the deterministic grader.
   // this one exists for the mutant that also refuses, which only contention can catch.
   const RACERS = 6;
   const NAMES = 1200;
@@ -387,7 +387,7 @@ check("...and that failure left no .tmp litter",
   }).catch((e: Error) => { spawnFailure ??= e; });
   const total = wins.reduce((a, b) => a + b, 0);
   const created = readdirSync(raceDir).filter((n) => n.endsWith(".secret")).length;
-  check("REFUSE: concurrent creators never both win a name — total wins equals names created",
+  check("REFUSE: concurrent creators never both win a name: total wins equals names created",
     spawnFailure === undefined && total === created && created === NAMES);
   // The positive control. Every racer must have run AND won at least one name, which is only true
   // if the field genuinely overlapped. Without this, a queue passes the check above perfectly.
@@ -435,4 +435,3 @@ if (!isWin) {
 rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
-(failures ? 1 : 0);
