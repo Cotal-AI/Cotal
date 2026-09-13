@@ -87,6 +87,16 @@
       "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback",
       "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct. NOTE ON WHAT IS AND IS NOT GRADED HERE. The duplicate needs BOTH guards to fail: drive must select the reserved item AND the wholesale wipe must drop the reservation. Severing only the wipe leaves this cell GREEN, because this filter alone still refuses the item; I measured that by hand rather than inferring it. So a separate mutation for the wipe SURVIVES by construction, and I removed it instead of keeping a survivor or inventing a cell to justify it. The redundancy is deliberate defence in depth, and this mutation grades the guard that is load-bearing on its own."
+    },
+    {
+      "name": "M9 acceptance is attributed by session alone, so a concurrent send settles another handover",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const previous = sessionDispatch;\n    let release!: () => void;\n    sessionDispatch = new Promise<void>((resolve) => { release = resolve; });\n",
+      "replace": "    const previous = Promise.resolve();\n    let release!: () => void;\n    void previous;\n",
+      "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
+      "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback-loss",
+      "note": "Severs the mutual exclusion while keeping every export, signature and call site, so the only thing removed is the property that makes an acknowledgement attributable. The release callback still runs and the gate still awaits, it simply never queues behind the previous handover. Verified by hand before committing: the cell reds with lost=true, aRuns=0 and unrelatedRan=true, so the unrelated message genuinely executed and its acknowledgement settled a batch that never ran. The precondition assertion is what keeps this honest, since a version of this cell without it passes vacuously whenever the two messages batch into one injection."
     }
   ]
 }

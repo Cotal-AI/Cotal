@@ -76,6 +76,9 @@ const log = join(root, "fake.jsonl");
 const sessionState = join(root, "fake-session.json");
 const lifecycleUid = mintLifecycleUid();
 const busyHoldMs = 120_000;
+// Touched by the cross-talk cell to end the seat's busy window at a chosen instant. Absent until
+// then, so the busy hold above governs every earlier cell exactly as before.
+const busyReleaseFile = join(root, "busy-release");
 const softInterruptTimeoutMs = 3_000;
 /** Declared here because the fake's swallow knob is scoped to this exact text. */
 const marker = "SWALLOWED_QUEUED_TURN_1233";
@@ -151,6 +154,10 @@ try {
       FAKE_JCODE_BUSY_AFTER_READINESS: "1",
       FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
       FAKE_JCODE_BUSY_HOLD_MS: String(busyHoldMs),
+      // Ends the busy window ON DEMAND rather than by clock. The cross-talk cell needs `drive()` to
+      // dispatch the unrelated message as its OWN turn while the swallowed handover is still
+      // reserved, and that only happens at an idle boundary the fixture chooses.
+      FAKE_JCODE_BUSY_RELEASE_FILE: busyReleaseFile,
       FAKE_JCODE_STEER_BLACKHOLE: "1",
       // THE FIXTURE'S WHOLE POINT: the queued send carrying this marker is taken and never
       // acknowledged. Scoped by content so the host's own readiness traffic still works and the seat
@@ -224,34 +231,64 @@ try {
     },
   );
 
-  // --- CROSS-TALK: NOT GRADED HERE, and this comment is the honest reason -----------------------
-  // Review found a real defect at 0a0bf255a that this suite CANNOT reproduce, and I am recording
-  // that rather than shipping a cell which passes either way.
+  // --- CROSS-TALK: another message's acknowledgement must not acknowledge THIS one ---------------
+  // Found in review, and it defeats the acknowledgement check above using an entirely ORDINARY event
+  // rather than a missing one, which is why every cell above passes while a message is lost.
   //
-  // THE DEFECT. `message_accepted` carries a session id and nothing else: no request id, no
-  // sequence, no echo of the content. `sendMessage` writes through the SDK's `notify()`, which
-  // allocates a wire request id and then discards it, so acceptance is matched by session alone
-  // (jcode-sdk client.js:317). While a swallowed handover waits, an unrelated send on the same
-  // session emits an acknowledgement that the waiting listener accepts, and the batch is promoted,
-  // acked out of the durable inbox, never run and never retried. A reviewer measured that end to
-  // end and independently against the SDK's own transport, where one acceptance resolved two
-  // concurrent sends. The fix for it is in `withExclusiveDispatch`, graded by its own mutation.
+  // `message_accepted` carries a session id and NOTHING ELSE: no request id, no sequence, no echo of
+  // the content. `sendMessage` writes through the SDK's `notify()`, which allocates a wire id and
+  // discards it, then matches acceptance by session alone (jcode-sdk client.js:317). So while the
+  // swallowed A waits, an unrelated B dispatched on the same session emits an acknowledgement that
+  // A's listener accepts. A is promoted, acked out of the durable inbox, never run, never retried.
   //
-  // WHY THIS FIXTURE CANNOT SHOW IT. The host batches everything owed into ONE injection. I tried
-  // to build the cell, and measured what actually happens: the second message rides the SAME
-  // `send_message` frame as the first (log index 22 carries both markers), so it never produces an
-  // independent acceptance and there is no second send to cross-talk with. Counts are identical on
-  // the fixed and severed trees: A sends 3, A runs 0, B sends 1, B runs 0, swallowed 3 on both.
-  //
-  // An earlier version of this cell DID red on the severed tree, and that red was timing luck
-  // rather than measurement: at a 5s observation the healthy tree simply had not retried yet,
-  // because a swallowed send occupies the SDK's full 10s acceptance wait. Widening the window to
-  // 30s made the control PASS, which is what exposed that the cell was grading the fixture's
-  // patience. Reproducing this properly needs two independently acknowledged sends on one session,
-  // which means either a fixture that can suppress batching or the reviewer's SDK-level harness.
-  //
-  // So the coverage here is stated as ABSENT. A cell that passes against the defect it names is
-  // the exact failure this repo catalogues, and I removed one earlier tonight for the same reason.
+  // THE ORDERING IS FORCED, and it has to be. A and B batch into one injection if both are merely
+  // owed, and then B never produces an acceptance of its own: measured that way first, with counts
+  // identical on the fixed and severed trees. The release file below ends the busy window while A is
+  // reserved and unacknowledged, so `drive()` composes a turn for B ALONE. That is the only shape
+  // that reaches the defect.
+  {
+    const unrelated = "UNRELATED_SAME_SESSION_SEND_1233";
+    const attemptsBefore = swallowed().length;
+    await operator.unicast(peerId!, unrelated);
+    // Wait for the fallback's own send to be outstanding before disturbing anything, so the
+    // acceptance window this cell is about is genuinely open.
+    await tryWaitFor(() => (swallowed().length > attemptsBefore - 1 ? true : undefined), 30_000);
+    // End the busy window: the idle edge lets drive() dispatch B as its own turn.
+    writeFileSync(busyReleaseFile, "release");
+    // B must genuinely RUN. Without this the cell passes vacuously whenever B was batched or
+    // dropped, which is exactly how the first version of this probe cleared a broken tree.
+    const bRan = await tryWaitFor(
+      () => (entries().some((e) => e.ev === "turn_run" && String(e.content ?? "").includes(unrelated)) ? true : undefined),
+      60_000,
+    );
+    // Past the SDK's 10s acceptance wait, so a correct host has had time to retry A.
+    await sleep(20_000);
+    const aRuns = entries().filter((e) => e.ev === "turn_run" && String(e.content ?? "").includes(marker)).length;
+    const attemptsAfter = swallowed().length;
+    check(
+      "the unrelated message genuinely ran, so a real acceptance happened on this session",
+      bRan === true,
+      { unrelatedRan: bRan === true, attemptsBefore, attemptsAfter },
+    );
+    // THE PREDICATE IS A REVIEWER'S CORRECTION AND IT IS THE WHOLE CELL. Asserting "A stays owed" is
+    // WRONG: once acceptance is attributable, A gets a real acknowledgement and RUNS, so that
+    // phrasing fails on the repair and passes on the defect, i.e. exactly backwards.
+    //
+    // The guarantee is that A is never treated as delivered without being delivered. Two healthy
+    // outcomes satisfy it, ran or still being retried. LOSS is the conjunction of neither.
+    const aLost = aRuns === 0 && attemptsAfter === attemptsBefore;
+    check(
+      "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
+      bRan === true && !aLost,
+      { lost: aLost, aRuns, attemptsBefore, attemptsAfter, unrelatedRan: bRan === true },
+    );
+    // And the duplicate half, because serialising acceptance must not deliver A twice.
+    check(
+      "and the swallowed handover is never executed more than once",
+      aRuns <= 1,
+      { aRuns },
+    );
+  }
 
   console.log(`\nSUITE COMPLETE: ${pass + fail} cells`);
   if (fail) {
