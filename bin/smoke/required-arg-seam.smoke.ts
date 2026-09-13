@@ -328,7 +328,13 @@ const SEAMS: Seam[] = [
   // BROKER on a connection of its own (one smoke-side call, tls: false), rather than trusting the
   // daemon's own report of whether it is still serving. A starved daemon's account of itself is
   // exactly what that suite exists to doubt.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 147, untypecheckedSites: 107 },
+  // 147/107 -> 150/110: delivery-starvation.smoke.ts grows three more smoke-side connections
+  // (tls: false), all for the same reason as the one above — the suite refuses to take the daemon's
+  // word for what it is doing. One deletes the lease row to stage a handover, one asks the broker
+  // how many pull requests each Plane-3 durable has parked, and one is a $SYS observer that counts
+  // ctl.delivery subscribers PER CONNECTION, which is what makes "two daemons were bound at once"
+  // a count of processes rather than a self-report.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 150, untypecheckedSites: 110 },
 ];
 
 /**

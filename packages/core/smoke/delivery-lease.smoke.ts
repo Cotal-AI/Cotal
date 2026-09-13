@@ -59,7 +59,7 @@ try {
 
   const before = await d1.readDeliveryLease(0);
   check("lease is NOT ready until the daemon marks it (responder bound)", before?.ready === false);
-  await d1.markDeliveryLeaseReady(0, rev1);
+  const readyRev = await d1.markDeliveryLeaseReady(0, rev1);
   const after = await d1.readDeliveryLease(0);
   check("lease reads ready + held by the first daemon after markReady", after?.ready === true && after?.holder === d1.card.id);
 
@@ -76,7 +76,10 @@ try {
   check("a ready lease held by another daemon does NOT answer for the one we launched", (await waitFor(d2.card.id)) === false);
   check("CONTROL: an unnamed holder (adopting a running daemon) still accepts any ready lease", await waitFor(undefined));
 
-  await d1.releaseDeliveryLease(0);
+  // RELEASE ARGUES THE REVISION IT LAST OWNED, and `markDeliveryLeaseReady` moved it — a release
+  // offering the stale `rev1` is refused, which is the correct outcome for a row that has moved on
+  // and the wrong one here, where this daemon genuinely still holds the shard.
+  await d1.releaseDeliveryLease(0, readyRev);
   let reacquired = false;
   try { await d2.acquireDeliveryLease(0); reacquired = true; } catch { /* still held */ }
   check("after release, a fresh daemon CAN acquire the freed lease", reacquired);
