@@ -33,19 +33,37 @@ class BridgeClient:
         self._on_incoming: Optional[Callable[[dict], None]] = None
         self._stop = threading.Event()
         self._reader: Optional[threading.Thread] = None
+        # Generation of the CURRENT reader. Bumped by close() and reopen(); each reader captures
+        # its own value at birth. A reader whose generation is stale is retired by definition, so
+        # correctness never depends on guessing whether a dying thread has finished dying.
+        self._gen = 0
 
     def start(self, on_incoming: Callable[[dict], None]) -> None:
-        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message."""
+        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message.
+
+        A reader is started only when none is installed for the CURRENT generation. Holding the
+        lock across the check and the install closes the window where two concurrent starts could
+        each see None and put two readers on one socket.
+        """
         self._on_incoming = on_incoming
-        if self._reader is None:
-            self._reader = threading.Thread(target=self._run, name="cotal-bridge", daemon=True)
-            self._reader.start()
+        with self._lock:
+            if self._reader is not None:
+                return
+            gen = self._gen
+            reader = threading.Thread(target=self._run, args=(gen,), name="cotal-bridge", daemon=True)
+            self._reader = reader
+        reader.start()
 
     # ---- reader thread -------------------------------------------------------
 
-    def _run(self) -> None:
+    def _run(self, gen: int = 0) -> None:
+        """Reader loop for generation ``gen``.
+
+        It stands down when a newer generation exists, so a reader that was slow to notice a close
+        cannot keep consuming the socket behind its replacement's back.
+        """
         buf = b""
-        while not self._stop.is_set():
+        while not self._stop.is_set() and gen == self._gen:
             if self._sock is None:
                 self._connect()
                 if self._sock is None:
@@ -141,37 +159,49 @@ class BridgeClient:
         ``get_client`` is a process-wide singleton, so the same closed client is what a reconnect
         gets handed. Clearing both here is what makes the restart real.
 
-        Ordering matters and is not incidental. Reading liveness first and clearing ``_stop``
-        second leaves a window: a reader that is still alive at the check, then reaches the top of
-        its loop and exits on the flag that is still set, is left installed as ``_reader``. That
-        rebuilds the exact dead-bridge state this method exists to undo, and it is timing
-        dependent, so it reproduces as an occasional silent platform rather than a clean failure.
-        Clearing the flag first means any reader observed alive afterwards cannot exit because of
-        it, so ``_stop`` is settled before liveness is ever read.
+        WHY A GENERATION COUNTER AND NOT A LIVENESS CHECK. An earlier version joined the closed
+        reader and then decided using ``is_alive()``. That is a guess about the future, and a
+        reader COMMITTED TO EXIT but descheduled past the timeout answers it wrongly: it reads
+        alive, stays installed as the active handle, and then dies, leaving a handle that is dead
+        with the platform still marked connected. A timeout cannot distinguish "already gone" from
+        "still unwinding", and on the wrong side of that guess there is nothing behind it, because
+        the gateway's watcher only ever revisits platforms in ``_failed_platforms`` and never
+        re-probes one it believes is connected. Measured: the reader was retained, ``start``
+        created no replacement, and the handle was dead moments later.
 
-        The join closes the second half. A reader that already exited must not stay installed, and
-        a reader still running must be left alone, because dropping the reference to a running
-        thread would let ``start`` create a second one on the same socket. It runs outside the lock
-        because ``_run`` takes that same lock when a peer drops the socket, and joining a thread
-        while holding a lock it needs is a deadlock rather than a wait.
+        The generation counter removes the guess. ``close`` and ``reopen`` both bump ``_gen``, and
+        each reader captures its generation at birth. A reader from an older generation is retired
+        BY DEFINITION, whatever its current liveness, so it can never be the active handle. The
+        bounded join is kept, but only as courtesy: it lets a prompt exit be observed so the common
+        case stays tidy. Correctness no longer depends on its outcome.
         """
+        with self._lock:
+            self._gen += 1
+            reader = self._reader
+            # Retire the old reader unconditionally: it belongs to a previous generation, so it is
+            # not the active handle regardless of whether it has finished unwinding yet.
+            self._reader = None
         self._stop.clear()
+        if reader is not None:
+            # Courtesy only: nothing below depends on whether this returns in time.
+            reader.join(timeout=_REOPEN_JOIN_SECONDS)
+
+    def reader_is_dead(self) -> bool:
+        """True when a reader was installed and has since died, so the bridge is deaf.
+
+        The adapter reports this to the gateway as a RETRYABLE FATAL. Without it a dead reader is
+        invisible: ``connect`` returned True, the platform is marked connected, and the watcher
+        only revisits platforms already in ``_failed_platforms``, so nothing would ever look again.
+        """
         with self._lock:
             reader = self._reader
-        if reader is None:
-            return
-        # A closed reader is already unwinding; give it a bounded moment to land so liveness is a
-        # settled fact and not a race with its own exit.
-        reader.join(timeout=_REOPEN_JOIN_SECONDS)
-        with self._lock:
-            # Re-read under the lock: a concurrent start() may have installed a fresh reader while
-            # we were joining the old one, and that one must survive.
-            if self._reader is reader and not reader.is_alive():
-                self._reader = None
+        return reader is not None and not reader.is_alive()
 
     def close(self) -> None:
         self._stop.set()
         with self._lock:
+            # Retire this generation: any reader still unwinding is already not the active handle.
+            self._gen += 1
             if self._sock is not None:
                 try:
                     self._sock.close()
