@@ -211,29 +211,33 @@ def main() -> None:
 
 
 def _race_reader_cleared() -> bool:
-    """The interleaving the old ordering lost.
+    """A reader still UNWINDING must not be mistaken for a live one.
 
-    The previous `reopen` read `is_alive()` first and cleared `_stop` second. A reader alive at the
-    check that then reached the top of its loop and exited on the still-set flag was left installed
-    as `_reader`, rebuilding the dead bridge. Here the reader is genuinely alive when `reopen` is
-    entered and exits immediately after, so a correct implementation must not leave it installed.
+    This is the race, and the mutation harness is what pinned down its real mechanism. An earlier
+    version of this check targeted the order of the liveness read and the `_stop.clear()`; with the
+    bounded join in place that ordering genuinely does not matter, and the harness graded the
+    corresponding mutation UNGRADABLE rather than letting it pass as proof. The join is the fix.
+
+    So the interleaving driven here is the one that matters: the reader is alive at the instant
+    `reopen` is entered and finishes a moment later. Without the join, `is_alive()` reads True, the
+    thread is left installed as `_reader`, and the next `start()` returns having started nothing,
+    which is the dead bridge. With the join, `reopen` waits for the thread to land and clears it.
     """
     client = BridgeClient(_sockpath)
     release = threading.Event()
-
-    def body() -> None:
-        release.wait(5)
-
-    reader = threading.Thread(target=body, daemon=True)
+    reader = threading.Thread(target=lambda: release.wait(5), daemon=True)
     client._reader = reader
     client._stop.set()
     reader.start()
-    t = threading.Timer(0.1, release.set)  # the reader exits DURING reopen's check
-    t.start()
-    client.reopen()
-    t.cancel()
-    reader.join(timeout=5)
-    return client._reader is None and not client._stop.is_set()
+    timer = threading.Timer(0.1, release.set)  # the reader exits just after reopen() is entered
+    timer.start()
+    try:
+        client.reopen()
+        return client._reader is None and not client._stop.is_set()
+    finally:
+        timer.cancel()
+        release.set()
+        reader.join(timeout=5)
 
 
 def _race_live_reader_kept() -> bool:
