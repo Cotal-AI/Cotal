@@ -39,8 +39,8 @@
     {
       "name": "M2 exclusive create is a plain overwrite (no EEXIST)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
-      "replace": "  writeSecretFile(path, data);\n  return;\n  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
+      "find": "  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      publishLink(tmp, path);",
+      "replace": "  writeSecretFile(path, data);\n  return;\n  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      publishLink(tmp, path);",
       "expectRed": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
       "cell": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
       "note": "The second writer must not replace the first. Overwrite is the pre-fix persist.",
@@ -50,7 +50,7 @@
     {
       "name": "M3 exclusive link becomes rename (atomic replace, still two in-memory ids)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "      linkSync(tmp, path);",
+      "find": "      publishLink(tmp, path);",
       "replace": "      renameSync(tmp, path);",
       "expectRed": "N=8 concurrent first mints over 20 rounds share exactly one identity",
       "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",
@@ -61,8 +61,8 @@
     {
       "name": "M4 the temp write is a plain overwrite again (colliding creators swap bytes)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });",
-      "replace": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  writeFileSync(path, data, { mode: 0o600 });",
+      "find": "  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {",
+      "replace": "  writeSecretFile(tmp, data);\n  try {",
       "expectRed": "REFUSE: a temp name already held by another creator is EEXIST, not a silent overwrite",
       "cell": "REFUSE: a temp name already held by another creator is EEXIST, not a silent overwrite",
       "note": "A probabilistically-unique temp name is not a concurrency argument; the collision must refuse, not overwrite.",
@@ -72,8 +72,8 @@
     {
       "name": "M5 O_EXCL becomes a userspace check-then-write (refuses, but is not atomic)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });",
-      "replace": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  let present = true;\n  try { chmodSync(path, 0o600); } catch { present = false; }\n  if (present) { const err: NodeJS.ErrnoException = new Error(`EEXIST: file already exists, open '${path}'`); err.code = \"EEXIST\"; throw err; }\n  writeFileSync(path, data, { mode: 0o600 });",
+      "find": "  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });\n  if (!isWin) return;",
+      "replace": "  writeFileSync(path, data, { mode: 0o600 });\n  if (!isWin) return;",
       "expectRed": "REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
       "cell": "REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
       "note": "Raised by review: refusing an existing file is not the same property as being atomic about it. A check-then-write passes every other refusing cell and is still the defect, because the check and the write are two syscalls.",
