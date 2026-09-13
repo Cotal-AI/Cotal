@@ -99,24 +99,39 @@ check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8")
 // actually grades it.
 const tmpVictim = join(dir, "tmp-symlink-victim");
 const danglingDest = join(dir, "dangling.secret");
-const realRandom2 = Math.random;
-const realNow2 = Date.now;
-Math.random = () => 0.5;
-Date.now = () => 1;
-const danglingTmp = `${danglingDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
-symlinkSync(tmpVictim, danglingTmp);
-let danglingCode: string | undefined;
+// Creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows, which an unprivileged CI
+// runner does not have. Probe the capability rather than assuming it from the platform: a
+// developer box with Developer Mode on DOES have it, and this cell is worth running there.
+let canSymlink = true;
 try {
-  writeSecretFileCreateOnly(danglingDest, "attacker\n");
-} catch (e) {
-  danglingCode = (e as NodeJS.ErrnoException).code;
-} finally {
-  Math.random = realRandom2;
-  Date.now = realNow2;
+  const probeLink = join(dir, "symlink-capability-probe");
+  symlinkSync(join(dir, "no-such-target"), probeLink);
+  rmSync(probeLink, { force: true });
+} catch {
+  canSymlink = false;
 }
-check("REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
-  danglingCode === "EEXIST");
-check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
+if (canSymlink) {
+  const realRandom2 = Math.random;
+  const realNow2 = Date.now;
+  Math.random = () => 0.5;
+  Date.now = () => 1;
+  const danglingTmp = `${danglingDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
+  symlinkSync(tmpVictim, danglingTmp);
+  let danglingCode: string | undefined;
+  try {
+    writeSecretFileCreateOnly(danglingDest, "attacker\n");
+  } catch (e) {
+    danglingCode = (e as NodeJS.ErrnoException).code;
+  } finally {
+    Math.random = realRandom2;
+    Date.now = realNow2;
+  }
+  check("REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
+    danglingCode === "EEXIST");
+  check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
+} else {
+  console.log("· dangling-symlink atomicity cell needs symlink privilege — skipped (POSIX CI is the oracle)");
+}
 
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");
