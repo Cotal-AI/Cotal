@@ -768,6 +768,10 @@ try {
   await deleteLease(spaceG, credsPathG);
   const replacement = spawnDaemon(spaceG, credsPathG);
   const replacementUp = await untilUp(replacement);
+  // OBSERVE THE OVERLAP WHILE IT IS HELD STILL. The replacement is bound and ready; the incumbent is
+  // frozen and still bound. That is the two-responder state, and it is stationary because one of the
+  // two processes cannot run — so it is read here, deliberately, rather than chased later.
+  const boundDuringOverlap = await obsG.controlSubs(accountG.account.pub);
   // Wake it only once the replacement is READY. Sol's boundary is stated exactly this way: the
   // replacement is already serving before the loser's create is refused.
   signalGroup(incumbent, "SIGCONT");
@@ -797,10 +801,44 @@ try {
   let overlapReturned = false;
   let peakBound = 0;
   let answeredSubs = 0;
+
+  // FREEZE THE LOSER THE INSTANT IT SAYS IT WENT QUIET, and sample at leisure.
+  //
+  // The window between "unbound" and "decided" is a couple of broker round trips — tens of
+  // milliseconds — and a CONNZ round is not free. Racing it is not a test, it is a coin flip: the
+  // first version of this cell won locally and lost on CI, where the reading came back after the
+  // daemon had already printed its verdict. Re-running that is exactly the kind of green I refuse.
+  //
+  // SIGSTOP at that moment changes nothing about what the daemon DID. Its subscriptions are already
+  // gone or already there; freezing a process does not unbind it, and the broker's answer is about
+  // the connection, not about whether the process is scheduled. What it buys is an arbitrarily long
+  // interval in which the state is provably "quiesced, ownership not yet decided" — the exact state
+  // this cell exists to observe, held still instead of chased.
+  //
+  // The mutation is still killed, and killed harder: a daemon that never quiesces never prints the
+  // line, so the trigger never fires, the loop below falls through on its deadline, and G7e reds
+  // with zero bracketed readings rather than with a lost race.
+  const quiesceSeen = Date.now() + 30_000;
+  let froze = false;
+  while (Date.now() < quiesceSeen && !incumbent.exited) {
+    if (incumbent.stderr.includes("stopped serving shard")) {
+      signalGroup(incumbent, "SIGSTOP");
+      froze = true;
+      break;
+    }
+    await wait(20);
+  }
+  check("G5b the loser announced going quiet, so there is a quiesced state to inspect at all",
+    froze, tail(incumbent));
+
   const arbDeadline = Date.now() + 25_000;
   while (Date.now() < arbDeadline && !incumbent.exited) {
     sawLoserAlive = true;
+    // Bracket the reading anyway: a frozen process prints nothing, so these agree, but if the
+    // freeze ever failed to land this still refuses to score a reading the daemon had outrun.
+    const decidedBefore = /taken shard|is held by/.test(incumbent.stderr);
     const subs = await obsG.controlSubs(accountG.account.pub);
+    const decidedAfter = /taken shard|is held by/.test(incumbent.stderr);
     if (subs !== undefined) {
       answeredSubs += 1;
       peakBound = Math.max(peakBound, subs);
@@ -809,33 +847,37 @@ try {
         // Coming BACK after it had resolved would mean the daemon re-armed without proving
         // ownership — the exact thing `mayServeOn` refuses. Distinct from never resolving.
         if (overlapEndedAlive) overlapReturned = true;
-      } else if (subs === 1 && !incumbent.exited) {
+      } else if (subs === 1) {
         // ALIVE IS NOT ENOUGH, and this is the distinction the first version of the cell missed.
         // `shutdown()` unbinds through `ep.stop()` and only then exits, so there is a window in
         // which a SHUTTING-DOWN daemon is unbound and still running — which means "the overlap
         // ended while the loser was alive" is satisfied by the pre-fix behaviour too, and a mutation
         // that disabled quiescing entirely still passed. Measured, not reasoned about.
         //
-        // So the loser must additionally not have DECIDED anything yet: no "taken shard" line. That
-        // is the real difference. Quiescing happens BEFORE the ownership question is answered;
-        // unbinding via shutdown can only happen after.
-        if (!/taken shard|is held by/.test(incumbent.stderr)) overlapEndedUndecided = true;
+        // So the loser must additionally not have DECIDED anything yet. Quiescing happens BEFORE the
+        // ownership question is answered; unbinding via shutdown can only happen after.
         overlapEndedAlive = true;
+        if (!decidedBefore && !decidedAfter) overlapEndedUndecided = true;
       }
     }
+    // Three consistent readings of the held state is enough; it is frozen, not evolving.
+    if (overlapEndedUndecided && answeredSubs >= 3) break;
+    await wait(100);
   }
-  // Sampled once at the end rather than in the hot loop: each `pendingPulls` opens its own
-  // connection, and paying that per iteration made the sampler slower than the window it was trying
-  // to resolve (measured: 5 readings across the whole arbitration).
+  if (froze) signalGroup(incumbent, "SIGCONT");
+  // Sampled once, after the quiesced window, rather than inside the hot loop: each `pendingPulls`
+  // opens its own connection, and paying that per iteration made the sampler slower than the window
+  // it was trying to resolve (measured: five readings across an entire arbitration).
   const peakPulls = await pendingPulls(spaceG, credsPathG);
+
   check("G6 the loser was still RUNNING during the arbitration — the window this cell grades exists",
     sawLoserAlive, { exited: incumbent.exited });
   check("G7 the responder count was actually readable throughout — the observable is not vacuous",
     answeredSubs > 0, { answeredSubs });
-  check("G7b the overlap this cell is about genuinely occurred: two daemons were briefly bound",
-    sawOverlap, { peakBound, answeredSubs });
-  check("G7c and it was at most two — no third party is involved in this measurement",
-    peakBound <= 2, { peakBound });
+  check("G7b the overlap this cell is about genuinely occurred: two daemons were bound at once",
+    boundDuringOverlap === 2, { boundDuringOverlap, peakBound, answeredSubs, sawOverlap });
+  check("G7c and never more than two — no third party is involved in this measurement",
+    peakBound <= 2 && (boundDuringOverlap ?? 0) <= 2, { peakBound, boundDuringOverlap });
   // THE DISCRIMINATING ASSERTION. Pre-fix this is only reachable by dying.
   check("G7d the overlap ENDED while the loser was still alive, not by the loser exiting",
     overlapEndedAlive, { peakBound, answeredSubs, loserExited: incumbent.exited });
@@ -847,8 +889,8 @@ try {
     overlapEndedUndecided, { overlapEndedAlive, overlapEndedUndecided, tail: tail(incumbent) });
   check("G7f and serving never resumed during the arbitration — no re-arm without proof",
     !overlapReturned, { overlapReturned });
-  check("G7g the fan-out durable was never carrying more than two daemons' pulls either",
-    peakPulls === undefined || servingBefore === undefined || peakPulls.fanout <= servingBefore.fanout * 2,
+  check("G7g and once it is over, the fan-out durable carries one daemon's pulls again",
+    peakPulls === undefined || servingBefore === undefined || peakPulls.fanout <= servingBefore.fanout,
     { peakPulls, baseline: servingBefore });
   // Said in the loser's own words too: it must announce going quiet, and it must do so BEFORE it
   // announces losing the shard. An implementation that quiesced only inside shutdown would exit
@@ -937,7 +979,7 @@ try {
     coupled.stderr.includes("exiting (coupled to the broker)"), tail(coupled));
   check("B5 the exit code is non-zero", coupled.code !== 0, coupled.code);
 
-  const EXPECTED_CELLS = 70;
+  const EXPECTED_CELLS = 71;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
