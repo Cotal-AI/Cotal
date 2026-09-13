@@ -74,9 +74,9 @@
       "file": "packages/core/src/secret-fs.ts",
       "find": "  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });\n  if (!isWin) return;",
       "replace": "  writeFileSync(path, data, { mode: 0o600 });\n  if (!isWin) return;",
-      "expectRed": "REFUSE: of 8 concurrent creators over 12 rounds exactly one ever creates the name",
-      "cell": "REFUSE: of 8 concurrent creators over 12 rounds exactly one ever creates the name",
-      "note": "Raised by review: refusing an existing file is not the same property as being atomic about it. With the lstat refusal in place only real concurrency separates O_EXCL from a check-then-write, so this cell is N real processes on a barrier.",
+      "expectRed": "REFUSE: a name taken AFTER the check but BEFORE the write does not get overwritten (O_EXCL decides at the write)",
+      "cell": "REFUSE: a name taken AFTER the check but BEFORE the write does not get overwritten (O_EXCL decides at the write)",
+      "note": "Raised by review: refusing an existing name is not the same property as deciding a concurrent create, since a userspace check-then-write refuses too. Graded deterministically by a name that is free when a pre-check would look and taken by the time the write runs. This replaced an N-process barrier race that was measured to fail toward green under a post-release stall.",
       "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },

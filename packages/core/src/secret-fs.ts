@@ -129,26 +129,43 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
  * were private. EEXIST propagates to the caller, which is the point: the name was already taken.
  *
  * `O_EXCL` alone does not carry that contract everywhere. On POSIX it refuses a final symlink
- * without following it, so a DANGLING link is EEXIST. On Windows the reparse point resolves, the
- * missing target is created, and the bytes land at a name this caller did NOT create — which is
- * precisely what the contract above forbids. `lstatSync` closes that: it reports the LINK rather
+ * without following it, so a DANGLING link is EEXIST (measured: file, directory and dangling link
+ * all refuse, and nothing is materialised). On Windows the reparse point resolves, the missing
+ * target is created, and the bytes land at a name this caller did NOT create — which is precisely
+ * what the contract above forbids. A win32-only `lstatSync` closes that: it reports the LINK rather
  * than its target, so a name that exists in any form is refused before anything is written.
  *
- * This is a refusal, never a fallback: it only ever converts a would-be silent write-through into
- * the EEXIST the caller already handles. The race that `O_EXCL` closes stays closed, because
- * `O_EXCL` still runs and is still what decides a concurrent create; the `lstat` only adds names
- * that `O_EXCL` would have followed rather than refused.
+ * That pre-check is deliberately NOT run on POSIX. It would be a check-then-act step guarding a
+ * case `O_EXCL` already refuses, and an unnecessary one weakens the very property this function
+ * exists to provide. Where it does run it is a refusal, never a fallback: it only converts a
+ * would-be silent write-through into the EEXIST the caller already handles, and it never decides a
+ * concurrent create — two creators that both find the name free still both reach `O_EXCL`, which is
+ * one syscall and is what picks the winner.
  */
 function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {
-  try {
-    lstatSync(path); // the NAME exists (file, dir, or dangling link) — never write through it
-    const taken: NodeJS.ErrnoException = new Error(`EEXIST: file already exists, open '${path}'`);
-    taken.code = "EEXIST";
-    throw taken;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "EEXIST") throw e;
-    // ENOENT is the expected case: the name is free, so O_EXCL below decides the race.
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  // WIN32 ONLY, and deliberately so. Measured on POSIX: `O_EXCL` already refuses a plain file, a
+  // directory AND a dangling symlink with EEXIST, materialising nothing — so a pre-check there
+  // would add a check-then-act step that buys nothing and can only weaken the guarantee. Windows
+  // is the platform where `O_EXCL` RESOLVES a reparse point and creates its target, which would
+  // land bytes at a name the caller never asked for; `lstatSync` reports the link rather than its
+  // target, so the name is refused before anything is written.
+  //
+  // This never decides a concurrent create. Two creators that both see the name free still both
+  // reach `O_EXCL` below, and O_EXCL — one syscall — is what picks the winner. The check only ever
+  // converts a would-be write-through into the EEXIST the caller already handles.
+  if (isWin) {
+    let exists = true;
+    try {
+      lstatSync(path); // the NAME exists (file, dir, or dangling link) — never write through it
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      exists = false;
+    }
+    if (exists) {
+      const taken: NodeJS.ErrnoException = new Error(`EEXIST: file already exists, open '${path}'`);
+      taken.code = "EEXIST";
+      throw taken;
+    }
   }
   writeFileSync(path, data, { flag: "wx", mode: 0o600 });
   if (!isWin) return; // POSIX mode set at create — nothing more to do
