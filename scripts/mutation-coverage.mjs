@@ -588,17 +588,17 @@ const executedWitness = (suite, source, command, mutation, executes) => {
 };
 
 const assertGradable = (configPath, cfg, suites, mutation) => {
+  // A suite that launches a repo entrypoint under a TS runner executes that entrypoint's own
+  // source tree, so the mutated file is covered when the entrypoint's relative imports reach it.
+  // A value-import of a package's dist reaches the mutated source only through a build the command
+  // actually runs; both halves are required, because the import alone loads a stale artifact.
   for (const suite of suites) {
     const source = readFileSync(suite, "utf8");
     if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;
-    // A suite that launches a repo entrypoint under a TS runner executes that entrypoint's own
-    // source tree. The mutated file is covered when the entrypoint's relative imports reach it.
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
     if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source)) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
     if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;
-    // A value-import of a package's dist reaches the mutated source only through a build the
-    // command actually runs. Both halves are required: the import alone loads a stale artifact.
     if (buildsPackage(cfg.command, packageName(mutation.file))
       && importsBuiltOutput(suite, source).some((root) => coversPath(resolve(mutation.file), root))) return;
     if (executedWitness(suite, source, cfg.command, mutation, cfg.executes ?? [])) return;
