@@ -1,0 +1,6 @@
+# Late delivery must never become LOST delivery (#1233). The SDK's acceptance wait RESOLVES on its
+# own timeout rather than rejecting, so a resolved `sendMessage` is not proof the session took the
+# text; a Harness that takes the frame and never acknowledges it was recorded as accepted and acked
+# out of the durable inbox at the next clean boundary. This suite grades acceptance being proved by
+# the acknowledgement itself, so an unacknowledged handover stays owed and is retried instead.
+smoke:jcode-queue-fallback-loss
