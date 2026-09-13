@@ -159,8 +159,11 @@ const rootOpen = mkdtempSync(join(tmpdir(), "cotal-openattach-root-"));
 const rootOpenWithSeed = mkdtempSync(join(tmpdir(), "cotal-openseeded-root-"));
 const rootSealedNoSeed = mkdtempSync(join(tmpdir(), "cotal-sealednoseed-root-"));
 // Fixtures for the RESOLVER cells (1b). These are roots the registry has never heard of, which is
-// what an operator has after `cotal up --open` in a fresh directory: a genuine `.cotal/` and no
-// entry anywhere. The pair differs ONLY by whether a seed is on disk, because that single bit is
+// what an operator has when a mesh was never recorded here: a genuine `.cotal/` and no
+// entry anywhere. NOT what `cotal up --open` leaves behind - that path calls `recordMesh`
+// (up.ts:2391), so a mesh brought up in this directory IS registered. The unregistered state is
+// reached by a pruned or hand-removed registry, or by a checkout that never ran `up` at all.
+// The pair differs ONLY by whether trust material is on disk, because that single bit is
 // what `localTarget` turns into the mode, and the mode is what decides the redeem.
 const rootUnregisteredNoSeed = mkdtempSync(join(tmpdir(), "cotal-unregistered-noseed-"));
 const rootUnregisteredWithSeed = mkdtempSync(join(tmpdir(), "cotal-unregistered-seeded-"));
@@ -346,8 +349,11 @@ try {
     resolvedRedeem.kind === "bare",
     resolvedRedeem,
   );
-  // The refusing partner, differing ONLY by trust material being present in the same unregistered
-  // root: the resolver then synthesises "auth", and the redeem MINTS from that material rather than
+  // The refusing partner. It is a SECOND unregistered root, not the same one: both are separate
+  // `mkdtempSync` calls (lines 165-166), and they are built to differ in exactly one respect, that
+  // this one carries trust material on disk. Saying "the same root" would have been simpler and
+  // false, and the point of the pair is that ONE bit differs, which a wrong label destroys.
+  // The resolver then synthesises "auth", and the redeem MINTS from that material rather than
   // going bare. Twice-measured, and the wobble is worth recording: with the MeshTarget fed in raw
   // this cell read as a by-name refusal, which looked like a real finding about the product. It was
   // an artifact of my adapter dropping the trust material on the floor. The shapes differ, so the
@@ -355,13 +361,13 @@ try {
   const resolvedSeeded = resolveOn(rootUnregisteredWithSeed);
   const seededMode = "failed" in resolvedSeeded ? `resolve failed: ${resolvedSeeded.failed}` : resolvedSeeded.mode;
   ok(
-    'REFUSE the bare arm (same unregistered root, trust material present): the resolver synthesises "auth" instead of "open"',
+    'REFUSE the bare arm (a SECOND unregistered root, differing only in that trust material is present): the resolver synthesises "auth" instead of "open"',
     seededMode === "auth",
     seededMode,
   );
   const seededRedeem = "failed" in resolvedSeeded ? { kind: "fatal", message: resolvedSeeded.failed } as Material : decideOn(asControlTarget(resolvedSeeded));
   ok(
-    "REFUSE the bare arm (same root, trust material present): the redeem MINTS from THAT material and never goes bare",
+    "REFUSE the bare arm (that same second root): the redeem MINTS from THAT material and never goes bare",
     seededRedeem.kind === "mint" && seededRedeem.auth !== undefined,
     seededRedeem.kind,
   );
