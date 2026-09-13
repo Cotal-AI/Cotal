@@ -492,4 +492,22 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // chain, so the count is part of the output and not just the exit status.
 console.log(`host-starvation.smoke: ${ok} passed, ${fail} failed`);
 done();
+
+// A reported count is a LIVENESS check; a PINNED count is a coverage check. Reporting `41 passed`
+// catches a suite that ran nothing, but it cannot catch a suite that quietly runs LESS than it
+// did: delete one executed cell and `41 passed, 0 failed` becomes `40 passed, 0 failed`, which is
+// still green and still reads like success. Measured, not assumed: removing the genuine-fault cell
+// from this file produced exactly that, a passing run one cell lighter. An assertion silently
+// stops being paid for the moment nobody counts it, which is the same way a displaced mutation
+// anchor stops grading without anything going red.
+const EXPECTED_CELLS = 41;
+const ran = ok + fail;
+if (ran !== EXPECTED_CELLS) {
+  console.error(
+    `ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}. A cell was added or removed `
+      + `without updating EXPECTED_CELLS. If the change was intentional, update the constant in the `
+      + `same commit so the new total is reviewed rather than inherited.`,
+  );
+  process.exit(1);
+}
 process.exit(fail === 0 ? 0 : 1);
