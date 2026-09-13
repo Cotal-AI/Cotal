@@ -94,6 +94,28 @@ const starveLoop = (ms: number): void => {
   while (Date.now() < until) { /* the starvation */ }
 };
 
+/**
+ * Starve the loop ACROSS a window, in rounds, and the shape is the difference between a cell that
+ * proves something and a cell that is merely lucky.
+ *
+ * A single long spin only catches a plane read that was ALREADY in flight when the spin began, and
+ * whether one was is a race against the pump's own poll timer. MEASURED: the first draft of cell 1
+ * passed with the repair removed, because during one 11s block no request happened to be in flight
+ * to time out. A green that depends on that coin landing is exactly the vacuity this lane was
+ * warned about — the cell would have reported the defect repaired while the defect was present.
+ *
+ * Rounds make it deterministic. Each spin outlasts the client's 5s deadline, and the short yield
+ * between them is long enough for the poll timers the previous spin made overdue to fire and issue
+ * their requests, which the NEXT spin then starves past that deadline. After the first yield there
+ * is always a read in flight to be starved.
+ */
+const starveAcross = async (rounds: number, spinMs = 6_000, yieldMs = 20): Promise<void> => {
+  for (let i = 0; i < rounds; i += 1) {
+    starveLoop(spinMs);
+    await new Promise((r) => setTimeout(r, yieldMs));
+  }
+};
+
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-meshstarve-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -183,9 +205,10 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   const armed = await armPending(4);
   c("and its timer is really armed on the broker, so the deadline will pass for real", armed === 1, armed);
 
-  // THE STARVATION, straddling the deadline: the sleep's own 3s expires inside this block, and the
-  // plane reads that would have observed it cannot run.
-  starveLoop(11_000);
+  // THE STARVATION, straddling the deadline: the sleep's own 3s expires inside it, and the plane
+  // reads that would have observed it cannot run. Four rounds, for the reason `starveAcross`
+  // documents: one spin catches only a read that was already in flight, which is a race.
+  await starveAcross(4);
 
   const out = await withDeadline(sleeping, 60_000, "the starved sleep");
   c("the sleep COMPLETES: a lower-bound wait that was late is not a failed wait",
