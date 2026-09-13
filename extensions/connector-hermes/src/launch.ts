@@ -9,12 +9,13 @@
  *   - connector-core **control socket** ← Python presence hooks (relay.ts pattern) → presence
  *   - **bridge socket** ⇄ Python gateway adapter + cotal_* tools (inbound wake/drive, outbound)
  *   - **tools file** → the cotal_* descriptors the plugin registers at load
- *   - an isolated **HERMES_HOME** profile so the operator's own ~/.hermes is never touched
+ *   - an isolated **HERMES_HOME** profile so the operator's own ~/.hermes is never touched, unless
+ *     the operator opts in with COTAL_HERMES_ADOPT_HOME to put their OWN Hermes on the mesh
  *
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,9 +24,27 @@ import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MES
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
-/** Hermes API line this connector is written + pinned against (see pyproject.toml). A different
- *  major.minor may move the plugin/platform/hook signatures, so we assert and fail loudly. */
-const HERMES_PIN = "0.16";
+/** Hermes API range this connector is written against (keep in sync with pyproject.toml).
+ *
+ *  A RANGE rather than a single line, with both ends load-bearing:
+ *
+ *  FLOOR 0.18. `BasePlatformAdapter.connect` gained a keyword-only `is_reconnect` at 0.18.0
+ *  (tag v2026.7.1) and the gateway passes it at every call site from that version on. The
+ *  adapter in plugin/cotal/adapter.py accepts it, so it can no longer be driven by a 0.16/0.17
+ *  gateway the way it was written for: those call `connect()` positionally with no keyword, which
+ *  still binds, but nothing below 0.18 supplies the reconnect signal the adapter now acts on.
+ *  Below the floor the connector is untested rather than merely older, so it is refused.
+ *
+ *  CEILING 0.22 (exclusive). Everything through 0.21.x is verified compatible on the surfaces
+ *  this connector binds: the four gateway.platforms.base imports resolve, Platform and
+ *  PlatformConfig are unchanged, all five registered hooks are still in VALID_HOOKS, and
+ *  register_platform / register_tool / register_hook keep their signatures. 0.22 does not exist
+ *  yet, so admitting it would be a claim about code nobody has read.
+ *
+ *  Refusing outside the range is deliberate: a silent degrade here surfaces as a TypeError at
+ *  platform connect, after a clean-looking plugin load. */
+const HERMES_MIN = "0.18";
+const HERMES_MAX_EXCLUSIVE = "0.22";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) || "_";
@@ -77,8 +96,89 @@ function setupProfile(home: string, opts: { model?: string; persona?: string }):
     writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${ORIENTATION_BOOTSTRAP}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}\n`);
 }
 
-/** Assert the installed hermes-agent is on the pinned API line, or throw. No silent degrade: a
- *  different major.minor can shift the plugin/platform/hook contract this connector depends on. */
+/** A major.minor as a sortable pair, or null when the string is not one. Compared numerically,
+ *  because a string compare puts "0.9" above "0.18" and would admit the versions the floor exists
+ *  to refuse. */
+function parseLine(raw: string): [number, number] | null {
+  const parts = raw.trim().split(".");
+  if (parts.length < 2) return null;
+  const major = Number(parts[0]);
+  const minor = Number(parts[1]);
+  if (!Number.isInteger(major) || !Number.isInteger(minor) || major < 0 || minor < 0) return null;
+  return [major, minor];
+}
+
+const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] || a[1] - b[1];
+
+/** Opt-in: run the gateway in the operator's OWN Hermes profile instead of a disposable one.
+ *  Set to the profile directory (`~/.hermes`, or any HERMES_HOME). Unset means the managed
+ *  default, which is what a spawned seat should almost always use. */
+export const ADOPT_HOME_ENV = "COTAL_HERMES_ADOPT_HOME";
+
+/** Resolve the adopt-home opt-in, or undefined for the managed default. */
+export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env[ADOPT_HOME_ENV]?.trim();
+  return raw ? raw : undefined;
+}
+
+/**
+ * Install the cotal plugin into an EXISTING Hermes profile, and change nothing else about it.
+ *
+ * Two needs are served by this connector and only one of them is served by the managed profile
+ * above. A fresh disposable seat wants isolation. An operator who already has a working Hermes
+ * wants THAT one on the mesh, with its configured credentials and integrations, because those
+ * are the reason the seat is worth anything: a Hermes wired to a notification path can reach its
+ * operator, and a temp HERMES_HOME cannot, since the integrations live in the real profile.
+ *
+ * What this writes is exactly one directory, `plugins/cotal`, which is this connector's own asset
+ * and is refreshed each launch so a connector upgrade lands. What it deliberately does NOT write:
+ *
+ *   config.yaml  the managed path regenerates it wholesale and turns approvals off. Doing that to
+ *                a real profile would discard the operator's model, platform and approval
+ *                settings, and silently disable the approvals a human profile is entitled to.
+ *   SOUL.md      the operator's own identity file. The managed path overwrites it with the
+ *                persona; here that would destroy the agent the operator built.
+ *
+ * Because config.yaml is not written, enabling the plugin is the operator's decision and this
+ * refuses rather than making it for them. That is the "no fallbacks" rule doing real work: a
+ * silent enable would be a write to a human's configuration that they never asked for.
+ */
+export function setupAdoptedProfile(home: string, opts: { persona?: string }): void {
+  if (!existsSync(home))
+    throw new Error(`${ADOPT_HOME_ENV}=${home} does not exist — point it at an existing Hermes profile directory (usually ~/.hermes)`);
+  if (!statSync(home).isDirectory())
+    throw new Error(`${ADOPT_HOME_ENV}=${home} is not a directory`);
+
+  // A persona is applied by overwriting SOUL.md, which this mode must not touch. Accepting one and
+  // never applying it would leave the operator waiting on an identity that never took effect, so
+  // it is refused the same way an unsubmittable initial prompt is.
+  if (opts.persona)
+    throw new Error(`${ADOPT_HOME_ENV} runs the operator's own profile, whose SOUL.md is not overwritten, so the agent file's persona cannot be applied — remove the persona from the agent file, or drop ${ADOPT_HOME_ENV} to use a managed profile`);
+
+  const pluginDst = join(home, "plugins", "cotal");
+  rmSync(pluginDst, { recursive: true, force: true });
+  mkdirSync(join(home, "plugins"), { recursive: true });
+  cpSync(PLUGIN_SRC, pluginDst, { recursive: true });
+
+  // Verify the operator enabled us, and say precisely what to add when they have not. Reading the
+  // file is not parsing it: this looks for the two things that must be true, and a profile whose
+  // YAML says them in a shape this does not recognise gets a loud instruction rather than a
+  // silent rewrite.
+  const configPath = join(home, "config.yaml");
+  const config = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  const pluginEnabled = /^\s*enabled:.*\bcotal\b/m.test(config) || /^\s*-\s*cotal\s*$/m.test(config);
+  const platformEnabled = /^\s*cotal:\s*$/m.test(config);
+  if (!pluginEnabled || !platformEnabled)
+    throw new Error(
+      `${ADOPT_HOME_ENV}=${home} but its config.yaml does not enable the cotal plugin and platform, and this mode does not edit an operator's config. Add:\n` +
+        "  plugins:\n    enabled: [cotal]\n  gateway:\n    platforms:\n      cotal:\n        enabled: true\n" +
+        `(plugin files were installed at ${pluginDst})`,
+    );
+}
+
+/** Assert the installed hermes-agent is within the supported API range, or throw. No silent
+ *  degrade: a version outside it can shift the plugin/platform/hook contract this connector
+ *  depends on, and the failure that produces lands at platform connect rather than at load. */
 export function assertHermesVersion(opts: {
   env?: NodeJS.ProcessEnv;
   pkgDir?: string;
@@ -96,10 +196,17 @@ export function assertHermesVersion(opts: {
   } catch (e) {
     throw new Error(`could not resolve the hermes-agent version via uv — is uv installed and hermes-agent available? (${(e as Error).message})`);
   }
-  const line = raw.split(".").slice(0, 2).join(".");
-  if (line !== HERMES_PIN)
-    throw new Error(`hermes-agent ${raw} is not on the pinned ${HERMES_PIN} line this connector targets — pin ${HERMES_PIN}.x or update src/launch.ts + pyproject.toml together`);
-  (opts.logImpl ?? log)(`hermes-agent ${raw} (pinned line ${HERMES_PIN}) ✓`);
+  const supported = `>=${HERMES_MIN},<${HERMES_MAX_EXCLUSIVE}`;
+  const line = parseLine(raw);
+  // An unparseable version is refused rather than waved through: "the version could not be read"
+  // must not be the one input that satisfies a guard whose whole job is refusing the unknown.
+  if (line === null)
+    throw new Error(`could not read a major.minor out of the hermes-agent version ${JSON.stringify(raw)} — this connector supports ${supported}`);
+  if (cmp(line, parseLine(HERMES_MIN)!) < 0)
+    throw new Error(`hermes-agent ${raw} is below the ${HERMES_MIN} floor this connector supports (${supported}) — the gateway only passes the is_reconnect signal the cotal adapter needs from ${HERMES_MIN} on; upgrade hermes-agent, or use a connector release pinned to the older line`);
+  if (cmp(line, parseLine(HERMES_MAX_EXCLUSIVE)!) >= 0)
+    throw new Error(`hermes-agent ${raw} is at or above the ${HERMES_MAX_EXCLUSIVE} ceiling this connector supports (${supported}) — the plugin/platform/hook contract has not been checked against it; update src/launch.ts + pyproject.toml together after verifying the surfaces in plugin/cotal/`);
+  (opts.logImpl ?? log)(`hermes-agent ${raw} (supported range ${supported}) ✓`);
 }
 
 async function main(): Promise<void> {
@@ -110,11 +217,15 @@ async function main(): Promise<void> {
   }
   const config = configFromEnv();
 
-  const home = join(tmpdir(), `cotal-hermes-${tok(config.space)}-${tok(config.name)}`);
+  const adopt = adoptedHome();
   const persona = process.env.COTAL_AGENT_FILE
     ? loadAgentFile(process.env.COTAL_AGENT_FILE).persona
     : undefined;
-  setupProfile(home, { model: process.env.HERMES_MODEL, persona });
+  // Managed (default): a disposable profile under tmp, regenerated every launch. Adopted (opt-in):
+  // the operator's own profile, into which only this connector's plugin directory is written.
+  const home = adopt ?? join(tmpdir(), `cotal-hermes-${tok(config.space)}-${tok(config.name)}`);
+  if (adopt) setupAdoptedProfile(home, { persona });
+  else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.

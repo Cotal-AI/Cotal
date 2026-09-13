@@ -7,14 +7,52 @@
  *
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
 import type { ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { assertHermesVersion } from "../src/launch.js";
+import { ADOPT_HOME_ENV, adoptedHome, assertHermesVersion, setupAdoptedProfile } from "../src/launch.js";
+
+/**
+ * Count every assertion, so the terminal tally is derived from what actually ran.
+ *
+ * `bin/smoke/shard.mjs` refuses a suite whose output carries no cell-count sentinel, and refuses
+ * a zero-cell run, because exit 0 having run nothing is the same false green as an empty chain.
+ * This suite used to satisfy that with a hand-written `4 checks passed`, a literal that was
+ * already wrong (it ran far more than four) and that silently stopped being printed when the
+ * line was edited. Counting the calls means the number cannot drift from the work again.
+ */
+let cells = 0;
+const assert = new Proxy(nodeAssert, {
+  get(target, prop, receiver) {
+    const value = Reflect.get(target, prop, receiver);
+    if (typeof value !== "function") return value;
+    return (...args: unknown[]) => {
+      cells += 1;
+      return (value as (...a: unknown[]) => unknown).apply(target, args);
+    };
+  },
+}) as typeof nodeAssert;
+
+/**
+ * The count is a FLOOR, not a decoration.
+ *
+ * A derived sentinel proves the suite RAN its assertions. It does not prove the suite still
+ * CONTAINS them: delete one executed assertion and the tally quietly reads one lower and the shard
+ * still passes. That is liveness, not coverage, and shipping it while it reads like a coverage
+ * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
+ * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
+ */
+const EXPECTED_CELLS = 156;
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
+  // A skip still has to name a cell count, or the shard reads the silence as a suite that ran
+  // nothing and refuses it.
+  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
   process.exit(0);
 }
 
@@ -141,7 +179,7 @@ assertHermesVersion({
   pkgDir: "/connector/hermes",
   execFileImpl: (command, args) => {
     inspected = { command, args };
-    return "0.16.7\n";
+    return "0.21.1\n";
   },
   logImpl: () => {},
 });
@@ -154,9 +192,160 @@ assert.deepEqual(
   "version inspection executes the exact manager-boot uv path",
 );
 
-console.log("4 checks passed");
+// ── The supported hermes-agent range (#1531) ─────────────────────────────────────────────────────
+// This guard used to be an equality test fed exactly one version, "0.16.7", by exactly one call.
+// A suite that only ever supplies an accepted version cannot tell an equality test from a range
+// test, so it stayed green on a tree that refused every hermes-agent an operator could install.
+// Both ends of the range are asserted here, and so is the shape of the check: a REFUSE row for a
+// version just outside each end, an ACCEPT row for the version just inside it.
+const checkVersion = (raw: string): void =>
+  assertHermesVersion({
+    env: bootResolved,
+    pkgDir: "/connector/hermes",
+    execFileImpl: () => `${raw}\n`,
+    logImpl: () => {},
+  });
+
+/** Versions inside the supported range: every one must be accepted. */
+const SUPPORTED = ["0.18.0", "0.18.1", "0.18.2", "0.19.0", "0.19.1", "0.20.1", "0.21.0", "0.21.1", "0.21.2"] as const;
+/** Below the floor: the gateway never passes is_reconnect on these lines. */
+const BELOW_FLOOR = ["0.16.0", "0.16.7", "0.17.0"] as const;
+/** At or above the ceiling: unverified contract, so refused rather than assumed. */
+const ABOVE_CEILING = ["0.22.0", "0.23.0", "1.0.0"] as const;
+
+for (const v of SUPPORTED)
+  assert.doesNotThrow(() => checkVersion(v), `hermes-agent ${v} is inside the supported range and must launch`);
+
+for (const v of BELOW_FLOOR)
+  assert.throws(() => checkVersion(v), /below the 0\.18 floor/, `hermes-agent ${v} is under the floor and must be refused`);
+
+for (const v of ABOVE_CEILING)
+  assert.throws(() => checkVersion(v), /at or above the 0\.22 ceiling/, `hermes-agent ${v} is over the ceiling and must be refused`);
+
+// 0.21.0 is the version this issue was filed about, and 0.19.0 is what PyPI actually resolves to
+// today. Both are named individually so a future narrowing of the range fails on the two versions
+// operators really run, not merely on an abstract boundary.
+assert.doesNotThrow(() => checkVersion("0.21.0"), "the version from the report must launch");
+assert.doesNotThrow(() => checkVersion("0.19.0"), "the version a plain pip/uv resolve installs must launch");
+
+// A range test compared as STRINGS would place "0.9" above "0.18" and admit it. This is the row
+// that tells the two implementations apart, and it is why the comparison is numeric.
+assert.throws(() => checkVersion("0.9.0"), /below the 0\.18 floor/, "0.9 is below 0.18 numerically, whatever a string compare says");
+
+// An unreadable version must be refused, not waved through: "could not tell" is the one answer a
+// guard against unknown versions must never treat as a pass.
+for (const junk of ["", "not-a-version", "0", "x.y.z"])
+  assert.throws(() => checkVersion(junk), /could not read a major\.minor|below the 0\.18 floor/, `an unreadable version ${JSON.stringify(junk)} must be refused`);
+
+// The accepted-version log line names the range, so an operator reading the launcher's output can
+// see what was allowed rather than only that something passed.
+let logged = "";
+assertHermesVersion({
+  env: bootResolved,
+  pkgDir: "/connector/hermes",
+  execFileImpl: () => "0.21.1\n",
+  logImpl: (m) => {
+    logged = m;
+  },
+});
+assert.match(logged, /hermes-agent 0\.21\.1 \(supported range >=0\.18,<0\.22\)/, "the accept log names the version and the range");
+
+// The TS guard and the resolver constraint are two halves of one pin: widening one alone leaves
+// the other refusing what it resolves, which is what made option 2 in the report unworkable.
+const pyproject = readFileSync(new URL("../pyproject.toml", import.meta.url), "utf8");
+assert.match(pyproject, /^\s*"hermes-agent>=0\.18,<0\.22",\s*$/m, "pyproject.toml declares the same range the launcher enforces");
+
+// ── Adopt an existing Hermes profile (#1531, second report) ──────────────────────────────────────
+// The managed default writes a disposable profile so ~/.hermes is never touched. That serves a
+// fresh seat and cannot serve an operator who wants their OWN Hermes, with its credentials and
+// integrations, on the mesh. The opt-in must install this connector's plugin and change nothing
+// else, because the managed path's config.yaml and SOUL.md writes would destroy a real profile.
+assert.equal(adoptedHome({}), undefined, "no opt-in means the managed disposable profile");
+assert.equal(adoptedHome({ [ADOPT_HOME_ENV]: "   " }), undefined, "a blank opt-in is not an opt-in");
+assert.equal(adoptedHome({ [ADOPT_HOME_ENV]: "/home/op/.hermes" }), "/home/op/.hermes", "the opt-in names the profile to adopt");
+
+const opAdopt = mkdtempSync(join(tmpdir(), "cotal-hermes-adopt-"));
+assert.throws(
+  () => setupAdoptedProfile(join(opAdopt, "no-such-profile"), {}),
+  /does not exist/,
+  "adopting a profile that is not there must fail loudly, not create one",
+);
+
+// An enabled profile: the plugin lands and nothing else is rewritten.
+const OP_CONFIG = [
+  "model: my-own-model",
+  "approvals:",
+  "  mode: prompt",
+  "plugins:",
+  "  enabled: [cotal, telegram]",
+  "gateway:",
+  "  platforms:",
+  "    cotal:",
+  "      enabled: true",
+  "",
+].join("\n");
+const OP_SOUL = "I am the operator's own Hermes.\n";
+writeFileSync(join(opAdopt, "config.yaml"), OP_CONFIG);
+writeFileSync(join(opAdopt, "SOUL.md"), OP_SOUL);
+setupAdoptedProfile(opAdopt, {});
+assert.ok(existsSync(join(opAdopt, "plugins", "cotal", "adapter.py")), "the cotal plugin is installed into the adopted profile");
+assert.equal(readFileSync(join(opAdopt, "config.yaml"), "utf8"), OP_CONFIG, "the operator's config.yaml is left exactly as it was");
+assert.equal(readFileSync(join(opAdopt, "SOUL.md"), "utf8"), OP_SOUL, "the operator's SOUL.md is left exactly as it was");
+
+// A persona cannot be honoured without overwriting SOUL.md, so it is refused rather than dropped.
+assert.throws(
+  () => setupAdoptedProfile(opAdopt, { persona: "be a helpful reviewer" }),
+  /persona cannot be applied/,
+  "a persona that would overwrite the operator's SOUL.md must refuse the launch",
+);
+
+// A profile that has not enabled the plugin is told what to add, and is NOT edited into shape.
+const opBare = mkdtempSync(join(tmpdir(), "cotal-hermes-adopt-bare-"));
+const BARE_CONFIG = "model: my-own-model\n";
+writeFileSync(join(opBare, "config.yaml"), BARE_CONFIG);
+assert.throws(
+  () => setupAdoptedProfile(opBare, {}),
+  /does not enable the cotal plugin and platform/,
+  "an unenabled profile must be reported, not silently reconfigured",
+);
+assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a refused adopt still leaves the operator's config untouched");
+
+// The opt-in has to survive the launch env or the launcher never sees it: every other COTAL_* name
+// is deliberately reset per session, and this one would be stripped with them.
+process.env.COTAL_HERMES_ADOPT_HOME = "/home/op/.hermes";
+const adoptEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
+assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/home/op/.hermes", "the adopt-home opt-in reaches the launcher");
+delete process.env.COTAL_HERMES_ADOPT_HOME;
+const plainEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
+assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
+
+rmSync(opAdopt, { recursive: true, force: true });
+rmSync(opBare, { recursive: true, force: true });
+
+console.log(
+  `hermes-agent range: ${SUPPORTED.length} supported versions accepted, ` +
+    `${BELOW_FLOOR.length} below-floor and ${ABOVE_CEILING.length} above-ceiling versions refused, ` +
+    "numeric-vs-string ordering held, unreadable versions refused, pyproject range matched",
+);
+console.log("adopt-home: plugin installed, operator config.yaml and SOUL.md untouched, unenabled profile refused, opt-in crosses the launch env");
+
 console.log(
   `launch-env smoke: ${PROVIDER_KEYS.length} declared provider keys forwarded, ` +
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +
     `${PER_SESSION.length} per-session names reset, ${OPERATOR_KNOBS.length} operator knobs crossed, both modes held`,
 );
+
+// Terminal sentinel, last line of output, with the count taken from the counting proxy above.
+// Any assertion that threw would have aborted before this line, so reaching it means every
+// counted cell passed.
+// The floor runs LAST, so a suite that lost an assertion fails here even though every remaining
+// assertion passed.
+if (cells !== EXPECTED_CELLS) {
+  console.error(
+    `SUITE INCOMPLETE: expected ${EXPECTED_CELLS} assertions, ran ${cells}. ` +
+      `A lower count means an assertion was deleted or skipped, which a derived tally alone would report as a smaller green.`,
+  );
+  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=1`);
+  process.exit(1);
+}
+console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);

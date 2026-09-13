@@ -1,0 +1,91 @@
+{
+  "suite": [
+    "extensions/connector-hermes/smoke/reconnect-effect.smoke.ts"
+  ],
+  "guard": "a hermes platform that reconnects actually carries mesh traffic again, rather than reporting connected while receiving nothing",
+  "command": "pnpm smoke:hermes-reconnect-effect",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/reconnect-effect.mutations.json",
+  "why": [
+    "THIS CONFIG EXISTS BECAUSE THE SUITE IT GRADES WAS ADDED TO FIX A FALSE GREEN, AND A GUARD THAT",
+    "REPLACES A FALSE GREEN MUST ITSELF BE PROVEN ABLE TO FAIL, or the same mistake has simply moved.",
+    "",
+    "The history is worth keeping, because it is the whole argument for asserting effects. The first",
+    "version of this fix was guarded by `adapter-contract.smoke.ts`, which inspects the SIGNATURE of",
+    "CotalAdapter.connect and the PRESENCE of BridgeClient.reopen. Two reviewers independently",
+    "deleted the `if is_reconnect: reopen()` call and emptied reopen()'s body, and that suite stayed",
+    "green under BOTH, printing a confident `cells=23 passed=23 failed=0`. It could not have done",
+    "otherwise: a name and a signature do not change when a body is replaced by `return`. Adding more",
+    "cells of the same kind would have grown the tally and not the guard.",
+    "",
+    "M1 EMPTIES reopen()'s BODY. This is the mutation that survived the signature suite verbatim.",
+    "The method still exists, is still called, and still has the right signature, so adapter-contract",
+    "remains green under it. The effect suite must redden, because with a latched stop event and a",
+    "dead reader the client never redials and no mesh message reaches a turn.",
+    "",
+    "M2 DELETES THE CALL SITE. The near neighbour: reopen() is present and perfectly correct, the",
+    "adapter just never calls it on the reconnect path. One line from the subject, and the exact",
+    "defect the issue reports. Naming both is what distinguishes 'the method exists' from 'the",
+    "method runs and does something'.",
+    "",
+    "M3 REMOVES THE BOUNDED JOIN, and it is the subtlest of the three. A reader that is still",
+    "clearing _stop leaves a window: a reader alive at the check that then reaches the top of its",
+    "loop and exits on the still-set flag stays installed as _reader, which rebuilds the dead bridge",
+    "the method exists to undo. It is timing dependent, so in production it surfaces as an occasional",
+    "silent platform rather than a clean failure. The suite forces that interleaving deterministically",
+    "instead of hoping to observe it, so this mutation reddens a named assertion every run.",
+    "",
+    "NO BUILD STEP IS PREPENDED. The suite drives plugin/cotal/*.py through a real python3 against a",
+    "real Unix socket, so the interpreter reads the mutated source directly and the dist/ staleness",
+    "trap that forces `pnpm build` on the TypeScript mutations cannot apply."
+  ],
+  "mutations": [
+    {
+      "name": "M1 reopen() exists and is called but does nothing",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n            # Retire the old reader unconditionally: it belongs to a previous generation, so it is\n            # not the active handle regardless of whether it has finished unwinding yet.\n            self._reader = None\n        self._stop.clear()\n        if reader is not None:\n            # Courtesy only: nothing below depends on whether this returns in time.\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "replace": "        return\n",
+      "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
+      "note": "The mutant that adapter-contract.smoke.ts cannot see. Its cold leg still delivers, so the refuse control's own 'fails only on the reconnect' row stays green and the failure is attributable to the reconnect rather than to a broken harness. Target re-derived after the generation latch replaced the join-then-liveness body; the harness reported ERROR rather than a false pass when the old string went stale."
+    },
+    {
+      "name": "M2 the reconnect path never calls reopen()",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "        if is_reconnect:\n            # Clear the latched stop and drop the dead reader, so start() below really starts one.\n            #\n            # OFF-LOOP, and that is not incidental. `reopen` joins the closed reader with a bounded\n            # wait so a thread still unwinding is not mistaken for a live one, and a reader wedged\n            # in a blocking recv makes that wait run to its full timeout. Calling it inline here\n            # would stall the gateway's event loop for that whole period, freezing every other\n            # platform in the process to repair this one. Measured at 2.00s against a wedged\n            # reader, which is exactly the kind of pause an operator would report as the gateway\n            # hanging on reconnect. `to_thread` keeps the loop free while the join runs.\n            await asyncio.to_thread(self._client.reopen)\n",
+      "replace": "",
+      "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
+      "note": "The defect exactly as reported. Note that connect() keeps its is_reconnect parameter under this mutation, so every signature assertion in adapter-contract stays green: this is the clearest demonstration that a signature test and an effect test are not substitutes. The find string is the whole is_reconnect block, since the call now runs through asyncio.to_thread and a one-line target went stale the moment that changed - the harness caught that as ERROR rather than reporting a false pass."
+    },
+    {
+      "name": "M3 reopen bumps the generation but leaves the old reader installed",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n            # Retire the old reader unconditionally: it belongs to a previous generation, so it is\n            # not the active handle regardless of whether it has finished unwinding yet.\n            self._reader = None\n        self._stop.clear()\n        if reader is not None:\n            # Courtesy only: nothing below depends on whether this returns in time.\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "replace": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n        self._stop.clear()\n        if reader is not None:\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
+      "note": "A HALF-APPLIED LATCH, which is the subtler failure and the reason this mutant is worth its own entry. The generation is bumped so _run stands down correctly, but the handle itself is never cleared, so start() still sees a non-None reader and creates no replacement. It isolates the retirement half of the fix from the stand-down half: a config that only restored the whole old body could not tell them apart. Measured: a half-applied latch is WORSE than none, because every reconnect leaves the stale handle installed rather than only the descheduled ones, so the headline delivery cell is what fires first. That is the honest name for this mutant and it is what expectRed records."
+    },
+    {
+      "name": "M4 the bounded join runs ON the gateway event loop",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "            await asyncio.to_thread(self._client.reopen)",
+      "replace": "            self._client.reopen()",
+      "expectRed": "the bounded join must run OFF the gateway event loop: a wedged reader must not freeze every other platform in the process",
+      "note": "A REGRESSION THE BOUNDED JOIN ITSELF INTRODUCED, and it was found by measuring rather than reading: the inline call blocked the loop for a measured 2.00s against a wedged reader. Note that every OTHER cell in this suite stays green under this mutation, because the reconnect still delivers - it just freezes every other platform in the process while doing so. That is why the tick-count assertion exists rather than a timing threshold: both versions take the same 2.00s of wall time and only the loop's responsiveness during it differs."
+    },
+    {
+      "name": "M5 reopen decides by liveness instead of retiring the generation",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n            # Retire the old reader unconditionally: it belongs to a previous generation, so it is\n            # not the active handle regardless of whether it has finished unwinding yet.\n            self._reader = None\n        self._stop.clear()\n        if reader is not None:\n            # Courtesy only: nothing below depends on whether this returns in time.\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "replace": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return\n        reader.join(timeout=_REOPEN_JOIN_SECONDS)\n        with self._lock:\n            if self._reader is reader and not reader.is_alive():\n                self._reader = None\n",
+      "expectRed": "a retired reader must stand down and start() must install exactly one fresh reader, so no two readers share a socket",
+      "note": "THE DEAD HANDLE, restored. Three reviewers converged on this independently. A reader committed to exit but descheduled past the 2s window reads alive, stays installed, then dies, leaving a dead handle while the platform is marked connected and nothing ever looks again. Note the fast-unwind and live-reader control rows stay GREEN under this mutation, which is what makes the red attributable to the slow-unwind case rather than to reopen being broken in general. expectRed names the cell that fires FIRST under this mutant. Four cells go red together (retired-reader stand-down, slow-unwind retention, dead handle after exit, and live replacement), because they are four consequences of the same retained handle; the harness grades on the first, so it is the one named."
+    },
+    {
+      "name": "M6 a dead reader is marked connected instead of reported",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "        if self._client.reader_is_dead():\n            self._set_fatal_error(\n                \"cotal_bridge_reader_dead\",\n                \"cotal bridge reader thread is not running, so no mesh traffic can arrive\",\n                retryable=True,\n            )\n            await self._notify_fatal_error()\n            return False\n\n",
+      "replace": "",
+      "expectRed": "connect() must return False and record a fatal when the bridge reader is dead, rather than reporting a connected platform that receives nothing",
+      "note": "The second half of the fix, removed. Load-bearing rather than belt-and-braces: verified against the pinned upstream source that the reconnect watcher iterates _failed_platforms only, entry requires a failed connect or a NOTIFIED retryable fatal, and there is no periodic health probe of a connected platform. Without this report a dead reader is never revisited and the bridge is deaf for the process lifetime. HEALTHY_READER_REPORTS_NO_FATAL stays green under it, so the cell is not merely asserting that connect always fails."
+    }
+  ]
+}

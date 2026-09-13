@@ -1,0 +1,3 @@
+# The Hermes adapter must accept the is_reconnect keyword the gateway has passed at every
+# connect call site since hermes-agent 0.18, or the platform raises TypeError at connect.
+smoke:hermes-adapter-contract

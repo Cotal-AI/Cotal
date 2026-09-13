@@ -39,9 +39,65 @@ class CotalAdapter(BasePlatformAdapter):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = get_client()
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Connect the bridge and start receiving.
+
+        ``is_reconnect`` is keyword-only and arrives from the gateway's reconnect watcher, which
+        has passed it at every call site since hermes-agent 0.18. Upstream asks adapters holding a
+        server-side queue to preserve it across a reconnect so messages sent during the outage are
+        delivered rather than dropped.
+
+        This bridge has no server-side queue of its own to preserve, so there is nothing to keep
+        here. What it does have is the mesh stream behind the sidecar, and the redelivery contract
+        that protects it is the ack: ``_maybe_ack`` acks a message only once the inject coroutine
+        has completed, so anything in flight when the platform dropped was never acked and is
+        redelivered by the stream. Preserving outage-time messages is therefore already the
+        behaviour on both paths, and it is the reason this method must not silently discard
+        in-flight state on the reconnect path.
+
+        What the flag does change is the restart. ``disconnect`` calls ``BridgeClient.close``,
+        which latches the stop event and leaves the reader thread terminated. A reconnect that
+        merely called ``start`` again would find ``_reader`` already set, return without starting
+        anything, and produce a platform that reports connected while receiving nothing at all,
+        which is the quiet failure mode this connector exists to avoid. On a reconnect the client
+        is therefore reopened explicitly before the reader is started.
+        """
         self._loop = asyncio.get_running_loop()
+        if is_reconnect:
+            # Clear the latched stop and drop the dead reader, so start() below really starts one.
+            #
+            # OFF-LOOP, and that is not incidental. `reopen` joins the closed reader with a bounded
+            # wait so a thread still unwinding is not mistaken for a live one, and a reader wedged
+            # in a blocking recv makes that wait run to its full timeout. Calling it inline here
+            # would stall the gateway's event loop for that whole period, freezing every other
+            # platform in the process to repair this one. Measured at 2.00s against a wedged
+            # reader, which is exactly the kind of pause an operator would report as the gateway
+            # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
+            await asyncio.to_thread(self._client.reopen)
         self._client.start(self._on_incoming)  # reader thread → _on_incoming
+
+        # THE BRIDGE MUST BE PROVED LIVE BEFORE THE PLATFORM IS CALLED CONNECTED.
+        #
+        # Marking connected is what removes this platform from anyone's attention: upstream's
+        # watcher only ever revisits platforms in `_failed_platforms`, entry to which requires a
+        # failed connect or a NOTIFIED retryable fatal, and there is no periodic health probe of a
+        # platform believed connected. A dying reader thread notifies nothing by itself. So a
+        # reader that is absent or already dead here would produce a platform reporting connected
+        # and deaf for the lifetime of the process, which is precisely the failure this connector
+        # exists to prevent.
+        #
+        # Reporting it as a RETRYABLE fatal is what turns the gateway's existing machinery into a
+        # real safety net: the platform enters `_failed_platforms` and the background reconnect
+        # queue picks it up, rather than the operator being the health check.
+        if self._client.reader_is_dead():
+            self._set_fatal_error(
+                "cotal_bridge_reader_dead",
+                "cotal bridge reader thread is not running, so no mesh traffic can arrive",
+                retryable=True,
+            )
+            await self._notify_fatal_error()
+            return False
+
         self._mark_connected()
         hooks.relay("gateway_startup")  # present + free
         return True
