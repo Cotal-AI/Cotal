@@ -325,9 +325,6 @@ export async function runJcodeHost(): Promise<void> {
   let launchIdentityValue: string | undefined;
   let client: JcodeClient | undefined;
   let bridgeStderr = "";
-  /** Set when the local read of this seat's `sessions/` failed, so a later startup failure can
-   *  still be reported against the path and errno the connector actually measured. */
-  let storedSessionsUnreadable: { path: string; code: string } | undefined;
   let tui: ChildProcess | undefined;
   let stopping = false;
   let reconnecting = false;
@@ -807,14 +804,14 @@ export async function runJcodeHost(): Promise<void> {
       );
     } else {
       // A directory the connector cannot read is not fatal by itself, but it is a fact worth
-      // naming: the harness reads and writes the same path, so if startup fails afterwards this
+      // naming: the harness reads and WRITES the same path, so if startup fails afterwards this
       // is very likely why, and the operator should not have to infer it from a harness message.
-      if (stored.kind === "unreadable") {
-        storedSessionsUnreadable = { path: stored.path, code: stored.code };
+      // Carrying it further, so that a later harness death is renamed from `unknown`, is #1538:
+      // that failure lands outside any guard this connector owns and main behaves identically.
+      if (stored.kind === "unreadable")
         writeJcodeDiagnostic(
           `[cotal-jcode] stored sessions directory could not be read (${stored.path}: ${stored.code}); asking the harness anyway\n`,
         );
-      }
       try {
         prior = chooseSessionToResume(await client.listSessions(), cwd);
       } catch (error) {
@@ -842,10 +839,10 @@ export async function runJcodeHost(): Promise<void> {
         writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
       }
     } catch (error) {
-      // The seat could not get a session. If we already know the stored-sessions path is the
-      // suspect - listing died on it, or the connector could not even read it - name that path
-      // and the bounded cause. `unknown` is what sent operators to rename the seat (#1293).
-      if (!listingFailed && stored.kind !== "unreadable") throw error;
+      // The seat could not get a session, and the stored-sessions path is the known suspect:
+      // listing died on it. Name that path and the bounded cause; `unknown` is what sent
+      // operators to rename the seat (#1293).
+      if (!listingFailed) throw error;
       const panic =
         classifyStoredSessionPanic(bridgeStderr) ??
         classifyStoredSessionPanic(String((error as Error).message ?? ""));
@@ -1096,20 +1093,6 @@ export async function runJcodeHost(): Promise<void> {
     }
     socketHome.dispose();
     await agent.stop().catch(() => {});
-    // The connector already knows this seat's stored-session path could not be read. The harness
-    // accepts create_session and only fails later, while it persists the session, so a failure
-    // after that point still has the same root cause and must not reach the operator as
-    // `unknown` (#1293). Name the path and the permission fact we measured; a failure that is
-    // already named keeps its own name.
-    if (
-      storedSessionsUnreadable &&
-      !(error instanceof JcodeSessionsEnumerationFailure) &&
-      !(error instanceof JcodeConnectorError)
-    )
-      throw new JcodeSessionsEnumerationFailure(
-        storedSessionsUnreadable.path,
-        `${storedSessionsUnreadable.code} reading the stored sessions directory`,
-      );
     throw error;
   }
 }
