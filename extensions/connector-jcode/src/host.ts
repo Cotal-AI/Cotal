@@ -871,7 +871,17 @@ export async function runJcodeHost(): Promise<void> {
         // the batch unselectable by any concurrent path without claiming it was accepted.
         const keys = items.map((item) => item.recvKey);
         const release = reserveForHandover(keys);
-        const request = withExclusiveDispatch(() => current.softInterrupt(sessionId!, injection, false));
+        // NOT gated, and this is a correctness point rather than an optimisation. The soft interrupt
+        // goes out via the SDK's `requestOk`, whose reply is matched by `reply_to` against the
+        // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
+        // another send's event. Only the uncorrelated `message_accepted` path needs exclusivity.
+        //
+        // Gating it anyway is not free and I measured the cost: a run can hold the dispatch gate for
+        // its acceptance window, so a gated steer waits behind it, and #910's mid-turn delivery suite
+        // timed out waiting for short/4KiB/64KiB DMs to reach the session before the turn ended. That
+        // is the exact delivery this connector exists to provide, so the gate must not stand in front
+        // of the one path that was never ambiguous.
+        const request = current.softInterrupt(sessionId, injection, false);
         steerSettled = request.catch(() => {});
         try {
           await request;

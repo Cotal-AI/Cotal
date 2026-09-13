@@ -224,84 +224,34 @@ try {
     },
   );
 
-  // --- CROSS-TALK: another message's acknowledgement must not acknowledge THIS one ---------------
-  // Found in review after the acknowledgement check above already existed, and it defeats that check
-  // using an entirely ORDINARY event rather than a missing one, which is why the cells above all
-  // pass while the message is lost.
+  // --- CROSS-TALK: NOT GRADED HERE, and this comment is the honest reason -----------------------
+  // Review found a real defect at 0a0bf255a that this suite CANNOT reproduce, and I am recording
+  // that rather than shipping a cell which passes either way.
   //
-  // `message_accepted` carries a session id and NOTHING ELSE: no request id, no sequence, no echo of
-  // the content. `sendMessage` writes with the SDK's `notify()`, which allocates a wire request id
-  // and discards it, then matches acceptance by session alone (jcode-sdk client.js:317). So while
-  // the swallowed A sits waiting, any unrelated B sent on the same session emits an acknowledgement
-  // that A's listener happily accepts. A is then promoted, acked out of the durable inbox, never run
-  // and never retried. A reviewer measured swallowedSends 1, aRuns 0, unrelatedRuns 1.
+  // THE DEFECT. `message_accepted` carries a session id and nothing else: no request id, no
+  // sequence, no echo of the content. `sendMessage` writes through the SDK's `notify()`, which
+  // allocates a wire request id and then discards it, so acceptance is matched by session alone
+  // (jcode-sdk client.js:317). While a swallowed handover waits, an unrelated send on the same
+  // session emits an acknowledgement that the waiting listener accepts, and the batch is promoted,
+  // acked out of the durable inbox, never run and never retried. A reviewer measured that end to
+  // end and independently against the SDK's own transport, where one acceptance resolved two
+  // concurrent sends. The fix for it is in `withExclusiveDispatch`, graded by its own mutation.
   //
-  // The repair is to establish the invariant rather than infer it: only one acceptance-listening
-  // send for a session may be outstanding at a time, so an acknowledgement is attributable by
-  // construction. This cell is what grades that, and it asserts BOTH halves, because refusing the
-  // cross-talk by refusing to deliver B would be a worse bug than the one being fixed.
-  {
-    const unrelated = "UNRELATED_SAME_SESSION_SEND_1233";
-    const attemptsBefore = swallowed().length;
-    await operator.unicast(peerId!, unrelated);
-    // B must genuinely reach the session before any of this is measured, or the cell would be
-    // reading a window in which nothing had happened yet. "Handled" rather than "ran": the host
-    // batches everything owed into one injection, so B rides the same frame as the swallowed A and
-    // is swallowed with it. Its arrival in a handover is the observable that says the host has
-    // actually processed B.
-    const bHandled = await tryWaitFor(
-      () => (entries().some((e) =>
-        e.ev === "request" && (e.frame?.req === "send_message" || e.frame?.req === "soft_interrupt")
-        && String(e.frame?.content ?? "").includes(unrelated)) ? true : undefined),
-      45_000,
-    );
-    // Give the host every chance to mistakenly settle A on B's acknowledgement.
-    await sleep(5_000);
-    const aRuns = entries().filter((e) => e.ev === "turn_run" && String(e.content ?? "").includes(marker)).length;
-    const attemptsAfter = swallowed().length;
-    // THE PREDICATE IS A REVIEWER'S CORRECTION AND IT MATTERS. My first version asserted that A must
-    // remain owed, which is wrong: "A eventually runs" is a perfectly healthy outcome, and so is "A
-    // is still being retried". Requiring one of them specifically would red a correct tree.
-    //
-    // LOSS is the conjunction: A never ran AND nothing is attempting it any more, measured only
-    // after B has genuinely been handled. That is the state where the durable inbox has given the
-    // message up and no path will ever deliver it, which is exactly what the uncorrelated
-    // acknowledgement produces.
-    const aLost = aRuns === 0 && attemptsAfter === attemptsBefore;
-    check(
-      "an unrelated send's acknowledgement does not acknowledge a swallowed handover (#1233)",
-      !aLost,
-      {
-        lost: aLost,
-        aRuns,
-        attemptsBefore,
-        attemptsAfter,
-        unrelatedHandled: bHandled === true,
-      },
-    );
-    // The no-loss half, and its witness needs care. B cannot be graded on "did B RUN", because the
-    // host batches everything owed into ONE injection: measured here, the handover carries both
-    // markers in a single frame, so the content-scoped swallow eats B along with A. That batching is
-    // correct behaviour and not the defect, so asserting B ran would red a healthy tree.
-    //
-    // What must be true is that B is never LOST: it stays owed and keeps being re-attempted for
-    // exactly as long as A does, rather than being acked out on someone else's acknowledgement. The
-    // attempts are the honest witness, and they are the same attempts that carry A, which is the
-    // point: nothing here is silently dropped.
-    const bAttempts = entries().filter((e) =>
-      e.ev === "request" && e.frame?.req === "send_message"
-      && String(e.frame?.content ?? "").includes(unrelated)).length;
-    check(
-      "and the unrelated message is never acked out either, so serialising costs no delivery",
-      bAttempts >= 1 && attemptsAfter > attemptsBefore,
-      {
-        unrelatedHandovers: bAttempts,
-        attemptsBefore,
-        attemptsAfter,
-        batchedWithSwallowedMessage: true,
-      },
-    );
-  }
+  // WHY THIS FIXTURE CANNOT SHOW IT. The host batches everything owed into ONE injection. I tried
+  // to build the cell, and measured what actually happens: the second message rides the SAME
+  // `send_message` frame as the first (log index 22 carries both markers), so it never produces an
+  // independent acceptance and there is no second send to cross-talk with. Counts are identical on
+  // the fixed and severed trees: A sends 3, A runs 0, B sends 1, B runs 0, swallowed 3 on both.
+  //
+  // An earlier version of this cell DID red on the severed tree, and that red was timing luck
+  // rather than measurement: at a 5s observation the healthy tree simply had not retried yet,
+  // because a swallowed send occupies the SDK's full 10s acceptance wait. Widening the window to
+  // 30s made the control PASS, which is what exposed that the cell was grading the fixture's
+  // patience. Reproducing this properly needs two independently acknowledged sends on one session,
+  // which means either a fixture that can suppress batching or the reviewer's SDK-level harness.
+  //
+  // So the coverage here is stated as ABSENT. A cell that passes against the defect it names is
+  // the exact failure this repo catalogues, and I removed one earlier tonight for the same reason.
 
   console.log(`\nSUITE COMPLETE: ${pass + fail} cells`);
   if (fail) {
