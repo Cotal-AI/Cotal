@@ -194,12 +194,11 @@
    "file": "packages/core/src/endpoint.ts",
    "find": "    if (revision === undefined) return;\n    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }",
    "replace": "    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }",
-   "expectRed": "F7 the replacement STILL holds a live, ready lease after the loser finished exiting",
-   "cell": "F7 the replacement STILL holds a live, ready lease after the loser finished exiting",
-   "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
-   "completionMarker": "DELIVERY-STARVATION SMOKE",
-   "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-   "note": "A REVIEWER FINDING, and the merge blocker. Every takeover path ends in shutdown(1), and shutdown released the lease with an UNCONDITIONAL KV delete. By the time a daemon exits because another daemon took the shard, the row belongs to the replacement — so the polite release deleted the new holder lease and left the shard unserved. That is the #1318 outage again, reached through the lease path instead of the broker watch. Only a live cell can see it: leaseAction was always correct, and the damage happened downstream of the decision."
+   "expectRed": "a release arguing a STALE revision leaves the row in place \u2014 silently",
+   "cell": "a release arguing a STALE revision leaves the row in place \u2014 silently",
+   "command": "pnpm smoke:delivery-lease:auth",
+   "completionMarker": "DELIVERY-LEASE SMOKE",
+   "note": "RE-ANCHORED, AND THE MOVE IS ITSELF A MEASUREMENT. This was anchored on F7 of the live suite and it SURVIVED once shutdown began re-reading the row and releasing at the BROKER's revision: the daemon no longer argues a token that could belong to a successor, so no end-to-end cell can feel any more whether that delete is conditional. That is a real coverage gap rather than a defect that went away - the compare-and-swap is the last thing standing between a departing daemon and its replacement's row, and with it removed nothing downstream would notice. So the claim moves to where it can still be argued directly, against the seam itself: a release arguing a stale revision must leave the row ALONE. Drop `previousSeq` and the delete succeeds unconditionally, which is exactly the deletion of somebody else's lease the original anchor described. A REVIEWER FINDING, and the merge blocker. Every takeover path ends in shutdown(1), and shutdown released the lease with an UNCONDITIONAL KV delete. By the time a daemon exits because another daemon took the shard, the row belongs to the replacement — so the polite release deleted the new holder lease and left the shard unserved. That is the #1318 outage again, reached through the lease path instead of the broker watch. Only a live cell can see it: leaseAction was always correct, and the damage happened downstream of the decision."
   },
   {
    "name": "M13 CONTROL: a stale cached socket can defer the hard bound again",
