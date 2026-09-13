@@ -195,7 +195,7 @@
     {
       "name": "a session that lands behind the press is forgotten instead of handed back",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });",
+      "find": "          abandoned.push({ grant: late.grant, link: late.link, inbox: late.inbox, server: late.server });",
       "replace": "",
       "expectRed": "...and the manager is back on the session count it started with, with no slot left behind",
       "cell": "E. the detach key struck in that same window ends the attach and hands the slot back",

@@ -814,23 +814,28 @@ defaults to 64 concurrent sessions (`--max-sessions`); the browser console opens
 pane, so a dashboard over a large mesh should size for agents × panes. Hitting the ceiling refuses
 before a credential is minted and names `--max-sessions`.
 
-Which mesh `attach` resolves also decides **whose trust it redeems with**. Redeeming a session grant
-means minting a short-lived, session-scoped credential from the space's seed, and that seed comes
-from the root the mesh resolved to, never from a `.cotal` found by walking up from whichever
-directory you happen to be standing in. The difference is not hypothetical: `~/.cotal` exists on
-every install because the mesh registry lives there, so a command run anywhere under your home
-directory but outside a project used to mint from your home directory's trust and present it to a
-broker that trusts a different chain, which surfaced as a bare authorization failure that named
-nothing. A directory that does hold another chain for the same space is now reported on the way
-past, and not obeyed:
+Which mesh `attach` resolves also decides **how it redeems the grant**. On a registered open mesh
+there is no local seed. The CLI connects bare, the same way other control commands already do, and
+the session rail is the caller rail that a real open-mode connection already reaches. Telling the
+operator to re-register the root is false: the registered root is already the contract. On a
+static-auth mesh the grant is still redeemed by minting a short-lived
+session-scoped credential from the seed at the root the mesh resolved to, never from a `.cotal`
+found by walking up from whichever directory you happen to be standing in. The difference is not
+hypothetical: `~/.cotal` exists on every install because the mesh registry lives there, so a command
+run anywhere under your home directory but outside a project used to mint from your home
+directory's trust and present it to a broker that trusts a different chain, which surfaced as a
+bare authorization failure that named nothing. A directory that does hold another chain for the
+same space is now reported on the way past, and not obeyed:
 
 ```text
 ! this directory resolves to /Users/you, whose .cotal/auth holds a DIFFERENT trust chain for space "team".
   attach used /Users/you/projects/app, the root this mesh resolved to. The other one is not being used, and is worth a look.
 ```
 
-When the resolved mesh holds no seed at all, `attach` refuses and names what it resolved, the broker
-and the root, instead of describing a directory it did not use.
+When a **static-auth** mesh holds no seed at the resolved root, `attach` refuses and names what it
+resolved, the broker and the root, instead of describing a directory it did not use and instead of
+taking the open-mode path. An authenticated registry entry with a missing seed is still
+authenticated. A USER-AUTH mesh still refuses loud: two-step user-mode redemption is not wired.
 
 Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
