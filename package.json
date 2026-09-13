@@ -135,6 +135,8 @@
     "smoke:jcode-recovery-classifier": "tsx extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts",
     "smoke:jcode-mid-turn-delivery": "tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
     "smoke:jcode-inbound-wedge": "tsx extensions/connector-jcode/smoke/jcode-inbound-wedge.smoke.ts",
+    "smoke:jcode-queue-fallback-policy": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-policy.smoke.ts",
+    "smoke:jcode-queue-fallback": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
@@ -230,6 +232,7 @@
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
     "smoke:mesh-attach-plane": "tsx implementations/manager/smoke/mesh-attach-plane.smoke.ts",
     "smoke:attach-auth-root": "tsx bin/smoke/attach-auth-root.smoke.ts",
+    "smoke:attach-open-mode": "tsx bin/smoke/attach-open-mode.smoke.ts",
     "smoke:manager-two-root-renewal": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-two-root-renewal.smoke.ts",
     "smoke:manager-stop-reap": "pnpm --filter cotal-ai... build && tsx bin/smoke/manager-stop-reaps-agents.smoke.ts",
     "smoke:manager-stop-spare-guard": "tsx bin/smoke/manager-stop-spare-guard.smoke.ts",
@@ -687,7 +690,8 @@
     "smoke:registration-executor-resume": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/registration-executor-resume.smoke.ts",
     "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts",
     "smoke:publish-closure-gate": "tsx bin/smoke/publish-closure-gate.smoke.ts",
-    "smoke:bearer-inside-margin": "tsx packages/core/smoke/bearer-inside-margin.smoke.ts"
+    "smoke:bearer-inside-margin": "tsx packages/core/smoke/bearer-inside-margin.smoke.ts",
+    "smoke:jcode-queue-fallback-loss": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-loss.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

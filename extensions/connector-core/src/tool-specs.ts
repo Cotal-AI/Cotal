@@ -585,8 +585,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_connection_status",
       title: "Cotal: connection status",
       description:
-        "Report this session's mesh connection as one of five states, plus the raw facts it is " +
-        "derived from. `ready` is bound with a live transport. `degraded` is bound while the " +
+        "Report this session's mesh connection as one of six states, plus the raw facts it is " +
+        "derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is " +
+        "bound with a live transport while automatic deliveries have been queued with no progress " +
+        "for over ten minutes: the connection is fine and the seat is not consuming, so peer " +
+        "messages are piling up behind it. `degraded` is bound while the " +
         "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
         "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
         "finished. `disconnected` is neither. `stopped` means this session was shut down " +
@@ -594,10 +597,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
         "retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as " +
         "`lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live " +
-        "problem. Also reports how many automatic (connector-managed) deliveries are still queued " +
-        "and the local receive time of the oldest of those, so a seat that cannot be steered can " +
-        "say so. Read-only and local: it reads this session's MeshAgent directly and does not call " +
-        "the manager or the broker.",
+        "problem. Also reports how many automatic (connector-managed) deliveries are still queued, " +
+        "the local receive time of the oldest of those, and how long that queue has gone without " +
+        "committing anything, so a seat that cannot be steered can say so. Read-only and local: it " +
+        "reads this session's MeshAgent directly and does not call the manager or the broker.",
       run(agent) {
         const state = agent.connectionState;
         const issue = agent.connectionIssue;
@@ -630,6 +633,12 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             note: "presence writes are the first thing to fail here, not necessarily the only thing - a broker can refuse writes far more widely while this connection stays up",
           },
         };
+        // #1233: the queue's own progress, reported whenever there IS a queue rather than only once
+        // it crosses the bound. A caller watching a seat needs to see the number climbing before it
+        // becomes a verdict, and a reader who disagrees with our threshold can apply their own -
+        // the same reason the three liveness facts are reported next to the state they derive.
+        const stalledForMs = agent.automaticQueueStalledForMs();
+        const lastAutomaticAt = agent.lastAutomaticDrainedAt;
         return ok(
           JSON.stringify(
             {
@@ -647,7 +656,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ...issueField,
               ...presenceField,
               ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
+              ...(lastAutomaticAt !== undefined ? { lastAutomaticDrainedAt: new Date(lastAutomaticAt).toISOString() } : {}),
               ...(oldestAutomaticAt !== undefined ? { oldestAutomaticAt: new Date(oldestAutomaticAt).toISOString() } : {}),
+              ...(stalledForMs !== undefined ? { automaticQueueStalledForMs: stalledForMs } : {}),
             },
             null,
             2,
