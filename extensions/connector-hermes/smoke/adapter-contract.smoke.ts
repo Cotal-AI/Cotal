@@ -20,12 +20,34 @@
  *
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+/**
+ * Count every assertion so the terminal sentinel is derived from what ran.
+ *
+ * `bin/smoke/shard.mjs` refuses a suite whose output names no cell count, and refuses a zero-cell
+ * run, because exit 0 having run nothing is the same false green as an empty chain. This suite is
+ * reached through the package `test` script today rather than the CI shard list, but it emits the
+ * sentinel anyway so that adding it to a shard later is a one-line change and not a fresh failure.
+ */
+let cells = 0;
+const assert = new Proxy(nodeAssert, {
+  get(target, prop, receiver) {
+    const value = Reflect.get(target, prop, receiver);
+    if (typeof value !== "function") return value;
+    return (...args: unknown[]) => {
+      cells += 1;
+      return (value as (...a: unknown[]) => unknown).apply(target, args);
+    };
+  },
+}) as typeof nodeAssert;
+
 if (process.platform === "win32") {
   console.log("✓ adapter-contract smoke skipped on Windows (the Hermes connector is Unix-only)");
+  // A skip still names a cell count, or the shard reads the silence as a suite that ran nothing.
+  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
   process.exit(0);
 }
 
@@ -179,3 +201,6 @@ console.log(
   "adapter contract: 3 gateway call styles bound, is_reconnect keyword-only defaulting False, " +
     "reopen present, 4 control rows held (accept binds both styles, pre-fix signature refuses the keyword)",
 );
+// Terminal sentinel, last line. Reaching it means every counted assertion passed, since a failed
+// one throws.
+console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
