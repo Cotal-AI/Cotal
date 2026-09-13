@@ -96,12 +96,14 @@ try {
     const barrier = join(root, "go");
     const workers: ChildProcess[] = [];
     const parsed: Array<{ ok: boolean; pid: number; instanceId?: string; error?: string }> = [];
+    const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("workers did not report")), 25_000);
       for (let i = 0; i < N; i++) {
         const child = spawnProc(TSX, [HERE], {
           env: {
-            ...process.env,
+            ...ambientEnv,
             COTAL_I1263_WORKER: "1",
             COTAL_I1263_ROOT: root,
             COTAL_I1263_SPACE: SPACE,

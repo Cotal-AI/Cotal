@@ -12,7 +12,7 @@
  *
  * Run: pnpm smoke:manager-instance-exclusive
  */
-import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,8 @@ import {
 const N = 8;
 const ROUNDS = 20;
 const SPACE = "issue-1263";
+const HERE = fileURLToPath(import.meta.url);
+const TSX = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
 
 function candidate(tag: string) {
   return {
@@ -34,11 +36,13 @@ function candidate(tag: string) {
   };
 }
 
-if (!isMainThread) {
-  const { root, barrier } = workerData as { root: string; barrier: string };
+if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
+  const root = process.env.COTAL_I1263_EXCL_ROOT!;
+  const barrier = process.env.COTAL_I1263_EXCL_BARRIER!;
   while (!existsSync(barrier)) {}
   const claimed = createManagerInstanceIdentity(root, SPACE, candidate(`w${process.pid}`));
-  parentPort!.postMessage(claimed.instanceId);
+  process.stdout.write(`${claimed.instanceId}\n`);
+  process.exit(0);
 } else {
   let pass = 0, fail = 0;
   const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -82,25 +86,64 @@ if (!isMainThread) {
       adoptedAfterExclusive.instanceId.startsWith("winner-"));
     rmSync(lostRoot, { recursive: true, force: true });
 
+    const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
     let raced = 0;
     for (let r = 0; r < ROUNDS; r++) {
       const raceRoot = mkdtempSync(join(tmpdir(), "cotal-iid-race-"));
       mkdirSync(join(raceRoot, ".cotal"), { recursive: true });
       const barrier = join(raceRoot, "go");
       const ids: string[] = [];
+      const workers: ChildProcess[] = [];
       await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("exclusive workers did not report")), 25_000);
         let left = N;
         for (let i = 0; i < N; i++) {
-          const w = new Worker(fileURLToPath(import.meta.url), { workerData: { root: raceRoot, barrier } });
-          w.on("message", (id: string) => ids.push(id));
-          w.on("error", reject);
-          w.on("exit", (code) => {
-            if (code !== 0) reject(new Error(`worker exit ${code}`));
-            if (--left === 0) resolve();
+          const child = spawn(TSX, [HERE], {
+            env: {
+              ...ambientEnv,
+              COTAL_I1263_EXCL_WORKER: "1",
+              COTAL_I1263_EXCL_ROOT: raceRoot,
+              COTAL_I1263_EXCL_BARRIER: barrier,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          workers.push(child);
+          let buf = "";
+          let reported = false;
+          child.stdout?.on("data", (c: Buffer) => {
+            if (reported) return;
+            buf += c.toString();
+            const line = buf.trim().split("\n").find((l) => l.length > 0);
+            if (!line) return;
+            reported = true;
+            ids.push(line.trim());
+          });
+          child.on("error", (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+          child.on("exit", (code) => {
+            if (!reported && buf.trim()) {
+              reported = true;
+              ids.push(buf.trim().split("\n")[0]!.trim());
+            }
+            if (code !== 0) {
+              clearTimeout(timer);
+              reject(new Error(`worker exit ${code}`));
+              return;
+            }
+            if (--left === 0) {
+              clearTimeout(timer);
+              resolve();
+            }
           });
         }
         writeFileSync(barrier, "go");
       });
+      for (const w of workers) {
+        try { w.kill("SIGKILL"); } catch { /* done */ }
+      }
       const unique = new Set(ids);
       const fileId = loadManagerInstanceIdentity(raceRoot, SPACE)?.instanceId;
       const leftovers = readdirSync(join(raceRoot, ".cotal", "auth")).filter((n) => n.endsWith(".tmp"));
