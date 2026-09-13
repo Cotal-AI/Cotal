@@ -109,6 +109,8 @@ try {
     'spawnSync(process.execPath, ["-e", "void 0", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("bin/smoke/eval-env.smoke.ts",
     'spawnSync(process.execPath, ["-e", "void 0"], { env: { HINT: join(ROOT, "scripts", "direct.mjs") } });\n');
+  write("bin/smoke/eval-then-script.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0", "--", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("bin/smoke/import-then-script.smoke.ts",
     'spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("pnpm", "#!/bin/sh\nexit 0\n");
@@ -195,6 +197,10 @@ try {
   config("eval-env", { suite: ["bin/smoke/eval-env.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("eval-env");
   check("a path in spawn env is not a launched script", result.status !== 0 && /REFUSED eval-env/.test(result.stderr), report(result));
+
+  config("eval-then-script", { suite: ["bin/smoke/eval-then-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("eval-then-script");
+  check("a path after -e and -- is not a launched script", result.status !== 0 && /REFUSED eval-then-script/.test(result.stderr), report(result));
 
   config("import-then-script", { suite: ["bin/smoke/import-then-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("import-then-script");
