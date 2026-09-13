@@ -79,6 +79,13 @@ try {
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
+  write("packages/seat/smoke/logged-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'console.log(used);\n');
+  write("bin/smoke/dead-copy.smoke.ts",
+    'import { cpSync } from "node:fs";\n' +
+    'function never() { cpSync(join(ROOT, "packages", "seat"), clone, { recursive: true }); }\n' +
+    'console.log("never is never called");\n');
   write("packages/seat/smoke/referenced-import.smoke.ts",
     'async function used() { return await import("../src/impl.js"); }\n' +
     'void used;\n');
@@ -336,6 +343,17 @@ try {
   config("referenced-dynamic-import", { suite: ["packages/seat/smoke/referenced-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("referenced-dynamic-import");
   check("referencing a function without calling it does not run its body", result.status !== 0 && /REFUSED referenced-dynamic-import/.test(result.stderr), report(result));
+
+  // THE DISCRIMINATOR: a call that RECEIVES a function but never invokes it. `console.log(used)`
+  // puts `used` in argument position exactly as a callback would, so this is the cell that
+  // separates "modelled invoking API" from "any call argument".
+  config("logged-dynamic-import", { suite: ["packages/seat/smoke/logged-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("logged-dynamic-import");
+  check("passing a function to a call that never invokes it is not execution", result.status !== 0 && /REFUSED logged-dynamic-import/.test(result.stderr), report(result));
+
+  config("dead-copy", { suite: ["bin/smoke/dead-copy.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dead-copy");
+  check("a copy inside a function nobody calls never happens", result.status !== 0 && /REFUSED dead-copy/.test(result.stderr), report(result));
 
   config("callback-dynamic-import", { suite: ["packages/seat/smoke/callback-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("callback-dynamic-import");

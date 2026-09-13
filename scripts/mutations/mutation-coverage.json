@@ -358,10 +358,26 @@
     {
       "name": "any reference to a function counts as running it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        const isCallee = parentNode\n          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))\n          && parentNode.expression === n;\n        const isCallbackArg = parentNode\n          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))\n          && parentNode.arguments?.includes(n);\n        if (isCallee || isCallbackArg) invoked = true;",
-      "replace": "        invoked = true;",
+      "find": "        const isCallee = parentNode\n          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))\n          && parentNode.expression === n;",
+      "replace": "        const isCallee = parentNode !== undefined;",
       "expectRed": "referencing a function without calling it does not run its body",
       "cell": "referencing a function without calling it does not run its body"
+    },
+    {
+      "name": "any call argument is treated as an invoked callback",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          && invokesArgument(parentNode, n);",
+      "replace": "          && parentNode.arguments?.includes(n);",
+      "expectRed": "passing a function to a call that never invokes it is not execution",
+      "cell": "passing a function to a call that never invokes it is not execution"
+    },
+    {
+      "name": "a copy is a witness even where control never reaches it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression)) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {",
+      "expectRed": "a copy inside a function nobody calls never happens",
+      "cell": "a copy inside a function nobody calls never happens"
     }
   ]
 }

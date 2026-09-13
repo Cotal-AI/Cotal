@@ -357,6 +357,33 @@ const listingIsRead = (call, readers) => {
 };
 
 /**
+ * Does this call INVOKE the function it is handed, and in this argument slot?
+ *
+ * An allowlist, deliberately. The alternative is to assume every callee invokes its arguments,
+ * which is how `console.log(used)` came to count as execution. Being wrong here must mean
+ * REFUSING a real load (a missing entry costs a gradable config, and shows up as a lost config in
+ * the corpus sweep, which is visible) rather than ACCEPTING a load that never happens (which is
+ * invisible and is the #1434 defect itself).
+ */
+const INVOKING_CALLS = new Map([
+  ["queueMicrotask", [0]], ["setTimeout", [0]], ["setInterval", [0]], ["setImmediate", [0]],
+  ["then", [0, 1]], ["catch", [0]], ["finally", [0]],
+  ["map", [0]], ["forEach", [0]], ["filter", [0]], ["find", [0]], ["findIndex", [0]],
+  ["some", [0]], ["every", [0]], ["flatMap", [0]], ["sort", [0]], ["reduce", [0]],
+  ["on", [1]], ["once", [1]], ["addEventListener", [1]], ["addListener", [1]],
+  ["process.nextTick", [0]], ["Promise.all", []], ["it", [1]], ["test", [1]], ["describe", [1]],
+  ["before", [0]], ["after", [0]], ["beforeEach", [0]], ["afterEach", [0]],
+]);
+const invokesArgument = (call, arg) => {
+  const callee = calleeText(call.expression);
+  const method = callee.includes(".") ? callee.slice(callee.lastIndexOf(".") + 1) : callee;
+  const slots = INVOKING_CALLS.get(callee) ?? INVOKING_CALLS.get(method);
+  if (slots === undefined) return false;
+  const index = call.arguments.indexOf(arg);
+  return index >= 0 && slots.includes(index);
+};
+
+/**
  * Does control reach this node when the module is loaded?
  *
  * Top-level code runs on load. Code inside a function runs only if something calls that function,
@@ -390,9 +417,14 @@ const evaluated = (node, sf) => {
         const isCallee = parentNode
           && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))
           && parentNode.expression === n;
+        // Being an ARGUMENT is not being CALLED. `console.log(used)` receives the function object
+        // and never invokes it, so the body does not run. Argument position is another cheap proxy
+        // for invocation, in the same family as the identifier-reference proxy it replaced, and it
+        // errs the same way: toward accepting too much. Acceptance therefore requires an API that
+        // is KNOWN to invoke what it is handed, in the parameter slot where it does so.
         const isCallbackArg = parentNode
           && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))
-          && parentNode.arguments?.includes(n);
+          && invokesArgument(parentNode, n);
         if (isCallee || isCallbackArg) invoked = true;
       }
       ts.forEachChild(n, scan);
@@ -513,7 +545,7 @@ const copiesRoot = (suite, source, root) => {
   const copiers = namedAliases(source, "fs", COPIERS);
   let hit = false;
   const visit = (node) => {
-    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {
+    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression)) && evaluated(node, sf)) {
       const from = node.arguments[0];
       if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)
         && exprCovers(evalPath, from, root)) hit = true;
