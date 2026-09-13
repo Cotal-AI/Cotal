@@ -223,6 +223,27 @@ class BridgeClient:
             # Retire the old reader unconditionally: it belongs to a previous generation, so it is
             # not the active handle regardless of whether it has finished unwinding yet.
             self._reader = None
+            # AND DROP THE SOCKET, which retiring the generation alone does not do. A retired
+            # reader is almost always parked in `recv` on this very socket, and a generation check
+            # cannot reach a thread blocked in a syscall: it is only evaluated at the TOP of the
+            # loop, which the reader reaches after its recv returns. Leaving the socket installed
+            # therefore leaves TWO readers on ONE socket, and the next frame is split between them
+            # -- the retired one takes a chunk, sees its generation is stale, and exits carrying
+            # those bytes, while the installed reader is left holding a fragment that never
+            # completes a line. Small frames hide this because they fit in a single recv and so
+            # cannot tear. Measured at 100KB before this close: 6 of 8 frames lost, two readers
+            # alive on one socket every rep.
+            #
+            # Closing here makes the retirement reach the syscall: the parked recv returns
+            # immediately, the retired reader exits without consuming a partial frame, and the
+            # replacement dials a socket of its own.
+            sock = self._sock
+            self._sock = None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
         self._stop.clear()
         if reader is not None:
             # Courtesy only: nothing below depends on whether this returns in time.

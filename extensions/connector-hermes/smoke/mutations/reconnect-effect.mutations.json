@@ -100,8 +100,16 @@
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
       "find": "                if self._stop.is_set() or gen != self._gen:\n                    return\n",
       "replace": "",
-      "expectRed": "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
+      "expectRed": "a reader retired WHILE DIALING must not read the socket the live generation installed under it",
       "note": "Deletes the post-dial re-check. The fence in _connect still prevents a stale dialer INSTALLING over the live generation, so this mutant is invisible to M7's cells: what it restores is the READ. A reader retired while parked in _connect returns having installed nothing, finds the live generation's socket in _sock, and recv()s on it, stealing frames and dispatching them into a retired callback. Measured before the re-check: RETIRED_READER_READ_FOREIGN_SOCKET True."
+    },
+    {
+      "name": "M9 reopen retires the generation but leaves the socket installed",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "            sock = self._sock\n            self._sock = None\n        if sock is not None:\n            try:\n                sock.close()\n            except OSError:\n                pass\n",
+      "replace": "",
+      "expectRed": "a 100KB frame on the LAST subscriber must reach the installed reader on every rep",
+      "note": "Retiring a generation does not reach a thread blocked in recv: the generation is only checked at the TOP of the loop, which a parked reader reaches after its recv returns. Leaving the socket installed therefore leaves two readers on one socket, and a frame larger than one recv(65536) is split between them: the retired reader takes a chunk and exits with it, leaving the installed reader holding a fragment that never completes a line. Invisible below 64KB because a small frame cannot tear. Measured at 100KB before this close: 6 of 8 lost, two readers alive every rep."
     }
   ]
 }

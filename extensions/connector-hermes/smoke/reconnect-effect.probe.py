@@ -245,6 +245,8 @@ def main() -> None:
                 print(name, ok)
             for name, ok in _postdial_rows():
                 print(name, ok)
+            for name, ok in _last_subscriber_rows():
+                print(name, ok)
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
             print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
             for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
@@ -253,6 +255,9 @@ def main() -> None:
                          "STALE_DIALER_DID_NOT_CLOBBER", "CURRENT_GEN_STILL_INSTALLS",
                          "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
                          "CURRENT_GEN_READER_STILL_READS",
+                         "LARGE_FRAME_SPANS_MULTIPLE_RECVS",
+                         "LAST_SUB_WRITER_NEVER_TIMED_OUT",
+                         "LAST_SUB_EVERY_REP_DELIVERED",
                          "DEAD_READER_REPORTS_FATAL",
                          "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
                          "HEALTHY_READER_REPORTS_NO_FATAL"):
@@ -633,6 +638,152 @@ def _postdial_rows() -> list[tuple[str, bool]]:
         time.sleep(1.0)
         rows.append(("CURRENT_GEN_READER_STILL_READS", seen["reads"] > 0))
         live.close()
+    finally:
+        try:
+            srv.close()
+        except OSError:
+            pass
+    return rows
+
+
+_LARGE_FRAME_BYTES = 100 * 1024
+_WRITER_DEADLINE_S = 10.0
+_LAST_SUB_REPS = 8
+
+
+def _bounded_write(sock, payload: bytes) -> bool:
+    """sendall on a worker thread with a deadline. True when the whole payload left.
+
+    NEVER a bare sendall on this path. A 100 KB frame exceeds `wmem_default` (212992 here, but the
+    margin is not the point), so a write to an AF_UNIX peer that nobody is draining blocks in the
+    kernel forever and hangs the probe instead of failing the cell. A writer that times out is a
+    FAILED CELL, not a stalled suite.
+    """
+    done: list[bool] = []
+
+    def _w() -> None:
+        try:
+            sock.sendall(payload)
+            done.append(True)
+        except OSError:
+            done.append(False)
+
+    t = threading.Thread(target=_w, daemon=True)
+    t.start()
+    t.join(_WRITER_DEADLINE_S)
+    return bool(done) and done[0]
+
+
+def _last_subscriber_rows() -> list[tuple[str, bool]]:
+    """The duplicate subscriber a retired reader leaves behind, graded on a frame that TEARS.
+
+    The shape. After `reopen()`, a retired generation can still be inside `_connect`. It declines
+    to install under the fence, falls through in `_run`, and subscribes again -- so the broker sees
+    a SECOND subscriber on the same socket, and that duplicate is the LAST one it registered. A
+    frame written to that last subscriber must still be dispatched by the reader that is actually
+    installed, not swallowed by the retired one.
+
+    WHY 100 KB AND NOT THE 134 BYTES THIS PROBE USED EVERYWHERE ELSE. A 134-byte frame fits in one
+    `recv(65536)` and therefore cannot tear: it is delivered whole or not at all, so a reader that
+    takes one chunk and stands down looks identical to a reader that never ran. At 100 KB the frame
+    spans MORE THAN ONE recv, so a retired reader that consumes the first chunk and then exits
+    leaves the installed reader holding a fragment that never completes a line, and the message is
+    lost rather than merely delayed. That is the loss the shipped connector shows and this probe's
+    frame size could not reach.
+
+    Every rep is asserted, not just the last: an intermittent tear that heals on rep 8 is still a
+    lost message on rep 3.
+    """
+    rows: list[tuple[str, bool]] = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    ls_path = os.path.join(_tmp, "lastsub.sock")
+    srv.bind(ls_path)
+    srv.listen(16)
+    side: dict = {"subs": []}
+
+    def _accept_loop() -> None:
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            side["subs"].append(c)
+
+    threading.Thread(target=_accept_loop, daemon=True).start()
+
+    delivered = 0
+    writer_ok = 0
+    try:
+        for rep in range(_LAST_SUB_REPS):
+            got: list[str] = []
+            seen = threading.Event()
+
+            def _on_incoming(msg: dict, _got=got, _seen=seen) -> None:
+                _got.append(msg.get("id") or "")
+                _seen.set()
+
+            client = BridgeClient(ls_path)
+            # PARK THE FIRST READER INSIDE `_connect`, NOT INSIDE `recv`. This is the reshape that
+            # makes the cell cover the post-dial re-check. Driven the obvious way -- let the reader
+            # install and sit in recv, then reopen() -- the retired reader is freed by reopen()'s
+            # socket close and exits at the TOP of the loop, so it never reaches the post-dial
+            # fall-through at all and the cell passes with the re-check deleted. MEASURED: the
+            # fence-only leg delivered 8 of 8, i.e. the cell was not covering what it claimed.
+            # Parking inside the dial is the state only the re-check guards: `_connect` returns
+            # under the fence having installed nothing, and the retired reader is then one line
+            # away from recv()ing the LIVE generation's socket and eating a chunk of this frame.
+            entered = threading.Event()
+            released = threading.Event()
+            real_connect = client._connect
+
+            def _park(gen=None, _e=entered, _r=released, _rc=real_connect):
+                if not _e.is_set():
+                    _e.set()
+                    _r.wait(5.0)
+                    return  # fenced: retired mid-dial, nothing installed
+                return _rc(gen)
+
+            client._connect = _park
+            client.start(_on_incoming)
+            entered.wait(5.0)
+            # Retire that generation and bring a fresh reader up, which is the reopen sequence the
+            # gateway actually drives. The parked reader is still inside the dial.
+            client.reopen()
+            client._connect = real_connect
+            client.start(_on_incoming)
+            deadline = time.time() + 5.0
+            while not side["subs"] and time.time() < deadline:
+                time.sleep(0.02)
+            released.set()  # let the retired dialer return, post-fence, into the fall-through
+            time.sleep(0.2)
+
+            # Write ONE large frame to the LAST subscriber the broker registered.
+            target = side["subs"][-1]
+            ident = f"large-{rep}"
+            pad = "x" * (_LARGE_FRAME_BYTES - 120)
+            frame = json.dumps({"t": "incoming", "msg": {"id": ident, "pad": pad}}).encode() + b"\n"
+            wrote = _bounded_write(target, frame)
+            writer_ok += 1 if wrote else 0
+            if wrote and seen.wait(6.0) and ident in got:
+                delivered += 1
+            client.close()
+            for c in side["subs"]:
+                try:
+                    c.close()
+                except OSError:
+                    pass
+            side["subs"].clear()
+
+        # Stable row NAMES with the counts carried in separate rows. A name that embeds its own
+        # count (LAST_SUB_DELIVERED_7_OF_8) renames itself the moment it fails, so the suite's
+        # lookup misses and the cell reads as absent rather than red. The denominator is still
+        # printed, just not as part of the key.
+        rows.append(("LARGE_FRAME_SPANS_MULTIPLE_RECVS", _LARGE_FRAME_BYTES > 65536))
+        rows.append(("LAST_SUB_WRITER_NEVER_TIMED_OUT", writer_ok == _LAST_SUB_REPS))
+        rows.append(("LAST_SUB_EVERY_REP_DELIVERED", delivered == _LAST_SUB_REPS))
+        print(f"LAST_SUB_FRAME_BYTES {_LARGE_FRAME_BYTES}")
+        print(f"LAST_SUB_WRITER_OK {writer_ok} of {_LAST_SUB_REPS}")
+        print(f"LAST_SUB_DELIVERED {delivered} of {_LAST_SUB_REPS}")
     finally:
         try:
             srv.close()

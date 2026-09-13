@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 46;
+const EXPECTED_CELLS = 49;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -338,6 +338,32 @@ assert.equal(
   subject.CURRENT_GEN_READER_STILL_READS,
   "True",
   "accept control: a CURRENT-generation reader must still read after its own dial",
+);
+// THE LAST-SUBSCRIBER CELL, ON A FRAME THAT CAN TEAR.
+// A retired generation that falls through in `_run` subscribes again, so the broker holds a
+// SECOND subscriber on the same socket and that duplicate is the LAST one it registered. A frame
+// written to it must still be dispatched by the reader that is actually installed.
+// The frame is 100 KB, deliberately larger than one `recv(65536)`. Everything else in this probe
+// writes 134 bytes, which fits in a single recv and therefore CANNOT TEAR: whole or nothing, so a
+// retired reader that takes one chunk looks exactly like a reader that never ran. Spanning two
+// recvs is what turns that into a lost message, and it is the size the shipped connector loses at.
+// The writer is bounded on a worker thread: a bare sendall of 100 KB to a socket nobody drains
+// blocks in the kernel forever, so a writer timeout must FAIL THE CELL rather than hang the suite.
+assert.equal(
+  subject.LARGE_FRAME_SPANS_MULTIPLE_RECVS,
+  "True",
+  "the last-subscriber frame must exceed one recv(65536), or it cannot tear and grades nothing",
+);
+assert.equal(
+  subject.LAST_SUB_WRITER_NEVER_TIMED_OUT,
+  "True",
+  `the bounded writer must complete every rep (${subject.LAST_SUB_WRITER_OK}); a timeout is a failed cell, not a stalled suite`,
+);
+// Every rep asserted, not just the last: a tear that heals on rep 8 is still a lost message on rep 3.
+assert.equal(
+  subject.LAST_SUB_EVERY_REP_DELIVERED,
+  "True",
+  `a 100KB frame on the LAST subscriber must reach the installed reader on every rep (${subject.LAST_SUB_DELIVERED})`,
 );
 
 console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);
