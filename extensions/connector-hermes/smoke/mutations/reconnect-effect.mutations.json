@@ -94,6 +94,14 @@
       "replace": "        while not self._stop.is_set():\n            try:\n                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n                s.connect(self._path)\n                with self._lock:\n                    self._sock = s\n                return\n            except OSError:\n                time.sleep(_BACKOFF_S)\n",
       "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
       "note": "FOUND BY REVIEW, NOT BY ME, and worth recording why it was easy to miss: the assignment was ALREADY under the lock. A lock makes a write atomic, which prevents a torn read, and says nothing about WHO is writing. A reader that entered _connect before its generation was retired finishes dialing afterwards and installs its socket over the live generation's. This mutant restores the base body, which is byte-identical to the merge base, so it also demonstrates that the defect was latent at base and made REACHABLE by reopen() rather than introduced by this line. CURRENT_GEN_STILL_INSTALLS stays green under it, so the red is the clobber and not a fence that refuses everything."
+    },
+    {
+      "name": "M8 the generation is re-checked only BEFORE the dial, not after it",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "                if self._stop.is_set() or gen != self._gen:\n                    return\n",
+      "replace": "",
+      "expectRed": "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
+      "note": "Deletes the post-dial re-check. The fence in _connect still prevents a stale dialer INSTALLING over the live generation, so this mutant is invisible to M7's cells: what it restores is the READ. A reader retired while parked in _connect returns having installed nothing, finds the live generation's socket in _sock, and recv()s on it, stealing frames and dispatching them into a retired callback. Measured before the re-check: RETIRED_READER_READ_FOREIGN_SOCKET True."
     }
   ]
 }

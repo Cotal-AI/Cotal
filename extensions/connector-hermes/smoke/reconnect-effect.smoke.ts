@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 44;
+const EXPECTED_CELLS = 46;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -322,6 +322,22 @@ assert.equal(
   subject.CURRENT_GEN_STILL_INSTALLS,
   "True",
   "accept control: the CURRENT generation must still dial and install its socket normally",
+);
+// The other half of the fence. NOT INSTALLING IS NOT THE SAME AS NOT READING: a fenced
+// `_connect` returns having installed nothing, and the retired reader then falls through to
+// recv() on whatever the LIVE generation put there, stealing its frames and dispatching them
+// into a retired callback. The loop's generation check runs BEFORE the dial, so only a
+// post-dial re-check catches it. Measured before: RETIRED_READER_READ_FOREIGN_SOCKET True.
+assert.equal(
+  subject.RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE,
+  "True",
+  "a reader retired WHILE DIALING must not read the socket the live generation installed under it",
+);
+// Accept control: without it the row above passes for a reader that never reads anything.
+assert.equal(
+  subject.CURRENT_GEN_READER_STILL_READS,
+  "True",
+  "accept control: a CURRENT-generation reader must still read after its own dial",
 );
 
 console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);

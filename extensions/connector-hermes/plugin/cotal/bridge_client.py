@@ -66,11 +66,26 @@ class BridgeClient:
         while not self._stop.is_set() and gen == self._gen:
             if self._sock is None:
                 self._connect(gen)
+                # RE-CHECK AFTER THE DIAL, NOT ONLY AT THE TOP OF THE LOOP. `_connect` is fenced,
+                # so a reader retired while dialing returns having installed nothing -- but that
+                # only means the socket below is not OURS. It does not mean there is no socket:
+                # the LIVE generation may have installed its own while we were parked, and the
+                # loop condition that would have caught the retirement was evaluated before the
+                # dial, not after it. Falling through here reads the live generation's socket and
+                # steals its frames, dispatching them into a retired reader's callback. Measured
+                # before this re-check: RETIRED_READER_READ_FOREIGN_SOCKET True.
+                if self._stop.is_set() or gen != self._gen:
+                    return
                 if self._sock is None:
                     continue
                 self._send({"t": "subscribe"})  # (re)subscribe after every (re)connect
+            # Read through a local handle. Re-reading `self._sock` here would race a concurrent
+            # reassignment between the guard above and the recv below.
+            sock = self._sock
+            if sock is None:
+                continue
             try:
-                data = self._sock.recv(65536)
+                data = sock.recv(65536)
             except OSError:
                 data = b""
             if not data:

@@ -243,12 +243,16 @@ def main() -> None:
                 print(name, ok)
             for name, ok in _socket_fence_rows():
                 print(name, ok)
+            for name, ok in _postdial_rows():
+                print(name, ok)
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
             print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
             for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
                          "NO_DEAD_HANDLE_AFTER_EXIT", "LIVE_READER_OF_CURRENT_GEN_KEPT",
                          "START_MADE_LIVE_REPLACEMENT", "CONNECT_TAKES_A_GENERATION",
                          "STALE_DIALER_DID_NOT_CLOBBER", "CURRENT_GEN_STILL_INSTALLS",
+                         "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
+                         "CURRENT_GEN_READER_STILL_READS",
                          "DEAD_READER_REPORTS_FATAL",
                          "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
                          "HEALTHY_READER_REPORTS_NO_FATAL"):
@@ -520,6 +524,115 @@ def _socket_fence_rows() -> list[tuple[str, bool]]:
         fresh = BridgeClient(fence_path)
         fresh._connect(fresh._gen) if fenced else fresh._connect()
         rows.append(("CURRENT_GEN_STILL_INSTALLS", fresh._sock is not None))
+    finally:
+        try:
+            srv.close()
+        except OSError:
+            pass
+    return rows
+
+
+def _postdial_rows() -> list[tuple[str, bool]]:
+    """A reader retired WHILE DIALING must not read the socket it finds on the way out.
+
+    The socket fence stops a stale dialer INSTALLING over the live generation. This is the other
+    half, and it survives that fix: a fenced `_connect` returns having installed nothing, which
+    means the socket in `_sock` is not ours -- it does NOT mean there is no socket. The live
+    generation may have installed its own while we were parked. `_run`'s loop condition was
+    evaluated BEFORE the dial, so nothing between the dial and the `recv` notices the retirement,
+    and the retired reader consumes frames belonging to its replacement and dispatches them into
+    the old callback.
+
+    Measured before the post-dial re-check: RETIRED_READER_READ_FOREIGN_SOCKET True.
+
+    The accept row keeps this from being a guard that simply refuses everything: a reader of the
+    CURRENT generation must still read normally after its own dial.
+    """
+    rows: list[tuple[str, bool]] = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    pd_path = os.path.join(_tmp, "postdial.sock")
+    srv.bind(pd_path)
+    srv.listen(16)
+
+    def _accept_loop() -> None:
+        while True:
+            try:
+                srv.accept()
+            except OSError:
+                return
+
+    threading.Thread(target=_accept_loop, daemon=True).start()
+    try:
+        # REFUSE ROW: a retired reader is parked in `_connect`; the live generation installs a
+        # socket underneath it; the retired reader must not read that socket.
+        client = BridgeClient(pd_path)
+        entered = threading.Event()
+        released = threading.Event()
+        touched = {"foreign": False}
+        real_connect = client._connect
+
+        def _gated_connect(gen=None):
+            if not entered.is_set():
+                entered.set()
+                released.wait(5.0)
+                return  # the fence: retired while dialing, nothing installed
+            return real_connect(gen)
+
+        client._connect = _gated_connect
+
+        class _Watch:
+            """Stands in for the LIVE generation's socket and records any read of it."""
+
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def recv(self, _n: int) -> bytes:
+                self.reads += 1
+                touched["foreign"] = True
+                time.sleep(0.2)
+                return b""
+
+            def sendall(self, _b: bytes) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        client.start(lambda _m: None)
+        entered.wait(5.0)
+        client.reopen()                      # retire the parked reader
+        with client._lock:
+            client._sock = _Watch()          # the live generation's socket
+        released.set()
+        time.sleep(1.2)
+        rows.append(("RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE", not touched["foreign"]))
+
+        # ACCEPT ROW: a CURRENT-generation reader still reads after its own dial. Without this the
+        # row above passes for a reader that never reads anything at all.
+        live = BridgeClient(pd_path)
+        seen = {"reads": 0}
+
+        class _Counting:
+            def recv(self, _n: int) -> bytes:
+                seen["reads"] += 1
+                time.sleep(0.2)
+                return b""
+
+            def sendall(self, _b: bytes) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        def _install(gen=None):
+            with live._lock:
+                live._sock = _Counting()
+
+        live._connect = _install
+        live.start(lambda _m: None)
+        time.sleep(1.0)
+        rows.append(("CURRENT_GEN_READER_STILL_READS", seen["reads"] > 0))
+        live.close()
     finally:
         try:
             srv.close()
