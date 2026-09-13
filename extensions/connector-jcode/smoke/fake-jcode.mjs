@@ -137,6 +137,29 @@ const saveSession = (session) => {
   if (sessionStatePath) writeFileSync(sessionStatePath, JSON.stringify(session));
 };
 
+// Real jcode writes the new session to JCODE_HOME/sessions/session_<id>.json and closes the
+// session when that write fails ("persistence to sessions/session_*.json failed ... session
+// closed"). Reproduced here so a home the harness cannot write to fails the same way it does in
+// production instead of passing on a fake that never touched the directory.
+const persistSession = (sessionId, workingDir, reply) => {
+  const home = process.env.JCODE_HOME;
+  if (!home) return true;
+  const dir = join(home, "sessions");
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `session_${sessionId}.json`),
+      JSON.stringify({ session_id: sessionId, working_dir: workingDir }),
+    );
+    return true;
+  } catch (error) {
+    log({ ev: "session_persist_failed", path: dir, code: error.code ?? "unknown" });
+    process.stderr.write(`persistence to sessions/session_${sessionId}.json failed: ${error.message}; session closed\n`);
+    reply({ ev: "error", code: "internal", message: `persistence to sessions/ failed: ${error.code ?? error.message}` });
+    return false;
+  }
+};
+
 // One model turn. Lifted out of the send_message handler so a turn that arrives while the agent is
 // busy can be QUEUED and replayed later against its own connection, which is what the real server
 // does. Writes its events to the socket that submitted it rather than to whichever connection
@@ -302,6 +325,11 @@ const server = createServer((socket) => {
         case "create_session":
           createdFresh = true;
           sessionWorkingDir = frame.working_dir;
+          // The real harness PERSISTS the new session into JCODE_HOME/sessions before it answers,
+          // and closes the session if that write fails. A fake that only wrote its optional state
+          // file was green on an unreadable sessions/ while real jcode v0.81.5 died there, so the
+          // suite proved nothing about the case it existed for.
+          if (!persistSession("fake-session", sessionWorkingDir, reply)) break;
           saveSession({ session_id: "fake-session", working_dir: sessionWorkingDir, transcript_bytes: 1 });
           writeJournal("fake-session");
           reply({ ev: "attached", session: { session_id: "fake-session", working_dir: sessionWorkingDir, status: "idle" } });

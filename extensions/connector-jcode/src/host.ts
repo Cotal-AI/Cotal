@@ -803,6 +803,13 @@ export async function runJcodeHost(): Promise<void> {
         `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
       );
     } else {
+      // A directory the connector cannot read is not fatal by itself, but it is a fact worth
+      // naming: the harness reads and writes the same path, so if startup fails afterwards this
+      // is very likely why, and the operator should not have to infer it from a harness message.
+      if (stored.kind === "unreadable")
+        writeJcodeDiagnostic(
+          `[cotal-jcode] stored sessions directory could not be read (${stored.path}: ${stored.code}); asking the harness anyway\n`,
+        );
       try {
         prior = chooseSessionToResume(await client.listSessions(), cwd);
       } catch (error) {
@@ -830,13 +837,16 @@ export async function runJcodeHost(): Promise<void> {
         writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
       }
     } catch (error) {
-      if (!listingFailed) throw error;
+      // The seat could not get a session. If we already know the stored-sessions path is the
+      // suspect - listing died on it, or the connector could not even read it - name that path
+      // and the bounded cause. `unknown` is what sent operators to rename the seat (#1293).
+      if (!listingFailed && stored.kind !== "unreadable") throw error;
       const panic =
         classifyStoredSessionPanic(bridgeStderr) ??
         classifyStoredSessionPanic(String((error as Error).message ?? ""));
       throw new JcodeSessionsEnumerationFailure(
         sessionsPath,
-        boundStoredSessionCause(panic ?? (error as Error).message),
+        boundStoredSessionCause(panic ?? `${(error as Error).message ?? ""}\n${bridgeStderr}`),
       );
     }
     const resumed = prior !== undefined;

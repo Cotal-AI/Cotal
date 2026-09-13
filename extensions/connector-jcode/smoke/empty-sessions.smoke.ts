@@ -169,8 +169,10 @@ try {
   const lockedSessions = join(lockedHome, "sessions");
   mkdirSync(lockedSessions, { recursive: true, mode: 0o700 });
   if (process.platform === "win32") {
-    check("an unreadable sessions directory still starts the seat (unreachable on Windows)", true);
+    check("the unreadable sessions directory is named to the operator (unreachable on Windows)", true);
     check("the unreadable-directory seat does not die as startup failed (unknown) (unreachable on Windows)", true);
+    check("an unreadable sessions directory either starts the seat or names sessions_enumeration_failed (unreachable on Windows)", true);
+    check("a seat killed by an unreadable sessions directory names the path it could not read (unreachable on Windows)", true);
   } else {
     // The local inspection runs on every managed seat's startup path. A directory it cannot read
     // must not be fatal: this home starts fine on the pre-change connector, so killing it here
@@ -181,19 +183,50 @@ try {
     try {
       // A timeout here is the regression itself, so it must redden a NAMED cell rather than
       // aborting the suite anonymously: a mutation-proof run needs a cell name to anchor on.
-      const created = await waitFor("unreadable-sessions create_session", () =>
+      await waitFor("unreadable-sessions create_session", () =>
         entriesOf(locked.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
       ).catch(() => undefined);
       const lockedErr = locked.stderr();
+      // The harness itself reads and WRITES this directory. On a real jcode v0.81.5 the seat gets
+      // past createSession and then dies persisting the session into sessions/. Whether the seat
+      // survives is the harness's call; what the connector owes is that the operator is told the
+      // path and the permission fact rather than `unknown`.
       check(
-        "an unreadable sessions directory still starts the seat",
-        Boolean(created) && /started a fresh session/.test(lockedErr),
+        "the unreadable sessions directory is named to the operator",
+        /stored sessions directory could not be read \(.*sessions: EACCES\)/.test(lockedErr),
         lockedErr,
       );
       check(
         "the unreadable-directory seat does not die as startup failed (unknown)",
         !/startup failed \(unknown\)/.test(lockedErr),
         lockedErr,
+      );
+      // Either it started, or it failed by the named code that carries the path. Never `unknown`.
+      // Wait for whichever settles: a fresh session, a named failure, or the host exiting.
+      await waitFor(
+        "unreadable-sessions outcome",
+        () =>
+          /started a fresh session|sessions_enumeration_failed|startup failed/.test(locked.stderr()) ||
+          locked.child.exitCode !== null
+            ? true
+            : undefined,
+        30_000,
+      ).catch(() => undefined);
+      const settledErr = locked.stderr();
+      check(
+        "an unreadable sessions directory either starts the seat or names sessions_enumeration_failed",
+        /started a fresh session/.test(settledErr) || /sessions_enumeration_failed/.test(settledErr),
+        settledErr,
+      );
+      check(
+        "a seat killed by an unreadable sessions directory names the path it could not read",
+        !/sessions_enumeration_failed/.test(settledErr) || /while reading .*sessions/.test(settledErr),
+        settledErr,
+      );
+      check(
+        "the unreadable-directory seat never renders as unknown",
+        !/startup failed \(unknown\)/.test(settledErr),
+        settledErr,
       );
     } finally {
       chmodSync(lockedSessions, 0o700);

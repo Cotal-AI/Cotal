@@ -98,6 +98,24 @@
       "command": "pnpm smoke:jcode-stored-sessions",
       "expectRed": "unrelated child text is not forwarded",
       "cell": "unrelated child text is not forwarded"
+    },
+    {
+      "name": "M10 stay silent about a sessions directory the connector cannot read",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (stored.kind === \"unreadable\")",
+      "replace": "      if (false)",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "the unreadable sessions directory is named to the operator",
+      "cell": "the unreadable sessions directory is named to the operator"
+    },
+    {
+      "name": "M11 let an unreadable home die unknown instead of naming the path",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (!listingFailed && stored.kind !== \"unreadable\") throw error;",
+      "replace": "      if (!listingFailed) throw error;",
+      "command": "pnpm smoke:jcode-empty-sessions",
+      "expectRed": "an unreadable sessions directory either starts the seat or names sessions_enumeration_failed",
+      "cell": "an unreadable sessions directory either starts the seat or names sessions_enumeration_failed"
     }
   ]
 }
