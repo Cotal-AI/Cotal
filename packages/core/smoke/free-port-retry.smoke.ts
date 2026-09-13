@@ -99,7 +99,7 @@ const reachable = (port: number): Promise<boolean> =>
   };
   let message = "";
   try {
-    await startOnFreePort(neverUp, async () => false, close, 3);
+    await startOnFreePort(neverUp, async () => false, close, { attempts: 3 });
   } catch (error) {
     message = (error as Error).message;
   }
@@ -109,11 +109,65 @@ const reachable = (port: number): Promise<boolean> =>
   ok("every failed attempt was stopped", started.every((s) => !s.listening));
 }
 
+// ── What the give-up message can and cannot tell apart ──────────────────────
+// Every unready start is "never became reachable" from in here, because both
+// failures leave the port OCCUPIED: a collision leaves it to the squatter, a
+// broken server holds it itself. Only the caller knows which, so `describe`
+// is the seam that makes the message true rather than merely specific.
+{
+  const started: Server[] = [];
+  const gone = new Set<Server>();
+  const startAndDie = async (port: number): Promise<Server> => {
+    const server = await listen(await pickFreePort());
+    started.push(server);
+    if (started.length === 1) { await close(server); gone.add(server); }
+    return server;
+  };
+  let message = "";
+  try {
+    await startOnFreePort(startAndDie, async () => false, close, {
+      attempts: 2,
+      describe: (server) => (gone.has(server) ? "exited 1: address already in use" : "still running, so it bound the port and never answered"),
+    });
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  ok("a start that DIED and one that went silent do not read the same", 
+    message.includes("address already in use") && message.includes("still running"), message);
+  ok("the caller's description reaches the give-up message at all",
+    message.includes("never became reachable — "), message);
+  for (const s of started) if (!gone.has(s)) await close(s);
+}
+
+// ── The retry waits for the previous attempt to be GONE ─────────────────────
+// A `stop` that resolves when the kill was SENT rather than when the process
+// exited leaves three live children racing each other for the next port, and
+// the helper cannot tell: it only sees a promise resolve. The contract is that
+// the next attempt does not begin until this one has.
+{
+  const events: string[] = [];
+  const slowStop = async (server: Server): Promise<void> => {
+    await new Promise((done) => setTimeout(done, 120));
+    events.push("stopped");
+    await close(server);
+  };
+  try {
+    await startOnFreePort(
+      async (port) => { events.push("started"); return await listen(await pickFreePort()); },
+      async () => false,
+      slowStop,
+      { attempts: 3 },
+    );
+  } catch { /* exhausting the attempts is the point */ }
+  ok("no attempt begins before the previous one has stopped",
+    events.join(",") === "started,stopped,started,stopped,started,stopped", events);
+}
+
 // ── Refusals ────────────────────────────────────────────────────────────────
 {
   let refused = "";
   try {
-    await startOnFreePort(listen, reachable, close, 0);
+    await startOnFreePort(listen, reachable, close, { attempts: 0 });
   } catch (error) {
     refused = (error as Error).message;
   }

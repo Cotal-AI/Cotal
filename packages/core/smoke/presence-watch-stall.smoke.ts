@@ -98,27 +98,84 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // where that window was lost on a parallel shard (#1583): the broker was
 // promised 45019, something else took it, and the readiness loop below waited
 // its full 10s for a server that was never coming. Another port is the answer,
-// so readiness moved INTO the start and the loop below is now the second
-// reading of an already-reachable broker.
-const brokerRun = await startOnFreePort(
-  (port) => spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" }),
-  async (port) => {
-    for (let i = 0; i < 100; i++) {
-      if (await isReachable(`nats://127.0.0.1:${port}`)) return true;
-      await wait(100);
-    }
-    return false;
-  },
-  (child) => { child.kill("SIGKILL"); },
-);
-const PORT = brokerRun.port;
-const broker = brokerRun.started;
-const SERVERS = `nats://127.0.0.1:${PORT}`;
-const releaseBroker = teardownOnSignal(broker, dir);
+// so readiness moved INTO the start.
+//
+// Everything from the temp directory on is inside the try/finally, because
+// exhausting the attempts THROWS: with the start above it, the give-up path
+// left `dir` on disk and a spawned broker with no signal teardown for the
+// whole readiness loop, which is minutes.
+let PORT = 0;
+let broker: ReturnType<typeof spawn> | undefined;
+let releaseBroker: (() => void) | undefined;
+let gate: Awaited<ReturnType<typeof link>> | undefined;
+let SERVERS = "";
+let SLOW = "";
 
-const PROXY = await pickFreePort();
-const SLOW = `nats://127.0.0.1:${PROXY}`;
-const gate = await link(PROXY, PORT);
+const cleanup = () => {
+  gate?.close();
+  releaseBroker?.();
+  broker?.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
+};
+
+try {
+  // stderr is piped and kept so the give-up message can tell a port COLLISION
+  // (the broker exited, saying `address already in use`) from a broker that
+  // bound the port and never spoke. Both leave the port occupied, so nothing
+  // the helper can see distinguishes them — only this process knows whether
+  // its own child is still running and what it said.
+  const stderrOf = new WeakMap<ReturnType<typeof spawn>, string[]>();
+  const brokerRun = await startOnFreePort(
+    (port) => {
+      const child = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(port), "-a", "127.0.0.1"],
+        { stdio: ["ignore", "ignore", "pipe"] });
+      const lines: string[] = [];
+      stderrOf.set(child, lines);
+      child.stderr?.on("data", (chunk) => { lines.push(String(chunk)); });
+      // `spawn` reports a missing binary through an ASYNC `error` event, not a
+      // throw, so without this listener an absent `nats-server` escapes the
+      // helper entirely, kills the process on an unhandled error, and takes
+      // the cleanup with it. Recorded instead: the attempt then fails
+      // readiness like any other and says why.
+      child.once("error", (error) => { lines.push(`spawn failed: ${error.message}`); });
+      return child;
+    },
+    async (port) => {
+      for (let i = 0; i < 100; i++) {
+        if (await isReachable(`nats://127.0.0.1:${port}`)) return true;
+        await wait(100);
+      }
+      return false;
+    },
+    // Resolves when the child is GONE, not when the kill was sent: three
+    // retries otherwise leave three live brokers racing for the next port.
+    (child) => new Promise<void>((done) => {
+      if (child.exitCode !== null || child.signalCode !== null) return done();
+      child.once("exit", () => done());
+      child.kill("SIGKILL");
+    }),
+    {
+      describe: (child) => {
+        const said = (stderrOf.get(child) ?? []).join("").trim().split("\n").at(-1) ?? "";
+        const state = child.exitCode !== null ? `exited ${child.exitCode}`
+          : child.signalCode !== null ? `killed by ${child.signalCode}`
+          : "still running, so it bound the port and never answered";
+        return said ? `${state}: ${said}` : state;
+      },
+    },
+  );
+  PORT = brokerRun.port;
+  broker = brokerRun.started;
+  SERVERS = `nats://127.0.0.1:${PORT}`;
+  releaseBroker = teardownOnSignal(broker, dir);
+
+  const PROXY = await pickFreePort();
+  SLOW = `nats://127.0.0.1:${PROXY}`;
+  gate = await link(PROXY, PORT);
+} catch (error) {
+  cleanup();
+  throw error;
+}
 
 const live = (ep: CotalEndpoint) => ep.getRoster().filter((p) => p.status !== "offline");
 const statusOf = (ep: CotalEndpoint) =>
@@ -238,10 +295,7 @@ try {
   await observer.stop().catch(() => { /* stall may have raced shutdown */ });
   for (const p of peers) await p.stop().catch(() => { /* already gone */ });
 } finally {
-  gate.close();
-  releaseBroker();
-  broker.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  cleanup();
 }
 
 console.log(`\npresence watch stall smoke: ${cells - failed} passed, ${failed} failed`);

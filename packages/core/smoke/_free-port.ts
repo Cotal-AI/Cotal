@@ -32,6 +32,19 @@ export interface StartedOnPort<T> {
   attempts: number;
 }
 
+export interface StartOnFreePortOptions<T> {
+  attempts?: number;
+  /**
+   * What the CALLER can say about a start that never answered. Without it every
+   * failure reads `never became reachable`, and a broker that bound the port
+   * and stayed silent is reported as the collision this helper exists to
+   * recover from — the two are indistinguishable from here, because both leave
+   * the port occupied. Only the caller knows whether its own process is still
+   * running, what it exited with, and what it said on the way out.
+   */
+  describe?: (started: T) => string;
+}
+
 /**
  * Start something on a free loopback port, and treat "it never came up" as a
  * reason to try another port rather than as the end of the run.
@@ -54,8 +67,9 @@ export const startOnFreePort = async <T>(
   start: (port: number) => Promise<T> | T,
   isUp: (port: number) => Promise<boolean>,
   stop: (started: T) => Promise<void> | void,
-  attempts = 3,
+  options: StartOnFreePortOptions<T> = {},
 ): Promise<StartedOnPort<T>> => {
+  const { attempts = 3, describe } = options;
   if (attempts < 1) throw new Error(`startOnFreePort: attempts must be at least 1, got ${attempts}`);
   const tried: PortAttempt[] = [];
 
@@ -71,7 +85,16 @@ export const startOnFreePort = async <T>(
 
     if (await isUp(port)) return { started, port, attempts: attempt };
 
-    tried.push({ port, reason: "never became reachable" });
+    let detail = "";
+    try {
+      detail = describe ? describe(started) : "";
+    } catch (error) {
+      detail = `describe threw: ${(error as Error).message}`;
+    }
+    tried.push({ port, reason: detail ? `never became reachable — ${detail}` : "never became reachable" });
+    // Awaited, and the caller's `stop` is expected to resolve when the thing is
+    // actually GONE rather than when the kill was sent. Three retries otherwise
+    // leave three live children racing each other for the next port.
     await stop(started);
   }
 
