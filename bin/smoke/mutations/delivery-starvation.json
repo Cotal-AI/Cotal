@@ -224,6 +224,18 @@
    "expectRed": "N2 `unknown` REFUSES to serve — not being able to ask is not permission to act",
    "cell": "N2 `unknown` REFUSES to serve — not being able to ask is not permission to act",
    "note": "The seam's own hardest case, and the one most likely to be 'simplified' away by someone noticing that leaseAction already returns keep-serving for `unknown`. It does, and that is correct: the PROCESS must survive a broker it cannot ask, which is the whole of #1318. But surviving is not serving. A daemon that cannot find out who owns the shard has no basis for continuing to act on it, and widening this gate to `unknown` re-opens the split-durable window through the one path where the daemon has the least evidence. N7 catches the same widening structurally (exactly one of the four readings may serve), so the shape is graded as well as the case."
-  }
+  },
+ {
+  "name": "M18 a lease row is proven ours by its PRINCIPAL alone, ignoring which run wrote it",
+  "file": "packages/core/src/endpoint.ts",
+  "find": "    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;",
+  "replace": "    return info.holder === this.card.id;",
+  "expectRed": "R9 a row with OUR holder but another run's incarnation is NOT adopted as our own",
+  "cell": "R9 a row with OUR holder but another run's incarnation is NOT adopted as our own",
+  "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+  "completionMarker": "DELIVERY-STARVATION SMOKE",
+  "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+  "note": "THE PLAUSIBLE WRONG FIX, pinned so nobody re-lands it. The defect this replaced compared the row against the bare connection nkey while the endpoint stamps the principal dot-form, which made `held` unreachable; the obvious repair is to compare principals, and it is still wrong. The daemon's cred is a FILE every restart re-reads, so a replacement daemon presents the SAME principal as the process it replaced. A displaced daemon would then read its successor's row as its own, keep serving a shard it had lost, and CAS-release the live holder's row on the way out. Measured rather than argued: this mutation reddens R9 AND F5/F6/G9/G10/G12, with G12 reporting two live ctl.delivery servers - the split the lease exists to prevent."
+ }
  ]
 }

@@ -338,7 +338,12 @@ const SEAMS: Seam[] = [
   // a `delivery`-role JetStream manager that REPLACES the fan-out durable with an incompatible
   // config so a rearm fails at the real broker. The Q cells then read the durable back off that
   // same connection, so "the endpoint recovered" is broker state rather than the endpoint's own flag.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 151, untypecheckedSites: 111 },
+  // 151/111 -> 153/113: delivery-starvation.smoke.ts grows two more smoke-side connections for cells
+  // R1-R9, which stage a lease row the daemon must prove is its own: one writes the row's own bytes
+  // back (moving the revision while the holder stays byte-identical), one writes a successor's row
+  // (same holder, another incarnation). Both read and write the lease KV directly, which is the
+  // point - the evidence comes off the broker rather than from the daemon's own log.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 153, untypecheckedSites: 113 },
 ];
 
 /**
