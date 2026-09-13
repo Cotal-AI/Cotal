@@ -29,6 +29,7 @@ import {
   fallbackStillOwed,
   nextFallbackAction,
   nextFallbackDelay,
+  refusalNeedsBoundary,
   type FallbackState,
 } from "../src/queue-fallback.js";
 
@@ -214,7 +215,51 @@ console.log("\n12. NO branch drops a delivery");
   check("and the delivering actions are all reachable from the incident state", actions.has("queue-turn") && actions.has("steer") && actions.has("drive"), [...actions]);
 }
 
-const EXPECTED_CELLS = 35;
+console.log("\n13. EVERY refusal forces a boundary, not only the unacknowledged one");
+{
+  // A reviewer reproduced this against the live host: a RUN whose acceptance window lapses owes
+  // debt that clears only when that TURN ends. Meanwhile the fallback's own sends are genuinely
+  // acknowledged, so the old `!acknowledged` trigger never fired, while `attributable` stayed false
+  // because the run debt was outstanding. The batch was refused, stayed owed, and was re-delivered
+  // into a healthy Harness that accepted and RAN each copy: 4 executions from 4 send frames.
+  //
+  // THE ACCEPTING BRANCH THIS CELL EXISTS FOR is `acknowledged && !attributable`. It is listed
+  // first because it is the one that was wrong, and the exhaustive table below is what keeps a
+  // future edit from narrowing the trigger back to the flag instead of the refusal.
+  check(
+    "an ACKNOWLEDGED but unattributable refusal forces the boundary (the measured 4-execution case)",
+    refusalNeedsBoundary(true, false) === true,
+    { acknowledged: true, attributable: false, boundary: refusalNeedsBoundary(true, false) },
+  );
+  check(
+    "an unacknowledged refusal still forces it",
+    refusalNeedsBoundary(false, false) === true,
+    { acknowledged: false, attributable: false },
+  );
+  check(
+    "an unacknowledged send whose acceptance would otherwise be attributable also forces it",
+    refusalNeedsBoundary(false, true) === true,
+    { acknowledged: false, attributable: true },
+  );
+  // THE REFUSING CASE, and without it every assertion above is satisfied by `return true`. This is
+  // the ONLY combination that is not a refusal at the call site, so it must be the only one that
+  // declines the boundary: a healthy delivery must never replace the connection, or the fallback
+  // becomes a reconnect loop against a seat that is working.
+  check(
+    "and a genuinely attributable acknowledgement does NOT force one",
+    refusalNeedsBoundary(true, true) === false,
+    { acknowledged: true, attributable: true, boundary: refusalNeedsBoundary(true, true) },
+  );
+  // Exhaustive, so the pair above cannot drift apart from the shipped predicate.
+  const table = [true, false].flatMap((a) => [true, false].map((t) => [a, t, refusalNeedsBoundary(a, t)] as const));
+  check(
+    "exactly one of the four combinations declines the boundary",
+    table.filter(([, , b]) => b === false).length === 1,
+    table.map(([a, t, b]) => `ack=${a} attr=${t} -> ${b}`),
+  );
+}
+
+const EXPECTED_CELLS = 40;
 console.log(`\nSUITE COMPLETE: ${pass + failures.length} cells`);
 console.log(`jcode queue fallback policy: ${pass} cells OK, ${failures.length} failed`);
 if (pass + failures.length !== EXPECTED_CELLS) {

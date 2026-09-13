@@ -26,6 +26,27 @@
  * work the seat never saw — and which the reported connection state now refuses to call `ready`.
  */
 
+/**
+ * Whether a REFUSED queued turn must force a connection boundary before the batch is re-delivered.
+ *
+ * A refusal has two causes and they were given different answers, which was a defect a reviewer
+ * measured rather than argued. `!acknowledged` means the send lapsed with no acceptance. `acknowledged
+ * && !attributable` means the acceptance arrived but some OTHER dispatch on this session was still
+ * open and could equally have emitted it, since `message_accepted` carries a session id and nothing
+ * else. The second case reaches the SAME unbounded duplicate execution as the first: the batch is
+ * refused, stays owed, and the level-triggered loop re-delivers it into a healthy Harness that
+ * accepts and RUNS each copy. Measured at 4 executions from 4 send frames, with a run's lapsed
+ * acceptance window holding the debt open for as long as that turn lasted.
+ *
+ * So the trigger is the REFUSAL, not which flag caused it. While any dispatch on this connection is
+ * unsettled, no acceptance here can be attributed, and re-delivering on it can only repeat. The
+ * boundary is what makes acceptance meaningful again; a one-shot guard at the call site bounds how
+ * often it may be taken, so widening this cannot become a reconnect loop.
+ */
+export function refusalNeedsBoundary(acknowledged: boolean, attributable: boolean): boolean {
+  return !acknowledged || !attributable;
+}
+
 /** First delay after work is owed. Short, because most stalls clear on the next attempt. */
 export const FALLBACK_INITIAL_MS = 1_000;
 /** Ceiling on the delay. One attempt a minute against a session that is not accepting. */

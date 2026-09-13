@@ -32,6 +32,7 @@ import {
   fallbackStillOwed,
   nextFallbackAction,
   nextFallbackDelay,
+  refusalNeedsBoundary,
   type FallbackState,
 } from "./queue-fallback.js";
 import {
@@ -1170,13 +1171,31 @@ export async function runJcodeHost(): Promise<void> {
         // The request itself is made by the fallback's next tick rather than here, so it happens on
         // the retry path where the batch is still owed and can be redriven, instead of inside a
         // handover that is already unwinding.
-        if (!acknowledged) acceptanceSuspectUntilBridgeReplaced = true;
+        // BOTH REFUSALS NEED THE BOUNDARY, not just the unacknowledged one. A reviewer measured the
+        // gap: a RUN whose acceptance window lapses owes `unsettledLapsedDispatches` debt that
+        // clears only when that turn ENDS, which on a long turn is unbounded. Every fallback send
+        // meanwhile is genuinely acknowledged, so `!acknowledged` is false and no boundary was ever
+        // requested, while `attributable` stays false because the run debt is outstanding. The
+        // batch is refused, stays owed, and the level-triggered loop re-delivers it into a healthy
+        // Harness that ACCEPTS AND EXECUTES each copy: 4 executions from 4 send frames.
+        //
+        // That is the same unbounded duplicate execution the `!acknowledged` case was given a
+        // boundary to stop, reached through the other debt state, so it takes the same answer. The
+        // discriminator is not which flag failed but whether re-delivery on THIS connection can
+        // ever become attributable again; while a lapsed dispatch is open it cannot, because
+        // nothing distinguishes its late acceptance from the next send's.
+        //
+        // Replacing the bridge ends the ambiguity at the root: the replacement attaches the same
+        // session, drops the old connection's still-open request with it, and the batch is redriven
+        // once where an acknowledgement means something. The one-shot guard governs it, so widening
+        // the trigger cannot turn into a reconnect loop.
+        if (refusalNeedsBoundary(acknowledged, attributable)) acceptanceSuspectUntilBridgeReplaced = true;
         release();
         writeJcodeDiagnostic(
           acknowledged
-            ? `[cotal-jcode] queued turn was acknowledged but an earlier unacknowledged send is still ` +
-              `open, so the acknowledgement is not attributable; ${items.length} automatic ` +
-              `message(s) remain queued for redelivery\n`
+            ? `[cotal-jcode] queued turn was acknowledged but an earlier unacknowledged dispatch is ` +
+              `still open, so the acknowledgement is not attributable; replacing the Harness ` +
+              `connection before re-delivering ${items.length} automatic message(s)\n`
             : `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
               `automatic message(s) remain queued for redelivery\n`,
         );
