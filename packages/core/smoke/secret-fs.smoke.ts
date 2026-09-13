@@ -31,6 +31,10 @@ if (process.env.COTAL_SECRETFS_RACE_WORKER === "1") {
     throw e;
   });
   const there = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
+  // Announce arrival BEFORE spinning. The parent releases only once every racer has parked here,
+  // so a slow loader cannot make a racer show up after the winner has already finished: that is a
+  // staggered queue, not a race, and it passes against a check-then-write.
+  writeFileSync(process.env.COTAL_SECRETFS_RACE_READY!, "");
   while (!there(barrier)) { /* spin to the barrier: the tightest release available */ }
   try {
     writeSecretFileCreateOnly(target, `${process.pid}\n`);
@@ -259,6 +263,7 @@ check("...and that failure left no .tmp litter",
             COTAL_SECRETFS_RACE_WORKER: "1",
             COTAL_SECRETFS_RACE_PATH: target,
             COTAL_SECRETFS_RACE_BARRIER: barrier,
+            COTAL_SECRETFS_RACE_READY: join(raceDir, `ready-${i}`),
           },
           stdio: ["ignore", "pipe", "ignore"],
         });
@@ -270,8 +275,21 @@ check("...and that failure left no .tmp litter",
           if (--left === 0) { clearTimeout(timer); resolve(); }
         });
       }
-      // Let every child reach its spin loop before releasing them.
-      setTimeout(() => writeFileSync(barrier, "go"), 300);
+      // Release only when all RACERS are parked at the barrier. A fixed sleep is a guess about
+      // process startup, and on a loaded CI runner it expires early: the racers then arrive one at
+      // a time, each finding the name already taken, and the cell passes even against a
+      // check-then-write. That is exactly how this cell reported a false green in CI.
+      const ready = (): number =>
+        readdirSync(raceDir).filter((n) => n.startsWith("ready-")).length;
+      const releaseAt = Date.now() + 45_000;
+      const poll = setInterval(() => {
+        if (ready() === RACERS) { clearInterval(poll); writeFileSync(barrier, "go"); }
+        else if (Date.now() > releaseAt) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          reject(new Error(`only ${ready()} of ${RACERS} racers parked at the barrier`));
+        }
+      }, 5);
     });
     const winners = outcomes.filter((o) => o === "WON").length;
     const reported = outcomes.filter((o) => o === "WON" || o === "LOST").length;
