@@ -21,11 +21,13 @@
  */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { createSpaceAuth, deliveryBucket, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
 import { saveSpaceAuth } from "@cotal-ai/workspace";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
@@ -159,6 +161,54 @@ try {
     check("ensureControlPlane threw before it could answer (manager half, not the delivery answer)",
       false, planeThrew);
   }
+
+  // ---------- THE STALE-READY PATH (#837 inside #1576) ----------
+  // THE ASSUMPTION THE WHOLE HOLDER CHECK RESTS ON, verified against the real broker rather than
+  // asserted in a comment: that a daemon's lease `holder` IS `idFromCreds` of the credential file it
+  // was given. If that were false, the check would call healthy meshes stale, which is the mirror of
+  // the bug it removes and worse than leaving it alone. The holder fixture connected with
+  // `holderCreds`, so the record now in the bucket is real evidence either way.
+  //
+  // This path was found by asking what path no cell walks. Every other leg here holds the holder
+  // fixed and varies `ready`, so nothing graded a ready record belonging to a daemon that is GONE —
+  // and measured on a real broker, a killed holder's `ready:true` survives for the rest of the bucket
+  // TTL, over which bare status printed `responder bound`.
+  const { deliveryResponderFromLease } = await import("../src/lib/delivery-responder.js");
+  const { idFromCreds, principalKey, DEV_OWNER } = await import("@cotal-ai/core");
+  const credsId = idFromCreds(readFileSync(holderCreds, "utf8"));
+  // THE SHAPE, stated as the code states it. This cell caught a real defect: the first version
+  // compared against the BARE creds id, but the endpoint rewrites `card.id` to the principal
+  // dot-form `<owner>.<actor>` before the lease is written, so that comparison would have marked
+  // EVERY healthy daemon stale — the exact mirror of the bug being fixed.
+  const holderId = principalKey(DEV_OWNER, credsId).key;
+  // Read with the holder's OWN credential and its `_INBOX_<id>` prefix: a delivery cred's `sub.allow`
+  // only permits that prefix, which is the same constraint `waitForDeliveryLease` works under.
+  const nc = await connect({
+    servers: server,
+    authenticator: credsAuthenticator(new TextEncoder().encode(readFileSync(holderCreds, "utf8"))),
+    inboxPrefix: `_INBOX_${credsId}`,
+  });
+  let recordedHolder: string | undefined;
+  try {
+    const kv = await new Kvm(nc).open(deliveryBucket(SPACE));
+    const entry = await kv.get("lease.0");
+    recordedHolder = entry && entry.operation !== "DEL" && entry.operation !== "PURGE"
+      ? (entry.json() as { holder: string }).holder
+      : undefined;
+  } finally {
+    await nc.drain().catch(() => {});
+  }
+  check("STALE PATH: the lease holder a real daemon writes IS the principal dot-form of its creds id",
+    recordedHolder === holderId, { recordedHolder, holderId });
+  // The negative half, so a future refactor that silently reverts to the bare id REDDENS here rather
+  // than shipping a check that marks every healthy mesh stale.
+  check("STALE PATH: the holder is NOT the bare creds id (the mistake this cell caught)",
+    recordedHolder !== credsId, { recordedHolder, credsId });
+  // Given that, the two directions of the check, on the REAL id rather than a made-up one.
+  check("STALE PATH: a ready record from a DIFFERENT daemon is stale, not bound",
+    deliveryResponderFromLease({ holder: "local.someOtherDaemon", since: Date.now(), ready: true }, holderId) === "stale");
+  check("STALE PATH: a ready record from THAT daemon is still bound (no false staleness)",
+    deliveryResponderFromLease({ holder: holderId, since: Date.now(), ready: true }, holderId) === "bound");
 
   console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and

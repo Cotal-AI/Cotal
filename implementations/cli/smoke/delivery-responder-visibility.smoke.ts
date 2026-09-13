@@ -31,7 +31,7 @@ import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { deliveryResponderFromLease, deliveryResponderState } from "../src/lib/delivery-responder.js";
+import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix } from "../src/lib/delivery-responder.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -206,6 +206,38 @@ try {
     (await deliveryResponderState(async () => { throw new Error("denied"); })) === "unknown");
   check("CELL 5: a successful read still classifies normally through the async reader",
     (await deliveryResponderState(async () => ({ holder: "local.x", since: Date.now(), ready: false }))) === "unbound");
+
+  // ---------- CELL 6: THE STALE-READY PATH (#837 inside #1576) ----------
+  // THIS CELL EXISTS BECAUSE THE FIRST VERSION OF THIS FIX WAS WRONG AND NO CELL SAID SO. Asking
+  // "what path does no cell walk" found it: every leg above holds the HOLDER fixed and varies
+  // `ready`, so nothing graded a ready record belonging to a daemon that is GONE. Measured against a
+  // real broker, a SIGKILLed holder's `ready:true` record survives in the bucket for the rest of the
+  // TTL, and bare status printed `responder bound` over it — the reported incident, reintroduced by
+  // the fix for the reported incident. Core already knew (`waitForDeliveryLease` demands a holder,
+  // #837); this classifier did not ask.
+  //
+  // The realistic trigger is a RESTART, not a kill: daemon A dies, `cotal up` starts B, and until the
+  // TTL expires A's record sits in front of B's live pid.
+  const nowLease = (holderId: string) => ({ holder: holderId, since: Date.now(), ready: true });
+  check("CELL 6: a ready lease held by ANOTHER daemon is STALE, not bound",
+    deliveryResponderFromLease(nowLease("local.deadDaemon"), "local.liveDaemon") === "stale");
+  check("CELL 6: a ready lease held by the EXPECTED daemon is still bound (no false staleness)",
+    deliveryResponderFromLease(nowLease("local.liveDaemon"), "local.liveDaemon") === "bound");
+  // The concession is deliberate and must stay: an ADOPTED daemon's id is genuinely unknowable from
+  // here, and refusing to answer would be worse than the pre-fix behaviour rather than better.
+  check("CELL 6: with no expected holder known, a ready lease is bound (the adopted-daemon concession)",
+    deliveryResponderFromLease(nowLease("local.someDaemon"), undefined) === "bound");
+  check("CELL 6: staleness never overrides NOT-READY - an unready lease is unbound whoever holds it",
+    deliveryResponderFromLease({ holder: "local.other", since: Date.now(), ready: false }, "local.mine") === "unbound");
+  check("CELL 6: the async reader threads the expected holder through too",
+    (await deliveryResponderState(async () => nowLease("local.dead"), "local.live")) === "stale");
+  // The row must SAY the record belongs to a dead daemon: "not bound" alone sends an operator looking
+  // for a daemon that is starting, when the actual next move is to let the corpse's lease expire.
+  const staleSuffix = deliveryRowSuffix(true, "stale", "cotal status --components");
+  check("CELL 6: the stale row names both NOT BOUND and the dead holder's record",
+    /RESPONDER NOT BOUND/.test(staleSuffix) && /DEAD daemon/.test(staleSuffix), staleSuffix);
+  check("CELL 6: the stale row still names the consequence",
+    staleSuffix.includes("no spawn, no retirement, no join until it binds"), staleSuffix);
 
   console.log(`\nDELIVERY RESPONDER VISIBILITY SMOKE OK ✅ (${pass} checks)`);
   // Canonical sentinel, not just the banner: the shard runner refuses a suite that exits 0 having

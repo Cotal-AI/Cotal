@@ -19,8 +19,17 @@ Bare `cotal status` now reads the same readiness lease `--components` reads, and
 responder as bound, not bound, or unchecked. An unbound responder names its consequence in the same
 line: no spawn, no retirement, no join until it binds. Bare status remains a broad, recovery
 oriented diagnostic and still exits 0, and where the lease cannot be read it says the axis was not
-checked and points at `--components` rather than implying health. `cotal up` either binds the
-responder or states that it did not and what that prevents; the promise of a reconcile stays, but as
+checked and points at `--components` rather than implying health.
+
+Readiness is judged against the daemon that is supposed to be serving, not merely against the flag.
+A daemon that dies without releasing its lease leaves its `ready` record in the bucket until the
+lease TTL expires it, so for that window a restarted or crashed mesh could still report a bound
+responder off the previous daemon's record. Both surfaces now compare the lease holder against the
+daemon this workspace launched and report a leftover record as not bound, naming it as a dead
+daemon's record that clears on its own. Where the holder genuinely cannot be known, such as an
+adopted daemon this process did not start, the holder is not checked and behaviour is unchanged.
+
+`cotal up` either binds the responder or states that it did not and what that prevents; the promise of a reconcile stays, but as
 a statement that the wait is open ended and that agents do not need respawning, rather than as the
 only thing said. A denied join now names the delivery daemon as a possible cause alongside
 credentials, instead of sending an operator holding valid credentials after the wrong hypothesis.

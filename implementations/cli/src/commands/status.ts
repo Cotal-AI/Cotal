@@ -11,13 +11,16 @@ import {
   resolveService,
   standaloneConnectOpts,
   newIdentity,
+  idFromCreds,
+  principalKey,
+  DEV_OWNER,
   unansweredRequest,
   resolveAuthProvider,
   type FlagValues,
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -160,6 +163,42 @@ async function printMachine(): Promise<void> {
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }
 
+/** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
+ *  cannot be known (#1576, and the reason is #837).
+ *
+ *  THE HOLDER IS A PRINCIPAL DOT-FORM, NOT THE RAW CREDS ID, and getting that wrong is a live-caught
+ *  mistake rather than a hypothetical: the daemon builds its endpoint with
+ *  `card.id = idFromCreds(creds)`, and the endpoint then REWRITES `card.id` to
+ *  `principalKey(owner, actor).key` — `<owner>.<actor>` — which is what lands in the lease. Comparing
+ *  against the bare id therefore mismatches EVERY healthy daemon, which would turn this check into
+ *  the mirror of the bug it removes: a permanent false "stale" on a perfectly good mesh. A smoke cell
+ *  reads the record a real holder wrote and pins the exact shape, so this cannot regress silently.
+ *
+ *  WHY IT MATTERS AT ALL. Without it, a `ready:true` record left by a daemon that has since died
+ *  reads as health for the rest of the bucket TTL — measured against a real broker, not theorised —
+ *  and a status command that exists to stop false green would print `responder bound` at a mesh that
+ *  cannot spawn, retire or join. Core demands a named holder in `waitForDeliveryLease` for exactly
+ *  this reason.
+ *
+ *  READ-ONLY AND BEST EFFORT. A workspace that never launched a daemon locally (an adopted or remote
+ *  one) has no creds file, and that is not an error: the caller then does not check the holder, the
+ *  same concession `waitForDeliveryLease` makes for an adopted daemon. Any failure yields `undefined`
+ *  rather than a wrong id, because a WRONG expected holder is worse than an unchecked one. */
+async function expectedDeliveryHolder(target: MeshTarget): Promise<string | undefined> {
+  try {
+    const creds = await workspaceSecretStore(target.root).get(
+      deliveryCredsKey(target.space, { injected: false, root: target.root }),
+    );
+    if (!creds) return undefined;
+    // The daemon declares no owner/actor, so the endpoint falls back to DEV_OWNER for the owner and
+    // to the connection id for the actor: `local.<idFromCreds>`. Built through `principalKey` rather
+    // than string concatenation so this tracks the one definition of the dot-form.
+    return principalKey(DEV_OWNER, idFromCreds(creds)).key;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Read the delivery responder axis for the bare-status rows (#1576).
  *
  *  ONE SHORT-LIVED READ-ONLY CONNECTION, and it must never turn status into a command that fails.
@@ -197,7 +236,10 @@ async function readResponderAxis(selected: Selected): Promise<DeliveryResponderS
     ep.on("warning", () => {});
     await ep.start();
     try {
-      return deliveryResponderFromLease(await ep.readDeliveryLease(0));
+      // The holder is resolved BEFORE the read so a dead daemon's surviving `ready:true` cannot be
+      // mistaken for the live one's (#837): `ready` alone says some daemon bound recently enough that
+      // its record has not expired, which is not the question this row asks.
+      return deliveryResponderFromLease(await ep.readDeliveryLease(0), await expectedDeliveryHolder(target));
     } finally {
       await ep.stop().catch(() => {});
     }
@@ -402,6 +444,11 @@ async function printTarget(selected: Selected, cmd: string, responder: DeliveryR
   // reachable broker and a running daemon had, before this, no row that said otherwise.
   if (responder === "unbound")
     row("delivery responder", c.red(`NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE}`) + c.dim(` · start it with \`${cmd} up\` (or \`${cmd} deliver --space <space>\`)`));
+  else if (responder === "stale")
+    // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
+    // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
+    // into a refusal they will read as a second failure.
+    row("delivery responder", c.red(`NOT BOUND - a DEAD daemon's ready record still holds the lease - ${RESPONDER_UNBOUND_CONSEQUENCE}`) + c.dim(" · it expires on its own; a replacement can then take the shard"));
   else if (responder === "bound") row("delivery responder", c.green("bound"));
   await liveSnapshot(target).catch((e) => row("live snapshot", c.dim(`unavailable (${(e as Error).message})`)));
 }
@@ -598,7 +645,7 @@ function formatProc(p: Proc): string {
 function deliveryRowNote(live: boolean, responder: DeliveryResponderState): string {
   const suffix = deliveryRowSuffix(live, responder, `${displayCmd()} status --components`);
   if (!suffix) return "";
-  return responder === "unbound" ? c.red(suffix) : c.dim(suffix);
+  return responder === "unbound" || responder === "stale" ? c.red(suffix) : c.dim(suffix);
 }
 
 function section(name: string): void {
@@ -819,12 +866,24 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext):
     // status was not, which is exactly how the two came to disagree about a mesh's health; routing
     // both through `deliveryResponderFromLease` means a future change cannot fix one and leave the
     // other green. The facts below stay as specific as they were.
-    const state = deliveryResponderFromLease(lease);
+    //
+    // THE HOLDER IS PART OF THE QUESTION (#837). This surface already PRINTED `lease holder …` as a
+    // fact while grading on `ready` alone, so it displayed the evidence that its own verdict was
+    // wrong and did not read it. A ready record belonging to a daemon that is gone keeps this row
+    // `serving` for the rest of the bucket TTL.
+    const state = deliveryResponderFromLease(lease, await expectedDeliveryHolder(target));
     if (!lease) {
       facts.push("ready lease absent", `responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
       return { name: "delivery", verdict: "not-serving", facts };
     }
     facts.push(`lease holder ${lease.holder}`);
+    if (state === "stale") {
+      // Name WHOSE record it is against whom we expected, because this is the one verdict an
+      // operator cannot derive from the other facts on the line.
+      facts.push("ready, but held by a DIFFERENT daemon than this workspace launched (a dead holder's record expires on its own)");
+      facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
+      return { name: "delivery", verdict: "not-serving", facts };
+    }
     facts.push(state === "bound" ? "ready" : "starting (lease not ready)");
     if (state !== "bound") facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
     return { name: "delivery", verdict: state === "bound" ? "serving" : "not-serving", facts };
