@@ -204,10 +204,16 @@ assert.equal(
   "True",
   "reopen must not leave a closed reader installed: a reader still unwinding when reopen is called must not be mistaken for a live one",
 );
+// This cell changed meaning with the generation latch, and the old wording is worth recording.
+// It used to assert that reopen LEAVES a live reader installed, which was right when identity was
+// how the handle was tracked. Under generations, reopen means "the previous generation is
+// finished", so retiring it is the point and keeping a live reader is exactly the guess that
+// produced the dead handle. Double-reading is prevented at the other end instead: start() holds
+// the lock across check-and-install, and _run stands down once its captured generation is stale.
 assert.equal(
   subject.RACE_LIVE_READER_KEPT,
   "True",
-  "reopen must LEAVE a genuinely running reader installed, or start() would run a second reader on one socket",
+  "a retired reader must stand down and start() must install exactly one fresh reader, so no two readers share a socket",
 );
 
 // ---- THE JOIN MUST NOT RUN ON THE GATEWAY'S EVENT LOOP ----------------------------------------

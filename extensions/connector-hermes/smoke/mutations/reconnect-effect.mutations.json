@@ -42,10 +42,10 @@
     {
       "name": "M1 reopen() exists and is called but does nothing",
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
-      "find": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return",
-      "replace": "        if True:\n            return\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return",
+      "find": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n            # Retire the old reader unconditionally: it belongs to a previous generation, so it is\n            # not the active handle regardless of whether it has finished unwinding yet.\n            self._reader = None\n        self._stop.clear()\n        if reader is not None:\n            # Courtesy only: nothing below depends on whether this returns in time.\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "replace": "        return\n",
       "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
-      "note": "The mutant that adapter-contract.smoke.ts cannot see. Its cold leg still delivers, so the refuse control's own 'fails only on the reconnect' row stays green and the failure is attributable to the reconnect rather than to a broken harness."
+      "note": "The mutant that adapter-contract.smoke.ts cannot see. Its cold leg still delivers, so the refuse control's own 'fails only on the reconnect' row stays green and the failure is attributable to the reconnect rather than to a broken harness. Target re-derived after the generation latch replaced the join-then-liveness body; the harness reported ERROR rather than a false pass when the old string went stale."
     },
     {
       "name": "M2 the reconnect path never calls reopen()",
@@ -56,12 +56,12 @@
       "note": "The defect exactly as reported. Note that connect() keeps its is_reconnect parameter under this mutation, so every signature assertion in adapter-contract stays green: this is the clearest demonstration that a signature test and an effect test are not substitutes. The find string is the whole is_reconnect block, since the call now runs through asyncio.to_thread and a one-line target went stale the moment that changed - the harness caught that as ERROR rather than reporting a false pass."
     },
     {
-      "name": "M3 reopen() reads liveness immediately instead of joining the closed reader",
+      "name": "M3 reopen retires the handle by identity instead of by generation",
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
-      "find": "        reader.join(timeout=_REOPEN_JOIN_SECONDS)\n        with self._lock:\n            # Re-read under the lock: a concurrent start() may have installed a fresh reader while\n            # we were joining the old one, and that one must survive.\n            if self._reader is reader and not reader.is_alive():\n                self._reader = None",
-      "replace": "        with self._lock:\n            if not reader.is_alive():\n                self._reader = None",
-      "expectRed": "reopen must not leave a closed reader installed: a reader still unwinding when reopen is called must not be mistaken for a live one",
-      "note": "THE MECHANISM THAT ACTUALLY FIXES THE RACE, removed. An earlier draft of this config named the STOP/LIVENESS ORDERING here instead, and the harness graded it UNGRADABLE because with the join in place the ordering genuinely does not matter - the mutant changed no behaviour. That verdict was right and it corrected the fix's own description: the bounded join is what settles liveness, not the order of the two statements. Without it, a reader still unwinding reads as alive and stays installed, which is the dead bridge."
+      "find": "        with self._lock:\n            self._gen += 1\n            reader = self._reader\n            # Retire the old reader unconditionally: it belongs to a previous generation, so it is\n            # not the active handle regardless of whether it has finished unwinding yet.\n            self._reader = None\n        self._stop.clear()\n        if reader is not None:\n            # Courtesy only: nothing below depends on whether this returns in time.\n            reader.join(timeout=_REOPEN_JOIN_SECONDS)\n",
+      "replace": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return\n        reader.join(timeout=_REOPEN_JOIN_SECONDS)\n        with self._lock:\n            if self._reader is reader and not reader.is_alive():\n                self._reader = None\n",
+      "expectRed": "after that reader finally dies the handle must not be a dead thread: that is a platform reporting connected while deaf",
+      "note": "Same shape as M5 but graded on a DIFFERENT cell, so the two together show the defect reddens more than one named property: M5 on the slow-unwind retention, M3 on the dead handle that remains afterwards. The original M3 targeted a statement ordering that the join made irrelevant, and the harness graded that UNGRADABLE."
     },
     {
       "name": "M4 the bounded join runs ON the gateway event loop",
