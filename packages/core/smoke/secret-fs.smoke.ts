@@ -7,7 +7,7 @@
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
@@ -99,18 +99,31 @@ check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8")
 // actually grades it.
 const tmpVictim = join(dir, "tmp-symlink-victim");
 const danglingDest = join(dir, "dangling.secret");
-// Creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows, which an unprivileged CI
-// runner does not have. Probe the capability rather than assuming it from the platform: a
-// developer box with Developer Mode on DOES have it, and this cell is worth running there.
-let canSymlink = true;
+// This cell rests on a POSIX guarantee: O_EXCL does not follow a final symlink, so a DANGLING link
+// is EEXIST. Windows resolves the reparse point instead and reports the missing target, so the
+// same call is not EEXIST there and the discriminator does not exist on that platform.
+//
+// Gate on the BEHAVIOUR, measured here, not on `process.platform` and not on whether a symlink can
+// be created. Creating one succeeded on the Windows runner; it was the O_EXCL semantics that
+// differed, which is exactly the assumption a platform check would have hidden.
+let danglingIsExclusive = false;
 try {
-  const probeLink = join(dir, "symlink-capability-probe");
-  symlinkSync(join(dir, "no-such-target"), probeLink);
+  const probeTarget = join(dir, "probe-target-missing");
+  const probeLink = join(dir, "probe-link");
+  symlinkSync(probeTarget, probeLink);
+  try {
+    // Exactly the primitive the cell depends on: O_EXCL against a dangling link. Not the whole
+    // helper, whose publish step answers for a different reason and would mispredict this.
+    writeFileSync(probeLink, "probe\n", { flag: "wx", mode: 0o600 });
+  } catch (e) {
+    danglingIsExclusive = (e as NodeJS.ErrnoException).code === "EEXIST";
+  }
   rmSync(probeLink, { force: true });
+  rmSync(probeTarget, { force: true });
 } catch {
-  canSymlink = false;
+  danglingIsExclusive = false; // no symlink privilege at all
 }
-if (canSymlink) {
+if (danglingIsExclusive) {
   const realRandom2 = Math.random;
   const realNow2 = Date.now;
   Math.random = () => 0.5;
@@ -130,7 +143,7 @@ if (canSymlink) {
     danglingCode === "EEXIST");
   check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
 } else {
-  console.log("· dangling-symlink atomicity cell needs symlink privilege — skipped (POSIX CI is the oracle)");
+  console.log("· dangling-symlink atomicity cell needs POSIX O_EXCL-on-symlink semantics — skipped (POSIX CI is the oracle)");
 }
 
 // mkSecretDir creates a private dir.
