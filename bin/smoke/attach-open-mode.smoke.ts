@@ -343,9 +343,16 @@ try {
     unrecMode === "open",
     unrecMode,
   );
+  // NOT the reporter's own scenario, and the label used to say it was. #1205 was filed against a
+  // mesh started with `cotal up --open --detach`, which is REGISTERED (up.ts calls recordMesh), and
+  // the refusal quoted in the issue names a resolved root the registry already knew. The cell that
+  // reproduces the report is the LIVE one, `open-without-seed attaches`, which drives the real
+  // binary against a real open broker. This pair covers a different and previously ungraded input:
+  // an UNREGISTERED root, where the mode is synthesised by `localTarget` rather than read from a
+  // record. Both reach the bare redeem; only the live cell is the reporter's path.
   const resolvedRedeem = "failed" in resolvedUnrecorded ? { kind: "fatal", message: resolvedUnrecorded.failed } as Material : decideOn(asControlTarget(resolvedUnrecorded));
   ok(
-    "ACCEPT: and it therefore redeems BARE through the real resolver, which is #1205's own scenario",
+    "ACCEPT: and it therefore redeems BARE through the real resolver, rather than through a hand-built value",
     resolvedRedeem.kind === "bare",
     resolvedRedeem,
   );
