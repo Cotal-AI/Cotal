@@ -124,12 +124,6 @@ const floorCouldNot = (out: string, paths: string[]): boolean =>
   && zeroDiscExpected(out).length === 0
   && !out.includes("MUTATION REPROOF OK")
   && !/^MUTATION REPROOF FAILED /m.test(out);
-/** Vacuous all-clear: proven configs, zero kills, named, not collapsed into SURVIVED/FAILED. */
-const floorRed = (out: string, paths: string[]): boolean =>
-  eq(zeroDiscExpected(out), paths)
-  && !out.includes("MUTATION REPROOF OK")
-  && !/^MUTATION REPROOF FAILED /m.test(out);
-
 const networkSetupEnv = (): NodeJS.ProcessEnv => {
   const env = childEnv();
   delete env.pnpm_config_offline;
