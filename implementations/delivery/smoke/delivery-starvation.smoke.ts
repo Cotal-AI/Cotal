@@ -1279,7 +1279,14 @@ try {
   // GiB tmpfs the run exits 1 here, and with TMPDIR on a roomy filesystem it is 94 passed 0 failed.
   // So the suite now says which it is, and says where to look.
   const why = (e as Error).message;
-  if (/insufficient storage resources/i.test(why)) {
+  // GATED ON THE PROVISIONING PHASE, not on the message alone. A reviewer pointed out that matching
+  // the broker's storage string ANYWHERE would relabel a genuine product failure as an environment
+  // one: the delivery path can refuse a write for storage reasons too, and sending a reviewer to
+  // check their disk over a real defect is a worse outcome than the bare string this replaced.
+  // `pass === 0` is the discriminator that costs nothing and cannot be wrong in the dangerous
+  // direction: provisioning happens before the first cell runs, so if any cell has already been
+  // graded the refusal is NOT the provisioning refusal, whatever it says.
+  if (pass === 0 && fail === 0 && /insufficient storage resources/i.test(why)) {
     console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
     console.error(`     This is the test environment, not the daemon. This suite provisions SIX spaces (cells`);
     console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 4 GiB artifact`);
