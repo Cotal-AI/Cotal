@@ -527,7 +527,18 @@ const server = createServer((socket) => {
             }
             const accept = () => {
               event({ ev: "message_accepted", session_id: frame.session_id });
-              queuedTurns.push(() => runTurn(frame, socket));
+              // Queue it only if the session is STILL busy. A queued turn is drained by whatever
+              // finishes next (a completing turn, or the end of the busy window), so a turn accepted
+              // AFTER that drain has already happened would sit in the queue forever with nothing
+              // left to shift it.
+              //
+              // That is not how a real server behaves, and the gap is observable: with a delayed
+              // acknowledgement the busy window can close while the acceptance is still pending, and
+              // the seat would then be idle with a turn it had acknowledged and never ran. A fixture
+              // in that state reports zero executions for a message that was genuinely delivered,
+              // which grades the fake rather than the host.
+              if (turnBusy) queuedTurns.push(() => runTurn(frame, socket));
+              else runTurn(frame, socket);
             };
             if (acceptDelayMs > 0) {
               log({ ev: "accept_delayed", ms: acceptDelayMs, session_id: frame.session_id });

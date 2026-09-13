@@ -385,19 +385,50 @@ export async function runJcodeHost(): Promise<void> {
    * followed by a `soft_interrupt` carrying that same marker.
    *
    * Released on every outcome that is not verified acceptance, so a failed handover leaves the item
-   * owed and un-acked rather than silently dropped. Cleared wholesale wherever the ledger is reset,
-   * because a new turn or a redrive re-derives ownership from scratch.
+   * owed and un-acked rather than silently dropped.
+   *
+   * A reservation is owned by the IN-FLIGHT HANDOVER, not by the turn that happened to be running
+   * when it started, and this is the correction for the second duplicate a reviewer reproduced
+   * (#1233). The first version cleared this set wholesale at the new-turn boundary, on the stated
+   * assumption that "any in-flight handover belonged to the turn that just ended". That assumption
+   * is false: the queued-turn fallback reserves a batch and then awaits `message_accepted`, and the
+   * OLD turn can go idle inside that await. The idle edge ran `drive`, which selected the whole
+   * automatic inbox including the reserved batch, wiped the reservation, and dispatched the same
+   * items as a fresh turn while the fallback's own acceptance was still pending. Both then landed:
+   * two `send_message` frames carrying one message, measured as `deliveries: 2`.
+   *
+   * So the lifetime is the handover's, and a reset may only drop keys no handover still holds.
+   * `heldReservations` is the live set of outstanding handovers; clearing "wholesale" now means
+   * re-deriving this set from them, which keeps a stale key from leaking (the leak would look
+   * exactly like the stall this PR repairs) without stranding a live one.
    */
   let reservedIds = new Set<string>();
+  /** Outstanding handovers, each owning the keys it reserved. The identity of the set is what makes
+   *  "still in flight" answerable at a reset point, rather than assumed from the current turn. */
+  const heldReservations = new Set<Set<string>>();
+  /** Re-derive the reservation set from the handovers still in flight. Called wherever ownership is
+   *  re-derived from scratch: it drops keys nothing holds and preserves keys a live handover does. */
+  const releaseUnheldReservations = (): void => {
+    const held = new Set<string>();
+    for (const batch of heldReservations) for (const key of batch) held.add(key);
+    reservedIds = held;
+  };
   /** Reserve a batch for the duration of one handover, returning its release. Idempotent per key:
    *  a key already reserved by another path is not selected, so double reservation cannot arise. */
   const reserveForHandover = (keys: string[]): (() => void) => {
+    const batch = new Set(keys);
+    heldReservations.add(batch);
     for (const key of keys) reservedIds.add(key);
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      for (const key of keys) reservedIds.delete(key);
+      heldReservations.delete(batch);
+      // Delete only what no OTHER live handover also holds, so releasing one batch cannot unreserve
+      // a key another in-flight handover is still relying on.
+      const stillHeld = new Set<string>();
+      for (const other of heldReservations) for (const key of other) stillHeld.add(key);
+      for (const key of keys) if (!stillHeld.has(key)) reservedIds.delete(key);
     };
   };
   let steering = false;
@@ -619,7 +650,11 @@ export async function runJcodeHost(): Promise<void> {
     const turnPeek = agent.peekPendingTurns();
     if (pendingKickoff !== undefined) parts.push(pendingKickoff);
     else {
-      const inbox = agent.peekInbox("automatic");
+      // Excludes reserved keys for the same reason the steer and fallback readers do: an item whose
+      // handover is in flight is already being delivered, and selecting it here delivers it twice.
+      // This reader was the one that still selected them, which is how the reproduced duplicate got
+      // its second copy even though every other reader was correct.
+      const inbox = agent.peekInbox("automatic").filter((item) => !reservedIds.has(item.recvKey));
       const injection = formatInjection(inbox);
       if (!injection && !turnPeek) {
         driving = false;
@@ -641,11 +676,12 @@ export async function runJcodeHost(): Promise<void> {
     }
     turnActive = true;
     surfacedIds = [...ids];
-    // A new turn re-derives ownership from its own prompt, so no earlier handover's reservation may
-    // survive into it. Any in-flight handover belonged to the turn that just ended; its release is a
-    // no-op after this, and leaving a key reserved here would make that delivery permanently
-    // unselectable, i.e. a leak that looks exactly like the stall this PR repairs.
-    reservedIds = new Set();
+    // A new turn re-derives ownership from its own prompt, so no STALE reservation may survive into
+    // it. But a reservation whose handover is still in flight is not stale, and clearing those here
+    // is the duplicate a reviewer reproduced: the fallback reserves a batch, the old turn goes idle
+    // inside the acceptance await, this boundary wipes the reservation, the selection above re-reads
+    // the same item, and both deliveries land. Drop only what no live handover holds.
+    releaseUnheldReservations();
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
@@ -958,6 +994,13 @@ export async function runJcodeHost(): Promise<void> {
     surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
     // Same reasoning: the replacement redrives the durable batch, so reservations held against the
     // lost bridge must not keep those items unselectable on the new one.
+    //
+    // This one IS a true wholesale wipe, unlike the new-turn boundary, and the difference is the
+    // point. Here the bridge itself is gone, so every outstanding handover is dead by definition:
+    // each one's own release checks `client !== current` and returns without promoting, so nothing
+    // is in flight that could still land. At the new-turn boundary the bridge is alive and the
+    // handover may still be awaiting acceptance, which is why that site re-derives instead.
+    heldReservations.clear();
     reservedIds = new Set();
     void agent.setStatus("waiting").catch(() => {});
     let lastError: unknown;

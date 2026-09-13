@@ -102,6 +102,9 @@ const softInterruptTimeoutMs = 3_000;
 // How long the fake holds `message_accepted` open. Wide enough that a concurrent directed arrival
 // lands reliably inside the host's post-await window (Cell B2), short enough not to pace the suite.
 const acceptDelayMs = 4_000;
+// Touched by Cell B3 to end the seat's busy window at a chosen instant. Absent until then, so the
+// busy hold above governs every earlier cell exactly as before.
+const busyReleaseFile = join(root, "busy-release");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
 let child: ChildProcess | undefined;
@@ -131,6 +134,19 @@ const turnRequests = (): Entry[] =>
   entries().filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame.no_reply);
 const turnsCarrying = (marker: string): Entry[] =>
   turnRequests().filter((entry) => String(entry.frame?.content ?? "").includes(marker));
+/**
+ * Turns the session actually EXECUTED carrying the marker, from the fake's `turn_run` event.
+ *
+ * This is the exactly-once witness, and the distinction is a reviewer's correction rather than
+ * pedantry. `turnsCarrying` counts FRAMES the host sent; `turn_run` counts times the session RAN
+ * the text. Those differ: the incident that prompted this was caught by the frame count only
+ * because two executions happened to arrive as two frames, and a defect that consumed one frame
+ * twice would have passed a frame-count cell while duplicating real work in front of a user.
+ * Consumption is what "exactly once" is about, so consumption is what is graded.
+ */
+const runsCarrying = (marker: string): Entry[] =>
+  entries().filter((entry) =>
+    entry.ev === "turn_run" && String(entry.content ?? "").includes(marker));
 const softInterrupts = (): Entry[] =>
   entries().filter((entry) => entry.ev === "request" && entry.frame?.req === "soft_interrupt");
 /**
@@ -171,6 +187,19 @@ const handoversCarrying = (marker: string): Entry[] =>
   entries().filter((entry) =>
     entry.ev === "request"
     && (entry.frame?.req === "send_message" || entry.frame?.req === "soft_interrupt")
+    && String(entry.frame?.content ?? "").includes(marker));
+/**
+ * Just the QUEUED-TURN handovers, which is the fallback's own path.
+ *
+ * Cell B3 needs the fallback's `send_message` to be in its acceptance window, and the union above
+ * cannot express that: the flow always opens with a black-holed `soft_interrupt` carrying the same
+ * marker, so waiting on the union fires on a frame that is never acknowledged and never races
+ * anything. Measured exactly that way when B3's control first passed: the release landed at the
+ * soft interrupt, long before the send it was meant to interleave with.
+ */
+const queuedSendsCarrying = (marker: string): Entry[] =>
+  entries().filter((entry) =>
+    entry.ev === "request" && entry.frame?.req === "send_message"
     && String(entry.frame?.content ?? "").includes(marker));
 /**
  * Was the marker offered AGAIN after the host had already had it accepted?
@@ -241,6 +270,12 @@ try {
       FAKE_JCODE_BUSY_AFTER_READINESS: "1",
       FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
       FAKE_JCODE_BUSY_HOLD_MS: String(busyHoldMs),
+      // Lets the fixture end the busy window ON DEMAND rather than by clock (Cell B3). The whole
+      // race depends on the idle edge landing INSIDE the fallback's acceptance await, which is a
+      // sub-second target if both sides are timers: found originally by sweeping hold/delay pairs,
+      // where only one pair in four reproduced it. Touching a file makes the ordering a decision
+      // instead of a coincidence, so the cell grades the host rather than the runner's load.
+      FAKE_JCODE_BUSY_RELEASE_FILE: busyReleaseFile,
       // Holds `message_accepted` open so the host's post-await window is observable (Cell B2). It
       // changes WHEN the acknowledgement lands, never whether the message is delivered.
       FAKE_JCODE_ACCEPT_DELAY_MS: String(acceptDelayMs),
@@ -397,18 +432,76 @@ try {
       secondCopies >= 1,
       { firstMarkerDeliveries: firstCopies, secondMarkerDeliveries: secondCopies },
     );
-    // NO CELL HERE for "the reservation prevents a re-offer", deliberately, and the reason is worth
-    // recording. A cell asserting it PASSED both with the reservation honoured and with the exclusion
-    // severed by hand, so it graded nothing: `steering` already serialises `steerPending` against
-    // itself, and this fixture cannot get a second selection to run inside the fallback's acceptance
-    // window. The duplicate that WAS reproduced here came from the ledger being written after the
-    // await, which the ordering change fixes and which the cells above do grade.
+    // NO CELL HERE for "the reservation prevents a re-offer BY A CONCURRENT STEER", deliberately.
+    // A cell asserting it PASSED both with the reservation honoured and with the exclusion severed
+    // by hand, so it graded nothing: `steering` serialises `steerPending` against itself, and this
+    // fixture cannot get a second STEER to run inside the fallback's acceptance window.
     //
-    // The reservation is kept because a reviewer reproduced the double consumption on a RECOVERING
-    // seat, where the recovery steer is a different caller and `steering` does not serialise it. That
-    // path is not reachable from this fixture, so its coverage is stated as absent rather than
-    // implied by a cell that cannot fail. An instrument that passes against the defect it names is
-    // the failure class this repo catalogues; leaving it in would be worse than having no cell.
+    // Cell B3 below grades the reservation against the path that IS reachable, the new-turn
+    // boundary, which is where a reviewer reproduced a real duplicate.
+  }
+
+  // --- Cell B3: an unrelated idle boundary must not steal an in-flight handover -----------------
+  // Found by review at this head, after the reservation landed, and it is the failure the removed
+  // cell said was NOT covered. The reservation was owned by the wrong thing: the code cleared it
+  // wholesale at the new-turn boundary, on the written assumption that "any in-flight handover
+  // belonged to the turn that just ended".
+  //
+  // That assumption is false whenever the OLD turn ends while a handover is still being accepted:
+  //
+  //   fallback reserves A, writes send_message(A), awaits message_accepted   <- in flight
+  //   old busy turn ends, session_status idle                                <- UNRELATED edge
+  //   drive() selects the automatic inbox, which still contains A            <- reserved, but read
+  //   drive() clears reservedIds wholesale, dispatches a NEW turn with A
+  //   the original send_message(A) is then accepted
+  //   => two frames carrying A, measured deliveries: 2
+  //
+  // The ordering is forced, not raced. The busy window is ended by touching a file at a moment the
+  // fixture chooses, inside the acceptance delay, because sweeping timer pairs reproduced this in
+  // only one of four combinations and a cell that depends on that is grading the runner. The
+  // witness is the count of distinct delivered turns carrying the marker, from the recipient's own
+  // request log: the message must arrive, and must arrive once.
+  {
+    const idleMarker = "RESERVED_ACROSS_IDLE_BOUNDARY_1233";
+    await operator.unicast(peerId!, idleMarker);
+    // Wait for THE FALLBACK'S OWN send to be in flight: its frame has arrived at the fake and the
+    // acknowledgement is being held open. It must be the `send_message`, not merely any handover:
+    // the flow opens with a black-holed `soft_interrupt` carrying the same marker, and releasing at
+    // that point interleaves with nothing. Reading the arrival rather than sleeping puts the release
+    // below inside the acceptance window by construction.
+    const inFlight = await tryWaitFor(
+      () => (queuedSendsCarrying(idleMarker).length > 0 ? true : undefined),
+      45_000,
+    );
+    // End the busy window NOW, while that acknowledgement is still outstanding. This is the
+    // unrelated idle edge: it belongs to the old turn, not to the handover.
+    writeFileSync(busyReleaseFile, "release");
+    // Let the idle transition, any turn it dispatches, and the delayed acceptance all settle. The
+    // wait is deliberately past the acceptance delay: a reviewer measured that stopping earlier
+    // sees only the first copy, because the ORIGINAL queued send advances after its delayed
+    // acknowledgement and produces the second execution then.
+    await tryWaitFor(() => (runsCarrying(idleMarker).length > 0 ? true : undefined), 45_000);
+    await sleep(acceptDelayMs + 5_000);
+    const runs = runsCarrying(idleMarker).length;
+    const copies = turnsCarrying(idleMarker).length;
+    check(
+      "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      inFlight === true && runs === 1,
+      {
+        handoverWasInFlight: inFlight === true,
+        executions: runs,
+        sendFrames: copies,
+        handovers: handoversCarrying(idleMarker).length,
+        seatWentIdle: wentIdle(),
+      },
+    );
+    // The no-loss half, and it is the half a naive fix breaks. Refusing the duplicate by making the
+    // item permanently unselectable would red here instead, which is the leak this PR repairs.
+    check(
+      "and it is still executed at least once, so the boundary refuses the duplicate without stranding it",
+      runs >= 1,
+      { executions: runs, sendFrames: copies },
+    );
   }
 
   // --- Cell C: the reported state --------------------------------------------------------------
