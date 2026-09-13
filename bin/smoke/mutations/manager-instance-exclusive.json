@@ -39,8 +39,8 @@
     {
       "name": "M2 exclusive create is a plain overwrite (no EEXIST)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;\n  try {\n    writeSecretFile(tmp, data);\n    try {\n      linkSync(tmp, path);",
-      "replace": "  writeSecretFile(path, data);\n  return;\n  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;\n  try {\n    writeSecretFile(tmp, data);\n    try {\n      linkSync(tmp, path);",
+      "find": "  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
+      "replace": "  writeSecretFile(path, data);\n  return;\n  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
       "expectRed": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
       "cell": "writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites",
       "note": "The second writer must not replace the first. Overwrite is the pre-fix persist.",
@@ -61,10 +61,10 @@
     {
       "name": "M4 the temp write is a plain overwrite again (colliding creators swap bytes)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "  writeSecretFileCreateOnlyRaw(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
-      "replace": "  writeSecretFile(tmp, data);\n  try {\n    try {\n      linkSync(tmp, path);",
-      "expectRed": "REFUSE: a colliding temp-shaped name is EEXIST, not a silent overwrite",
-      "cell": "REFUSE: a colliding temp-shaped name is EEXIST, not a silent overwrite",
+      "find": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });",
+      "replace": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  writeFileSync(path, data, { mode: 0o600 });",
+      "expectRed": "REFUSE: a temp name already held by another creator is EEXIST, not a silent overwrite",
+      "cell": "REFUSE: a temp name already held by another creator is EEXIST, not a silent overwrite",
       "note": "A probabilistically-unique temp name is not a concurrency argument; the collision must refuse, not overwrite.",
       "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

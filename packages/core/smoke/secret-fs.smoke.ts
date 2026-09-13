@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
 
 const isWin = process.platform === "win32";
+const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
 let failures = 0;
 function check(label: string, cond: boolean): void {
   console.log(`${cond ? "✓" : "✗"} ${label}`);
@@ -38,23 +39,37 @@ try {
 check("writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites", exclusiveCode === "EEXIST");
 check("...and the first writer's bytes are unchanged", readFileSync(exclusive, "utf8") === "first-writer\n");
 
-// The TEMP write is exclusive too. A temp-name collision that plain-overwrote would let the caller
-// whose link succeeded return the candidate IT minted while the file held the OTHER one's bytes —
-// the identity split, one step earlier. Drive the collision directly on a temp-shaped name.
-const tmpShaped = join(dir, `collide.secret.${process.pid}.0.zzz.tmp`);
-writeSecretFileCreateOnly(tmpShaped, "creator-A\n");
-let tmpCollisionCode: string | undefined;
+// The TEMP write is exclusive too. A temp-name collision that plain-overwrote would destroy the
+// other creator's bytes, and the caller whose link then succeeded would return the candidate IT
+// minted while the file held the OTHER identity — the split, one step earlier.
+//
+// The temp name is internal (pid + clock + Math.random), so pin the clock and the RNG, compute the
+// exact name this call will choose, and squat it with another creator's bytes. The destination is
+// FRESH, so the publish would succeed: the only thing under test is the temp write itself.
+const squatDest = join(dir, "squat.secret");
+const realRandom = Math.random;
+const realNow = Date.now;
+Math.random = () => 0.5;
+Date.now = () => 1;
+const squattedTmp = `${squatDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
+writeSecretFile(squattedTmp, "other-creator\n");
+let squatCode: string | undefined;
 try {
-  writeSecretFileCreateOnly(tmpShaped, "creator-B\n");
+  writeSecretFileCreateOnly(squatDest, "my-candidate\n");
 } catch (e) {
-  tmpCollisionCode = (e as NodeJS.ErrnoException).code;
+  squatCode = (e as NodeJS.ErrnoException).code;
+} finally {
+  Math.random = realRandom;
+  Date.now = realNow;
 }
-check("REFUSE: a colliding temp-shaped name is EEXIST, not a silent overwrite", tmpCollisionCode === "EEXIST");
-check("...and the colliding creator did NOT swap the first creator's bytes",
-  readFileSync(tmpShaped, "utf8") === "creator-A\n");
+check("REFUSE: a temp name already held by another creator is EEXIST, not a silent overwrite",
+  squatCode === "EEXIST");
+check("...and that other creator's bytes were NOT destroyed",
+  readFileSync(squattedTmp, "utf8") === "other-creator\n");
+check("...and nothing was published at the destination on that refusal", !statSafe(squatDest));
 
 // A loser must never destroy a live creator's temp. Publishing into an already-taken destination
-// fails, and the pre-existing temp-shaped sibling must survive that failure untouched.
+// fails, and leaves no litter of its own behind.
 const takenDest = join(dir, "taken.secret");
 writeSecretFileCreateOnly(takenDest, "incumbent\n");
 let secondPublish: string | undefined;
