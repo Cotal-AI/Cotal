@@ -105,6 +105,12 @@ try {
   write("bin/smoke/unrelated-spawn.smoke.ts",
     'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
     'const unused = join(ROOT, "scripts", "direct.mjs");\n');
+  write("bin/smoke/eval-extra-arg.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0", join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/eval-env.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0"], { env: { HINT: join(ROOT, "scripts", "direct.mjs") } });\n');
+  write("bin/smoke/import-then-script.smoke.ts",
+    'spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "direct.mjs")]);\n');
   write("pnpm", "#!/bin/sh\nexit 0\n");
   chmodSync(join(root, "pnpm"), 0o755);
   execFileSync("git", ["init", "-q"], { cwd: root });
@@ -181,6 +187,18 @@ try {
   config("unrelated-spawn", { suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("unrelated-spawn");
   check("an unrelated spawn near a quoted path is refused", result.status !== 0 && /REFUSED unrelated-spawn/.test(result.stderr), report(result));
+
+  config("eval-extra-arg", { suite: ["bin/smoke/eval-extra-arg.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("eval-extra-arg");
+  check("a path after -e is not a launched script", result.status !== 0 && /REFUSED eval-extra-arg/.test(result.stderr), report(result));
+
+  config("eval-env", { suite: ["bin/smoke/eval-env.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("eval-env");
+  check("a path in spawn env is not a launched script", result.status !== 0 && /REFUSED eval-env/.test(result.stderr), report(result));
+
+  config("import-then-script", { suite: ["bin/smoke/import-then-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("import-then-script");
+  check("a script after --import still witnesses the launched file", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("executed");

@@ -159,14 +159,60 @@ const exprCovers = (evalPath, node, want) => {
   return hit;
 };
 
+const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "-pe"]);
+const NODE_VALUE_FLAGS = new Set([
+  "-e", "--eval", "-p", "--print", "-pe",
+  "-r", "--require", "--import", "--loader", "--experimental-loader",
+  "-C", "--conditions", "--env-file", "--env-file-if-exists", "--input-type", "--title",
+]);
+
+const flagName = (text) => (typeof text === "string" && text.startsWith("-") ? text.split("=")[0] : "");
+
+const isNodeExecutable = (evalPath, node) => {
+  if ((ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node))
+    && node.expression.getText() === "process" && node.name.text === "execPath") return true;
+  const value = stringValue(node) ?? evalPath(node);
+  if (typeof value !== "string") return false;
+  const base = value.replaceAll("\\", "/").split("/").pop() ?? "";
+  return /^(node|nodejs|tsx)(\.exe|\.cmd)?$/i.test(base);
+};
+
+const argvElements = (node) => {
+  if (!ts.isArrayLiteralExpression(node)) return [];
+  return node.elements.filter((el) => !ts.isOmittedExpression(el) && !ts.isSpreadElement(el));
+};
+
+/** Node's first positional after flags, or undefined when -e/--eval/-p runs code instead of a file. */
+const launchedScriptArg = (evalPath, argvNode) => {
+  const tokens = argvElements(argvNode);
+  for (let i = 0; i < tokens.length; i++) {
+    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);
+    const text = typeof raw === "string" ? raw : "";
+    if (text === "--") return tokens[i + 1];
+    const flag = flagName(text);
+    if (flag) {
+      if (NODE_EVAL_FLAGS.has(flag)) return undefined;
+      if (!text.includes("=") && NODE_VALUE_FLAGS.has(flag)) i += 1;
+      continue;
+    }
+    return tokens[i];
+  }
+  return undefined;
+};
+
 const invokesFile = (suite, source, file) => {
   const { sf, evalPath } = pathEval(suite, source);
   const launchers = namedAliases(source, "child_process", LAUNCHERS);
   let hit = false;
   const visit = (node) => {
     if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {
-      for (const arg of node.arguments) {
-        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, file)) hit = true;
+      const args = node.arguments.filter((arg) => !ts.isSpreadElement(arg));
+      const command = args[0];
+      const argv = args[1] && !ts.isObjectLiteralExpression(args[1]) ? args[1] : undefined;
+      if (command && coversPath(evalPath(command), file)) hit = true;
+      else if (command && isNodeExecutable(evalPath, command) && argv) {
+        const script = launchedScriptArg(evalPath, argv);
+        if (script && coversPath(evalPath(script), file)) hit = true;
       }
     }
     ts.forEachChild(node, visit);
