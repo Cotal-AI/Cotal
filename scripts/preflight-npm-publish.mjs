@@ -7,8 +7,8 @@
  *   - the public workspace manifests that `pnpm publish -r` can select.
  *
  * It then reads every exact package@version from npm. A clean release has every version absent.
- * Any present exact version is refused. A mixed census is a prior partial publish; an all-present
- * census has no complete fixed group left to publish. Unknown registry answers refuse too.
+ * A mixed census is a prior partial publish and is refused. An all-present census is a no-op because
+ * there is no version left to publish. Unknown registry answers refuse too.
  *
  * When GitHub Actions exposes its OIDC token requester, a distinct id_token is exchanged for every
  * package. That HTTP 201 is identity only: npm's trusted-publisher Allowed actions always permit
@@ -329,15 +329,32 @@ export async function preflightNpmPublish({
   const unknown = rows.filter((row) => row.registry.startsWith("unknown:"));
   const present = rows.filter((row) => row.registry === "present");
   const absent = rows.filter((row) => row.registry === "absent");
+  const registryVerdict = unknown.length > 0
+    ? "inconclusive"
+    : absent.length === rows.length
+      ? "all-absent"
+      : present.length === rows.length
+        ? "all-present"
+        : present.length > 0
+          ? "mixed"
+          : "incomplete";
 
-  if (unknown.length || present.length > 0) {
+  if (registryVerdict === "inconclusive") {
     printPublishCensus(rows, log);
-    if (unknown.length) throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);
+    throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);
+  }
+  if (registryVerdict === "mixed") {
+    printPublishCensus(rows, log);
     throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);
   }
-  if (absent.length !== rows.length) {
+  if (registryVerdict === "incomplete") {
     printPublishCensus(rows, log);
     throw new Error("the packages that would publish are not the complete fixed group");
+  }
+  if (registryVerdict === "all-present") {
+    printPublishCensus(rows, log);
+    log("nothing to publish: every exact version is already on the registry");
+    return { state: "nothing-to-publish", rows };
   }
 
   const hasOidcUrl = Boolean(env.ACTIONS_ID_TOKEN_REQUEST_URL);

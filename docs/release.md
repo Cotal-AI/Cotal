@@ -111,8 +111,9 @@ Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
 - only after those checks, the workspace build, native assembly, and recursive publish.
 
 The census prints every package, version, OIDC result, and direct-publish result before it refuses.
-If any exact version already exists, the recursive publish set is not the full fixed group, an
-OIDC exchange fails, or any package is stage-only, the command exits before `pnpm publish`.
+If every exact version already exists, the preflight reports a no-op and exits successfully before
+credential checks. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only
+package exits before `pnpm publish`.
 
 HTTP 201 from the OIDC exchange is identity only. npm's trusted-publisher Allowed actions always
 permit `npm stage publish`; configurations created after 2026-09-03 default to stage and may omit

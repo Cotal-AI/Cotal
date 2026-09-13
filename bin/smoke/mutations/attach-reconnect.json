@@ -135,7 +135,7 @@
     {
       "name": "a reconnecting client forgets the session it abandoned, so it never hands it back",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "        abandoned.push({ grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server });",
+      "find": "        abandoned.push({ grant: est.grant, link: est.link, inbox: est.inbox, server: est.server });",
       "replace": "        void est;",
       "expectRed": "...and the reconnect left ONE live session, not two: the abandoned one was handed back",
       "cell": "...and the reconnect left ONE live session, not two: the abandoned one was handed back",

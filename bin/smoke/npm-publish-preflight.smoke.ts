@@ -1,8 +1,9 @@
 /**
  * The release preflight must fail before the first registry write. This suite drives the shipped
- * preflight against a local fake registry and records every request. Clean all-absent full-group
- * state passes only after an OIDC exchange AND a GET-trust direct-publish census for every package.
- * A prior partial publish, an incomplete recursive publish set, a refused exchange, a
+ * preflight against a local fake registry and records every request. An all-present full-group
+ * state is a no-op before credential work. Clean all-absent state passes only after an OIDC exchange
+ * AND a GET-trust direct-publish census for every package. A prior partial publish, an incomplete
+ * recursive publish set, a refused exchange, a
  * stage-only Allowed-actions sibling, and a stage-only this-workflow publisher next to an
  * unrelated GitHub publisher that lists createPackage all refuse without any write-shaped
  * request. An opaque HTTP 201 exchange is not treated as publish-ready.
@@ -150,7 +151,8 @@ async function scenario({
   }
 }
 
-async function repositoryEntrypoint() {
+type RegistryState = "all-present" | "mixed" | "all-absent";
+async function repositoryEntrypoint(registryState: RegistryState = "all-absent") {
   const seen: Seen[] = [];
   const server = createServer((req, res) => {
     seen.push({ method: req.method ?? "", url: req.url ?? "" });
@@ -164,8 +166,12 @@ async function repositoryEntrypoint() {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify([githubClaimsPublisher(["createPackage", "createStagedPackage"])]));
     } else {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end("{}");
+      const exact = req.url?.match(/^\/(.+)\/[^/]+$/)?.[1] ?? "";
+      const name = decodeURIComponent(exact);
+      const present = registryState === "all-present"
+        || (registryState === "mixed" && name === "@cotal-ai/core");
+      res.writeHead(present ? 200 : 404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ name }));
     }
   });
   server.listen(0, "127.0.0.1");
@@ -285,19 +291,70 @@ check(
   }, thisRelease) === "refused:no-github-publisher",
 );
 
-const cli = await repositoryEntrypoint();
-check("the shipped repository entrypoint passes a clean full fixed group", cli.code === 0, cli.output);
+const allPresent = await repositoryEntrypoint("all-present");
 check(
-  "the repository entrypoint derives and exchanges every fixed-group package",
-  cli.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 22,
-  cli.seen,
+  "all-present repository entrypoint returns the named no-op verdict",
+  allPresent.code === 0
+    && allPresent.output.includes("nothing to publish: every exact version is already on the registry"),
+  allPresent.output,
 );
 check(
-  "the repository entrypoint GETs trust for every fixed-group package",
-  cli.seen.filter((call) => call.method === "GET" && call.url.includes("/trust")).length === 22,
-  cli.seen,
+  "all-present repository entrypoint prints the full fixed-group census",
+  allPresent.output.split("\n").filter((line) => line.includes("\tpresent\tnot-run\tnot-run")).length === 22,
+  allPresent.output,
 );
-check("the repository entrypoint never issues a write-shaped registry call", cli.seen.every((call) => !isWriteShaped(call)), cli.seen);
+check(
+  "all-present repository entrypoint stops before OIDC, trust, or publish work",
+  allPresent.seen.every((call) => !call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/"))
+    && allPresent.seen.every((call) => !call.url.includes("/trust"))
+    && allPresent.seen.every((call) => !isWriteShaped(call)),
+  allPresent.seen,
+);
+
+const mixedEntrypoint = await repositoryEntrypoint("mixed");
+check(
+  "mixed repository entrypoint preserves the partial-publication refusal",
+  mixedEntrypoint.code !== 0
+    && mixedEntrypoint.output.includes("publish preflight refused: 1/22 exact versions already exist"),
+  mixedEntrypoint.output,
+);
+check(
+  "mixed repository entrypoint stops before OIDC, trust, or publish work",
+  mixedEntrypoint.seen.every((call) => !call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/"))
+    && mixedEntrypoint.seen.every((call) => !call.url.includes("/trust"))
+    && mixedEntrypoint.seen.every((call) => !isWriteShaped(call)),
+  mixedEntrypoint.seen,
+);
+
+const zeroPresent = await repositoryEntrypoint("all-absent");
+check(
+  "zero-present repository entrypoint reaches the publish authorization stage",
+  zeroPresent.code === 0
+    && zeroPresent.seen.some((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")),
+  zeroPresent.output,
+);
+check(
+  "zero-present repository entrypoint derives and exchanges every fixed-group package",
+  zeroPresent.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 22,
+  zeroPresent.seen,
+);
+check(
+  "zero-present repository entrypoint GETs trust for every fixed-group package",
+  zeroPresent.seen.filter((call) => call.method === "GET" && call.url.includes("/trust")).length === 22,
+  zeroPresent.seen,
+);
+check(
+  "zero-present repository entrypoint never issues a write-shaped registry call",
+  zeroPresent.seen.every((call) => !isWriteShaped(call)),
+  zeroPresent.seen,
+);
+
+const allPresentCensus = await scenario({ present: new Set(fixed) });
+check(
+  "all-present preflight returns the named no-op state",
+  allPresentCensus.result?.state === "nothing-to-publish",
+  allPresentCensus.error ?? allPresentCensus.result,
+);
 
 const clean = await scenario();
 check("clean full-group census passes", clean.result?.state === "ready", clean.error);

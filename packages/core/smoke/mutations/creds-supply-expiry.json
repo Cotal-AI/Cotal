@@ -52,11 +52,11 @@
     {
       "name": "the expiry comparison is loosened to a strict past-check (a cred expiring THIS instant is presented)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())",
-      "replace": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now() - 30_000)",
+      "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())\n      throw new Error(\n        opts.renewable",
+      "replace": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now() - 30_000)\n      throw new Error(\n        opts.renewable",
       "expectRed": "REFUSE: a STATIC expired cred is refused and names replacement, not renewal",
       "cell": "REFUSE: a STATIC expired cred is refused and names replacement, not renewal",
-      "note": "A grace window is the most plausible wrong repair of this defect and the one a reviewer is most likely to wave through, because it still 'checks expiry'. It is wrong because the broker applies none: inside the window the endpoint presents material the broker has already rejected. The named cell mints a cred a few seconds past exp, so it sits inside a 30s grace and goes red on it while the far-past cases stay green."
+      "note": "A grace window is the most plausible wrong repair of this defect and the one a reviewer is most likely to wave through, because it still 'checks expiry'. It is wrong because the broker applies none: inside the window the endpoint presents material the broker has already rejected. The named cell mints a cred a few seconds past exp, so it sits inside a 30s grace and goes red on it while the far-past cases stay green. The anchor carries the two following lines because the adoption-time guard added for #1523 opens with the same comparison and also throws; `opts.renewable` is what makes it the presentation check."
     },
     {
       "name": "the dial gate tests the cached cred for TRUTHINESS again (an empty credential dials anonymously)",
