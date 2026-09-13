@@ -247,12 +247,21 @@ const manager = new Manager({ space: "legacy783", servers: ${JSON.stringify(`nat
 await manager.start();
 const handle = manager.runtime.spawn("counter", { command: process.execPath, args: ["-e", "let n=0;setInterval(()=>process.stdout.write(String(++n)+'\\\\n'),50)"], env: { PATH: process.env.PATH } }, ${JSON.stringify(root)});
 for (const [name, agent] of [["pi_seat", "pi"], ["claude_seat", "claude"], ["open_seat", "opencode"], ["jcode_seat", "jcode"]]) manager.agents.set(name, { name, agent, id: name, lifecycleUid: "aaaaaaaaaaaaaaaaaaaaaaaaaa", spawner: "fixture", startedAt: Date.now(), handle, launch: { cwd: ${JSON.stringify(root)} } });
-await import("node:fs").then(({ writeFileSync }) => writeFileSync(process.env.READY, JSON.stringify({ managerPid: process.pid, childPid: handle.pid })));
+await import("node:fs").then(({ writeFileSync, renameSync }) => { const p = process.env.READY; writeFileSync(p + ".part", JSON.stringify({ managerPid: process.pid, childPid: handle.pid })); renameSync(p + ".part", p); });
 setInterval(() => {}, 1000);
 `);
   legacy = spawn(process.execPath, [host], { env: { ...cleanEnv, READY: ready }, stdio: ["ignore", "ignore", "pipe"] });
-  assert.ok(await until(() => existsSync(ready)), "published old manager started its counter seats");
-  const ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number };
+  // WAIT FOR CONTENT, NOT FOR A NAME. `existsSync` goes true the instant the file is CREATED, which
+  // is before its bytes are written: this read observed a zero-length file on CI and died on
+  // `JSON.parse("")` with a bare SyntaxError, no cell, no diagnosis. The writer above now stages to
+  // `.part` and renames, which is atomic within a directory, and the wait reads rather than stats,
+  // so the handshake cannot be satisfied by a file that has no answer in it yet.
+  let ids: { managerPid: number; childPid: number } | undefined;
+  const idsRead = await until(() => {
+    try { ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number }; return true; }
+    catch { return false; }
+  });
+  assert.ok(idsRead && ids !== undefined, "published old manager started its counter seats");
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "old manager and counter child are live before update");
   const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
   const update = spawnSync(process.execPath, [currentBin, "update", "--space", "legacy783", "--server", `nats://127.0.0.1:${port}`], { cwd: root, env: cleanEnv, encoding: "utf8", timeout: 180_000 });
