@@ -1,5 +1,7 @@
 # @cotal-ai/connector-jcode
 
+## 0.49.1
+
 ## 0.49.0
 
 ### Minor Changes
