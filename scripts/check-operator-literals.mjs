@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // Refuse operator-environment literals in tracked files, commit messages, and pull request text.
 //
-// Three classes are checked:
-//   host-name    the runtime host name plus configured literal host tokens, matched whole
-//   public-ipv4  a valid IPv4 literal outside special-use and documentation ranges
-//   home-path    an absolute Linux home directory path
+// Four classes are checked:
+//   host-name     the runtime host name plus configured literal host tokens, matched whole
+//   public-ipv4   a valid IPv4 literal outside special-use and documentation ranges
+//   shared-ipv4   a host-shaped IPv4 literal in the shared address range
+//   home-path     an absolute Unix home directory path
 //
 // Approved fixtures live in scripts/operator-literal-allowlist.json. Each exception names one
 // path, one rule, and the exact number of matches that must remain. A missing fixture is an error,
 // an added match is dirty, and the same token in any other path is dirty. The self-test prints a
 // planted positive and a near-negative for every class before the real subject is scanned.
-// Finding rows never print the matched token.
+// Workflow files are excluded from host-name matching because CI configuration must name its pool. Shared-address network notation is excluded because it names a range, not a host. Finding
+// rows never print the matched token.
 //
 // Usage:
 //   node scripts/check-operator-literals.mjs [--range <base>..<head>] [--event <event.json>]
@@ -26,6 +28,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { isIPv4 } from 'node:net';
 import { hostname, tmpdir } from 'node:os';
@@ -34,11 +37,13 @@ import { isAbsolute, join, resolve } from 'node:path';
 const RULES = new Map([
   ['host-name', 'configured host name'],
   ['public-ipv4', 'public IPv4 literal'],
+  ['shared-ipv4', 'shared IPv4 literal'],
   ['home-path', 'absolute home path'],
 ]);
 
 const IPV4_CANDIDATE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g;
-const HOME_PATH = /(?<![A-Za-z0-9._~-])\/home\/(?!\.\.?\/?(?:$|[^A-Za-z0-9._-]))[A-Za-z0-9_][A-Za-z0-9._-]*(?=\/|$|[^A-Za-z0-9._-])/g;
+const CIDR_SUFFIX = /^\/(?:[0-9]|[12][0-9]|3[0-2])(?![0-9])/;
+const HOME_PATH = /(?<![A-Za-z0-9._~-])\/(?:home|Users)\/(?!\.\.?\/?(?:$|[^A-Za-z0-9._-]))[A-Za-z0-9_][A-Za-z0-9._-]*(?=\/|$|[^A-Za-z0-9._-])/g;
 
 const NON_PUBLIC_CIDRS = [
   [[0, 0, 0, 0], 8],
@@ -58,6 +63,11 @@ const NON_PUBLIC_CIDRS = [
   [[240, 0, 0, 0], 4],
 ].map(([parts, bits]) => [partsToInt(parts), bits]);
 
+const SHARED_IPV4_BASE = partsToInt([100, 64, 0, 0]);
+const MIN_HOST_TOKEN_LENGTH = 7;
+// A host literal should be rare, so this ceiling stops a vocabulary token before it floods the scan.
+const HOST_TOKEN_FILE_CEILING = 25;
+
 const PUBLIC_EXCEPTIONS = new Set([
   partsToInt([192, 0, 0, 9]),
   partsToInt([192, 0, 0, 10]),
@@ -69,6 +79,12 @@ function partsToInt(parts) {
 
 function ipv4ToInt(value) {
   return partsToInt(value.split('.').map(Number));
+}
+
+export function isSharedIPv4(value) {
+  if (!isIPv4(value)) return false;
+  const numeric = ipv4ToInt(value);
+  return (numeric >>> 22) === (SHARED_IPV4_BASE >>> 22);
 }
 
 export function isPublicIPv4(value) {
@@ -102,6 +118,38 @@ function hostPatterns(hostTokens) {
   );
 }
 
+// CI configuration must name its pool, so only this rule excludes this exact subtree.
+function excludesHostNames(path) {
+  return String(path).startsWith('.github/workflows/');
+}
+
+function hostTokenLengthFailures(hostTokens) {
+  return hostTokens
+    .filter((token) => token.length < MIN_HOST_TOKEN_LENGTH)
+    .map((token) => ({ tokenLength: token.length }));
+}
+
+function hostTokenCeilingFailures(entries, hostTokens) {
+  const failures = [];
+  for (const token of hostTokens) {
+    const pattern = hostPatterns([token])[0];
+    let matchingFiles = 0;
+    for (const entry of entries) {
+      if (excludesHostNames(entry.path)) continue;
+      pattern.lastIndex = 0;
+      if (pattern.test(entry.text)) matchingFiles += 1;
+    }
+    if (matchingFiles > HOST_TOKEN_FILE_CEILING) {
+      failures.push({ tokenLength: token.length, matchingFiles });
+    }
+  }
+  return failures;
+}
+
+function hasBinaryPrefix(buffer) {
+  return buffer.subarray(0, 8192).includes(0);
+}
+
 function lines(text) {
   return String(text ?? '').split(/\r?\n/);
 }
@@ -119,14 +167,23 @@ export function findings(text, where, hostTokens) {
   };
 
   lines(text).forEach((lineText, lineIndex) => {
-    for (const pattern of hosts) {
-      pattern.lastIndex = 0;
-      for (const match of lineText.matchAll(pattern)) add('host-name', lineIndex + 1, match.index + 1);
+    if (!excludesHostNames(where)) {
+      for (const pattern of hosts) {
+        pattern.lastIndex = 0;
+        for (const match of lineText.matchAll(pattern)) {
+          add('host-name', lineIndex + 1, match.index + 1);
+        }
+      }
     }
 
     IPV4_CANDIDATE.lastIndex = 0;
     for (const match of lineText.matchAll(IPV4_CANDIDATE)) {
-      if (isPublicIPv4(match[0])) add('public-ipv4', lineIndex + 1, match.index + 1);
+      const cidrNotation = CIDR_SUFFIX.test(lineText.slice(match.index + match[0].length));
+      if (isSharedIPv4(match[0]) && !cidrNotation) {
+        add('shared-ipv4', lineIndex + 1, match.index + 1);
+      } else if (isPublicIPv4(match[0])) {
+        add('public-ipv4', lineIndex + 1, match.index + 1);
+      }
     }
 
     HOME_PATH.lastIndex = 0;
@@ -166,8 +223,10 @@ export function trackedEntries(root) {
 
   const entries = [];
   let gitlinks = 0;
+  let binarySkipped = 0;
   for (const row of rows) {
     const { mode, path } = parseStageRow(row);
+    // Gitlinks are staged paths but not eligible files because their content is not in this tree.
     if (mode === '160000') {
       gitlinks += 1;
       continue;
@@ -180,12 +239,22 @@ export function trackedEntries(root) {
     } catch {
       throw new Error(`tracked subject is missing: ${path}`);
     }
-    const text = stat.isSymbolicLink() ? readlinkSync(fullPath) : readFileSync(fullPath, 'utf8');
+    let text;
+    if (stat.isSymbolicLink()) {
+      text = readlinkSync(fullPath);
+    } else {
+      const contents = readFileSync(fullPath);
+      if (hasBinaryPrefix(contents)) {
+        binarySkipped += 1;
+        continue;
+      }
+      text = contents.toString('utf8');
+    }
     entries.push({ path, text });
   }
 
   if (entries.length === 0) throw new Error('tracked-file subject has no readable files');
-  return { entries, stageRows: rows.length, gitlinks };
+  return { entries, stageRows: rows.length, gitlinks, binarySkipped };
 }
 
 function readAllowlist(path) {
@@ -338,23 +407,34 @@ function shapeIPv4Count(text) {
 }
 
 function homeFragmentCount(text) {
-  return String(text).includes('home/') ? 1 : 0;
+  return /(?:home|Users)\//.test(String(text)) ? 1 : 0;
 }
 
 const SELFTEST_HOST = ['privacy', 'fixture', 'host'].join('-');
 const SELFTEST_HOME = `/${['home', 'fixture-user'].join('/')}`;
+const SELFTEST_MAC_HOME = `/${['Users', 'fixture-user'].join('/')}`;
 const SELFTEST_PUBLIC_IP = [8, 8, 4, 4].join('.');
+const SELFTEST_SHARED_IP = [100, 64, 23, 45].join('.');
 
 const CELL_EXPECTATIONS = new Map([
   ['host-planted', 'primary=1/1 secondary=1/1'],
   ['host-substring', 'primary=0/1 secondary=1/1'],
+  ['workflow-host-exclusion', 'workflow=0/1 non_workflow=1/1 planted=2/2'],
   ['ip-planted', 'primary=1/1 secondary=1/1'],
   ['ip-loopback', 'primary=0/1 secondary=1/1'],
   ['ip-zero', 'primary=0/1 secondary=1/1'],
   ['ip-private', 'primary=0/1 secondary=1/1'],
   ['ip-documentation', 'primary=0/1 secondary=1/1'],
+  ['shared-ip-planted', 'primary=1/1 secondary=1/1'],
+  ['shared-ip-private', 'primary=0/1 secondary=1/1'],
+  ['shared-ip-network', 'primary=0/1 secondary=1/1'],
   ['home-planted', 'primary=1/1 secondary=1/1'],
   ['home-relative', 'primary=0/1 secondary=1/1'],
+  ['mac-home-planted', 'primary=1/1 secondary=1/1'],
+  ['mac-home-relative', 'primary=0/1 secondary=1/1'],
+  ['short-host-token', `scanner=broken token_length=5/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
+  ['host-token-ceiling', `scanner=broken matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${SELFTEST_HOST.length}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
+  ['binary-skip', 'files_scanned=1/1 binary_skipped=1/1'],
   ['allowlisted-fixture', 'scanner=clean allowed=1/1'],
   ['same-token-elsewhere', 'scanner=dirty findings=1/1'],
   ['allowlist-fixture-deleted', 'scanner=broken errors=1/1'],
@@ -399,6 +479,19 @@ function scanCell(id, expectedStatus, metric, expectedCount, measure) {
   };
 }
 
+function binaryFixtureResult() {
+  const dir = mkdtempSync(join(tmpdir(), 'operator-literal-binary-selftest-'));
+  try {
+    git(['init', '-q'], dir);
+    writeFileSync(join(dir, 'fixture.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]));
+    writeFileSync(join(dir, 'fixture.txt'), 'text fixture\n');
+    git(['add', '--', 'fixture.png', 'fixture.txt'], dir);
+    return trackedEntries(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function missingSubjectResult() {
   const dir = mkdtempSync(join(tmpdir(), 'operator-literal-selftest-'));
   try {
@@ -427,6 +520,30 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL host-substring START
   matchCell('host-substring', `connect x${SELFTEST_HOST}y now`, 'host-name', 0, (text) => Number(text.includes(SELFTEST_HOST)), 1),
   // SELFTEST_CELL host-substring END
+  // SELFTEST_CELL workflow-host-exclusion START
+  {
+    id: 'workflow-host-exclusion',
+    measure: () => {
+      const workflowText = `runs-on: ${SELFTEST_HOST}`;
+      const nonWorkflowText = `connect ${SELFTEST_HOST} now`;
+      const workflow = findings(
+        workflowText,
+        '.github/workflows/fixture.yml',
+        [SELFTEST_HOST],
+      ).filter((finding) => finding.rule === 'host-name').length;
+      const nonWorkflow = findings(
+        nonWorkflowText,
+        'src/fixture.txt',
+        [SELFTEST_HOST],
+      ).filter((finding) => finding.rule === 'host-name').length;
+      const planted = [workflowText, nonWorkflowText].filter((text) => text.includes(SELFTEST_HOST)).length;
+      return {
+        actual: `workflow=${workflow}/1 non_workflow=${nonWorkflow}/1 planted=${planted}/2`,
+        pass: workflow === 0 && nonWorkflow === 1 && planted === 2,
+      };
+    },
+  },
+  // SELFTEST_CELL workflow-host-exclusion END
   // SELFTEST_CELL ip-planted START
   matchCell('ip-planted', SELFTEST_PUBLIC_IP, 'public-ipv4', 1, shapeIPv4Count, 1),
   // SELFTEST_CELL ip-planted END
@@ -442,12 +559,69 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL ip-documentation START
   matchCell('ip-documentation', [203, 0, 113, 9].join('.'), 'public-ipv4', 0, shapeIPv4Count, 1),
   // SELFTEST_CELL ip-documentation END
+  // SELFTEST_CELL shared-ip-planted START
+  matchCell('shared-ip-planted', SELFTEST_SHARED_IP, 'shared-ipv4', 1, shapeIPv4Count, 1),
+  // SELFTEST_CELL shared-ip-planted END
+  // SELFTEST_CELL shared-ip-private START
+  matchCell('shared-ip-private', [10, 45, 67, 89].join('.'), 'shared-ipv4', 0, shapeIPv4Count, 1),
+  // SELFTEST_CELL shared-ip-private END
+  // SELFTEST_CELL shared-ip-network START
+  matchCell('shared-ip-network', `${SELFTEST_SHARED_IP}/10`, 'shared-ipv4', 0, shapeIPv4Count, 1),
+  // SELFTEST_CELL shared-ip-network END
   // SELFTEST_CELL home-planted START
   matchCell('home-planted', `file://${SELFTEST_HOME}/file`, 'home-path', 1, homeFragmentCount, 1),
   // SELFTEST_CELL home-planted END
   // SELFTEST_CELL home-relative START
   matchCell('home-relative', `open ${SELFTEST_HOME.slice(1)}/file`, 'home-path', 0, homeFragmentCount, 1),
   // SELFTEST_CELL home-relative END
+  // SELFTEST_CELL mac-home-planted START
+  matchCell('mac-home-planted', `file://${SELFTEST_MAC_HOME}/file`, 'home-path', 1, homeFragmentCount, 1),
+  // SELFTEST_CELL mac-home-planted END
+  // SELFTEST_CELL mac-home-relative START
+  matchCell('mac-home-relative', `open ${SELFTEST_MAC_HOME.slice(1)}/file`, 'home-path', 0, homeFragmentCount, 1),
+  // SELFTEST_CELL mac-home-relative END
+  // SELFTEST_CELL short-host-token START
+  {
+    id: 'short-host-token',
+    measure: () => {
+      const failures = hostTokenLengthFailures(['short']);
+      const tokenLength = failures[0]?.tokenLength ?? 0;
+      return {
+        actual: `scanner=${failures.length === 1 ? 'broken' : 'clean'} token_length=${tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=${failures.length}/1`,
+        pass: failures.length === 1 && tokenLength === 5,
+      };
+    },
+  },
+  // SELFTEST_CELL short-host-token END
+  // SELFTEST_CELL host-token-ceiling START
+  {
+    id: 'host-token-ceiling',
+    measure: () => {
+      const entries = Array.from({ length: HOST_TOKEN_FILE_CEILING + 1 }, (_, index) => ({
+        path: `fixtures/host-${index}.txt`,
+        text: `connect ${SELFTEST_HOST} now`,
+      }));
+      const failures = hostTokenCeilingFailures(entries, [SELFTEST_HOST]);
+      const failure = failures[0];
+      return {
+        actual: `scanner=${failures.length === 1 ? 'broken' : 'clean'} matching_files=${failure?.matchingFiles ?? 0}/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${failure?.tokenLength ?? 0}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=${failures.length}/1`,
+        pass: failures.length === 1 && failure.matchingFiles === HOST_TOKEN_FILE_CEILING + 1 && failure.tokenLength === SELFTEST_HOST.length,
+      };
+    },
+  },
+  // SELFTEST_CELL host-token-ceiling END
+  // SELFTEST_CELL binary-skip START
+  {
+    id: 'binary-skip',
+    measure: () => {
+      const tracked = binaryFixtureResult();
+      return {
+        actual: `files_scanned=${tracked.entries.length}/1 binary_skipped=${tracked.binarySkipped}/1`,
+        pass: tracked.entries.length === 1 && tracked.binarySkipped === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL binary-skip END
   // SELFTEST_CELL allowlisted-fixture START
   scanCell('allowlisted-fixture', 'clean', 'allowed', 1, () => scanEntries([{ path: 'fixtures/scrubber.txt', text: SELFTEST_HOME }], [SELFTEST_HOST], SELFTEST_ALLOWLIST)),
   // SELFTEST_CELL allowlisted-fixture END
@@ -514,6 +688,12 @@ export function selftest(context) {
   return failed === 0;
 }
 
+function treeAccountingFields(tracked) {
+  const trackedFiles = tracked.stageRows - tracked.gitlinks;
+  const eligibleFiles = trackedFiles - tracked.binarySkipped;
+  return `stage_paths=${tracked.stageRows}/${tracked.stageRows} gitlinks=${tracked.gitlinks}/${tracked.stageRows} binary_skipped=${tracked.binarySkipped}/${trackedFiles} files_scanned=${tracked.entries.length}/${eligibleFiles}`;
+}
+
 function reportFindings(context, all) {
   const groups = new Map();
   for (const finding of all) {
@@ -527,7 +707,7 @@ function reportFindings(context, all) {
       emit(
         context,
         'FINDING_ROW',
-        `source=${JSON.stringify(finding.where)} rule=${finding.rule} occurrence=${index + 1}/${group.length}`,
+        `source=${JSON.stringify(finding.where)} rule=${finding.rule} line=${finding.line} column=${finding.column} occurrence=${index + 1}/${group.length}`,
       );
     });
   }
@@ -581,11 +761,6 @@ function main(argv) {
     return 2;
   }
 
-  emit(context, 'IDENTITY_ROW', 'subject=operator-literal-check source=current-git-head');
-
-  if (!selftest(context)) return 2;
-  if (args.selftestOnly) return 0;
-
   let hostTokens;
   try {
     const configured = (process.env.COTAL_PRIVACY_HOST_TOKENS ?? '').split(/\r?\n/);
@@ -595,10 +770,47 @@ function main(argv) {
     return 2;
   }
 
+  emit(
+    context,
+    'IDENTITY_ROW',
+    `subject=operator-literal-check source=current-git-head host_tokens=${hostTokens.length}`,
+  );
+
+  if (!selftest(context)) return 2;
+  if (args.selftestOnly) return 0;
+
+  const lengthFailures = hostTokenLengthFailures(hostTokens);
+  if (lengthFailures.length > 0) {
+    for (const failure of lengthFailures) {
+      emit(
+        context,
+        'ERROR_ROW',
+        `subject=host-configuration status=broken reason="host token is shorter than minimum" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum`,
+      );
+    }
+    return 2;
+  }
+
   let tracked;
   let treeResult;
   try {
     tracked = trackedEntries(args.root);
+    const ceilingFailures = hostTokenCeilingFailures(tracked.entries, hostTokens);
+    if (ceilingFailures.length > 0) {
+      for (const failure of ceilingFailures) {
+        emit(
+          context,
+          'ERROR_ROW',
+          `subject=host-configuration status=broken reason="host token matches too many files" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum matching_files=${failure.matchingFiles}/${HOST_TOKEN_FILE_CEILING}_ceiling`,
+        );
+      }
+      emit(
+        context,
+        'SCAN_ROW',
+        `subject=tree ${treeAccountingFields(tracked)} findings=0/${tracked.entries.length}_files status=broken`,
+      );
+      return 2;
+    }
     treeResult = scanEntries(tracked.entries, hostTokens, readAllowlist(args.allowlist));
   } catch (error) {
     emit(context, 'ERROR_ROW', `subject=tree status=broken reason=${JSON.stringify(error.message)}`);
@@ -618,7 +830,7 @@ function main(argv) {
   emit(
     context,
     'SCAN_ROW',
-    `subject=tree files_scanned=${tracked.entries.length}/${tracked.stageRows - tracked.gitlinks} eligible_tracked_files findings=${treeResult.findings.length}/${tracked.entries.length}_files status=${treeResult.status}`,
+    `subject=tree ${treeAccountingFields(tracked)} findings=${treeResult.findings.length}/${tracked.entries.length}_files status=${treeResult.status}`,
   );
 
   const allFindings = [...treeResult.findings];
@@ -669,5 +881,5 @@ function main(argv) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  process.exit(main(process.argv));
+  process.exitCode = main(process.argv);
 }

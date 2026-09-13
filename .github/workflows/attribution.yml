@@ -43,6 +43,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          COTAL_PRIVACY_HOST_TOKENS: ${{ vars.COTAL_PRIVACY_HOST_TOKENS }}
         run: |
           git fetch --no-tags origin "$BASE" "$HEAD"
           node scripts/check-operator-literals.mjs --range "$BASE..$HEAD" --event "$GITHUB_EVENT_PATH"

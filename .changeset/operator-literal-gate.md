@@ -1,4 +1,4 @@
 ---
 ---
 
-Repository checks now reject public IPv4 literals, absolute home paths, and configured host tokens while preserving counted fixtures.
+Repository checks now reject public and shared IPv4 literals, Linux and macOS home paths, and configured host tokens while preserving counted fixtures.
