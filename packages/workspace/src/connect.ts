@@ -99,6 +99,11 @@ export interface Connection {
   root?: string;
   /** How the target was resolved (registry / current / flag-space / …) — undefined for raw. */
   source?: MeshTarget["source"];
+  /** The registered mesh contract (`auth` / `open` / `user`). Present on a registry-resolved
+   *  connection and absent on a raw off-registry connect (`--creds`, or `--server` plus an
+   *  unregistered `--space`). Callers that branch on open vs static MUST read this, not the
+   *  absence of `auth`: an authenticated registry entry with a missing seed is still `auth`. */
+  mode?: MeshTarget["mode"];
   /** The connection's v0.4 caller triple (SPEC §13.2), present when this connection can ride the
    *  ep rails: a minted operator INSTRUMENT (`control-caller-*` / `deployer`, static trust
    *  material - the mint pins a fresh lifecycle uid) or a USER-mode bearer (the callout mints the
@@ -398,12 +403,21 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       creds = await mintCreds(target.auth, identity, role, opts.mint ?? {});
     }
   }
+  // A registered AUTH mesh with no seed is still authenticated. A credless probe would
+  // classify it as "open now wants auth" and prune or attach as open. Refuse here,
+  // naming the recorded mode.
+  if (target.mode === "auth" && !target.auth) {
+    throw new ConnectRefusal(
+      `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
+    );
+  }
   await preflightOrThrow(target, creds);
   // THE REGISTRY-RESOLVED PATH, and the one that must inherit the recorded decision: if the mesh
   // record says this broker is TLS-required, the connection REQUIRES it. This is the site whose
   // omission had no symptom - it connects either way against an honest broker.
   return {
     server: target.server, space: target.space, tls: target.tlsRequired, creds, auth: target.auth, root: target.root, source: target.source,
+    mode: target.mode,
     ...(epCaller ? { epCaller } : {}),
   };
 }
@@ -482,6 +496,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
       userAuth: ua,
       root: target.root,
       source: target.source,
+      mode: target.mode,
       epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
     };
   } catch (e) {

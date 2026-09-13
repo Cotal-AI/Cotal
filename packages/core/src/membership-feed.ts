@@ -121,8 +121,26 @@ async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: num
 }
 const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server before a loud under-report)
 
-/** Connect, wire the triggers + safety poll, and run an immediate first reconcile. */
+/** Connect, wire the triggers + safety poll, and run an immediate first reconcile.
+ *
+ *  Startup is TRANSACTIONAL. Conn A opens first, and every step after it can throw: an rw source that
+ *  rejects, credential bytes `idFromCreds` refuses, conn B's own dial (its pre-dial checkpoint refuses a
+ *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open,
+ *  the first reconcile. The only `drain()` in this file is inside the handle's `stop()`, and a caller
+ *  that never receives the handle can never call it — so a reject left the observer connection open for
+ *  the life of the process. Everything acquired is drained here before the rejection propagates. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
+  const opened: NatsConnection[] = [];
+  try {
+    return await startFeed(opts, opened);
+  } catch (err) {
+    // `allSettled`: a drain that itself fails must not replace the startup error the caller needs.
+    await Promise.allSettled(opened.map((c) => c.drain()));
+    throw err;
+  }
+}
+
+async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Promise<MembershipFeedHandle> {
   const log = opts.log ?? ((m: string) => console.error(`! membership: ${m}`));
   const intervalMs = opts.intervalMs ?? 15_000;
   const debounceMs = opts.debounceMs ?? 400;
@@ -138,6 +156,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX, // scoped reply inboxes — the cred only allows `<prefix>.>`
     maxReconnectAttempts: -1,
   });
+  opened.push(connA); // the transactional record — `startMembershipFeed` drains this if anything below throws
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
   // The rw source: async-capable (a hosted `store.get`) or sync (a local FS read / literal). Read ONCE
@@ -189,6 +208,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     inboxPrefix: `_INBOX_${rwSelfId}`,
     maxReconnectAttempts: -1,
   });
+  opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
 
   const kvm = new Kvm(connB);
