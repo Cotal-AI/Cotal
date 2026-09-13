@@ -773,7 +773,15 @@ export async function runJcodeHost(): Promise<void> {
       // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
       // #910 delivery this connector exists to provide. So the gate is released as soon as the send
       // has been acknowledged, while the turn keeps streaming outside it.
-      const runTurn = await withExclusiveDispatch(async () => {
+      //
+      // THE HANDLE IS WRAPPED IN AN OBJECT AND THAT IS LOAD-BEARING, NOT STYLE. Returning the run
+      // promise bare from an async callback assimilates it: `return await operation()` would adopt
+      // it and wait for the TURN, silently extending this gate from one acceptance round trip to the
+      // entire run. A reviewer measured exactly that on the bare form, observing no fallback send for
+      // 95 seconds while a swallowed run stayed open, which recreates the starvation #1233 is about.
+      // An object is not a thenable, so it crosses both async boundaries as a value and the turn is
+      // awaited below, outside the gate.
+      const { dispatched: runTurn } = await withExclusiveDispatch(async () => {
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
@@ -785,7 +793,7 @@ export async function runJcodeHost(): Promise<void> {
           dispatched.then(() => undefined, () => undefined),
           onceAccepted(turnClient!, sessionId!, RUN_ACCEPT_WINDOW_MS),
         ]);
-        return dispatched;
+        return { dispatched };
       });
       await runTurn;
       // The SDK's event iterator returns normally when its socket closes. That is not a successful

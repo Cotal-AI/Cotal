@@ -105,6 +105,10 @@ const acceptDelayMs = 4_000;
 // Touched by Cell B3 to end the seat's busy window at a chosen instant. Absent until then, so the
 // busy hold above governs every earlier cell exactly as before.
 const busyReleaseFile = join(root, "busy-release");
+// Cell B4 holds one turn open to prove the dispatch gate is bounded by an acceptance round trip
+// rather than by the turn. Absent until that cell writes it, so no earlier cell is affected.
+const heldTurnReleaseFile = join(root, "held-turn-release");
+const heldTurnMarker = "HELD_OPEN_TURN_1233";
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
 let child: ChildProcess | undefined;
@@ -276,6 +280,11 @@ try {
       // where only one pair in four reproduced it. Touching a file makes the ordering a decision
       // instead of a coincidence, so the cell grades the host rather than the runner's load.
       FAKE_JCODE_BUSY_RELEASE_FILE: busyReleaseFile,
+      // A turn carrying this text is accepted and RUNS, and its completion waits for the release
+      // file. That models a seat thinking for a long time, which is the ordinary case, and it is the
+      // only way to observe whether host bookkeeping is bounded by acceptance or by the turn.
+      FAKE_JCODE_HOLD_TURN_ON_CONTENT: heldTurnMarker,
+      FAKE_JCODE_HOLD_TURN_RELEASE_FILE: heldTurnReleaseFile,
       // Holds `message_accepted` open so the host's post-await window is observable (Cell B2). It
       // changes WHEN the acknowledgement lands, never whether the message is delivered.
       FAKE_JCODE_ACCEPT_DELAY_MS: String(acceptDelayMs),
@@ -502,6 +511,67 @@ try {
       runs >= 1,
       { executions: runs, sendFrames: copies },
     );
+  }
+
+  // --- Cell B4: the dispatch gate is bounded by an ACCEPTANCE, never by the turn ----------------
+  // Reviewer-found, and it is the starvation this issue exists to stop, reintroduced by the repair
+  // for the cross-talk loss. The gate serialising acceptance-listening sends must hold for ONE
+  // acceptance round trip. If it instead holds for the whole turn, then a seat thinking for minutes
+  // blocks every queued handover behind it, which is #1233 again with a new cause.
+  //
+  // THE MECHANISM IS PROMISE ASSIMILATION, and it is invisible in a diff. `withExclusiveDispatch` is
+  // async and does `return await operation()`. If the callback returns the bare `run()` promise,
+  // both async boundaries ADOPT it, so the gate awaits the turn no matter what the race inside it
+  // decided. A reviewer measured 95 seconds with no fallback send while a swallowed run stayed open.
+  // Wrapping the handle in an object fixes it, because an object is not a thenable.
+  //
+  // The witness is a message that arrives DURING a turn that has not finished. The turn is genuinely
+  // running and genuinely accepted; only its completion is deferred, so nothing here fakes progress.
+  {
+    const starveMarker = "STARVED_BEHIND_HELD_TURN_1233";
+    // Send the held-open turn first and wait for the seat to actually be running it. Waiting on the
+    // fake's own record rather than sleeping means the window below is open by construction.
+    await operator.unicast(peerId!, heldTurnMarker);
+    const turnHeld = await tryWaitFor(
+      () => (entries().some((entry) => entry.ev === "turn_held_open") ? true : undefined),
+      45_000,
+    );
+    // Now a second message, which must reach the session while that turn is still open.
+    //
+    // THE WITNESS IS THE FALLBACK'S OWN `send_message`, NOT ANY HANDOVER, and getting that wrong is
+    // how the first version of this cell graded nothing. `handoversCarrying` unions send_message with
+    // soft_interrupt, and the soft interrupt is deliberately NOT gated (it is correlated by
+    // `reply_to`), so its request frame arrives whatever the dispatch gate is doing. The control
+    // PASSED on the bare-promise tree with that predicate, because it was watching a path the defect
+    // cannot touch. The queued-turn send is the only delivery that goes through the gate, and it is
+    // exactly what the reviewer observed to be absent for 95 seconds.
+    await operator.unicast(peerId!, starveMarker);
+    const reached = await tryWaitFor(
+      () => (queuedSendsCarrying(starveMarker).length > 0 ? true : undefined),
+      45_000,
+    );
+    // Read the turn's state at the moment of judgement rather than inferring it: the whole claim is
+    // that the delivery happened while the turn was UNFINISHED, so a cell that let the turn complete
+    // first would pass against the defect it names.
+    const stillOpen = !entries().some((entry) => entry.ev === "turn_hold_released");
+    check(
+      "the held turn is genuinely still running, so the delivery below is not merely post-turn",
+      turnHeld === true && stillOpen,
+      { turnHeld: turnHeld === true, stillOpen },
+    );
+    check(
+      "a message reaches the session while an earlier turn is still open, so the dispatch gate is bounded by acceptance rather than by the turn (#1233)",
+      turnHeld === true && reached === true && stillOpen,
+      {
+        turnHeld: turnHeld === true,
+        deliveredDuringOpenTurn: reached === true,
+        stillOpen,
+        queuedSends: queuedSendsCarrying(starveMarker).length,
+        handoversIncludingUngatedSteer: handoversCarrying(starveMarker).length,
+      },
+    );
+    // Release the held turn so the suite's teardown is not waiting on it.
+    writeFileSync(heldTurnReleaseFile, "release");
   }
 
   // --- Cell C: the reported state --------------------------------------------------------------

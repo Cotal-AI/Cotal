@@ -210,6 +210,32 @@ function runTurn(frame, socket) {
   }
   turnBusy = true;
   busyOwner = socket;
+  // A turn that STAYS OPEN, scoped by content. A real seat can take a message and then think for
+  // minutes, and any host bookkeeping keyed to the turn's completion is held for exactly that long.
+  // The turn is accepted normally and is genuinely running; only its completion is deferred until
+  // the fixture writes the release file. Scoped by content so readiness and post-join traffic still
+  // complete and the seat reaches the mesh, rather than grading a boot failure.
+  const holdMatch = process.env.FAKE_JCODE_HOLD_TURN_ON_CONTENT;
+  const holdRelease = process.env.FAKE_JCODE_HOLD_TURN_RELEASE_FILE;
+  if (holdMatch && String(frame.content).includes(holdMatch)) {
+    log({ ev: "turn_held_open", content: frame.content });
+    const waitForRelease = () => {
+      if (holdRelease && !existsSync(holdRelease)) {
+        setTimeout(waitForRelease, 50).unref();
+        return;
+      }
+      log({ ev: "turn_hold_released", content: frame.content });
+      event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
+      log({ ev: "turn_done_emitted", content: frame.content });
+      event({ ev: "turn_done", session_id: frame.session_id });
+      turnBusy = false;
+      busyOwner = undefined;
+      const queued = queuedTurns.shift();
+      if (queued) queued();
+    };
+    setTimeout(waitForRelease, 50).unref();
+    return;
+  }
   // The delay knob keeps a failure-path test observable: a host that tears down on the
   // refusal is faster than a 100ms poll, so the turn must outlast the observer's window.
   setTimeout(() => {
