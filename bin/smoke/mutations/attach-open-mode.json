@@ -104,8 +104,8 @@
     {
       "name": "a registered sealed mesh with no seed is probed and connected as open",
       "file": "packages/workspace/src/connect.ts",
-      "find": "  if (target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `✗ mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,\n    );\n  }",
-      "replace": "  if (false && target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `✗ mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,\n    );\n  }",
+      "find": "  if (target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `\u2717 mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,\n    );\n  }",
+      "replace": "  if (false && target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `\u2717 mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,\n    );\n  }",
       "expectRed": "connecting to a sealed mesh whose seed is gone refuses by name, and says the mesh is NOT open",
       "cell": "connecting to a sealed mesh whose seed is gone refuses by name, and says the mesh is NOT open",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build",
@@ -140,6 +140,16 @@
       "cell": "REFUSE (same creds, seed absent): a sealed mesh keeps what it arrived with and DEGRADES, never refusing",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "note": "A sealed mesh with no seed must DEGRADE here, not be reclassified as open. Treating it as open at this site is the same class of error as #1205, one call before the redeem."
+    },
+    {
+      "name": "the mode the resolver SYNTHESISES is broken: an unregistered seedless root stops resolving as open",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "mode: auth ? \"auth\" : \"open\", tlsRequired: false",
+      "replace": "mode: auth ? \"auth\" : \"user\", tlsRequired: false",
+      "expectRed": "ACCEPT: an UNREGISTERED root with no seed resolves to mode \"open\", not to an absent mode",
+      "cell": "ACCEPT: an UNREGISTERED root with no seed resolves to mode \"open\", not to an absent mode",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
+      "note": "localTarget DERIVES the mode that the redeem decision then reads, so the resolver decides the redeem contract one step earlier. Mutating the derived mode to another VALID member (not undefined, which only breaks the build and proves nothing) shows the resolver cells actually observe that derivation rather than restating the hand-built case."
     }
   ]
 }
