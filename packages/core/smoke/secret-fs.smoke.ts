@@ -41,7 +41,17 @@ if (process.env.COTAL_SECRETFS_RACE_WORKER === "1") {
   process.exit(0);
 }
 const isWin = process.platform === "win32";
-const TSX = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
+// Racers re-enter THIS file, so they need the same loader running it. Do NOT spawn
+// `node_modules/.bin/tsx`: on Windows that is an extensionless shell shim and spawns ENOENT, and
+// the `.CMD` beside it needs a shell. The package's own CLI entry is a plain .mjs that `node` can
+// run directly on every platform, which is what the tsx bin resolves to anyway.
+const TSX_CLI = join(
+  fileURLToPath(new URL("../../../", import.meta.url)),
+  "node_modules",
+  "tsx",
+  "dist",
+  "cli.mjs",
+);
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
 let failures = 0;
 function check(label: string, cond: boolean): void {
@@ -224,6 +234,7 @@ check("...and that failure left no .tmp litter",
   const RACERS = 8;
   const ROUNDS = 12;
   let multiWinner = 0;
+  let silent = 0;
   let observed = 0;
   for (let r = 0; r < ROUNDS; r++) {
     const raceDir = join(dir, `race-${r}`);
@@ -231,15 +242,20 @@ check("...and that failure left no .tmp litter",
     const target = join(raceDir, "contested.secret");
     const barrier = join(raceDir, "go");
     const outcomes: string[] = [];
+    // Whatever runs a suite may be a managed agent session, so a raw spread would hand each racer
+    // a live credential and broker URL. Strip every COTAL_ key from the copy first; the racers need
+    // only their own three variables.
+    const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
     await new Promise<void>((resolve, reject) => {
       let left = RACERS;
       const timer = setTimeout(() => reject(new Error("race workers did not report")), 60_000);
       for (let i = 0; i < RACERS; i++) {
         // spawnSync would serialise the racers and could never observe a conflict; these run
         // concurrently and are released together by the barrier below.
-        const child = spawn(TSX, [process.argv[1]!], {
+        const child = spawn(process.execPath, [TSX_CLI, process.argv[1]!], {
           env: {
-            ...process.env,
+            ...cleanEnv,
             COTAL_SECRETFS_RACE_WORKER: "1",
             COTAL_SECRETFS_RACE_PATH: target,
             COTAL_SECRETFS_RACE_BARRIER: barrier,
@@ -258,11 +274,15 @@ check("...and that failure left no .tmp litter",
       setTimeout(() => writeFileSync(barrier, "go"), 300);
     });
     const winners = outcomes.filter((o) => o === "WON").length;
-    observed += outcomes.length;
+    const reported = outcomes.filter((o) => o === "WON" || o === "LOST").length;
+    // A racer that never started prints nothing and would otherwise be counted a loser, which
+    // makes "exactly one winner" true for the wrong reason. Every racer must have reported.
+    if (reported !== RACERS) silent++;
+    observed += reported;
     if (winners !== 1) multiWinner++;
   }
   check(`REFUSE: of ${RACERS} concurrent creators over ${ROUNDS} rounds exactly one ever creates the name`,
-    multiWinner === 0 && observed === RACERS * ROUNDS);
+    multiWinner === 0 && silent === 0 && observed === RACERS * ROUNDS);
 }
 
 // mkSecretDir creates a private dir.
