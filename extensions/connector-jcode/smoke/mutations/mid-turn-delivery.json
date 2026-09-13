@@ -23,10 +23,10 @@
     {
       "name": "M1 leave directed mid-turn DMs parked in the connector inbox",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        const release = reserveForHandover(keys);\n        const request = current.softInterrupt(sessionId, injection, false);",
+      "find": "        const release = reserveForHandover(keys);\n        const request = withExclusiveDispatch(() => current.softInterrupt(sessionId!, injection, false));",
       "replace": "        const release = reserveForHandover(keys);\n        release();\n        return;",
       "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)",
-      "note": "Re-anchored for #1233: the reservation fix inserted the reserve call between `const current` and the softInterrupt, so the old anchor no longer matched and the mutation ERRORed instead of running. Same severing: the soft interrupt never happens and the DMs stay parked. The mutant releases first so it leaks nothing, which keeps the cell measuring undelivered mid-turn DMs rather than a reservation leak."
+      "note": "Re-anchored for #1233: the reservation fix inserted the reserve call between `const current` and the softInterrupt, so the old anchor no longer matched and the mutation ERRORed instead of running. Same severing: the soft interrupt never happens and the DMs stay parked. The mutant releases first so it leaks nothing, which keeps the cell measuring undelivered mid-turn DMs rather than a reservation leak. Re-anchored again for #1233 when the steer was placed behind the acceptance dispatch gate. Same severing as before: no soft interrupt, DMs stay parked, and the mutant releases first so it leaks no reservation."
     },
     {
       "name": "M2 accept the soft interrupt but commit only the turn's initial ids",
