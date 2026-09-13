@@ -124,8 +124,8 @@
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
       "find": "            if gen is not None and gen != self._gen:\n                return  # retired while dialing: this socket is not wanted\n",
       "replace": "",
-      "expectRed": "a reader retired mid-dial must not install its socket over the live generation's: the lock makes the write atomic, not correct",
-      "note": "MEASURED SURVIVOR, kept deliberately and disclosed rather than deleted. With only the pre-dial check removed the suite stays 52/52 green, because the under-lock check still refuses the clobber this probe constructs. That makes the pre-dial check an early-out rather than the correctness guard: it saves a pointless dial, and removing it costs work, not safety. A cell that kills this half would have to observe the dial NOT happening, which is a performance property, not a delivery one."
+      "expectRed": "a dialer retired BEFORE its dial must not open a connection at all",
+      "note": "The pre-dial check is an early-out, not the correctness guard: with it removed the under-lock check still refuses the install, so every delivery row stays green. Its effect is observable as a connection the broker accepts and nobody uses, measured 0 with the check and 1 without, which is what this cell grades."
     },
     {
       "name": "M7b the UNDER-LOCK generation check is removed (the pre-dial check remains)",

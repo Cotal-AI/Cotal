@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 54;
+const EXPECTED_CELLS = 55;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -364,6 +364,15 @@ assert.equal(
   subject.LAST_SUB_EVERY_REP_DELIVERED,
   "True",
   `a 100KB frame on the LAST subscriber must reach the installed reader on every rep (${subject.LAST_SUB_DELIVERED})`,
+);
+
+// The pre-dial check is an early-out rather than a correctness guard: removing it leaves the
+// under-lock check to refuse the install, so no delivery cell changes. What changes is that a
+// retired dialer opens a connection nobody uses. Measured 0 with the check and 1 without.
+assert.equal(
+  subject.RETIRED_DIALER_OPENED_NO_CONNECTION,
+  "True",
+  `a dialer retired BEFORE its dial must not open a connection at all (${subject.PREDIAL_CONNECTIONS_OPENED} opened)`,
 );
 
 // The stale-dialer row above retires the generation BEFORE calling _connect, so the pre-dial check

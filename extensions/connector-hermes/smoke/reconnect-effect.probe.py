@@ -259,6 +259,7 @@ def main() -> None:
                          "STALE_DIALER_DID_NOT_CLOBBER", "CURRENT_GEN_STILL_INSTALLS",
                          "MIDDIAL_PARK_REACHED",
                          "MIDDIAL_RETIRED_DIALER_DID_NOT_CLOBBER",
+                         "RETIRED_DIALER_OPENED_NO_CONNECTION",
                          "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
                          "CURRENT_GEN_READER_STILL_READS",
                          "LARGE_FRAME_SPANS_MULTIPLE_RECVS",
@@ -574,6 +575,44 @@ def _socket_fence_rows() -> list[tuple[str, bool]]:
         # The instrument must be proven to have reached the window, or a pass means nothing.
         rows.append(("MIDDIAL_PARK_REACHED", reached))
         rows.append(("MIDDIAL_RETIRED_DIALER_DID_NOT_CLOBBER", midflight._sock is live2))
+
+        # THE PRE-DIAL CHECK IS AN EARLY-OUT, AND ITS EFFECT IS OBSERVABLE. Removing it leaves the
+        # under-lock check to refuse the install, so no delivery cell can see the difference and the
+        # half survived every existing row. What DOES change is that the retired dialer opens a
+        # connection the broker accepts and nobody ever uses. Measured both ways on this same probe:
+        # 0 accepted connections with the check, 1 without it. Graded here so the guard is
+        # attributable rather than merely present.
+        count_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        count_path = os.path.join(_tmp, "predial.sock")
+        count_srv.bind(count_path)
+        count_srv.listen(16)
+        accepted = {"n": 0}
+
+        def _count_loop() -> None:
+            while True:
+                try:
+                    count_srv.accept()
+                except OSError:
+                    return
+                accepted["n"] += 1
+
+        threading.Thread(target=_count_loop, daemon=True).start()
+        counted = BridgeClient(count_path)
+        live3 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        live3.connect(count_path)
+        time.sleep(0.2)
+        base_n = accepted["n"]
+        counted._sock = live3
+        stale3 = counted._gen
+        counted._gen += 1  # retired BEFORE the dial: the pre-dial check should short-circuit
+        counted._connect(stale3) if fenced else counted._connect()
+        time.sleep(0.2)
+        rows.append(("RETIRED_DIALER_OPENED_NO_CONNECTION", accepted["n"] - base_n == 0))
+        print(f"PREDIAL_CONNECTIONS_OPENED {accepted['n'] - base_n}")
+        try:
+            count_srv.close()
+        except OSError:
+            pass
 
         # ACCEPT CONTROL: the live generation still dials and installs.
         fresh = BridgeClient(fence_path)
