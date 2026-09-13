@@ -1,5 +1,117 @@
 # @cotal-ai/cli
 
+## 0.49.0
+
+### Minor Changes
+
+- b0aeca4: Make bare `cotal down` and `Manager.stop()` spare managed agents by default. Use
+  `cotal down --with-agents` or `Manager.stop({ withAgents: true })` for deliberate destructive
+  teardown. Linux PTY seats release manager-local proxy custody while their detached custodians and
+  child processes continue running, and the CLI binds destructive intent to the exact live stop
+  attempt so an interrupted command cannot poison a later bare shutdown. Managers launched before
+  process identity pins existed remain stoppable after the documented reduced-guarantee warning:
+  bare down cannot prove which SIGTERM handler that running binary carries, so it never reports the
+  pre-signal seat inventory as confirmed spared. A genuinely older destructive handler may still reap
+  those agents. `--with-agents` uses a one-shot handoff bound to the manager pid and the live
+  stop-reservation inode, then signals unconditionally.
+- e3f2d21: Keep a dead `cotal up` mesh record as offline, with its root in the error
+
+  A liveness miss used to delete every registry record that was not `origin: "manual"`, including
+  `origin: "up"` and pre-origin records. `cotal meshes` was the command the error pointed at, and it
+  was the command that destroyed the restart authority. The record was already written at provision
+  time; this change stops withholding survival from it.
+
+  `pruneMesh` is now reason-gated. `gone` (the liveness sweep, and preflight `unreachable`) keeps
+  every origin as `offline`. `mismatch` (credentials rejected, open-now-auth, stale-auth-root) still
+  drops an `up` record and still never drops a `manual` one. `cotal down` / `cotal clean all` still
+  drop `up` records for the root they tear down.
+
+  The unreachable copy for a kept `up` record still starts `no mesh running at <server>` and then
+  names the recorded root, telling the operator to run `cotal up` there, so a bare `cotal up` in
+  the wrong cwd cannot start a different mesh.
+
+  A liveness sweep still returns `{ pruned, offline }`. Resolution now uses `offline`: a record
+  known dead is not a live candidate for a bare command (`no mesh running` / `multiple meshes
+running` name only meshes that answered). `--space` still resolves a dead record so preflight
+  can name its root. All-offline is still `no-meshes`; the named-space path is what reports
+  "recorded but not running".
+
+### Patch Changes
+
+- 0680a3f: Warn when `cotal up --detach` is launched by a systemd `Type=oneshot` unit with
+  `RemainAfterExit=yes`, because that unit observes only the launcher's successful exit and can remain
+  active after the detached stack dies. Document a foreground long-running unit, component-health
+  checks, and split broker/manager monitoring.
+- 062881a: Wire `--max-sessions` from the CLI into the manager's live-session ceiling.
+
+  `ManagerOptions.maxSessions` was documented as deployment-configurable, but nothing in the CLI
+  could set it, so every live manager sat at 64. `cotal supervise --max-sessions` and
+  `cotal up --max-sessions` now parse a positive integer, pass it into the manager, and record it on
+  the mesh so a same-root repair, resume, or `spawn -f` that restarts the manager does not silently
+  drop a raised ceiling. A refresh of an already-running manager refuses a different `--max-sessions`
+  rather than recording an unapplied setting. A capacity refusal names `--max-sessions`. Default
+  remains 64. Size for agents × panes: the browser console opens one session per pane.
+
+- 5079c89: Rebind a presence watch that goes silent under a live connection, and stop `cotal ps` from printing a liveness verdict while the manager's own presence view is stale.
+
+  On netcup on 2026-09-09 the presence stream was deleted and recreated while the manager kept its
+  connection. Its ordered consumer re-created itself from the old cursor against a stream whose
+  sequence had restarted, the broker kept sending it idle heartbeats, and nothing ever re-created the
+  watch. The manager's roster froze at the pre-recreation snapshot for hours: `cotal ps` printed
+  `mesh offline` for every seat older than the freeze and `not in roster` for every seat younger,
+  while a fresh observer saw all of them heartbeating. The lane watchdog stopped a working
+  orchestrator twice on that reading.
+
+  The endpoint's sweep already refused to age peers out while the whole bucket was silent and marked
+  the view stale; that was the right verdict for a held link and the wrong end state for a dead
+  consumer. When the view is stale and the transport is up, the endpoint now stops the old watch and
+  binds a new one from the bucket's current state, once per liveness window, and reports the rebind
+  as a warning that names the silent interval. The per-peer age-out also requires that the watch
+  delivered for a full window after the peer's last heartbeat, so an observer's own deafness no longer
+  emits one offline verdict per peer on the tick before the whole-bucket gate trips. A rebind that
+  is still awaiting the broker when the endpoint stops or rebuilds its connection is retired: it
+  installs nothing and reports nothing, so a stopped endpoint never regains a watch and a rebuilt
+  one keeps the watch its fresh connection bound. A rebind that lands on a bucket with no keys is
+  read two ways. An observer that does not register (a probe) learns that nobody is present: it
+  retires every peer still in its roster and holds the view current until the first write, instead of
+  reading its own silence as staleness and rebinding once per window while the mesh is empty. An
+  observer that registers (the manager) is one of the missing keys, so the bucket was wiped since its
+  last heartbeat: it re-publishes its own record, the new watch delivers it, and every other peer is
+  re-observed or aged out from that delivery. It never marks itself offline on a current view.
+
+  Each `ps` row now carries the manager's presence-view state (`meshView`: `current`, `stale`, or
+  `unpopulated`), and the CLI prints `mesh unknown` with the reason instead of `mesh offline` or
+  `not in roster` whenever that state is not `current`. Rows from an older manager carry no field and
+  render as before.
+
+- 1636927: Resume long manager re-registrations with fresh scoped authority and durable same-operation eviction progress, and document safe gate recovery and the last-resort JetStream store replacement procedure.
+- 6836dd3: Allow `cotal send dm`, `msg`, and `ask` from an operator shell outside a managed seat. The transient
+  sender now uses a fixed advisory display name while its wire principal continues to come from the
+  resolved credential or user bearer.
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/workspace@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

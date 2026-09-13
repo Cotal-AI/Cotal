@@ -1,5 +1,72 @@
 # cotal-ai
 
+## 0.49.0
+
+### Minor Changes
+
+- 6a03ccf: Stop republishing tool-call arguments and results onto `events.<owner>.<actor>`. The durable emitter drops `TOOL_CALL_ARGS` and `TOOL_CALL_RESULT` before the write-ahead log, and refuses to republish a frozen pre-fix frame that still carries them. A frozen frame whose event list cannot be read is withheld too, and the emitter halts by name rather than publishing bytes it could not inspect onto a channel with a different read ACL. An empty event list counts as unreadable rather than as nothing to object to, since no shipped writer can produce one, and so does a frame whose envelope does not parse: a wrong protocol version, or a missing or malformed `threadId`, `runId`, `epoch` or `seq`, is withheld rather than published. A body the policy cannot iterate at all is withheld on the same grounds, so the classifier answers for every input its signature accepts instead of throwing on some of them. Observers lose that tool output; that is the boundary. Tool start and end, text, and reasoning still go out.
+- cf6ced5: Make `cotal input` wait for the target runtime to acknowledge the PTY write before printing its byte receipt. Custodial and in-process PTY writes now return the accepted UTF-8 byte count or reject, and the manager refuses missing, partial, or failed acknowledgements with an error that names the seat. A dropped write therefore exits non-zero without a `sent` receipt instead of claiming delivery from the intended buffer.
+- 36d1779: Issued authority and run admission (SPEC 13.15, 14.8). A static credential is now an issuance: the issuer records its permission ceiling as evidence under a fresh generation before the material exists, its endpoint rows ride the versioned `ep.v1` rail with that generation pinned beside the caller triple, and a connected client reads its generation from an issuer-written accepted row. A hosted workflow run is admitted under the starting caller's resolved ceiling, recorded once per run in a dedicated admission store the driver cannot write, checked before every channel effect (wait open, fetch, recorded re-read, conclave writes), and revoked by an independent create-only marker that ends open waits at their next poll and refuses resume, takeover and reconcile. `run-start` on the legacy rail is refused with `permission-denied` and the `ai.cotal.ep.unbound-caller-authority` detail. `cotal run start --local` takes `--admit-read` and `--admit-publish` (required) and `cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker. Three new per-space stores (`cotal_issued_`, `cotal_accepted_`, `cotal_admission_`), immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup headers, message deletes and purges, so a holder of its own key row can neither widen nor erase what was recorded. Two new one-shot profiles (`issuer`, `run-admitter`), an admission read on the run mediator and operator profiles, and `COTAL_ACCEPTED_TOKEN` on every connector's spawn environment. Breaking pre-1.0 authority change.
+- 6fd855f: Add a target-pinned hosted manager retirement phase that preserves host release ordering, uses the existing crash-resumable auth barrier, bounds activation to the canonical contract artifacts, and keeps remote manager maintenance on fresh host-owned admin authorization without copying host ledger state to participants.
+
+### Patch Changes
+
+- c8fe5a8: Make aggregate mutation coverage examine the full selected corpus, report every skipped or ungraded config with the checkout identity, and recognize declared repository entrypoints executed through subprocesses.
+- 438d03a: Reject dmHistory / channelHistory / multiChannelHistory rows whose payload `from.id` disagrees with the forge-locked subject sender (SPEC §5). Fail closed on non-object payloads so one poisoned row cannot throw the whole page. Surviving DMs still take recipient from the subject. Trustworthiness here is `from.id` versus the subject sender; payload `from.name` / `from.role` remain advisory. History drain does not require a full CotalMessage shape.
+- 0e58bac: Grade a replacement frozen-body egress guard against the predicate it replaced, on one corpus, both directions. The export name and shape both change; the loader binds the classifier by role. A boolean arm is never coerced from a three-way verdict. Also correct the agui-tool-result mutation why-block: the rebuilds stay because command poisons dist, not because this suite reads dist.
+- 9a334ae: Honor connector-declared startup confirmation prompts in PTY seats by matching normalized terminal output, pressing Enter only when the prompt appears, and failing with a named bounded error when it does not.
+- 9ff5c22: Make the first manager identity on a fresh root an exclusive create. Of N concurrent starts, exactly one process mints the instance file and the others adopt that identity or refuse with a named error, so they cannot take two leases.
+- 159c5f0: Merge a complete agent file passed as a cotal_persona prompt into one frontmatter block. Authored channel grants, role, and agent survive load, explicit tool arguments win, and a malformed leading fence is refused rather than wrapped.
+- 5b2281c: Compile the seat JavaScript and type entrypoints during pack and publish after validating both native helpers. A new installed-distribution smoke packs the full CLI closure from an assembled seat tree and proves a fresh npm install imports seat, imports the manager, and prints the packaged CLI help banner.
+- 6836dd3: Allow `cotal send dm`, `msg`, and `ask` from an operator shell outside a managed seat. The transient
+  sender now uses a fixed advisory display name while its wire principal continues to come from the
+  resolved credential or user bearer.
+- 86f0bb8: Resume an interrupted built-in connector refresh automatically when the durable seed stamp proves
+  that the running CLI is advancing the store to a newer generation and no reconcile or seed child is
+  still live. The manager now reaches readiness after that safe upgrade repair, while same-generation
+  and unattributable interruption markers still fail closed and report the recorded package, phase,
+  store generation, running generation, and absence of a live writer.
+- 13f29e1: Pin Windows teardowns to process creation time. A launch writes a sibling identity file from the UTC FILETIME of `Get-Process StartTime`, and a stop refuses when that pin no longer matches. Records with no sibling pin stay on the upgrade-only legacy path.
+- Updated dependencies [6a03ccf]
+- Updated dependencies [0680a3f]
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [1469d18]
+- Updated dependencies [0e58bac]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [cd74517]
+- Updated dependencies [61d08ab]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [0a3e58a]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [5b2281c]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6836dd3]
+- Updated dependencies [4b3881f]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/connector-core@0.49.0
+  - @cotal-ai/cli@0.49.0
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/manager@0.49.0
+  - @cotal-ai/workspace@0.49.0
+  - @cotal-ai/runtime@0.49.0
+  - @cotal-ai/auth@0.49.0
+  - @cotal-ai/delivery@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes
