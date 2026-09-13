@@ -50,10 +50,10 @@
     {
       "name": "M2 the reconnect path never calls reopen()",
       "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
-      "find": "        if is_reconnect:\n            # Clear the latched stop and drop the dead reader, so start() below really starts one.\n            self._client.reopen()\n",
+      "find": "        if is_reconnect:\n            # Clear the latched stop and drop the dead reader, so start() below really starts one.\n            #\n            # OFF-LOOP, and that is not incidental. `reopen` joins the closed reader with a bounded\n            # wait so a thread still unwinding is not mistaken for a live one, and a reader wedged\n            # in a blocking recv makes that wait run to its full timeout. Calling it inline here\n            # would stall the gateway's event loop for that whole period, freezing every other\n            # platform in the process to repair this one. Measured at 2.00s against a wedged\n            # reader, which is exactly the kind of pause an operator would report as the gateway\n            # hanging on reconnect. `to_thread` keeps the loop free while the join runs.\n            await asyncio.to_thread(self._client.reopen)\n",
       "replace": "",
       "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
-      "note": "The defect exactly as reported. Note that connect() keeps its is_reconnect parameter under this mutation, so every signature assertion in adapter-contract stays green: this is the clearest demonstration that a signature test and an effect test are not substitutes."
+      "note": "The defect exactly as reported. Note that connect() keeps its is_reconnect parameter under this mutation, so every signature assertion in adapter-contract stays green: this is the clearest demonstration that a signature test and an effect test are not substitutes. The find string is the whole is_reconnect block, since the call now runs through asyncio.to_thread and a one-line target went stale the moment that changed - the harness caught that as ERROR rather than reporting a false pass."
     },
     {
       "name": "M3 reopen() reads liveness immediately instead of joining the closed reader",
