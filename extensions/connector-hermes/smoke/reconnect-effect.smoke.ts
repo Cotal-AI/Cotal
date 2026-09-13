@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 49;
+const EXPECTED_CELLS = 52;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -364,6 +364,27 @@ assert.equal(
   subject.LAST_SUB_EVERY_REP_DELIVERED,
   "True",
   `a 100KB frame on the LAST subscriber must reach the installed reader on every rep (${subject.LAST_SUB_DELIVERED})`,
+);
+
+// The EOF branch runs on OSError too, which is how `reopen` wakes a retired reader. Without an
+// identity check that reader erases the LIVE generation's socket, and `_send` then returns early on
+// every outbound frame, so the seat goes mute until an inbound wakes a redial.
+assert.equal(
+  subject.EOF_LEFT_LIVE_SOCKET_INSTALLED,
+  "True",
+  `a retired reader woken by EOF must not erase the live generation's socket, and a reply must still reach the broker (${subject.EOF_SOCK_LIVE})`,
+);
+assert.equal(
+  subject.EOF_REPLY_STILL_REACHES_BROKER,
+  "True",
+  `a retired reader woken by EOF must not erase the live generation's socket, and a reply must still reach the broker (${subject.EOF_REPLIES_DELIVERED})`,
+);
+// Graded on GROWTH, not the absolute count: earlier cells leave their own bridge threads alive, so
+// the absolute number is noise and only the per-reconnect increment belongs to this defect.
+assert.equal(
+  subject.RECONNECT_LEAKS_NO_READER_THREAD,
+  "True",
+  `every reconnect must retire its reader thread rather than strand it in a blocked read (${subject.BRIDGE_THREADS_PER_CYCLE})`,
 );
 
 console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);
