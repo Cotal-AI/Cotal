@@ -722,6 +722,48 @@ r = runTool(["--config", "dup-labels.json"]);
     out.includes("| first line: CAUSE-ALPHA") && out.includes("middle line(s) omitted") && out.includes("| teardown line 29"),
     out.slice(-900));
 }
+// A FAILURE IN THE MIDDLE, which is the shape a positional window cannot see and the one that cost a
+// panel an hour: banner, a run of green cells, ONE red, then a summary. Head and tail are chosen by
+// POSITION, so the single line naming the failing cell falls in the discarded span. Observed for real
+// on a `creds-supply-expiry` WRONG-RED that echoed `… 8 middle line(s) omitted` where the omitted
+// eight held the only thing a reader needed. The rescue is by CONTENT, so it does not depend on the
+// red landing anywhere in particular.
+writeFileSync(
+  join(root, "buried-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "const v = admit(5);",
+    "console.log('banner');",
+    "for (let i = 0; i < 14; i++) console.log('  \\u2713 green cell ' + i);",
+    "if (v !== true) console.log('  \\u2717 FAIL: BURIED-CELL the one line that names the failure');",
+    "else console.log('  \\u2713 BURIED-CELL green');",
+    "for (let i = 0; i < 14; i++) console.log('  \\u2713 later green ' + i);",
+    "console.log('SUITE SUMMARY (22 passed, 1 failed)');",
+    "process.exit(v === true ? 0 : 1);",
+    "",
+  ].join("\n"),
+);
+writeFileSync(join(root, "buried.json"), JSON.stringify({ suite: ["smoke/suite.mjs"],
+  command: `${process.execPath} buried-suite.mjs`,
+  mutations: [
+    { name: "buried", file: "src/impl.js", find: "  return true;", replace: "  return 'A';", expectRed: "never printed" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm buried-fixture", { cwd: root });
+r = runTool(["--config", "buried.json"]);
+{
+  const out = stripAnsi(r.stdout);
+  // The load-bearing assertion. Without the content rescue this line is inside the omitted span and
+  // the reader is told only how many lines vanished.
+  check("a FAILING line buried mid-transcript is echoed, not counted as an omitted line",
+    out.includes("✗ FAIL: BURIED-CELL the one line that names the failure"), out.slice(-1200));
+  // And the window is still a window: the greens in the DISCARDED span are not dragged in with it.
+  // `later green 5` and after fall inside the tail, so they are shown for an unrelated reason; the
+  // honest probe is a green that lies in the omitted middle. Getting this wrong once is why the
+  // assertion names the line it expects to be absent rather than any convenient nearby string.
+  check("...while the greens in the omitted span stay omitted — the rescue is by failure, not by widening",
+    out.includes("middle line(s) omitted") && !out.includes("green cell 12"), out.slice(-1200));
+}
 // A verdict reached BEFORE any run has no transcript, and must say so rather than claim an empty run.
 r = runTool([
   "--command", `${process.execPath} suite.mjs`,

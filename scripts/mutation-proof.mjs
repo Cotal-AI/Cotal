@@ -64,6 +64,18 @@ const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2
  *  `… 6 earlier line(s) omitted` and the cause was among the six. */
 const EXCERPT_HEAD = 10;
 const EXCERPT_TAIL = 10;
+/** Failing lines to rescue from the MIDDLE of a transcript, on top of head and tail.
+ *
+ *  MEASURED, not anticipated: a WRONG-RED on `creds-supply-expiry` echoed
+ *  `… 8 middle line(s) omitted` and the omitted eight contained the ONLY thing a reader needs, the
+ *  name of the cell that actually reddened. Head and tail are chosen by POSITION, and a suite that
+ *  prints a banner, twenty green cells, one red cell, then a summary puts its single red exactly
+ *  where a positional window cannot see it. The head/tail rule was itself a fix for a tail-only
+ *  echo that hid an early cause (#1328); this is the same defect one step in, and the lesson is
+ *  that no positional window can be relied on to contain the interesting line. So select by
+ *  CONTENT as well: whatever else is dropped, do not drop the failures. */
+const EXCERPT_FAILURES = 8;
+const FAILURE_LINE = /✗|\bFAIL\b|scenario threw|^\s*Error:/;
 /**
  * Bound a run's combined output to head + tail lines, at capture time. Carried ON THE RESULT, not
  * in a map keyed by label: duplicate mutation names are accepted by the fixture format, and a
@@ -74,11 +86,19 @@ const EXCERPT_TAIL = 10;
  */
 const excerpt = (output) => {
   const t = (output ?? "").replace(/\s+$/, "");
-  if (t === "") return { head: [], tail: [], omitted: 0, empty: true };
+  if (t === "") return { head: [], tail: [], middle: [], omitted: 0, empty: true };
   const lines = t.split("\n");
-  if (lines.length <= EXCERPT_HEAD + EXCERPT_TAIL) return { head: lines, tail: [], omitted: 0, empty: false };
-  return { head: lines.slice(0, EXCERPT_HEAD), tail: lines.slice(-EXCERPT_TAIL),
-    omitted: lines.length - EXCERPT_HEAD - EXCERPT_TAIL, empty: false };
+  if (lines.length <= EXCERPT_HEAD + EXCERPT_TAIL)
+    return { head: lines, tail: [], middle: [], omitted: 0, empty: false };
+  const headEnd = EXCERPT_HEAD, tailStart = lines.length - EXCERPT_TAIL;
+  // Rescue failing lines from the span the positional window discards, in order, capped. Indices are
+  // kept so the reader can see WHERE in the run they occurred rather than a floating quotation, and
+  // so the "omitted" count below can report what is still genuinely unshown.
+  const middle = [];
+  for (let i = headEnd; i < tailStart && middle.length < EXCERPT_FAILURES; i++)
+    if (FAILURE_LINE.test(lines[i])) middle.push({ n: i + 1, line: lines[i] });
+  return { head: lines.slice(0, headEnd), tail: lines.slice(tailStart), middle,
+    omitted: tailStart - headEnd - middle.length, empty: false };
 };
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
@@ -623,7 +643,10 @@ for (const r of results) {
       say(`  ${C.dim}  (the run produced NO output at all — it failed before writing anything)${C.off}`);
     } else {
       for (const l of t.head) say(`  ${C.dim}  | ${l}${C.off}`);
-      if (t.omitted > 0) say(`  ${C.dim}  … ${t.omitted} middle line(s) omitted${C.off}`);
+      // Failures rescued from the discarded middle, printed with their line numbers so they read as
+      // evidence from a known place in the run rather than as a floating quotation.
+      for (const m of t.middle ?? []) say(`  ${C.dim}  |${String(m.n).padStart(5)}: ${m.line}${C.off}`);
+      if (t.omitted > 0) say(`  ${C.dim}  … ${t.omitted} middle line(s) omitted (no failure markers)${C.off}`);
       for (const l of t.tail) say(`  ${C.dim}  | ${l}${C.off}`);
     }
   }
