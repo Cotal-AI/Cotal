@@ -1092,6 +1092,81 @@ try {
   signalGroup(own2, "SIGKILL");
   await untilExit(own2, 5000);
 
+  // ── W. AN ORDINARY STOP DURING START-UP MUST NOT STRAND THE SHARD ────────────────────
+  //
+  // Every other cell stops a daemon with SIGKILL, which is honest for a crash and says nothing about
+  // the ordinary case: an operator stops the daemon and starts another. That case reaches this
+  // issue's outage with no starvation and no broker fault at all.
+  //
+  // The daemon CAS-creates its lease row early in start-up, then binds Plane-3, flips the row ready,
+  // and starts the membership feed and the timer writer - and its signal handlers used to be
+  // registered only after ALL of that. In the window between the create and that registration,
+  // SIGTERM takes Node's DEFAULT action: immediate death, no release, the row claiming the shard for
+  // the rest of the 30s bucket TTL with no process behind it. The next daemon is refused outright.
+  //
+  // THE STIMULUS HAS TO HIT THAT WINDOW, AND POLLING CANNOT. An earlier version of this cell polled
+  // the row with `readLease` and signalled on the readiness edge, and it passed against the unfixed
+  // daemon, i.e. it graded nothing. Instrumenting it said why, and the number is the whole point:
+  // `readLease` opens a fresh NATS connection per call, so a "1ms" loop actually polls every 32ms,
+  // and the FIRST sighting of the row was already `ready:true` - the window had opened and closed
+  // between two polls. So this cell does not poll. It holds a KV WATCH open before the daemon starts
+  // and signals on the PUSHED create, which is the earliest instant the row exists anywhere.
+  console.log("\nW. an ordinary stop in the start-up window");
+  await deleteLease(spaceH, credsPathH);
+  const wCreds = readFileSync(credsPathH, "utf8");
+  const wNc = await connect({
+    servers: SERVERS,
+    ...standaloneConnectOpts({ creds: wCreds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(wCreds)}`,
+    maxReconnectAttempts: 0,
+  });
+  let edge: Daemon | undefined;
+  let edgeSignalled = false;
+  let edgeReadyAtSignal: boolean | undefined;
+  let edgePolls = 0;
+  try {
+    // ONE connection, reused. A KV watch would be the natural way to take the pushed create, but the
+    // daemon's cred is granted kv.get and NOT consumer-create, and so is the space provisioner's -
+    // both were tried and both were refused by the broker with a Permissions Violation on
+    // $JS.API.CONSUMER.CREATE. So this polls, but it polls down the SAME connection: the earlier
+    // version called `readLease`, which dials a fresh NATS connection per call, and that is the
+    // 32ms-per-poll figure that made it miss the window entirely.
+    const wKv = await openDeliveryRegistry(wNc, spaceH);
+    edge = spawnDaemon(spaceH, credsPathH);
+    for (let i = 0; i < 300_000; i++) {
+      if (edge.exited) break;
+      const e = await wKv.get(leaseKey(0));
+      edgePolls++;
+      if (e && e.operation !== "DEL" && e.operation !== "PURGE") {
+        // THE WINDOW, caught at its opening edge: the row exists, so the CAS-create has returned.
+        edgeReadyAtSignal = e.json<DeliveryLeaseInfo>().ready === true;
+        signalGroup(edge, "SIGTERM");
+        edgeSignalled = true;
+        break;
+      }
+    }
+  } finally {
+    try { await wNc.drain(); } catch { /* already gone */ }
+  }
+  check("W1 the lease row was created, so the signal landed inside the start-up window", edgeSignalled, tail(edge!));
+  // WHICH edge was caught, recorded rather than assumed. The claim above is about the window that
+  // opens at the CREATE; if the push that won the race were already `ready:true` this cell would be
+  // testing the later, easier instant, and the reader deserves to see which one it was.
+  check("W2 and it was caught at the create, before the row was ever marked ready", edgeReadyAtSignal === false, edgeReadyAtSignal);
+  check("W3 and the daemon exited", await untilExit(edge!, 15_000), tail(edge!));
+  // THE CLAIM, off the BROKER rather than the daemon's log: an ordinary stop gives the shard back.
+  const edgeRow = await readLease(spaceH, credsPathH);
+  check("W4 the lease row is GONE \u2014 not stranded for the bucket TTL", edgeRow === undefined, edgeRow);
+  // THE CONSEQUENCE an operator actually meets, through the REAL acquire path of a REAL daemon.
+  const afterEdge = spawnDaemon(spaceH, credsPathH);
+  const afterEdgeUp = await untilUp(afterEdge);
+  check("W5 a real replacement daemon comes up on that shard", afterEdgeUp, tail(afterEdge));
+  check("W6 and it was never refused a live lease", !/a live lease already exists/.test(afterEdge.stderr), tail(afterEdge));
+  const afterEdgeRow = await readLease(spaceH, credsPathH);
+  check("W7 and it holds a live, ready lease of its own", afterEdgeRow?.info.ready === true, afterEdgeRow);
+  signalGroup(afterEdge, "SIGKILL");
+  await untilExit(afterEdge, 5000);
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -1111,7 +1186,8 @@ try {
 
   // 71 -> 80: cells R1-R9 (the survivable renew failure, which drives the re-read to `held`, and
   // the successor row that must NOT be adopted as our own).
-  const EXPECTED_CELLS = 80;
+  // 80 -> 87: cells W1-W7 (an ordinary stop inside the start-up window must give the shard back).
+  const EXPECTED_CELLS = 87;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
