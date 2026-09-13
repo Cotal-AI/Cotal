@@ -29,9 +29,9 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect as connectSocket, type AddressInfo, type Socket } from "node:net";
-import { isReachable, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, chatStream, inboxStream, FANOUT_DURABLE, INBOX_READER_DURABLE, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, idFromCreds, leaseKey, mintCreds, mintMembershipObserverCreds, openDeliveryRegistry, serverConfig, newIdentity, setupSpaceStreams, standaloneConnectOpts, type DeliveryLeaseInfo } from "@cotal-ai/core";
+import { isReachable, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, chatStream, inboxStream, FANOUT_DURABLE, INBOX_READER_DURABLE, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, idFromCreds, leaseKey, mintCreds, mintMembershipObserverCreds, fanoutDurableConfig, openDeliveryRegistry, serverConfig, newIdentity, setupSpaceStreams, standaloneConnectOpts, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { spaceMaterialDir } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -1167,6 +1167,73 @@ try {
   signalGroup(afterEdge, "SIGKILL");
   await untilExit(afterEdge, 5000);
 
+  // ── X. A START-UP FAILURE THE CALLER CATCHES MUST STILL GIVE THE SHARD BACK ──────────────
+  //
+  // A REVIEWER FINDING, and it disproved a claim this suite was already making. The W cells above
+  // grade an ordinary SIGTERM in the start-up window, and the daemon's process-level guards
+  // (`uncaughtException` / `unhandledRejection`) were supposed to cover the other door: a start-up
+  // that FAILS after the shard is already ours. They do not, on the path that actually ships.
+  // `runCli` awaits the command inside its OWN try/catch, so a rejection out of start-up is a
+  // HANDLED error: the CLI prints one line, exits 1, and `unhandledRejection` never fires. The shard
+  // stays claimed for the rest of the bucket TTL and the next `cotal up` is refused.
+  //
+  // THE STIMULUS IS A REAL BROKER-SIDE CONFLICT, not an injected throw: the fan-out durable is
+  // re-created with an incompatible `ack_policy` before the daemon starts, so `startPlane3` rejects
+  // against a live broker at a point PAST the lease acquire. That is the same technique the lease
+  // suite's Q cells use, and it means this cell exercises a failure the product can actually meet
+  // rather than one the test invented.
+  console.log("\nX. a start-up failure the CLI catches, after the shard is already ours");
+  await deleteLease(spaceH, credsPathH);
+  const xCreds = readFileSync(credsPathH, "utf8");
+  const xNc = await connect({
+    servers: SERVERS,
+    ...standaloneConnectOpts({ creds: xCreds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(xCreds)}`,
+    maxReconnectAttempts: 0,
+  });
+  let xFanoutBroken = false;
+  try {
+    const xJsm = await jetstreamManager(xNc);
+    await xJsm.consumers.delete(chatStream(spaceH), FANOUT_DURABLE).catch(() => {});
+    await xJsm.consumers.add(chatStream(spaceH), {
+      ...fanoutDurableConfig(spaceH), ack_policy: AckPolicy.None, durable_name: FANOUT_DURABLE,
+    });
+    xFanoutBroken = true;
+  } catch { /* graded below */ } finally {
+    try { await xNc.drain(); } catch { /* already gone */ }
+  }
+  check("X1 the fan-out durable was re-created incompatibly, so start-up WILL fail at the broker", xFanoutBroken);
+  const xd = spawnDaemon(spaceH, credsPathH);
+  const xExited = await untilExit(xd, 30_000);
+  check("X2 the daemon exits rather than serving against a durable it could not bind", xExited, tail(xd));
+  // THE FAULT STAYS A FAULT. A release that quietly turned a start-up failure into a clean stop
+  // would trade this issue's outage for a silent one, so the exit code is graded, not just the exit.
+  check("X3 and it exits NON-ZERO, so cleaning up the lease did not swallow the failure", xd.code !== 0, xd.code);
+  // THE CLAIM, read off the BROKER rather than the daemon's log.
+  const xRow = await readLease(spaceH, credsPathH);
+  check("X4 the lease row is GONE \u2014 a caught start-up rejection still released the shard", xRow === undefined, xRow);
+  // Repair the durable so the replacement has a broker it can actually bind against: the question
+  // here is whether the SHARD was given back, not whether the conflict is permanent.
+  const xFixNc = await connect({
+    servers: SERVERS,
+    ...standaloneConnectOpts({ creds: xCreds, tls: false }),
+    inboxPrefix: `_INBOX_${idFromCreds(xCreds)}`,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const xJsm2 = await jetstreamManager(xFixNc);
+    await xJsm2.consumers.delete(chatStream(spaceH), FANOUT_DURABLE).catch(() => {});
+  } finally {
+    try { await xFixNc.drain(); } catch { /* already gone */ }
+  }
+  // THE CONSEQUENCE an operator meets, through the REAL acquire path of a REAL daemon.
+  const afterX = spawnDaemon(spaceH, credsPathH);
+  const afterXUp = await untilUp(afterX);
+  check("X5 a real replacement daemon comes up on that shard", afterXUp, tail(afterX));
+  check("X6 and it was never refused a live lease", !/a live lease already exists/.test(afterX.stderr), tail(afterX));
+  signalGroup(afterX, "SIGKILL");
+  await untilExit(afterX, 5000);
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -1187,7 +1254,8 @@ try {
   // 71 -> 80: cells R1-R9 (the survivable renew failure, which drives the re-read to `held`, and
   // the successor row that must NOT be adopted as our own).
   // 80 -> 87: cells W1-W7 (an ordinary stop inside the start-up window must give the shard back).
-  const EXPECTED_CELLS = 87;
+  // 87 -> 93: cells X1-X6 (a start-up failure the CALLER catches must give the shard back too).
+  const EXPECTED_CELLS = 93;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

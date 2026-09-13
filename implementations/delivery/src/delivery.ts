@@ -290,6 +290,36 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
  * the manager and this daemon are handed the SAME store.
  */
 export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promise<void> {
+  // A START-UP FAILURE AFTER THE ACQUIRE MUST GIVE THE SHARD BACK, INCLUDING WHEN THE CALLER
+  // CATCHES IT. `runDelivery` is awaited inside the CLI dispatcher's own try/catch, so a rejection
+  // out of start-up is an ordinary handled error: the process prints one line and exits 1 while the
+  // lease row still claims the shard for the rest of the 30s bucket TTL, and the next `cotal up` is
+  // refused. That is this issue's outage reached without any signal, starvation or broker fault.
+  //
+  // The release therefore hangs off the REJECTION rather than off a process event. `runStartedDelivery`
+  // publishes its own releaser once the shard is actually ours, so before the acquire there is nothing
+  // to give back and this catch re-throws untouched.
+  //
+  // THE FAULT STAYS A FAULT. This never swallows: the original error is re-thrown after the release,
+  // so the CLI prints the same line and exits with the same non-zero code it would have without any
+  // of this. Cleaning up a lease must not turn a start-up failure into a quiet one.
+  let releaseOnStartupFailure: (() => Promise<void>) | undefined;
+  try {
+    await runStartedDelivery(args, store, (r) => { releaseOnStartupFailure = r; });
+  } catch (e) {
+    if (releaseOnStartupFailure !== undefined) {
+      console.error(`\u2717 delivery: start-up failed - releasing the shard before exiting`);
+      try { await releaseOnStartupFailure(); } catch { /* the throw below is the report */ }
+    }
+    throw e;
+  }
+}
+
+async function runStartedDelivery(
+  args: ParsedArgs,
+  store: SecretStore | undefined,
+  publishReleaser: (release: () => Promise<void>) => void,
+): Promise<void> {
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -437,6 +467,25 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const earlySigterm = (): void => earlyStop(0);
   process.on("SIGINT", earlySigint);
   process.on("SIGTERM", earlySigterm);
+  // AND THE SAME RELEASE, REACHABLE BY AN ORDINARY `catch`. The two process-level guards below
+  // only see a fault that reaches the RUNTIME. A start-up rejection on the public CLI path does
+  // not: `runCli` awaits this function inside its own try/catch (cli/src/command.ts), so the
+  // rejection is HANDLED, `unhandledRejection` never fires, and the process exits 1 through the
+  // CLI's own error line with the shard still claimed. A reviewer reproduced exactly that against
+  // a real broker by pre-creating a conflicting fan-out durable so `startPlane3` rejects after the
+  // acquire: exit 1, row still on the broker, replacement refused with "a live lease already
+  // exists". So the release is published HERE, to a scope that a plain `catch` around the rest of
+  // start-up can reach, and the process guards stay as the backstop for faults that never become
+  // a rejection this function can see (a synchronous throw in a timer, say).
+  publishReleaser(async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      const own = await ep.readDeliveryLeaseEntry(shard);
+      if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+    } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
+    try { await ep.stop(); } catch { /* broker may be gone */ }
+  });
   // A START-UP FAILURE AFTER THE ACQUIRE MUST ALSO GIVE THE SHARD BACK. Between this point and the
   // handler swap far below, a throw would otherwise propagate out of `runDelivery` with the row
   // still claiming the shard, stranding it for the bucket TTL exactly as an unhandled signal did -

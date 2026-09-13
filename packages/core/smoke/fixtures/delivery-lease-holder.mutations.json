@@ -35,10 +35,10 @@
     {
       "name": "a rearm that fails part-way records itself as SERVING, so the retry is lost",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      this.plane3Quiesced = true;\n      // Drop whatever DID bind. Leaving half-bound responders up would answer control requests for a\n      // shard this process has just declared itself not to be serving.\n      this.quiescePlane3();\n      throw e;",
-      "replace": "      throw e;",
+      "find": "      this.quiescePlane3();\n      throw e;",
+      "replace": "      this.plane3Quiesced = false;\n      throw e;",
       "expectRed": "Q4 and the endpoint is STILL QUIESCED after that failure, not silently un-quiesced",
-      "note": "Found in review, and the recovery path re-introducing #1318's own class. armPlane3 binds in four stages, so it can throw with some bound. Leaving the flag lowered on that throw records the endpoint as serving while it is not: every later rearmPlane3 returns at the !plane3Quiesced guard WITHOUT retrying, and resumeServing then flips the lease READY over missing bindings. A transient broker error becomes a permanent readiness lie. Q5 and Q6 grade the lost retry and Q8 reads the durable back off the broker, so this is graded by broker state rather than only by the flag it mutates."
+      "note": "ANCHORED ON CODE ONLY. It used to span the two comment lines between the flag raise and the quiesce, so a docs commit touching either would have disarmed it silently; the mutation now takes the contiguous pair of statements and states the defect directly by LOWERING the flag on the failure path, which is the same end state the original reached by deleting the raise. Found in review, and the recovery path re-introducing #1318's own class. armPlane3 binds in four stages, so it can throw with some bound. Leaving the flag lowered on that throw records the endpoint as serving while it is not: every later rearmPlane3 returns at the !plane3Quiesced guard WITHOUT retrying, and resumeServing then flips the lease READY over missing bindings. A transient broker error becomes a permanent readiness lie. Q5 and Q6 grade the lost retry and Q8 reads the durable back off the broker, so this is graded by broker state rather than only by the flag it mutates."
     },
     {
       "name": "M3 the launcher derives the lease holder as the bare connection nkey",
