@@ -112,6 +112,7 @@ import {
 
 import type { RunPauseHost } from "./run-pause-host.js";
 import type { RunWaitHost } from "./run-wait-host.js";
+import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
 
 export interface RunMeshServices {
@@ -218,6 +219,19 @@ export class MeshHandler {
     private readonly watcher: SettleWatcher,
     private readonly clock: () => number = () => Date.now(),
     private readonly services?: RunMeshServices,
+    /**
+     * How this handler learns whether its own process was scheduled (#1508). Injected so a suite
+     * can drive a starved loop deterministically; the default is the process-wide observer, which
+     * is the only honest source outside a test.
+     */
+    private readonly lag: LoopLagObserver = loopLag(),
+    /**
+     * Where the operator notice for an absorbed starvation goes (#1508). A daemon routes it to its
+     * own log rather than stderr, and a suite counts it: an absorbed starvation is otherwise
+     * INVISIBLE, and a cell asserting "the sleep completed" cannot tell a completion that survived
+     * starvation from one that was never starved at all.
+     */
+    private readonly onStarved: (note: string) => void = (note) => console.error(note),
   ) {}
 
   /**
@@ -2008,6 +2022,12 @@ export class MeshHandler {
    * raised rather than waited on.
    */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
+    // #1508: every read and write below rides a client-side deadline, and a deadline that elapsed
+    // because THIS PROCESS was off the CPU is not evidence about the plane. See `host-starvation`.
+    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);
+  }
+
+  private async armOnce(ref: CheckpointRef, deadline: number): Promise<void> {
     if (this.services) return this.services.pauses.arm(ref.token, deadline);
     // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
     // caller reads the fact next.
@@ -2194,6 +2214,14 @@ export class MeshHandler {
    * already in the past.
    */
   private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
+    // #1508, and the load-bearing half: this is where a `sleep` spends its whole duration, so this
+    // is where a starved host was reporting its own scheduling as the effect's failure. The pause
+    // and its timer are durable facts on the plane; re-reading them observes the same world, and a
+    // sleep whose deadline passed while this process was blocked settles `ok`, late.
+    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+  }
+
+  private async settleOnce(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
     const already = this.services ? await this.services.pauses.readSettle(ref.token) : await readCheckpointSettle(this.jsm, this.binding.space, ref);
     if (already !== undefined) return already;
     // The watcher waits for the FACT. For a pause with an answer the fact arrives because somebody

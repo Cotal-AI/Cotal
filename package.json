@@ -54,6 +54,7 @@
     "smoke:runtime-mesh-wait": "tsx implementations/runtime/smoke/mesh-wait.smoke.ts",
     "smoke:runtime-mesh-checkpoint": "tsx implementations/runtime/smoke/mesh-checkpoint.smoke.ts",
     "smoke:runtime-mesh-sleep": "tsx implementations/runtime/smoke/mesh-sleep.smoke.ts",
+    "smoke:runtime-host-starvation": "tsx implementations/runtime/smoke/host-starvation.smoke.ts",
     "smoke:runtime-mesh-notify": "tsx implementations/runtime/smoke/mesh-notify.smoke.ts",
     "smoke:runtime-migrate": "tsx implementations/runtime/smoke/migrate-run.smoke.ts",
     "smoke:runtime-mesh-spawn": "tsx implementations/runtime/smoke/mesh-spawn.smoke.ts",

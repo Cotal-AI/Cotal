@@ -1103,6 +1103,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4022 | Unreadable ask schema |
 | L4023 | `waitUntil` deadline elapsed |
 | L4024 | `waitUntil` probe or predicate answered the wrong shape |
+| L4025 | Host did not schedule the run |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -1133,7 +1134,7 @@ time, L5xxx durability, L6xxx simulation.
 
 `L4000` is not a catalog code: it is the generic code an unclassified failure carries (`kind`
 `handler-fault`, `scope-fault`, or `host`), and it is what a program sees for a failure the catalog
-does not name. L3022, L4001 to L4006 and L4008 are the effect handler's failure vocabulary: a host
+does not name. L3022, L4001 to L4006, L4008 and L4025 are the effect handler's failure vocabulary: a host
 reports them, the interpreter journals and delivers them, and none is raised by the language itself.
 L1006, L1014, L5005, L5007 and L6002 are reserved: no path in this revision raises them.
 L6001 and L6002 belong to the reference implementation's simulator (`SimHandler`, `dryRun`), which
@@ -1158,3 +1159,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-19 | The same rule reaches a failure's `detail` (§10.1): it is a value the handler chose and the record keeps, so it is refused where it is written and on load, and a failure whose detail is refused is recorded under `L4000` with the reason rather than under the handler's own code with the field quietly missing. Reachable because a program that CATCHES an effect failure still completes, so a successful run can carry a settled failure. |
 | 2026-09-01 | The `ask` schema shorthand is the handler-side reply contract (§6.5): a handler enforcing it refuses a schema it cannot read (L4022) and reports exhausted `attempts` as L4006; the reference simulator enforces it. A journal MAY carry a result bound, refusing an oversized `ok` result ahead of the settling append (L5006, §12), which leaves the reserved list. A host release or refused append inside a scope cancels no sibling and settles nothing (§7.6): the run unwinds with the journal exactly where it was, so a stopped run resumes past the scope instead of replaying a cancellation it never chose. A refused append among a race's settled arms unwinds the run ahead of the winner scan: a race may not settle over an entry the journal refused to record, whichever arm won. |
 | 2026-09-01 | A capability refusal is durable and retryable: a handler's refusal settles the entry `refused` under the handler's code (§10.1), the run unwinds with the uncatchable L5025 and is held (§9.2); a resume on a capable host finds the **refused** verdict (§10.7) and performs the step live (§11.1). A held arm among a race's settled arms unwinds ahead of the winner scan for the same reason a refused append does: a race that completed over it would settle the scope a resume short-circuits, burying the heal it owes (§7.3, §9.2). Two concurrent `turn`s on one handle are serialized at the dispatch (§6.5). A fork's child records its lineage: the run record's `forkedFrom` names the parent and the cut step (§11.3, SPEC.md §14.3). |
+| 2026-09-12 | A host that cannot schedule the run's own process reports that, and not a failed effect (L4025): a pause-plane deadline that elapsed while the process was demonstrably off the CPU is evidence about the host, so the operation is re-entered on the durable pause it already holds and a `sleep` whose deadline passed during the starvation completes LATE, which is what a lower-bound wait promises. The distinction is measured rather than assumed, by event-loop lag across the window AND a shortfall in the ticks that window should have contained, because a wall clock alone cannot separate "the timer did not fire" from "this process never ran". A caller that still cannot be served after a bounded number of consecutive starved attempts fails with L4025 naming the measurement, never hangs; a deadline on a loop that was running, and every failure that is not a client deadline, is unchanged and still `L4000`. |

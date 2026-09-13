@@ -1,0 +1,9 @@
+---
+"@cotal-ai/runtime": patch
+"@cotal-ai/lang": patch
+"@cotal-ai/connector-core": patch
+---
+
+A workflow `sleep` that a busy host was simply too loaded to schedule no longer fails the run. A pause waits by reading the durable checkpoint plane, and each of those reads carries a client-side deadline that is itself a timer; when the machine is loaded hard enough that the run's process does not get back onto the CPU, that timer cannot run either, so it expires the moment the process resumes and reports a bare `timeout` even though the broker answered long ago. That was recorded as `L4000 EffectError: timeout`, which names the effect as the thing that broke and sends the author looking at their own program, and it killed runs whose only fault was being polite about load.
+
+The runtime now measures whether its own process was actually running across the wait, namely event-loop lag over the window together with a shortfall in the ticks that window should have contained, and treats a deadline that elapsed while the process was demonstrably off the CPU as a fact about the host rather than about the effect. The pause and its timer are durable, so the wait is simply re-entered and a `sleep` whose deadline passed during the starvation completes late, which is what a lower-bound wait promises. Nothing is widened and nothing is swallowed: a deadline on a loop that was running, and every failure that is not a client deadline, still fails immediately as `L4000` with its message intact. A host that still cannot serve the run after a bounded number of consecutive starved attempts fails under the new `L4025`, "Host did not schedule the run", quoting the lag and tick measurement it made, so a caller that genuinely cannot be served fails rather than hanging and the operator reads the real cause.
