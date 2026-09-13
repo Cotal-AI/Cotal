@@ -107,6 +107,15 @@
       "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback-loss",
       "note": "Reviewer-found against the SDK and then reproduced through the shipped host. The exclusion gate alone does NOT fix this: the gate releases on a 10s lapse so a silent Harness cannot starve the queue, and the lapsed send is still live and can emit its session-only acceptance later, when a different batch is the one listening. A timeout proves only that a send has not acknowledged YET. This mutation removes the one line that records the lapse, keeping the gate, the listener and the refusal path intact, so what is severed is exactly the knowledge that a late event may belong to someone else. ON THE MUTATION THAT IS NOT HERE: an earlier M9 severed the gate's queueing and named the cross-talk cell. It SURVIVED once this defence landed, and I applied it by hand rather than trusting the verdict. Reading it: the mutant DOES red, but on the re-attempt and no-duplicate cells with deliveredTurns 2 and turnsRun 1, while the cell it NAMED still printed green. That is a WRONG-RED, not a kill, so it was deleted rather than re-aimed at whichever cell happened to fail. The exclusion gate is still load-bearing and is still graded, by those two cells reddening; what no longer has a mutation of its own is the specific claim that exclusivity alone prevents cross-talk, and that claim is FALSE, which is the whole finding behind M11. UPDATED after the trigger was widened from `!acknowledged` to `refusalNeedsBoundary(acknowledged, attributable)`: the mutation still severs exactly one thing, the recording of the lapse, and the anchor now names the shipped call rather than the superseded inline condition."
+    },
+    {
+      "name": "M12 a run holding acceptance unattributable does not defer the send",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {",
+      "replace": "      if (false && attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {",
+      "expectRed": "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
+      "cell": "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
+      "note": "Severs the CALL SITE, not the predicate. An earlier version of this mutation replaced the pure function's body and SURVIVED, because it sat inside a branch whose condition was the same expression and could not disagree with it. Measured by hand at this anchor: severed gives sendFrames=4 with the run still open, fixed gives 0."
     }
   ]
 }

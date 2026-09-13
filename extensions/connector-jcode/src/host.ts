@@ -461,6 +461,8 @@ export async function runJcodeHost(): Promise<void> {
   /** When the current run-debt deferral began, so it can be bounded. Cleared whenever no run debt is
    *  outstanding, so an ordinary sequence of turns never accumulates a deferral age across them. */
   let deferralStartedAt: number | undefined;
+  /** Announce a deferral episode once, not once per level-triggered tick. Cleared with the clock. */
+  let deferralAnnounced = false;
   /** The queued-turn tier has stopped attempting: an unsettleable run with no recovery left. Latched
    *  so the terminal diagnostic is written once rather than on every fallback tick. Cleared on bridge
    *  replacement, where attribution and the recovery budget are both restored. */
@@ -1100,7 +1102,20 @@ export async function runJcodeHost(): Promise<void> {
     if (unsettledLapsedDispatches > 0) {
       if (deferralStartedAt === undefined) deferralStartedAt = Date.now();
       const blockedForMs = Date.now() - deferralStartedAt;
-      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) return;
+      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {
+        // Say it ONCE per episode. A silent return is why an operator cannot tell this deferral
+        // from the stall it replaces, and why a test could not witness that it engaged at all.
+        // Once per episode rather than per tick: the fallback is level-triggered and would
+        // otherwise print this every second for the life of the run.
+        if (!deferralAnnounced) {
+          deferralAnnounced = true;
+          writeJcodeDiagnostic(
+            `[cotal-jcode] a run has not acknowledged within its window; deferring ${items.length} ` +
+              `queued automatic message(s) until it settles, so delivery cannot be misattributed\n`,
+          );
+        }
+        return;
+      }
       if (deferralExhausted(unsettledLapsedDispatches, blockedForMs)) {
         // The run is unsettleable, so the connection boundary is the answer -- BUT ONLY IF THERE IS
         // ONE LEFT TO TAKE. `recoverBridge` is one-shot: once spent it does not replace anything, it
@@ -1159,7 +1174,7 @@ export async function runJcodeHost(): Promise<void> {
         }
         return;
       }
-    } else deferralStartedAt = undefined;
+    } else { deferralStartedAt = undefined; deferralAnnounced = false; }
     const injection = formatInjection(items);
     if (!injection) return;
     const current = client;
@@ -1415,6 +1430,7 @@ export async function runJcodeHost(): Promise<void> {
           // connection is gone, so a stale age must not make the replacement's first deferral look
           // already exhausted and force a second boundary on arrival.
           deferralStartedAt = undefined;
+          deferralAnnounced = false;
           queuedTurnTierStopped = false;
           watchClient(replacement);
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);

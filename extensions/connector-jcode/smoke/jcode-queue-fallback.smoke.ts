@@ -109,6 +109,10 @@ const busyReleaseFile = join(root, "busy-release");
 // rather than by the turn. Absent until that cell writes it, so no earlier cell is affected.
 const heldTurnReleaseFile = join(root, "held-turn-release");
 const heldTurnMarker = "HELD_OPEN_TURN_1233";
+const noAcceptReleaseFile = join(root, "no-accept-release");
+const noAcceptTurnMarker = "RUN_WITHOUT_ACCEPT_1233";
+/** Shared so a later cell can wait for B4's turn to drain before it arms its own state. */
+const STARVE_MARKER = "STARVED_BEHIND_HELD_TURN_1233";
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
 let child: ChildProcess | undefined;
@@ -285,6 +289,8 @@ try {
       // only way to observe whether host bookkeeping is bounded by acceptance or by the turn.
       FAKE_JCODE_HOLD_TURN_ON_CONTENT: heldTurnMarker,
       FAKE_JCODE_HOLD_TURN_RELEASE_FILE: heldTurnReleaseFile,
+      FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT: noAcceptTurnMarker,
+      FAKE_JCODE_RUN_WITHOUT_ACCEPT_HOLD_FILE: noAcceptReleaseFile,
       // Holds `message_accepted` open so the host's post-await window is observable (Cell B2). It
       // changes WHEN the acknowledgement lands, never whether the message is delivered.
       FAKE_JCODE_ACCEPT_DELAY_MS: String(acceptDelayMs),
@@ -538,7 +544,7 @@ try {
   // The witness is a message that arrives DURING a turn that has not finished. The turn is genuinely
   // running and genuinely accepted; only its completion is deferred, so nothing here fakes progress.
   {
-    const starveMarker = "STARVED_BEHIND_HELD_TURN_1233";
+    const starveMarker = STARVE_MARKER;
     // Send the held-open turn first and wait for the seat to actually be running it. Waiting on the
     // fake's own record rather than sleeping means the window below is open by construction.
     await operator.unicast(peerId!, heldTurnMarker);
@@ -582,6 +588,98 @@ try {
     );
     // Release the held turn so the suite's teardown is not waiting on it.
     writeFileSync(heldTurnReleaseFile, "release");
+  }
+
+  // --- Cell B5: a run that never acknowledges must not make later sends repeat ------------------
+  // A reviewer measured this on the shipped host and it is the defect B4 cannot see. B4's held turn
+  // is ACKNOWLEDGED (the fake emits acceptance before deferring `turn_done`), so it owes no
+  // acceptance debt. A turn that genuinely RUNS, stays open, and NEVER acknowledges does: the host's
+  // gate lapses, `unsettledLapsedDispatches` stays outstanding, and every later send is refused as
+  // unattributable however healthy it is. Refused, still owed, re-sent next tick, and the Harness
+  // accepts and RUNS each copy: the reviewer counted 4 executions from 4 send frames.
+  //
+  // THE ORDERING IS THE WHOLE CELL AND MY FIRST VERSION HAD IT WRONG. It ran after B4 released its
+  // turn, so the seat was IDLE, `nextFallbackAction` took `drive`, and the queued-turn tier was
+  // never reached: the cell passed with the deferral SEVERED. The same reviewer named the fix. A
+  // must be open AND unacknowledged so `sessionBusy` and the debt both hold, and B must reach the
+  // queue-turn tier, which needs its soft interrupt to fail first (STEER_BLACKHOLE, already on).
+  //
+  // Every precondition below is asserted from the fake's own record, because a cell that cannot
+  // prove it reached the state grades nothing, which is how the first version passed.
+  {
+    const debtMarker = "RUN_DEBT_NO_DUPLICATE_1233";
+    // DRAIN THE PREVIOUS CELL FIRST. B4's starve turn is still in flight here, and its `turn_done`
+    // lands AFTER this cell's run has started: the host sets `turnActive = false` on any turn_done
+    // for the session (host.ts watchClient), so the seat flips back to IDLE under my open run and B
+    // takes the plain drive path. Measured exactly that: a `turn_done` for STARVED_BEHIND_HELD_TURN
+    // arriving one row after `run_without_acceptance`. Wait for that turn to finish being observed
+    // before arming anything, or this cell grades the idle path again.
+    await tryWaitFor(
+      () => (entries().some((e) => e.ev === "turn_done_emitted"
+        && String(e.content ?? "").includes(STARVE_MARKER)) ? true : undefined),
+      45_000,
+    );
+    await sleep(3_000);
+    await operator.unicast(peerId!, noAcceptTurnMarker);
+    const ranWithoutAccept = await tryWaitFor(
+      () => (entries().some((entry) => entry.ev === "run_without_acceptance") ? true : undefined),
+      45_000,
+    );
+    // The run must also be HELD, or it completes, the debt clears, and the window closes.
+    const heldOpen = await tryWaitFor(
+      () => (entries().some((e) => e.ev === "turn_held_open" && String(e.content ?? "").includes(noAcceptTurnMarker)) ? true : undefined),
+      45_000,
+    );
+    check(
+      "a run is genuinely open, held, and never acknowledged, so acceptance debt is real",
+      ranWithoutAccept === true && heldOpen === true,
+      { ranWithoutAccept: ranWithoutAccept === true, heldOpen: heldOpen === true },
+    );
+    // THE DEBT DOES NOT EXIST YET. `oweAcceptanceDebt` is registered only AFTER the gate's
+    // RUN_ACCEPT_WINDOW_MS (10s) race times out; before that the host has no reason to suspect
+    // anything and `unsettledLapsedDispatches` is still 0. My previous version sent B ~2s in, so B's
+    // frame was written on a perfectly attributable path and the single frame I measured was a
+    // correct first delivery, not a duplicate. Waiting past the window is what arms the state under
+    // test; asserting it below is what stops this cell silently grading the unarmed path again.
+    // Mirrors host.ts RUN_ACCEPT_WINDOW_MS (10_000); not imported because host.ts does not export it.
+    await sleep(13_000);
+    await operator.unicast(peerId!, debtMarker);
+    // B must reach the QUEUE-TURN tier, which only happens once its soft interrupt has FAILED.
+    // Waiting on `handoversCarrying` is what let the previous version lie: that helper is the union
+    // of soft_interrupt AND send_message, so it fired on B's plain drive-path send and reported a
+    // tier B had never entered. Wait on the black-holed soft interrupt specifically.
+    const steered = await tryWaitFor(
+      () => (entries().some((e) => e.ev === "request" && e.frame?.req === "soft_interrupt"
+        && String(e.frame?.content ?? "").includes(debtMarker)) ? true : undefined),
+      45_000,
+    );
+    // Past several fallback ticks: pacing is 1s doubling, so this covers ~1+2+4+8+16s of attempts.
+    // On the defect the reviewer saw three sends inside a window of this size.
+    await sleep(40_000);
+    const stillOpen = !entries().some((e) => e.ev === "turn_hold_released" && String(e.content ?? "").includes(noAcceptTurnMarker));
+    const frames = queuedSendsCarrying(debtMarker).length;
+    const runs = entries().filter((e) => e.ev === "turn_run" && String(e.content ?? "").includes(debtMarker)).length;
+    check(
+      "the run is STILL open at judgement, so this is not measuring a settled seat",
+      stillOpen && steered === true,
+      { stillOpen, softInterruptAttempted: steered === true },
+    );
+    // THE ARMING WITNESS. Without this the cell cannot tell "the deferral held the send" from "the
+    // state under test never armed and there was nothing to send yet", which is exactly the way the
+    // previous two versions passed while grading nothing. This is the host SAYING it deferred.
+    const deferralEngaged = stderr.includes("deferring") && stderr.includes("until it settles");
+    check(
+      "the host reports that it DEFERRED the batch, proving the state under test actually armed",
+      deferralEngaged,
+      { deferralEngaged },
+    );
+    check(
+      "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
+      ranWithoutAccept === true && heldOpen === true && stillOpen && deferralEngaged && frames === 0,
+      { sendFrames: frames, executions: runs, stillOpenAtJudgement: stillOpen, deferralEngaged },
+    );
+    // Release so teardown is not waiting on it.
+    writeFileSync(noAcceptReleaseFile, "release");
   }
 
   // --- Cell C: the reported state --------------------------------------------------------------

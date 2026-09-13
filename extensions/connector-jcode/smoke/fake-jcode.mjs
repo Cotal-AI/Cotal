@@ -216,8 +216,15 @@ function runTurn(frame, socket) {
   // the fixture writes the release file. Scoped by content so readiness and post-join traffic still
   // complete and the seat reaches the mesh, rather than grading a boot failure.
   const holdMatch = process.env.FAKE_JCODE_HOLD_TURN_ON_CONTENT;
-  const holdRelease = process.env.FAKE_JCODE_HOLD_TURN_RELEASE_FILE;
-  if (holdMatch && String(frame.content).includes(holdMatch)) {
+  const noAcceptMatch = process.env.FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT;
+  const noAcceptHold = process.env.FAKE_JCODE_RUN_WITHOUT_ACCEPT_HOLD_FILE;
+  // A no-acceptance run is held by its OWN file. It has to be held at all, or it completes and
+  // discharges the very acceptance debt it exists to express; and it cannot share the hold knob's
+  // release, because that knob is content-scoped to a different marker and is released earlier by
+  // the cell that owns it.
+  const heldAsNoAccept = Boolean(noAcceptMatch && noAcceptHold && String(frame.content).includes(noAcceptMatch));
+  const holdRelease = heldAsNoAccept ? noAcceptHold : process.env.FAKE_JCODE_HOLD_TURN_RELEASE_FILE;
+  if (heldAsNoAccept || (holdMatch && String(frame.content).includes(holdMatch))) {
     log({ ev: "turn_held_open", content: frame.content });
     const waitForRelease = () => {
       if (holdRelease && !existsSync(holdRelease)) {
@@ -646,6 +653,12 @@ const server = createServer((socket) => {
           const noAcceptRun = process.env.FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT;
           if (noAcceptRun && String(frame.content).includes(noAcceptRun)) {
             log({ ev: "run_without_acceptance", session_id: frame.session_id, content: frame.content });
+            // WORKING, but never ACCEPTED. Suppressing `message_accepted` alone is not the real
+            // seat: the host tracks busy from `session_status` (host.ts turnActive), so without
+            // this the seat still reads IDLE, a later send takes the plain drive path, and the
+            // queue-turn tier under test is never reached. The distinction being modelled is a run
+            // that is visibly running yet owes an acknowledgement, which is exactly the pair.
+            event({ ev: "session_status", session_id: frame.session_id, status: "working" });
             runTurn(frame, socket);
             break;
           }
