@@ -1,0 +1,2 @@
+# Inspect/classify stored sessions/ without calling the panicking list_sessions RPC.
+smoke:jcode-stored-sessions
