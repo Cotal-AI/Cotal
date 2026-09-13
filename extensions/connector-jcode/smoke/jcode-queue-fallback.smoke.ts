@@ -390,10 +390,20 @@ try {
   // a concurrent path offer it twice.
   {
     const handoversBefore = handoversCarrying(marker).length;
-    await sleep(4_000);
+    // THE WINDOW MUST OUTLAST THE RETRY BACKOFF, and a fixed 4s did not. The fallback paces itself
+    // 1s, 2s, 4s ... to 60s, so by the time this batch has been delivered the next tick can be tens
+    // of seconds away. Watching for 4s therefore proved only that no tick happened to fire, not that
+    // the batch had stopped being owed, and the cell stayed green when the recording was severed:
+    // mutation-proof caught that as a WRONG-RED, reddening a later cell while this one, which NAMES
+    // the defect, passed. Waiting for a re-handover and failing if one arrives grades the claim
+    // itself, and costs the full window only when the suite is about to fail anyway.
+    const reHandedOver = await tryWaitFor(
+      () => (handoversCarrying(marker).length > handoversBefore ? true : undefined),
+      35_000,
+    );
     check(
       "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
-      handoversCarrying(marker).length === handoversBefore,
+      reHandedOver === undefined,
       { handoversBefore, handoversAfter: handoversCarrying(marker).length },
     );
   }
