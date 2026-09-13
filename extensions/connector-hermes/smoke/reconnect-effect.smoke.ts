@@ -196,8 +196,8 @@ assert.equal(
 
 console.log(
   "reconnect effect: a reconnected bridge delivers mesh traffic; both refuse controls (emptied reopen body, " +
-    "deleted call site) go silent on the warm leg while their cold legs still deliver; the clear-before-liveness " +
-    "ordering holds under a forced interleaving",
+    "deleted call site) go silent on the warm leg while their cold legs still deliver; a reader still unwinding " +
+    "is not mistaken for a live one, and a genuinely live reader survives",
 );
 
 // The floor check runs LAST, so a suite that lost an assertion fails here even though every
