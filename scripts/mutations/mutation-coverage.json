@@ -104,8 +104,8 @@
       "file": "scripts/mutation-coverage.mjs",
       "find": "      const from = node.arguments[0];\n      if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)\n        && exprCovers(evalPath, from, root)) hit = true;",
       "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;\n      }",
-      "expectRed": "an unused root spelling beside a by-name import is refused",
-      "cell": "an unused root spelling beside a by-name import is refused"
+      "expectRed": "a root appearing as a copy's DESTINATION is not a copy of that root",
+      "cell": "a root appearing as a copy's DESTINATION is not a copy of that root"
     },
     {
       "name": "a skipped build segment is still treated as a package build",
@@ -186,14 +186,6 @@
       "replace": "  if (command.includes(\"pnpm build\")) return true;\n  for (const segment of expandScripts(command).split(/&&|;/)) {",
       "expectRed": "printed-build cannot fabricate executes evidence",
       "cell": "printed-build cannot fabricate executes evidence"
-    },
-    {
-      "name": "a genuine variable argument array is refused",
-      "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (ts.isIdentifier(node)) node = variables.get(node.text);",
-      "replace": "    if (ts.isIdentifier(node)) return false;",
-      "expectRed": "a genuine subprocess argument array is accepted",
-      "cell": "a genuine subprocess argument array is accepted"
     },
     {
       "name": "the pnpm --filter=value form is refused",
@@ -342,8 +334,8 @@
     {
       "name": "an argv binding is resolved without regard to scope",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (node !== scope && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)\n        || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isClassDeclaration(node))) return;",
-      "replace": "      if (false) return;",
+      "find": "  const arrays = {\n    get: (name, use) => {\n      for (let scope = use?.parent; scope !== undefined; scope = scope.parent) {\n        const initializer = declaresIn(scope, name);\n        if (initializer !== undefined) return argvCandidates(initializer, arrays, 0, initializer);\n      }\n      return undefined;\n    },\n  };",
+      "replace": "  const flatMap = new Map();\n  const arrays = { get: (name) => flatMap.get(name) ?? [] };\n  const bindAll = (node) => {\n    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {\n      const candidates = argvCandidates(node.initializer, arrays);\n      if (candidates.length > 0) flatMap.set(node.name.text, candidates);\n    }\n    ts.forEachChild(node, bindAll);\n  };\n  bindAll(sf);",
       "expectRed": "a same-named argv array in another scope cannot stand in for the launcher's",
       "cell": "a same-named argv array in another scope cannot stand in for the launcher's"
     }
