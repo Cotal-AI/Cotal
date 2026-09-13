@@ -298,6 +298,16 @@ const evaluatedProgramLoads = (evalPath, argvNode) => {
  * `readFileSync(path)`, and mutating it changes what the suite asserts on just as surely as
  * mutating imported source. This is the same shape as the launcher and copier rules: the path must
  * be the argument the call actually reads, not a value sitting near it.
+ *
+ * BUT A READ OF AN IMPORTABLE SOURCE MODULE IS NOT AN EXECUTION WITNESS, and that distinction is
+ * the whole point of this tool. Reading a file proves the suite depends on its TEXT. For a data
+ * file the text IS the artifact, so a read is the strongest witness available and nothing stronger
+ * exists. For a `.ts`/`.js` module the text is not the behaviour: a suite that does
+ * `readFileSync("mesh-handler.ts")` and counts `"export class MeshHandler"` reddens when the
+ * SPELLING changes and stays green when the SEMANTICS change. Grading that as coverage is the
+ * original defect of this tool wearing a data-flow costume, because the read really is evaluated
+ * and the path really does resolve; the fact it establishes is simply not execution. A source
+ * module has a stronger witness available (import, launch, build), so requiring one costs nothing.
  */
 /**
  * Environment variables the command itself assigns, as `NAME=value` prefixes on a run step.
@@ -456,6 +466,18 @@ const evaluated = (node, sf) => {
 };
 
 const READERS = ["readFileSync", "readFile", "openSync", "createReadStream"];
+/**
+ * Is this file an importable source MODULE, as opposed to data?
+ *
+ * The test is the file's own extension, which is what decides whether a module loader will execute
+ * it. That is a property of the artifact, not a witness about any suite, so it is a fair thing to
+ * read off a path: `.ts` means a loader can run it, `.json`/`.yml`/`.md` means nothing executes it
+ * and its bytes are its entire contribution. `.json` is deliberately DATA here even though it is
+ * importable, because importing JSON yields a value rather than behaviour, so a read of it and an
+ * import of it establish the same fact.
+ */
+const SOURCE_MODULE = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
+const isSourceModule = (file) => SOURCE_MODULE.has(extname(file));
 /**
  * A recursive directory read is a read of every file under that directory.
  *
@@ -1052,7 +1074,7 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
     const source = readFileSync(suite, "utf8");
     if (resolve(mutation.file) === resolve(suite)) return;
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
-    if (readsFile(suite, source, mutation.file, commandEnv(command))) return;
+    if (!isSourceModule(mutation.file) && readsFile(suite, source, mutation.file, commandEnv(command))) return;
     if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
     if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;

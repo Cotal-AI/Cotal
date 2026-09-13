@@ -58,6 +58,12 @@ try {
   write("bin/smoke/reads-data.smoke.ts",
     'import { readFileSync } from "node:fs";\n' +
     'readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8");\n');
+  // The grep harness: reads a SOURCE module and asserts on its text, never loading it. Identical
+  // read shape to `reads-data`, so the only thing separating them is the kind of file read.
+  write("bin/smoke/greps-source.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'const src = readFileSync(join(ROOT, "scripts", "direct.mjs"), "utf8");\n' +
+    'if (src.split("export function run").length - 1 !== 1) throw new Error("shape changed");\n');
   write("bin/smoke/reads-other.smoke.ts",
     'import { readFileSync } from "node:fs";\n' +
     'readFileSync(join(ROOT, "packages", "other", "package.json"), "utf8");\n');
@@ -318,6 +324,15 @@ try {
   result = run("reads-data-file");
   check("reading the mutated data file's bytes is a witness", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
+  // The discriminator for the read witness, and the defect found at a6c0e4608 by the orchestrator:
+  // `mesh-seam.smoke.ts` reads `mesh-handler.ts` as a STRING and counts substrings in it. That
+  // reddens when the text changes, which is not evidence the behaviour changed. The read shape here
+  // is byte-identical to `reads-data` above; only the KIND of file differs, so this cell fails the
+  // moment a read of a source module is allowed to stand in for executing it.
+  config("greps-source", { suite: ["bin/smoke/greps-source.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("greps-source");
+  check("reading a SOURCE module as text is not executing it", result.status !== 0 && /REFUSED greps-source/.test(result.stderr), report(result));
+
   config("reads-other-file", { suite: ["bin/smoke/reads-other.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
   result = run("reads-other-file");
   check("reading some OTHER file is not a witness for the mutated one", result.status !== 0 && /REFUSED reads-other-file/.test(result.stderr), report(result));
@@ -334,13 +349,21 @@ try {
   result = run("env-path-unread");
   check("an env assignment nothing reads is a mention, not a witness", result.status !== 0 && /REFUSED env-path-unread/.test(result.stderr), report(result));
 
-  config("recursive-listing-read", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  // Targets a DATA file in the tree, not a source module. A recursive read genuinely witnesses the
+  // data it sweeps up, but sweeping a `.ts` file into a text read is the grep harness again, just
+  // with a wider net, so the tree rule is exercised on the file kind it can actually speak for.
+  config("recursive-listing-read", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
   result = run("recursive-listing-read");
   check("a recursive listing whose entries are read witnesses the tree", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
-  config("recursive-listing-names", { suite: ["bin/smoke/listing-names.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  config("recursive-listing-names", { suite: ["bin/smoke/listing-names.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
   result = run("recursive-listing-names");
   check("a listing that only observes names is refused", result.status !== 0 && /REFUSED recursive-listing-names/.test(result.stderr), report(result));
+
+  // The same sweep, aimed at a SOURCE module: refused, because a wide text read is still a text read.
+  config("recursive-listing-source", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("recursive-listing-source");
+  check("a recursive listing that reads a source module is not executing it", result.status !== 0 && /REFUSED recursive-listing-source/.test(result.stderr), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
