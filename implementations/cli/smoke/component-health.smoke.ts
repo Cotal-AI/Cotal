@@ -311,8 +311,9 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
     pid: process.pid,
   };
   const managerLeaseRevision = await health.acquireManagerLease(managerLease);
-  const deliveryLeaseRevision = await health.acquireDeliveryLease(0);
-  await health.markDeliveryLeaseReady(0, deliveryLeaseRevision);
+  // The READY flip moves the revision, and release is a compare-and-swap against the revision this
+  // endpoint last owned — so carry the one markReady returned, not the one acquire did.
+  const deliveryLeaseRevision = await health.markDeliveryLeaseReady(0, await health.acquireDeliveryLease(0));
   writeFileSync(join(root, ".cotal", "manager.pid"), String(process.pid));
   writeFileSync(join(root, ".cotal", "delivery.pid"), String(process.pid));
   writeFileSync(join(root, ".cotal", "renewal.json"), JSON.stringify({
@@ -322,7 +323,7 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
   return {
     close: async () => {
       await service.stop();
-      await health.releaseDeliveryLease(0);
+      await health.releaseDeliveryLease(0, deliveryLeaseRevision);
       await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision);
       await health.stop().catch(() => {});
       await nc.drain().catch(() => nc.close());

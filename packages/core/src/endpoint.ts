@@ -3558,9 +3558,17 @@ export class CotalEndpoint extends EventEmitter {
    *  departing process would delete the REPLACEMENT's lease on its way out and leave the shard with
    *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
    *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
-   *  on is left alone. A caller with no revision to offer releases nothing, which is the safe
-   *  direction: the bucket TTL is the crash-safe authority and will expire a genuinely stale row. */
-  async releaseDeliveryLease(shardIndex: number, revision?: number): Promise<void> {
+   *  on is left alone.
+   *
+   *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
+   *  process no longer holds a revision it can argue for", which is the takeover paths' honest
+   *  answer and correctly releases nothing — the bucket TTL is the crash-safe authority and expires
+   *  a genuinely stale row. But if that were the DEFAULT, every existing `releaseDeliveryLease(0)`
+   *  call site would keep compiling and silently stop releasing: the same omission hole
+   *  `standaloneConnectOpts` closed by deleting its `= {}`. Measured, not theorised — this landed as
+   *  a red in `smoke:delivery-lease`, where a caller that genuinely held the lease released nothing
+   *  and the next acquire was refused. A caller must now say which it means. */
+  async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
     if (revision === undefined) return;
     try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
     catch {
