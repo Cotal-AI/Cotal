@@ -77,6 +77,26 @@
       "expectRed": "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
       "cell": "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
       "note": "The second reviewer finding, restored. The SDK's acceptance wait RESOLVES on its own timeout rather than rejecting, so `await sendMessage(...)` returning proves only that the frame was written. Infer acceptance from it and a Harness that takes the frame and never acknowledges it is recorded as having taken the batch; the next clean boundary then ACKS a message the session never ran, so the peer's message is lost rather than late. Runs the loss fixture, whose fake takes the queued send and stays silent, and whose witness is a turn_run record: arrival is logged for every frame, so only an execution record can distinguish delivered from dropped. Its cell is distinct from M5's and M6's: M5 removes the record of acceptance, M6 removes the exclusion during the window, M7 accepts something that was never acknowledged."
+    },
+    {
+      "name": "M8 a new turn steals a handover that is still being accepted",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    releaseUnheldReservations();",
+      "replace": "    reservedIds = new Set();",
+      "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback",
+      "note": "The shipped assumption, restored verbatim: clear every reservation at the new-turn boundary because any in-flight handover must have belonged to the turn that just ended. False when the old turn goes idle inside the acceptance await, and the queued message is then EXECUTED twice. Reproduced by review at c40624cb7 before the fix; the graded cell is the only one that reads turn_run rather than frames."
+    },
+    {
+      "name": "M9 the new-turn selection reads items another handover is already delivering",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !reservedIds.has(item.recvKey));",
+      "replace": "      const inbox = agent.peekInbox(\"automatic\");",
+      "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback",
+      "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct."
     }
   ]
 }
