@@ -177,6 +177,9 @@ try {
     'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
     'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
     'console.log(ENTRY);\n');
+  write("bin/smoke/identifier-argv.smoke.ts",
+    'const ARGV = [join(ROOT, "scripts", "direct.mjs")];\n' +
+    'spawnSync(process.execPath, ARGV);\n');
   write("bin/smoke/mentions-script.smoke.ts",
     'const note = "scripts/direct.mjs";\n');
   write("bin/smoke/unused-root.smoke.ts",
@@ -303,6 +306,19 @@ try {
   config("direct-script", { suite: ["bin/smoke/direct-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("direct-script");
   check("a suite is gradable when it launches the exact mutated script path", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // Identifier argv is a real capability — 57 corpus suites pass argv that way —
+  // and nothing pinned it, so it could have rotted unnoticed (#1586).
+  //
+  // It is witnessed by `launchedPaths`, whose resolver walks scopes, and NOT by
+  // `spawnsEntrypoint.entryArray:915`, whose flat-map copy the issue reports as
+  // deletable with zero of 430 corpus verdicts flipping. This cell reds when
+  // `launchedPaths` loses that resolution and does NOT red when `:915` goes,
+  // which is the measurement rather than a claim about it.
+  config("identifier-argv", { suite: ["bin/smoke/identifier-argv.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("identifier-argv");
+  check("a spawn whose argv is an IDENTIFIER bound to an array witnesses the script it names",
+    result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("aliased-launcher", { suite: ["bin/smoke/aliased-launcher.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("aliased-launcher");
