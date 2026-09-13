@@ -7,12 +7,15 @@
 //   shared-ipv4   a host-shaped IPv4 literal in the shared address range
 //   home-path     an absolute Unix home directory path
 //
-// Approved fixtures live in scripts/operator-literal-allowlist.json. Each exception names one
-// path, one rule, and the exact number of matches that must remain. A missing fixture is an error,
-// an added match is dirty, and the same token in any other path is dirty. The self-test prints a
-// planted positive and a near-negative for every class before the real subject is scanned.
-// Workflow files are excluded from host-name matching because CI configuration must name its pool. Shared-address network notation is excluded because it names a range, not a host. Finding
-// rows never print the matched token.
+// Approved tracked-file fixtures live in scripts/operator-literal-allowlist.json. Each exception
+// names one path, one rule, and the exact number of matches that must remain. Commit messages, commit
+// identities, the PR title, and the PR body never use the allowlist because that text is editable and
+// an edited PR reruns the gate. An allowlist entry naming a non-file breaks the check with exit 2, so
+// measurement prose in PR text uses placeholders. The self-test prints a planted positive and a
+// near-negative for every class before the real subject is scanned.
+// Workflow files are excluded from host-name matching because CI configuration must name its pool.
+// Shared-address and public-address network notation is excluded because it names a range, not a
+// host. Finding rows never print the matched token.
 //
 // Usage:
 //   node scripts/check-operator-literals.mjs [--range <base>..<head>] [--event <event.json>]
@@ -100,16 +103,53 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function normalizeHostTokens(values) {
+function hostConfigurationError(source, message) {
+  const error = new Error(message);
+  error.hostSource = source;
+  return error;
+}
+
+function normalizeHostTokens(values, source, allowEmpty = false) {
   const tokens = [];
   for (const raw of values) {
     const value = String(raw ?? '').trim();
     if (!value) continue;
-    if (/\r|\n/.test(value)) throw new Error('host tokens must be one line each');
+    if (/\r|\n/.test(value)) {
+      throw hostConfigurationError(source, 'host tokens must be one line each');
+    }
     if (!tokens.some((token) => token.toLowerCase() === value.toLowerCase())) tokens.push(value);
   }
-  if (tokens.length === 0) throw new Error('no host token is configured');
+  if (!allowEmpty && tokens.length === 0) {
+    throw hostConfigurationError(source, 'no host token is configured');
+  }
   return tokens;
+}
+
+function hostTokenConfiguration(runtimeHostname, repositoryValues, argumentValues) {
+  const machineHostTokens = normalizeHostTokens(
+    [runtimeHostname],
+    'machine-hostname',
+  );
+  const configuredHostTokens = [
+    ...normalizeHostTokens(repositoryValues, 'repository-variable', true).map((token) => ({
+      token,
+      source: 'repository-variable',
+    })),
+    ...normalizeHostTokens(argumentValues, 'argument', true).map((token) => ({
+      token,
+      source: 'argument',
+    })),
+  ].filter(
+    (entry, index, entries) =>
+      entries.findIndex((candidate) => candidate.token.toLowerCase() === entry.token.toLowerCase()) === index,
+  );
+  const hostTokens = [...machineHostTokens];
+  for (const entry of configuredHostTokens) {
+    if (!hostTokens.some((token) => token.toLowerCase() === entry.token.toLowerCase())) {
+      hostTokens.push(entry.token);
+    }
+  }
+  return { hostTokens, machineHostTokens, configuredHostTokens };
 }
 
 function hostPatterns(hostTokens) {
@@ -125,13 +165,13 @@ function excludesHostNames(path) {
 
 function hostTokenLengthFailures(hostTokens) {
   return hostTokens
-    .filter((token) => token.length < MIN_HOST_TOKEN_LENGTH)
-    .map((token) => ({ tokenLength: token.length }));
+    .filter((entry) => entry.token.length < MIN_HOST_TOKEN_LENGTH)
+    .map((entry) => ({ tokenLength: entry.token.length, source: entry.source }));
 }
 
 function hostTokenCeilingFailures(entries, hostTokens) {
   const failures = [];
-  for (const token of hostTokens) {
+  for (const { token, source } of hostTokens) {
     const pattern = hostPatterns([token])[0];
     let matchingFiles = 0;
     for (const entry of entries) {
@@ -140,7 +180,7 @@ function hostTokenCeilingFailures(entries, hostTokens) {
       if (pattern.test(entry.text)) matchingFiles += 1;
     }
     if (matchingFiles > HOST_TOKEN_FILE_CEILING) {
-      failures.push({ tokenLength: token.length, matchingFiles });
+      failures.push({ tokenLength: token.length, matchingFiles, source });
     }
   }
   return failures;
@@ -178,10 +218,12 @@ export function findings(text, where, hostTokens) {
 
     IPV4_CANDIDATE.lastIndex = 0;
     for (const match of lineText.matchAll(IPV4_CANDIDATE)) {
-      const cidrNotation = CIDR_SUFFIX.test(lineText.slice(match.index + match[0].length));
+      const urlHost = /:\/\/[^\s\/]*$/.test(lineText.slice(0, match.index));
+      const cidrNotation =
+        !urlHost && CIDR_SUFFIX.test(lineText.slice(match.index + match[0].length));
       if (isSharedIPv4(match[0]) && !cidrNotation) {
         add('shared-ipv4', lineIndex + 1, match.index + 1);
-      } else if (isPublicIPv4(match[0])) {
+      } else if (isPublicIPv4(match[0]) && !cidrNotation) {
         add('public-ipv4', lineIndex + 1, match.index + 1);
       }
     }
@@ -222,8 +264,8 @@ export function trackedEntries(root) {
   if (rows.length === 0) throw new Error('tracked-file subject is empty');
 
   const entries = [];
+  const binarySkippedPaths = [];
   let gitlinks = 0;
-  let binarySkipped = 0;
   for (const row of rows) {
     const { mode, path } = parseStageRow(row);
     // Gitlinks are staged paths but not eligible files because their content is not in this tree.
@@ -245,7 +287,7 @@ export function trackedEntries(root) {
     } else {
       const contents = readFileSync(fullPath);
       if (hasBinaryPrefix(contents)) {
-        binarySkipped += 1;
+        binarySkippedPaths.push(path);
         continue;
       }
       text = contents.toString('utf8');
@@ -254,7 +296,13 @@ export function trackedEntries(root) {
   }
 
   if (entries.length === 0) throw new Error('tracked-file subject has no readable files');
-  return { entries, stageRows: rows.length, gitlinks, binarySkipped };
+  return {
+    entries,
+    stageRows: rows.length,
+    gitlinks,
+    binarySkipped: binarySkippedPaths.length,
+    binarySkippedPaths,
+  };
 }
 
 function readAllowlist(path) {
@@ -425,15 +473,19 @@ const CELL_EXPECTATIONS = new Map([
   ['ip-zero', 'primary=0/1 secondary=1/1'],
   ['ip-private', 'primary=0/1 secondary=1/1'],
   ['ip-documentation', 'primary=0/1 secondary=1/1'],
+  ['ip-network', 'primary=0/1 secondary=1/1'],
   ['shared-ip-planted', 'primary=1/1 secondary=1/1'],
   ['shared-ip-private', 'primary=0/1 secondary=1/1'],
   ['shared-ip-network', 'primary=0/1 secondary=1/1'],
+  ['shared-ip-url-host', 'primary=1/1 secondary=1/1'],
+  ['shared-ip-url-userinfo', 'primary=1/1 secondary=1/1'],
+  ['shared-ip-url-path', 'primary=0/1 secondary=1/1'],
   ['home-planted', 'primary=1/1 secondary=1/1'],
   ['home-relative', 'primary=0/1 secondary=1/1'],
   ['mac-home-planted', 'primary=1/1 secondary=1/1'],
   ['mac-home-relative', 'primary=0/1 secondary=1/1'],
-  ['short-host-token', `scanner=broken token_length=5/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
-  ['host-token-ceiling', `scanner=broken matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${SELFTEST_HOST.length}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
+  ['short-host-token', `scanner=broken runtime_scanned=1/1 runtime_guard_errors=0/2 source=argument token_length=5/${MIN_HOST_TOKEN_LENGTH}_minimum configured_errors=1/1`],
+  ['host-token-ceiling', `scanner=broken source=repository-variable matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${SELFTEST_HOST.length}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
   ['binary-skip', 'files_scanned=1/1 binary_skipped=1/1'],
   ['allowlisted-fixture', 'scanner=clean allowed=1/1'],
   ['same-token-elsewhere', 'scanner=dirty findings=1/1'],
@@ -559,6 +611,9 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL ip-documentation START
   matchCell('ip-documentation', [203, 0, 113, 9].join('.'), 'public-ipv4', 0, shapeIPv4Count, 1),
   // SELFTEST_CELL ip-documentation END
+  // SELFTEST_CELL ip-network START
+  matchCell('ip-network', `${SELFTEST_PUBLIC_IP}/8`, 'public-ipv4', 0, shapeIPv4Count, 1),
+  // SELFTEST_CELL ip-network END
   // SELFTEST_CELL shared-ip-planted START
   matchCell('shared-ip-planted', SELFTEST_SHARED_IP, 'shared-ipv4', 1, shapeIPv4Count, 1),
   // SELFTEST_CELL shared-ip-planted END
@@ -568,6 +623,15 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL shared-ip-network START
   matchCell('shared-ip-network', `${SELFTEST_SHARED_IP}/10`, 'shared-ipv4', 0, shapeIPv4Count, 1),
   // SELFTEST_CELL shared-ip-network END
+  // SELFTEST_CELL shared-ip-url-host START
+  matchCell('shared-ip-url-host', `http://${SELFTEST_SHARED_IP}/8`, 'shared-ipv4', 1, shapeIPv4Count, 1),
+  // SELFTEST_CELL shared-ip-url-host END
+  // SELFTEST_CELL shared-ip-url-userinfo START
+  matchCell('shared-ip-url-userinfo', `http://user@${SELFTEST_SHARED_IP}/8`, 'shared-ipv4', 1, shapeIPv4Count, 1),
+  // SELFTEST_CELL shared-ip-url-userinfo END
+  // SELFTEST_CELL shared-ip-url-path START
+  matchCell('shared-ip-url-path', `http://example.test/${SELFTEST_SHARED_IP}/10`, 'shared-ipv4', 0, shapeIPv4Count, 1),
+  // SELFTEST_CELL shared-ip-url-path END
   // SELFTEST_CELL home-planted START
   matchCell('home-planted', `file://${SELFTEST_HOME}/file`, 'home-path', 1, homeFragmentCount, 1),
   // SELFTEST_CELL home-planted END
@@ -584,11 +648,34 @@ const SELFTEST_CELLS = [
   {
     id: 'short-host-token',
     measure: () => {
-      const failures = hostTokenLengthFailures(['short']);
-      const tokenLength = failures[0]?.tokenLength ?? 0;
+      const runtimeHostname = 'runner';
+      const runtimeOnly = hostTokenConfiguration(runtimeHostname, [], []);
+      const configured = hostTokenConfiguration(runtimeHostname, [], ['short']);
+      const runtimeScanned = findings(
+        `connect ${runtimeHostname} now`,
+        'fixture',
+        runtimeOnly.hostTokens,
+      ).filter((finding) => finding.rule === 'host-name').length;
+      const entries = Array.from({ length: HOST_TOKEN_FILE_CEILING + 1 }, (_, index) => ({
+        path: `fixtures/runtime-${index}.txt`,
+        text: `connect ${runtimeHostname} now`,
+      }));
+      const runtimeLengthErrors = hostTokenLengthFailures(runtimeOnly.configuredHostTokens);
+      const runtimeCeilingErrors = hostTokenCeilingFailures(
+        entries,
+        runtimeOnly.configuredHostTokens,
+      );
+      const failures = hostTokenLengthFailures(configured.configuredHostTokens);
+      const failure = failures[0];
+      const runtimeGuardErrors = runtimeLengthErrors.length + runtimeCeilingErrors.length;
       return {
-        actual: `scanner=${failures.length === 1 ? 'broken' : 'clean'} token_length=${tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=${failures.length}/1`,
-        pass: failures.length === 1 && tokenLength === 5,
+        actual: `scanner=${failures.length === 1 ? 'broken' : 'clean'} runtime_scanned=${runtimeScanned}/1 runtime_guard_errors=${runtimeGuardErrors}/2 source=${failure?.source ?? 'missing'} token_length=${failure?.tokenLength ?? 0}/${MIN_HOST_TOKEN_LENGTH}_minimum configured_errors=${failures.length}/1`,
+        pass:
+          runtimeScanned === 1 &&
+          runtimeGuardErrors === 0 &&
+          failures.length === 1 &&
+          failure.tokenLength === 5 &&
+          failure.source === 'argument',
       };
     },
   },
@@ -601,11 +688,13 @@ const SELFTEST_CELLS = [
         path: `fixtures/host-${index}.txt`,
         text: `connect ${SELFTEST_HOST} now`,
       }));
-      const failures = hostTokenCeilingFailures(entries, [SELFTEST_HOST]);
+      const failures = hostTokenCeilingFailures(entries, [
+        { token: SELFTEST_HOST, source: 'repository-variable' },
+      ]);
       const failure = failures[0];
       return {
-        actual: `scanner=${failures.length === 1 ? 'broken' : 'clean'} matching_files=${failure?.matchingFiles ?? 0}/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${failure?.tokenLength ?? 0}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=${failures.length}/1`,
-        pass: failures.length === 1 && failure.matchingFiles === HOST_TOKEN_FILE_CEILING + 1 && failure.tokenLength === SELFTEST_HOST.length,
+        actual: `scanner=${failures.length === 1 ? 'broken' : 'clean'} source=${failure?.source ?? 'missing'} matching_files=${failure?.matchingFiles ?? 0}/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${failure?.tokenLength ?? 0}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=${failures.length}/1`,
+        pass: failures.length === 1 && failure.matchingFiles === HOST_TOKEN_FILE_CEILING + 1 && failure.tokenLength === SELFTEST_HOST.length && failure.source === 'repository-variable',
       };
     },
   },
@@ -761,31 +850,36 @@ function main(argv) {
     return 2;
   }
 
-  let hostTokens;
+  let hostConfiguration;
   try {
     const configured = (process.env.COTAL_PRIVACY_HOST_TOKENS ?? '').split(/\r?\n/);
-    hostTokens = normalizeHostTokens([hostname(), ...configured, ...args.hostTokens]);
+    hostConfiguration = hostTokenConfiguration(hostname(), configured, args.hostTokens);
   } catch (error) {
-    emit(context, 'ERROR_ROW', `subject=host-configuration status=broken reason=${JSON.stringify(error.message)}`);
+    emit(
+      context,
+      'ERROR_ROW',
+      `subject=host-configuration source=${error.hostSource ?? 'unknown'} status=broken reason=${JSON.stringify(error.message)}`,
+    );
     return 2;
   }
+  const { configuredHostTokens, hostTokens, machineHostTokens } = hostConfiguration;
 
   emit(
     context,
     'IDENTITY_ROW',
-    `subject=operator-literal-check source=current-git-head host_tokens=${hostTokens.length}`,
+    `subject=operator-literal-check source=current-git-head host_tokens=${hostTokens.length} machine_host_tokens=${machineHostTokens.length} configured_host_tokens=${configuredHostTokens.length}`,
   );
 
   if (!selftest(context)) return 2;
   if (args.selftestOnly) return 0;
 
-  const lengthFailures = hostTokenLengthFailures(hostTokens);
+  const lengthFailures = hostTokenLengthFailures(configuredHostTokens);
   if (lengthFailures.length > 0) {
     for (const failure of lengthFailures) {
       emit(
         context,
         'ERROR_ROW',
-        `subject=host-configuration status=broken reason="host token is shorter than minimum" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum`,
+        `subject=host-configuration source=${failure.source} status=broken reason="host token is shorter than minimum" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum`,
       );
     }
     return 2;
@@ -795,13 +889,16 @@ function main(argv) {
   let treeResult;
   try {
     tracked = trackedEntries(args.root);
-    const ceilingFailures = hostTokenCeilingFailures(tracked.entries, hostTokens);
+    for (const path of tracked.binarySkippedPaths) {
+      emit(context, 'SKIP_ROW', `path=${JSON.stringify(path)} reason=nul-byte`);
+    }
+    const ceilingFailures = hostTokenCeilingFailures(tracked.entries, configuredHostTokens);
     if (ceilingFailures.length > 0) {
       for (const failure of ceilingFailures) {
         emit(
           context,
           'ERROR_ROW',
-          `subject=host-configuration status=broken reason="host token matches too many files" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum matching_files=${failure.matchingFiles}/${HOST_TOKEN_FILE_CEILING}_ceiling`,
+          `subject=host-configuration source=${failure.source} status=broken reason="host token matches too many files" host_tokens=${hostTokens.length} token_length=${failure.tokenLength}/${MIN_HOST_TOKEN_LENGTH}_minimum matching_files=${failure.matchingFiles}/${HOST_TOKEN_FILE_CEILING}_ceiling`,
         );
       }
       emit(
