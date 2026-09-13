@@ -18,13 +18,22 @@
   ],
   "mutations": [
     {
-      "name": "the inside-the-margin token is adopted instead of refused",
+      "name": "a non-advancing token is adopted instead of refused",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!initial && nextRefreshMs <= 0)",
-      "replace": "      if (!initial && nextRefreshMs <= Number.NEGATIVE_INFINITY)",
+      "find": "      if (!initial && nextRefreshMs <= 0 && !advanced)",
+      "replace": "      if (!initial && nextRefreshMs <= 0 && advanced)",
       "expectRed": "the refusal backs off past the 5s floor (no re-read in 12s)",
       "cell": "the refusal backs off past the 5s floor (no re-read in 12s)",
-      "note": "A finite delay is never <= -Infinity, so the refusal can never fire: the issue's pre-fix behavior, with the tree compiling and the initial-fetch arm untouched. Under the mutation the cell reads twice inside the 12s window, at the 5s floor."
+      "note": "Flipping the advance test, not deleting the guard: a deleted guard also reds the cell, but so would any change that stops the refusal firing. Inverting it keeps the refusal armed for exactly the tokens that ARE fresh — the shape `expiry-renewal` depends on — so the cell fails if the rule ever goes back to refusing a short lifetime."
+    },
+    {
+      "name": "the rule reverts to refusing any short-lived token",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!initial && nextRefreshMs <= 0 && !advanced)",
+      "replace": "      if (!initial && nextRefreshMs <= 0)",
+      "expectRed": "a token that does not advance the expiry is NOT adopted",
+      "cell": "a token that does not advance the expiry is NOT adopted",
+      "note": "The first form of this guard. It reds nothing here — the fixture's stale token does not advance either — which is the point: this fixture alone cannot tell the two rules apart, and `smoke:expiry-renewal:auth` is what does. Kept so the pair is on the record."
     }
   ]
 }
