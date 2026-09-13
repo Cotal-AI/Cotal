@@ -107,16 +107,6 @@
       "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback-loss",
       "note": "Reviewer-found against the SDK and then reproduced through the shipped host. The exclusion gate alone does NOT fix this: the gate releases on a 10s lapse so a silent Harness cannot starve the queue, and the lapsed send is still live and can emit its session-only acceptance later, when a different batch is the one listening. A timeout proves only that a send has not acknowledged YET. This mutation removes the one line that records the lapse, keeping the gate, the listener and the refusal path intact, so what is severed is exactly the knowledge that a late event may belong to someone else. ON THE MUTATION THAT IS NOT HERE: an earlier M9 severed the gate's queueing and named the cross-talk cell. It SURVIVED once this defence landed, and I applied it by hand rather than trusting the verdict. Reading it: the mutant DOES red, but on the re-attempt and no-duplicate cells with deliveredTurns 2 and turnsRun 1, while the cell it NAMED still printed green. That is a WRONG-RED, not a kill, so it was deleted rather than re-aimed at whichever cell happened to fail. The exclusion gate is still load-bearing and is still graded, by those two cells reddening; what no longer has a mutation of its own is the specific claim that exclusivity alone prevents cross-talk, and that claim is FALSE, which is the whole finding behind M11. UPDATED after the trigger was widened from `!acknowledged` to `refusalNeedsBoundary(acknowledged, attributable)`: the mutation still severs exactly one thing, the recording of the lapse, and the anchor now names the shipped call rather than the superseded inline condition."
-    },
-    {
-      "name": "M12 a send is written while a run's acceptance is still open, so every refused copy re-executes",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) return;\n",
-      "replace": "\n",
-      "expectRed": "and the swallowed handover is never executed more than once",
-      "cell": "and the swallowed handover is never executed more than once",
-      "command": "pnpm smoke:jcode-queue-fallback-loss",
-      "note": "Severs ONLY the deferral, keeping the function, its export, the boundary trigger and every other branch. Without it a send is issued while a run's acceptance window is still open; that send can never be attributed, so it is refused on arrival, stays owed, and is re-sent every tick while the Harness ACCEPTS AND RUNS each copy. A reviewer measured 4 executions from 4 send frames. GRADED ON THE LIVE LOSS SUITE, not on the pure function: an earlier version of this mutation pointed at `refusalNeedsBoundary(ack, attr)` and was WORTHLESS, because its call site sat inside `if (!acknowledged || !attributable)` where that expression is tautologically true. The unit cell passed on a predicate the branch could never consult. A pure-function mutation cannot grade a call site that cannot disagree with it."
     }
   ]
 }

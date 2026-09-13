@@ -564,6 +564,23 @@ const server = createServer((socket) => {
               }
               break;
             }
+            // RUN WITHOUT EVER ACKNOWLEDGING. This has to sit on the BUSY path as well as the plain
+            // one, and the first version of it did not: the seat under test is busy by construction,
+            // so a frame arriving here never reached the plain-path knob and the precondition read
+            // false while the cell looked like it had run. A reviewer hit the identical trap from
+            // the other direction and reported the resulting run as vacuous rather than as evidence.
+            //
+            // The turn genuinely RUNS and stays open having never emitted `message_accepted`, which
+            // is the only way to leave `unsettledLapsedDispatches` outstanding while later sends are
+            // themselves healthy. The hold knob cannot express it: it defers `turn_done` but
+            // acceptance is emitted first, so a held turn is always acknowledged.
+            const noAcceptRun = process.env.FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT;
+            if (noAcceptRun && String(frame.content).includes(noAcceptRun)) {
+              log({ ev: "run_without_acceptance", session_id: frame.session_id, content: frame.content });
+              if (turnBusy) queuedTurns.push(() => runTurn(frame, socket));
+              else runTurn(frame, socket);
+              break;
+            }
             const accept = () => {
               event({ ev: "message_accepted", session_id: frame.session_id });
               // Queue it only if the session is STILL busy. A queued turn is drained by whatever
@@ -618,6 +635,18 @@ const server = createServer((socket) => {
             } else {
               close();
             }
+            break;
+          }
+          // RUN WITHOUT EVER ACKNOWLEDGING, which is the state that creates run-acceptance debt in
+          // the host and which this fake could not previously express: the hold knob defers
+          // `turn_done` but acceptance is emitted on the line below it, so a held turn is always
+          // acknowledged. A reviewer needed a turn that genuinely RUNS and stays open having never
+          // emitted `message_accepted`, because that is what makes the host's gate lapse and leaves
+          // `unsettledLapsedDispatches` outstanding while later sends are healthy.
+          const noAcceptRun = process.env.FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT;
+          if (noAcceptRun && String(frame.content).includes(noAcceptRun)) {
+            log({ ev: "run_without_acceptance", session_id: frame.session_id, content: frame.content });
+            runTurn(frame, socket);
             break;
           }
           event({ ev: "message_accepted", session_id: frame.session_id });

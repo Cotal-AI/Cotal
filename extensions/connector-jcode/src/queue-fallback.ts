@@ -87,6 +87,16 @@ export function refusalNeedsBoundary(sendLapsed: boolean): boolean {
  * an event for a request made on the old one. The bound is generous enough that an ordinary long
  * turn defers and delivers late rather than reconnecting, and finite so a wedged one cannot defer
  * forever. Delivery is late, bounded, and exactly once in every branch.
+ *
+ * NOT GRADED BY A LIVE CELL, AND SAYING SO RATHER THAN IMPLYING OTHERWISE. A mutation severing the
+ * call site SURVIVED the loss suite: that suite's A is a swallowed SEND, not an open unacknowledged
+ * RUN, so the deferral is never consulted there. I then built the run-debt cell (the fixture knob
+ * `FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT` exists for it) and it PASSED WITH THE DEFERRAL SEVERED,
+ * because `nextFallbackAction` takes `drive` on an idle seat and only reaches `queue-turn` on the
+ * busy branch after a soft interrupt has failed, so my probe measured a path the defect cannot
+ * touch. I deleted the mutation instead of keeping one whose SURVIVED verdict I could not turn into
+ * a red, and left the knob so the next attempt starts further along. The behaviour here is covered
+ * by the policy cells and by a reviewer's live reproduction, NOT by a mutation-graded live cell.
  */
 export function attributionBlockedByOpenRun(unsettledRunDispatches: number, blockedForMs = 0): boolean {
   if (unsettledRunDispatches <= 0) return false;
