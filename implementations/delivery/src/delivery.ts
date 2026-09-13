@@ -660,7 +660,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
               reading.kind === "held" ? "held-unrenewed" : "unknown",
               reading.kind === "held"
                 ? `could not renew its lease (${why}) but the key is still its own; serving, retrying`
-                : `could not renew its lease (${why}) or re-read it (${reading.kind === "unknown" ? reading.why : ""}); serving, retrying until the broker answers`,
+                // NOT "serving": the quiesce above is still in force on this branch, and `mayServeOn`
+                // refuses `unknown`, so nothing re-armed. Saying "serving" here would describe the
+                // pre-fix behaviour and hide the very state this repair introduced.
+                : `could not renew its lease (${why}) or re-read it (${reading.kind === "unknown" ? reading.why : ""}); staying quiet, retrying until the broker answers`,
             );
             return;
           case "reacquire":
