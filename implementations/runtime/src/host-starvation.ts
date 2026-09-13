@@ -148,13 +148,25 @@ class TickLoopLag implements LoopLagObserver {
     this.timer = undefined;
   }
 
+  /**
+   * The reading a TICK measures itself against, as its own named function.
+   *
+   * Extracted so the wall-clock regression has a single code-only line to be restored on. It was
+   * previously reachable only by rewriting `due` and `late` together, which spans the comment
+   * between them, and this repo refuses a mutation anchor that includes prose — correctly, since a
+   * later tidy of that comment would silently disarm the mutation and nothing would go red.
+   */
+  private tickNow(): number {
+    return this.clock.monotonic();
+  }
+
   private schedule(): void {
-    const due = this.clock.monotonic() + this.tickMs;
+    const due = this.tickNow() + this.tickMs;
     const timer = setTimeout(() => {
       // Lateness against the instant this tick was SCHEDULED for, not against the previous tick:
       // measuring tick-to-tick would report a healthy loop's own jitter as lag and would miss a
       // block that straddled exactly one tick.
-      const late = this.clock.monotonic() - due;
+      const late = this.tickNow() - due;
       if (late > 0) this.lagMs += late;
       this.ticks += 1;
       this.schedule();

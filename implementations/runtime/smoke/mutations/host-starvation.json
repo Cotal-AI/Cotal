@@ -142,8 +142,8 @@
     {
       "name": "MP14 the TICK measures its own lateness on the wall clock, so a backward step erases a real block and #1508's misattribution returns",
       "file": "implementations/runtime/src/host-starvation.ts",
-      "find": "    const due = this.clock.monotonic() + this.tickMs;\n    const timer = setTimeout(() => {\n      // Lateness against the instant this tick was SCHEDULED for, not against the previous tick:\n      // measuring tick-to-tick would report a healthy loop's own jitter as lag and would miss a\n      // block that straddled exactly one tick.\n      const late = this.clock.monotonic() - due;",
-      "replace": "    const due = this.clock.wall() + this.tickMs;\n    const timer = setTimeout(() => {\n      const late = this.clock.wall() - due;",
+      "find": "    return this.clock.monotonic();",
+      "replace": "    return this.clock.wall();",
       "expectRed": "a backward clock step during a REAL block does not hide the starvation",
       "cell": "a backward clock step during a REAL block does not hide the starvation"
     }
