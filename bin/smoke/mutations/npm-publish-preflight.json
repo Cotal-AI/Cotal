@@ -25,10 +25,34 @@
     {
       "name": "a mixed present and absent census is allowed to continue",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  if (unknown.length || present.length > 0) {\n",
-      "replace": "  if (unknown.length) {\n",
-      "expectRed": "one already-published package refuses the whole preflight",
-      "cell": "one already-published package refuses the whole preflight"
+      "find": "  if (registryVerdict === \"mixed\") {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n  }\n",
+      "replace": "",
+      "expectRed": "mixed repository entrypoint preserves the partial-publication refusal",
+      "cell": "mixed repository entrypoint preserves the partial-publication refusal"
+    },
+    {
+      "name": "an all-present census is refused instead of treated as a no-op",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"all-present\") {\n    printPublishCensus(rows, log);\n    log(\"nothing to publish: every exact version is already on the registry\");\n    return { state: \"nothing-to-publish\", rows };\n  }\n",
+      "replace": "  if (registryVerdict === \"all-present\") {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n  }\n",
+      "expectRed": "all-present repository entrypoint returns the named no-op verdict",
+      "cell": "all-present repository entrypoint returns the named no-op verdict"
+    },
+    {
+      "name": "the all-present no-op returns a publish-ready state",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return { state: \"nothing-to-publish\", rows };\n",
+      "replace": "    return { state: \"ready\", rows };\n",
+      "expectRed": "all-present preflight returns the named no-op state",
+      "cell": "all-present preflight returns the named no-op state"
+    },
+    {
+      "name": "an all-absent census is treated as the all-present no-op",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    : absent.length === rows.length\n      ? \"all-absent\"\n",
+      "replace": "    : absent.length === rows.length\n      ? \"all-present\"\n",
+      "expectRed": "zero-present repository entrypoint reaches the publish authorization stage",
+      "cell": "zero-present repository entrypoint reaches the publish authorization stage"
     },
     {
       "name": "the recursive publish set may omit one fixed-group package",
