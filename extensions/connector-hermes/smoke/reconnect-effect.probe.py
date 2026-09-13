@@ -251,6 +251,8 @@ def main() -> None:
                 print(name, ok)
             for name, ok in _reader_leak_rows():
                 print(name, ok)
+            for name, ok in _adapter_lifecycle_rows():
+                print(name, ok)
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
             print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
             for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
@@ -263,12 +265,16 @@ def main() -> None:
                          "RETIRED_DIALER_OPENED_NO_CONNECTION",
                          "RETIRED_READER_LEFT_FOREIGN_SOCKET_ALONE",
                          "CURRENT_GEN_READER_STILL_READS",
+                         "CLOSE_SHUTS_DOWN_BEFORE_CLOSING",
                          "LARGE_FRAME_SPANS_MULTIPLE_RECVS",
                          "LAST_SUB_WRITER_NEVER_TIMED_OUT",
                          "LAST_SUB_EVERY_REP_DELIVERED",
                          "EOF_LEFT_LIVE_SOCKET_INSTALLED",
                          "EOF_REPLY_STILL_REACHES_BROKER",
                          "RECONNECT_LEAKS_NO_READER_THREAD",
+                         "ADAPTER_CYCLE_LEAKS_NO_READER_THREAD",
+                         "ADAPTER_CYCLE_DIALLED_EVERY_RECONNECT",
+                         "ADAPTER_CYCLE_READER_REACHED_ITS_READ",
                          "DEAD_READER_REPORTS_FATAL",
                          "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
                          "HEALTHY_READER_REPORTS_NO_FATAL"):
@@ -695,10 +701,22 @@ def _postdial_rows() -> list[tuple[str, bool]]:
         client._connect = _gated_connect
 
         class _Watch:
-            """Stands in for the LIVE generation's socket and records any read of it."""
+            """Stands in for the LIVE generation's socket and records any read of it.
+
+            THE SHUTDOWN STUB IS PREVENTIVE HERE, NOT LOAD-BEARING, and saying which matters. The
+            client this double is installed on is never closed in this cell, so nothing exercises
+            the method today and a green run is no evidence that it was needed. It exists because
+            the client's socket surface is recv / sendall / shutdown / close, and any future path
+            that routes a `close()` through this double would otherwise raise AttributeError from
+            inside the client, reddening unrelated rows with something that reads exactly like a
+            product defect rather than like a missing stub. Do not delete it as unused: the day it
+            is reached is the day the suite lies about why it failed. The call is recorded so a
+            cell can assert it if one ever drives that path.
+            """
 
             def __init__(self) -> None:
                 self.reads = 0
+                self.calls: list[str] = []
 
             def recv(self, _n: int) -> bytes:
                 self.reads += 1
@@ -709,8 +727,11 @@ def _postdial_rows() -> list[tuple[str, bool]]:
             def sendall(self, _b: bytes) -> None:
                 return None
 
+            def shutdown(self, how: int) -> None:
+                self.calls.append(f"shutdown:{how}")
+
             def close(self) -> None:
-                return None
+                self.calls.append("close")
 
         client.start(lambda _m: None)
         entered.wait(5.0)
@@ -727,6 +748,20 @@ def _postdial_rows() -> list[tuple[str, bool]]:
         seen = {"reads": 0}
 
         class _Counting:
+            """The live generation's socket, counting reads and recording the close sequence.
+
+            THIS DOUBLE'S SHUTDOWN STUB IS LOAD-BEARING, unlike `_Watch`'s. `live.close()` below is
+            a real product close on the client holding this object, so once `close()` shuts the
+            socket down before closing it, a double without the method raises AttributeError from
+            inside the client and flips unrelated rows in this cell. The full surface the client
+            uses is recv / sendall / shutdown / close, so the full surface is implemented, and the
+            ORDER is recorded rather than discarded so a cell can assert the shutdown really
+            preceded the close instead of trusting that the method merely exists.
+            """
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
             def recv(self, _n: int) -> bytes:
                 seen["reads"] += 1
                 time.sleep(0.2)
@@ -735,18 +770,32 @@ def _postdial_rows() -> list[tuple[str, bool]]:
             def sendall(self, _b: bytes) -> None:
                 return None
 
+            def shutdown(self, how: int) -> None:
+                self.calls.append(f"shutdown:{how}")
+
             def close(self) -> None:
-                return None
+                self.calls.append("close")
+
+        counting = _Counting()
 
         def _install(gen=None):
             with live._lock:
-                live._sock = _Counting()
+                live._sock = counting
 
         live._connect = _install
         live.start(lambda _m: None)
         time.sleep(1.0)
         rows.append(("CURRENT_GEN_READER_STILL_READS", seen["reads"] > 0))
         live.close()
+        # GRADED ON THE SEQUENCE, NOT ON THE PRESENCE OF A METHOD. `close()` must shut the
+        # connection down before releasing the descriptor, because only the shutdown reaches a
+        # reader already parked in `recv`. Recording the calls in order is what separates "the
+        # product called shutdown" from "the double happens to own a shutdown method".
+        rows.append((
+            "CLOSE_SHUTS_DOWN_BEFORE_CLOSING",
+            counting.calls[:2] == [f"shutdown:{socket.SHUT_RDWR}", "close"],
+        ))
+        print(f"CLOSE_CALL_SEQUENCE {','.join(counting.calls) or 'none'}")
     finally:
         try:
             srv.close()
@@ -1213,10 +1262,199 @@ def _reader_leak_rows() -> list[tuple[str, bool]]:
         # RECONNECT adds one: the leak is strictly monotonic, one per cycle, so growth over the
         # baseline is the signal and the baseline itself is noise from other cells.
         growth = max(counts) - baseline
-        rows.append(("RECONNECT_LEAKS_NO_READER_THREAD", growth <= 0))
+        rows.append(("RECONNECT_LEAKS_NO_READER_THREAD", growth == 0))
         print(f"BRIDGE_THREADS_PER_CYCLE {','.join(str(x) for x in counts)}")
         print(f"BRIDGE_THREADS_BASELINE {baseline}")
         print(f"BRIDGE_THREADS_GROWTH {max(counts) - baseline} over {_LEAK_CYCLES} cycles")
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - teardown must not mask the rows
+            pass
+        for c in subs:
+            try:
+                c.close()
+            except OSError:
+                pass
+        try:
+            srv.close()
+        except OSError:
+            pass
+    return rows
+
+
+_ADAPTER_CYCLES = 6
+_ADAPTER_DIALS = _ADAPTER_CYCLES + 1  # the cold connect, plus one per reconnect
+_STEADY_STATE_DEADLINE_S = 3.0
+_PARK_DEADLINE_S = 5.0
+_DRAIN_DEADLINE_S = 5.0
+
+
+def _adapter_lifecycle_rows() -> list[tuple[str, bool]]:
+    """The same leak through the PUBLIC adapter lifecycle, which is the path an operator drives.
+
+    WHY A SECOND THREAD CELL RATHER THAN A WIDER ONE. The reader-leak cell above drives `reopen()`
+    directly, so it grades the socket shutdown `reopen` performs and is blind to `close()`. The
+    gateway never calls `reopen` on its own: it calls `disconnect`, which calls `BridgeClient.close`,
+    and `close` had no shutdown at all. `reopen` cannot repair that afterwards either, because
+    `close` has already set `_sock` to None and the handle is gone. So the defect this cell exists
+    for lives entirely on the public path, and no cell in this suite reached it: measured over six
+    disconnect/connect(is_reconnect=True) cycles, bridge threads 1,2,3,4,5,6,7 with 7 connections
+    accepted, against 1,1,1,1,1,1,1 and the same 7 accepted once `close` shuts the socket down.
+
+    TWO ROWS, BECAUSE A THREAD COUNT ALONE CANNOT TELL A FIX FROM AN OUTAGE. A build whose reconnect
+    never happens leaks nothing, so growth reads 0 (measured -1 on a no-op `reopen`, which is why
+    this asserts `== 0` and not `<= 0`) while only ONE connection is ever accepted. Asserting the
+    dials as well is what makes the green mean "seven real reconnects, no stranded readers" rather
+    than "nothing ran".
+
+    SAMPLED AT STEADY STATE WHILE CONNECTED, NEVER IN THE DISCONNECTED WINDOW. A sample taken
+    between `disconnect` and `connect` reads a reader that is mid-exit, which on a loaded runner
+    gives spurious growth on CORRECT code. The settle below is a bounded POLL rather than a fixed
+    sleep, and it can only ever forgive a TRANSIENT overlap: a stranded reader is parked in `recv`
+    forever, so waiting cannot make a real leak disappear, it can only let a dying thread finish
+    dying.
+
+    GRADED AS EVERY CONNECTED SAMPLE EQUAL TO THE FIRST, after a drain, and both halves are needed.
+    Two subtraction metrics were tried first and each has its own blind spot: final minus first
+    passes a dip that returns (5,3,3,3,3,3,5), final minus the lowest sample passes a monotone
+    decline (5,4,3,2,2,2,2), and BOTH pass a bump that is reaped before the end
+    (5,9,9,9,9,9,5), which is six threads leaked and then collected. Requiring every sample to
+    equal the baseline reds all three, and costs nothing on a correct build, where every sample IS
+    the baseline.
+
+    THE DRAIN IS NOT OPTIONAL UNDER THAT METRIC. Earlier cells in this probe leave their own bridge
+    threads alive and still dying when this cell starts, so an undrained baseline is contaminated:
+    measured 5,4,4,5,6,7,8 on the pre-fix control, where the first sample sat above the true floor.
+    Under a subtraction that quietly rescored; under this metric it would RED ON CORRECT CODE and
+    look exactly like a product leak. So the count is first polled to stability (unchanged across
+    two consecutive reads, with a deadline, never a fixed sleep) and only then is the baseline
+    taken.
+
+    THE PARK IS FORCED AND PROVEN, NOT ASSUMED, and this is what the cell got wrong first. The leak
+    only exists for a reader that is ALREADY BLOCKED IN `recv` when `close()` runs: a reader still
+    dialing, or between its dial and its first read, sees the latched stop flag at the top of its
+    loop and exits cleanly, leaking nothing. A cycle that disconnects too quickly therefore measures
+    a defect-free build, and it does so SILENTLY. Measured on the pre-fix control: with no wait the
+    series read 4,4,4,4,4,4,4, a confident green against the live defect, while the same control
+    with the park forced read a strictly growing series. So each cycle waits for the broker to
+    accept the dial AND for the reader's own `{"t": "subscribe"}` frame to arrive, which is the last
+    thing `_run` does before it blocks in `recv`. That every cycle reached the park is asserted as
+    its own row, because a park that never happened would otherwise produce a pass.
+
+    Whether the leak is observable WITHOUT forcing the park depends on event-loop scheduling: the
+    adapter path puts an await and a thread hop between `close()` and the replacement's first read,
+    which gives the retired reader more chance to observe the latch and exit. A cell whose
+    sensitivity varies by host and load is the intermittent this suite exists to remove, which is
+    why the precondition is made explicit rather than left accidental.
+    """
+    rows: list[tuple[str, bool]] = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    life_path = os.path.join(_tmp, "lifecycle.sock")
+    srv.bind(life_path)
+    srv.listen(64)
+    accepted = {"n": 0}
+    subs: list = []
+
+    def _accept_loop() -> None:
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            accepted["n"] += 1
+            c.settimeout(_PARK_DEADLINE_S)
+            subs.append(c)
+
+    threading.Thread(target=_accept_loop, daemon=True).start()
+
+    def _bridge_threads() -> int:
+        return sum(1 for t in threading.enumerate() if t.name == _READER_THREAD_NAME and t.is_alive())
+
+    def _settled(floor: int) -> int:
+        """Poll until the bridge-thread count is back at `floor`, or the deadline expires."""
+        deadline = time.time() + _STEADY_STATE_DEADLINE_S
+        n = _bridge_threads()
+        while n > floor and time.time() < deadline:
+            time.sleep(0.05)
+            n = _bridge_threads()
+        return n
+
+    def _drained() -> int:
+        """Poll until the count stops moving, so the baseline is this cell's and not the last one's.
+
+        Stability across two consecutive reads, with a deadline, rather than a fixed sleep: the
+        threads being waited out belong to earlier cells and their exit time is not knowable from
+        here. A deadline that expires simply yields the current count, which the strict row below
+        will then judge; it cannot silently rescore anything.
+        """
+        deadline = time.time() + _DRAIN_DEADLINE_S
+        prev = _bridge_threads()
+        while time.time() < deadline:
+            time.sleep(0.1)
+            cur = _bridge_threads()
+            if cur == prev:
+                return cur
+            prev = cur
+        return prev
+
+    def _await_park(want: int) -> bool:
+        """Wait until dial `want` is accepted and its reader has reached its blocking read.
+
+        The reader's LAST act before blocking in `recv` is to write `{"t": "subscribe"}`, so
+        reading that frame off the broker's end is the proof that the park was reached. Anything
+        weaker (a sleep, or the accept alone) lets the cycle close a reader that has not blocked
+        yet, which exits cleanly and leaks nothing even on the defective build.
+        """
+        deadline = time.time() + _PARK_DEADLINE_S
+        while len(subs) < want and time.time() < deadline:
+            time.sleep(0.02)
+        if len(subs) < want:
+            return False
+        try:
+            return b"subscribe" in subs[want - 1].recv(65536)
+        except (OSError, socket.timeout):
+            return False
+
+    adapter = CotalAdapter(PlatformConfig())
+    # A CLIENT OF THIS CELL'S OWN, on this cell's own socket, and the reason is not tidiness.
+    # `get_client()` is a process-wide singleton that earlier cells have already dialled, retired
+    # and closed, so its accept count is not attributable to this cell and its reader history is
+    # not this cell's. The adapter methods under test are the REAL ones; only the socket the client
+    # dials is this cell's.
+    client = BridgeClient(life_path)
+    adapter._client = client
+    counts: list[int] = []
+    parked = 0
+    try:
+        # DRAIN BEFORE THE BASELINE, so the figure every later sample is compared against belongs
+        # to this cell. Earlier cells' readers are still dying at this point.
+        drained = _drained()
+
+        async def _cycle() -> None:
+            nonlocal parked
+            await adapter.connect()
+            parked += 1 if await asyncio.to_thread(_await_park, 1) else 0
+            # Baseline is taken with the platform CONNECTED and its reader parked in its read, so
+            # the figure the later samples are compared against is one live, blocked reader.
+            counts.append(_bridge_threads())
+            for cycle in range(_ADAPTER_CYCLES):
+                await adapter.disconnect()      # the product path: BridgeClient.close()
+                await adapter.connect(is_reconnect=True)
+                parked += 1 if await asyncio.to_thread(_await_park, cycle + 2) else 0
+                counts.append(_settled(counts[0]))
+
+        asyncio.run(_cycle())
+        baseline = counts[0]
+        rows.append(("ADAPTER_CYCLE_LEAKS_NO_READER_THREAD", all(n == baseline for n in counts)))
+        rows.append(("ADAPTER_CYCLE_DIALLED_EVERY_RECONNECT", accepted["n"] == _ADAPTER_DIALS))
+        rows.append(("ADAPTER_CYCLE_READER_REACHED_ITS_READ", parked == _ADAPTER_DIALS))
+        print(f"ADAPTER_CYCLE_THREADS_PER_CYCLE {','.join(str(x) for x in counts)}")
+        print(f"ADAPTER_CYCLE_THREADS_BASELINE {baseline}")
+        print(f"ADAPTER_CYCLE_THREADS_DRAINED_TO {drained}")
+        print(f"ADAPTER_CYCLE_THREADS_GROWTH {max(counts) - baseline} over {_ADAPTER_CYCLES} cycles")
+        print(f"ADAPTER_CYCLE_ACCEPTED {accepted['n']} of {_ADAPTER_DIALS}")
+        print(f"ADAPTER_CYCLE_PARKED {parked} of {_ADAPTER_DIALS}")
     finally:
         try:
             client.close()

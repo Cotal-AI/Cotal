@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 59;
+const EXPECTED_CELLS = 63;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -427,11 +427,63 @@ assert.equal(
   `a retired reader woken by EOF must not erase the live generation's socket, and a reply must still reach the broker (${subject.EOF_REPLIES_DELIVERED})`,
 );
 // Graded on GROWTH, not the absolute count: earlier cells leave their own bridge threads alive, so
-// the absolute number is noise and only the per-reconnect increment belongs to this defect.
+// the absolute number is noise and only the per-reconnect increment belongs to this defect. The
+// comparison is EXACT: a build that never reconnects at all leaks nothing and so passes any
+// "no more than the baseline" form, which is why the lifecycle rows below assert the dials too.
 assert.equal(
   subject.RECONNECT_LEAKS_NO_READER_THREAD,
   "True",
   `every reconnect must retire its reader thread rather than strand it in a blocked read (${subject.BRIDGE_THREADS_PER_CYCLE})`,
+);
+
+// ---- AND THE SAME LEAK ON THE PUBLIC ADAPTER PATH, WHICH IS THE ONE THE GATEWAY DRIVES --------
+// The cell above drives `reopen()` directly, so it grades the shutdown `reopen` performs and is
+// blind to `close()`. The gateway never calls `reopen` by itself: it calls `disconnect`, which
+// calls `BridgeClient.close`, and `close` shut nothing down, so a parked `recv` never returned and
+// `reopen` could not repair it because `close` had already dropped the handle. Measured over six
+// disconnect/connect(is_reconnect=True) cycles with the park proven every time: bridge threads
+// 5,6,7,8,9,10,11 with 7 connections accepted, against a flat series and the same 7 accepted with
+// the shutdown in place. The absolute numbers carry other cells' threads, which is why the cell
+// drains to a stable count before taking its baseline.
+//
+// GRADED AS EVERY SAMPLE EQUAL TO THE BASELINE, not as a subtraction. Two subtractions were tried
+// and each has its own blind spot: final minus first passes a dip that returns (5,3,3,3,3,3,5),
+// final minus the lowest passes a monotone decline (5,4,3,2,2,2,2), and both pass a bump that is
+// reaped before the end (5,9,9,9,9,9,5), which is six threads leaked and then collected. Requiring
+// equality reds all three and costs nothing on a correct build, where every sample IS the baseline.
+assert.equal(
+  subject.ADAPTER_CYCLE_LEAKS_NO_READER_THREAD,
+  "True",
+  `an adapter disconnect/reconnect cycle must strand no reader thread: close() must shut the socket down, not only release the descriptor (${subject.ADAPTER_CYCLE_THREADS_PER_CYCLE})`,
+);
+// THE LIVENESS HALF, and it is what makes the row above mean anything. A build whose reconnect
+// never happens strands nothing, so a thread-count row alone reads green on a total outage:
+// measured -1 growth with 1 connection accepted against a no-op reopen. Requiring all seven dials
+// is what separates "seven real reconnects, none leaked" from "nothing ran".
+assert.equal(
+  subject.ADAPTER_CYCLE_DIALLED_EVERY_RECONNECT,
+  "True",
+  `every cycle must really reconnect, or a thread count of zero growth would grade an outage as a fix (${subject.ADAPTER_CYCLE_ACCEPTED} accepted)`,
+);
+// AND THE PARK MUST BE PROVEN, because the leak only exists for a reader ALREADY BLOCKED in recv.
+// A reader closed before it reaches its read sees the latched stop flag and exits cleanly, leaking
+// nothing, so a cycle that disconnects too early measures a defect-free build even on the broken
+// one. Measured on the pre-fix control: without this wait the series read flat 4,4,4,4,4,4,4, a
+// confident green against the live defect; with the park forced it grew every cycle. Whether the
+// leak shows WITHOUT forcing the park depends on event-loop scheduling, so the precondition is made
+// explicit rather than left to vary by host and load.
+assert.equal(
+  subject.ADAPTER_CYCLE_READER_REACHED_ITS_READ,
+  "True",
+  `every cycle's reader must reach its blocking read before the disconnect, or the cell grades a reader that never parked (${subject.ADAPTER_CYCLE_PARKED} parked)`,
+);
+// The product's close ORDER, read off a double that records the sequence rather than ignoring it.
+// A double that merely owns a shutdown method proves nothing: only the shutdown reaches a reader
+// already parked in recv, so the shutdown must precede the close on the live socket.
+assert.equal(
+  subject.CLOSE_SHUTS_DOWN_BEFORE_CLOSING,
+  "True",
+  `close() must shut the connection down before releasing the descriptor (${subject.CLOSE_CALL_SEQUENCE})`,
 );
 
 console.log(`reconnect effect: reopen held a wedged reader for ${subject.LOOP_BLOCKED_SECONDS}s without blocking the loop`);

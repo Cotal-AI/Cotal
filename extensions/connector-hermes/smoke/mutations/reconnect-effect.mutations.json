@@ -120,6 +120,14 @@
       "note": "close() does not wake a thread already blocked in recv: it drops this object's reference to the open file description while the blocked thread keeps its own, so the read never returns. The delivery cells are blind to it because a reader stranded forever stops competing for the new socket just as well as one that exits. Measured: bridge threads grew 4,5,6,7,8,9,10 over six reopen cycles without the shutdown and stayed flat at 4 with it."
     },
     {
+      "name": "M12 close() releases the descriptor without shutting the connection down",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "                try:\n                    self._sock.shutdown(socket.SHUT_RDWR)\n                except OSError:\n                    pass  # already disconnected, and the close below still frees the descriptor\n",
+      "replace": "",
+      "expectRed": "an adapter disconnect/reconnect cycle must strand no reader thread",
+      "note": "THE SAME DEFECT AS M11, ON THE PUBLIC PATH, and it is a separate mutant because a separate cell catches it. M11 removes the shutdown from reopen(), which the reader-leak cell drives directly. This removes it from close(), which is what the gateway actually calls: disconnect() calls close(), and close() then dropped only this object's reference while the reader parked in recv kept its own, so the description stayed open and the read never returned. reopen() cannot repair it afterwards, because close() has already set _sock to None and the handle is gone. Measured over six public disconnect/connect(is_reconnect=True) cycles: bridge threads 1,2,3,4,5,6,7 with 7 connections accepted, against 1,1,1,1,1,1,1 and the same 7 accepted with the shutdown present. Every delivery cell is blind to both halves, because a reader stranded forever stops competing for the new socket just as well as one that exits, so the thread count is the only observable. The red is attributable: ADAPTER_CYCLE_LEAKS_NO_READER_THREAD fires on the GROWTH while ADAPTER_CYCLE_DIALLED_EVERY_RECONNECT stays green at 7 accepted, so the mutant is distinguishable from a build that simply stops reconnecting, which would leak nothing and accept one."
+    },
+    {
       "name": "M7a the PRE-DIAL generation check is removed (the under-lock check remains)",
       "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
       "find": "            if gen is not None and gen != self._gen:\n                return  # retired while dialing: this socket is not wanted\n",

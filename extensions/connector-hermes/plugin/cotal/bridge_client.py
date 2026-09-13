@@ -298,11 +298,38 @@ class BridgeClient:
         return reader is not None and not reader.is_alive()
 
     def close(self) -> None:
+        """Stop the reader and drop the socket. The adapter's ``disconnect`` path.
+
+        SHUTDOWN BEFORE CLOSE, for the same reason ``reopen`` does it, and the omission here was a
+        real leak rather than an asymmetry worth tolerating. ``close()`` drops THIS object's
+        reference to the open file description; the reader thread parked in ``recv`` still holds
+        its own, so the description stays open and that read never returns. Latching ``_stop`` and
+        bumping the generation cannot reach it either: both are only read at the TOP of the loop,
+        which a thread blocked in a syscall never gets back to.
+
+        ``reopen`` cannot repair it afterwards, because this method has already set ``_sock`` to
+        None and the handle is gone. So every adapter disconnect/reconnect cycle stranded one
+        reader thread for the life of the process. Measured over six public
+        disconnect/connect(is_reconnect=True) cycles, with each reader proven to have reached its
+        blocking read before the disconnect: bridge threads 4,5,6,7,8,9,10 without the shutdown
+        and flat at 3 with it, 7 connections accepted either way. The absolute figures carry the
+        other cells' own threads, so the cell drains to a stable count before taking its baseline
+        and then requires every sample to equal it.
+
+        Every delivery cell is blind to this, which is why it survived five heads: a reader
+        stranded forever on a dead socket stops competing for the new socket just as effectively
+        as a reader that exits, so frames arrive in both worlds and the thread count is the only
+        observable.
+        """
         self._stop.set()
         with self._lock:
             # Retire this generation: any reader still unwinding is already not the active handle.
             self._gen += 1
             if self._sock is not None:
+                try:
+                    self._sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # already disconnected, and the close below still frees the descriptor
                 try:
                     self._sock.close()
                 except OSError:
