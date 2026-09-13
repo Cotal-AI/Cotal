@@ -79,6 +79,12 @@ try {
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
+  write("packages/seat/smoke/dead-branch-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'if (false) { await used(); }\n');
+  write("packages/seat/smoke/live-branch-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'if (process.env.X) { await used(); }\n');
   write("packages/seat/smoke/logged-import.smoke.ts",
     'async function used() { return await import("../src/impl.js"); }\n' +
     'console.log(used);\n');
@@ -343,6 +349,15 @@ try {
   config("referenced-dynamic-import", { suite: ["packages/seat/smoke/referenced-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("referenced-dynamic-import");
   check("referencing a function without calling it does not run its body", result.status !== 0 && /REFUSED referenced-dynamic-import/.test(result.stderr), report(result));
+
+  config("dead-branch-import", { suite: ["packages/seat/smoke/dead-branch-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("dead-branch-import");
+  check("a call a literal condition excludes never runs", result.status !== 0 && /REFUSED dead-branch-import/.test(result.stderr), report(result));
+
+  // The near neighbour: a condition the program COMPUTES is not foldable, so it still counts.
+  config("live-branch-import", { suite: ["packages/seat/smoke/live-branch-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("live-branch-import");
+  check("a call under a computed condition is still reachable", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   // THE DISCRIMINATOR: a call that RECEIVES a function but never invokes it. `console.log(used)`
   // puts `used` in argument position exactly as a callback would, so this is the cell that

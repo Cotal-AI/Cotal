@@ -378,6 +378,14 @@
       "replace": "    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {",
       "expectRed": "a copy inside a function nobody calls never happens",
       "cell": "a copy inside a function nobody calls never happens"
+    },
+    {
+      "name": "a call a literal condition excludes still counts as execution",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !inDeadBranch(n)) {",
+      "replace": "      if (ts.isIdentifier(n) && n.text === name && n !== cur.name) {",
+      "expectRed": "a call a literal condition excludes never runs",
+      "cell": "a call a literal condition excludes never runs"
     }
   ]
 }

@@ -357,6 +357,24 @@ const listingIsRead = (call, readers) => {
 };
 
 /**
+ * Is this node inside a branch a literal condition excludes?
+ *
+ * `if (false) { … }` and the `else` of `if (true)` never run. Only literal `true`/`false` is
+ * folded: any other condition is a value the program computes, and guessing at it would be the
+ * same kind of proxy this module exists to avoid.
+ */
+const inDeadBranch = (node) => {
+  for (let cur = node; cur.parent !== undefined; cur = cur.parent) {
+    const parent = cur.parent;
+    if (!ts.isIfStatement(parent)) continue;
+    const kind = parent.expression.kind;
+    if (kind === ts.SyntaxKind.FalseKeyword && parent.thenStatement === cur) return true;
+    if (kind === ts.SyntaxKind.TrueKeyword && parent.elseStatement === cur) return true;
+  }
+  return false;
+};
+
+/**
  * Does this call INVOKE the function it is handed, and in this argument slot?
  *
  * An allowlist, deliberately. The alternative is to assume every callee invokes its arguments,
@@ -391,6 +409,7 @@ const invokesArgument = (call, arg) => {
  * passed straight to a call, or a binding whose name is used somewhere other than its declaration.
  */
 const evaluated = (node, sf) => {
+  if (inDeadBranch(node)) return false;
   for (let cur = node.parent; cur !== undefined; cur = cur.parent) {
     const isFn = ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur)
       || ts.isArrowFunction(cur) || ts.isMethodDeclaration(cur);
@@ -412,7 +431,7 @@ const evaluated = (node, sf) => {
     let invoked = false;
     const scan = (n) => {
       if (invoked) return;
-      if (ts.isIdentifier(n) && n.text === name && n !== cur.name) {
+      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !inDeadBranch(n)) {
         const parentNode = n.parent;
         const isCallee = parentNode
           && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))
