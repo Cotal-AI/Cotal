@@ -764,6 +764,40 @@ r = runTool(["--config", "buried.json"]);
   check("...while the greens in the omitted span stay omitted — the rescue is by failure, not by widening",
     out.includes("middle line(s) omitted") && !out.includes("green cell 12"), out.slice(-1200));
 }
+// MORE BURIED FAILURES THAN THE CAP. The cell above uses ONE buried failure, which cannot tell a
+// rescue that scans the whole span from one that stops at the cap and then claims the remainder is
+// clean. A reviewer found exactly that with twelve failures against a cap of eight: four were
+// dropped and the footer still read "(no failure markers)". A tool asserting something false about
+// what it hid is the defect this whole change exists to remove, so it is graded here.
+writeFileSync(
+  join(root, "many-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "const v = admit(5);",
+    "for (let i = 0; i < 10; i++) console.log('head ' + i);",
+    "for (let i = 0; i < 12; i++) console.log(v === true ? '  \\u2713 ok ' + i : '  \\u2717 FAIL buried ' + i);",
+    "for (let i = 0; i < 10; i++) console.log('tail ' + i);",
+    "process.exit(v === true ? 0 : 1);",
+    "",
+  ].join("\n"),
+);
+writeFileSync(join(root, "many.json"), JSON.stringify({ suite: ["smoke/suite.mjs"],
+  command: `${process.execPath} many-suite.mjs`,
+  mutations: [
+    { name: "many", file: "src/impl.js", find: "  return true;", replace: "  return 'A';", expectRed: "never printed" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm many-fixture", { cwd: root });
+r = runTool(["--config", "many.json"]);
+{
+  const out = stripAnsi(r.stdout);
+  // 12 failures in the span, 8 shown, so 4 are hidden and the footer must SAY so.
+  check("when more failures are buried than the cap shows, the footer counts the hidden ones",
+    out.includes("INCLUDING 4 more failure(s)"), out.slice(-1400));
+  // The load-bearing negative: it must never claim cleanliness it did not verify.
+  check("...and it does NOT claim the omitted lines carry no failure markers",
+    !out.includes("(no failure markers)"), out.slice(-1400));
+}
 // A verdict reached BEFORE any run has no transcript, and must say so rather than claim an empty run.
 r = runTool([
   "--command", `${process.execPath} suite.mjs`,

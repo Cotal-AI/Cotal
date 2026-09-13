@@ -91,14 +91,20 @@ const excerpt = (output) => {
   if (lines.length <= EXCERPT_HEAD + EXCERPT_TAIL)
     return { head: lines, tail: [], middle: [], omitted: 0, empty: false };
   const headEnd = EXCERPT_HEAD, tailStart = lines.length - EXCERPT_TAIL;
-  // Rescue failing lines from the span the positional window discards, in order, capped. Indices are
-  // kept so the reader can see WHERE in the run they occurred rather than a floating quotation, and
-  // so the "omitted" count below can report what is still genuinely unshown.
-  const middle = [];
-  for (let i = headEnd; i < tailStart && middle.length < EXCERPT_FAILURES; i++)
-    if (FAILURE_LINE.test(lines[i])) middle.push({ n: i + 1, line: lines[i] });
+  // Scan the WHOLE discarded span before applying the cap, so the count of what is left behind is
+  // measured rather than assumed. Rescuing inside the scan loop would stop at the cap and leave the
+  // reporter unable to distinguish "nothing else failed" from "I stopped looking" — and it then
+  // printed the former. Found by a reviewer with twelve buried failures against a cap of eight: four
+  // were dropped and the footer still said the remainder carried no failure markers. That is the
+  // exact sin this whole change exists to remove, a tool stating something false about what it hid,
+  // so the footer below now reports the unshown failures instead of denying they exist.
+  const failures = [];
+  for (let i = headEnd; i < tailStart; i++)
+    if (FAILURE_LINE.test(lines[i])) failures.push({ n: i + 1, line: lines[i] });
+  const middle = failures.slice(0, EXCERPT_FAILURES);
   return { head: lines.slice(0, headEnd), tail: lines.slice(tailStart), middle,
-    omitted: tailStart - headEnd - middle.length, empty: false };
+    omitted: tailStart - headEnd - middle.length, hiddenFailures: failures.length - middle.length,
+    empty: false };
 };
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
@@ -646,7 +652,14 @@ for (const r of results) {
       // Failures rescued from the discarded middle, printed with their line numbers so they read as
       // evidence from a known place in the run rather than as a floating quotation.
       for (const m of t.middle ?? []) say(`  ${C.dim}  |${String(m.n).padStart(5)}: ${m.line}${C.off}`);
-      if (t.omitted > 0) say(`  ${C.dim}  … ${t.omitted} middle line(s) omitted (no failure markers)${C.off}`);
+      if (t.omitted > 0) {
+        // Say which of the two situations this is. "no failure markers" is a CLAIM about the hidden
+        // lines and is only safe to print when the whole span was scanned and nothing else failed.
+        const hidden = t.hiddenFailures ?? 0;
+        say(hidden > 0
+          ? `  ${C.dim}  … ${t.omitted} middle line(s) omitted, INCLUDING ${hidden} more failure(s) beyond the first ${EXCERPT_FAILURES} shown — rerun and read the full log${C.off}`
+          : `  ${C.dim}  … ${t.omitted} middle line(s) omitted (no failure markers)${C.off}`);
+      }
       for (const l of t.tail) say(`  ${C.dim}  | ${l}${C.off}`);
     }
   }
