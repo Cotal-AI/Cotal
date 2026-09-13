@@ -18,10 +18,14 @@ const check = (name, condition, extra) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+// Fixtures name the repo root as real suites do: by computing it. The resolver deliberately has no
+// notion of a root-shaped IDENTIFIER (that was the #1434 class), so a fixture that used a free
+// `ROOT` would be testing a spelling rather than a data-flow fact.
+const ROOT_BINDING = 'const ROOT = process.cwd();\n';
 const write = (path, value) => {
   const target = join(root, path);
   mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, value);
+  writeFileSync(target, /\bROOT\b/.test(value) && !value.startsWith(ROOT_BINDING) ? ROOT_BINDING + value : value);
 };
 const summaryCommand = (line) =>
   `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`console.log(${JSON.stringify(line)})`)}`;
@@ -39,6 +43,7 @@ const report = (result) => `${result.stdout}\n${result.stderr}`;
 try {
   write("packages/seat/package.json", JSON.stringify({ name: "@cotal-ai/seat" }));
   write("packages/seat/src/index.ts", "export const x = 1;\n");
+  write("packages/seat/src/impl.ts", "export const impl = 1;\n");
   write("packages/seat/smoke/local.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
   write("packages/seat/smoke/src-import.smoke.ts", 'import { x } from "../src/index.js";\n');
   write("packages/seat/smoke/comment-src.smoke.ts", 'const note = "see ../src/index.ts for details";\n');
@@ -49,6 +54,41 @@ try {
   write("bin/direct.mjs", "export const x = 1;\n");
   write("bin/smoke/assembling.smoke.ts", 'cpSync(join(ROOT, "packages", "seat"), clone);\n');
   write("bin/smoke/by-name.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  write("bin/smoke/reads-data.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8");\n');
+  write("bin/smoke/reads-other.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'readFileSync(join(ROOT, "packages", "other", "package.json"), "utf8");\n');
+  write("bin/smoke/env-read.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'const FIXTURE = process.env.FIXTURE_PATH;\n' +
+    'readFileSync(FIXTURE, "utf8");\n');
+  write("bin/smoke/env-unread.smoke.ts",
+    'const FIXTURE = process.env.FIXTURE_PATH;\n' +
+    'console.log(FIXTURE);\n');
+  write("bin/smoke/listing-read.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) { readFileSync(join(DIR, String(f)), "utf8"); }\n');
+  write("bin/smoke/listing-names.smoke.ts",
+    'import { readdirSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) { console.log(String(f)); }\n');
+  write("packages/seat/smoke/parked-import.smoke.ts",
+    'async function never() { return await import("../src/impl.js"); }\n' +
+    'console.log("nothing calls never");\n');
+  write("packages/seat/smoke/called-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'await used();\n');
+  write("bin/smoke/scoped-argv.smoke.ts",
+    'function real() { const args = [join(ROOT, "scripts", "absent.mjs")]; spawnSync(process.execPath, args); }\n' +
+    'function decoy() { const args = [join(ROOT, "scripts", "direct.mjs")]; return args; }\n' +
+    'real(); decoy();\n');
+  write("bin/smoke/named-root.smoke.ts",
+    'import { mkdtempSync } from "node:fs";\n' +
+    'const pkgRoot = mkdtempSync("/tmp/fixture-");\n' +
+    'spawnSync(process.execPath, [join(pkgRoot, "scripts", "direct.mjs")]);\n');
   write("bin/smoke/spawn-entry.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
     'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
@@ -227,6 +267,52 @@ try {
   config("bound-entry-unused", { suite: ["bin/smoke/bound-entry-unused.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
   result = run("bound-entry-unused");
   check("a name bound to the target but never passed to a launcher is still refused", result.status !== 0 && /REFUSED bound-entry-unused/.test(result.stderr), report(result));
+
+  // --- witnesses added for #1434: each real route is PAIRED with the near-miss it must refuse. ---
+
+  config("reads-data-file", { suite: ["bin/smoke/reads-data.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("reads-data-file");
+  check("reading the mutated data file's bytes is a witness", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("reads-other-file", { suite: ["bin/smoke/reads-other.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("reads-other-file");
+  check("reading some OTHER file is not a witness for the mutated one", result.status !== 0 && /REFUSED reads-other-file/.test(result.stderr), report(result));
+
+  config("env-path-read", { suite: ["bin/smoke/env-read.smoke.ts"], command: `FIXTURE_PATH=packages/seat/package.json ${tally}`, mutations: [mutation("packages/seat/package.json")] });
+  result = run("env-path-read");
+  check("a path the command supplies by env and the suite reads is a witness", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("env-path-other", { suite: ["bin/smoke/env-read.smoke.ts"], command: `FIXTURE_PATH=packages/other/package.json ${tally}`, mutations: [mutation("packages/seat/package.json")] });
+  result = run("env-path-other");
+  check("an env-supplied path pointing elsewhere is refused", result.status !== 0 && /REFUSED env-path-other/.test(result.stderr), report(result));
+
+  config("env-path-unread", { suite: ["bin/smoke/env-unread.smoke.ts"], command: `FIXTURE_PATH=packages/seat/package.json ${tally}`, mutations: [mutation("packages/seat/package.json")] });
+  result = run("env-path-unread");
+  check("an env assignment nothing reads is a mention, not a witness", result.status !== 0 && /REFUSED env-path-unread/.test(result.stderr), report(result));
+
+  config("recursive-listing-read", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("recursive-listing-read");
+  check("a recursive listing whose entries are read witnesses the tree", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("recursive-listing-names", { suite: ["bin/smoke/listing-names.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("recursive-listing-names");
+  check("a listing that only observes names is refused", result.status !== 0 && /REFUSED recursive-listing-names/.test(result.stderr), report(result));
+
+  config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("uncalled-dynamic-import");
+  check("a dynamic import in a function nobody calls never loads", result.status !== 0 && /REFUSED uncalled-dynamic-import/.test(result.stderr), report(result));
+
+  config("called-dynamic-import", { suite: ["packages/seat/smoke/called-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("called-dynamic-import");
+  check("a dynamic import that is actually evaluated does load", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("scoped-argv-decoy", { suite: ["bin/smoke/scoped-argv.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("scoped-argv-decoy");
+  check("a same-named argv array in another scope cannot stand in for the launcher's", result.status !== 0 && /REFUSED scoped-argv-decoy/.test(result.stderr), report(result));
+
+  config("named-root-identifier", { suite: ["bin/smoke/named-root.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("named-root-identifier");
+  check("an identifier merely SPELLED like a root is not the repo root", result.status !== 0 && /REFUSED named-root-identifier/.test(result.stderr), report(result));
 
   config("malformed-assembles", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: "packages/seat", mutations: [mutation("packages/seat/package.json")] });
   result = run("malformed-assembles");
