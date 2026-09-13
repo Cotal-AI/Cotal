@@ -69,6 +69,11 @@ const DUTY_CYCLE_MS = 20_000;
 
 /** Last few lines of a daemon's output — enough to diagnose a red without printing its whole life. */
 const tail = (d: Daemon): string => d.stderr.trimEnd().split("\n").slice(-4).join("\n");
+/** The daemon has CONCLUDED it does not own the shard. Every such path ends by exiting to keep the
+ *  holder single and says so in this clause, which is why the clause is the marker rather than any
+ *  particular description of who took it: the phrasings differ between the pre-fix and post-fix
+ *  daemon, and a cell keyed to one of them grades nothing against the other. */
+const DECIDED = /exiting so the holder is single/;
 
 const space = `delivery-starve-${randomUUID().slice(0, 8)}`;
 // Cell B runs in its OWN space. The delivery lease is per-space with a 30s bucket TTL, so a second
@@ -853,9 +858,17 @@ try {
     sawLoserAlive = true;
     // Bracket the reading anyway: a frozen process prints nothing, so these agree, but if the
     // freeze ever failed to land this still refuses to score a reading the daemon had outrun.
-    const decidedBefore = /taken shard|is held by/.test(incumbent.stderr);
+    // THE OWNERSHIP-DECISION MARKER, and it is deliberately not a list of the current wording.
+    // A REVIEWER FINDING: this used to test /taken shard|is held by/, which are the two phrasings
+    // THIS implementation happens to use. The pre-fix daemon announced the same decision as
+    // "lost the lease (...) - exiting so the holder is single", which matches NEITHER, so the cell
+    // was enforcing post-fix vocabulary rather than a state, and any future rewording would make it
+    // grade nothing while still passing. Every path that concludes the shard is not ours ends by
+    // exiting to keep the holder single, and says so in that clause - at the merge base as well as
+    // here - so that clause is the durable fact rather than the current phrasing.
+    const decidedBefore = DECIDED.test(incumbent.stderr);
     const subs = await obsG.controlSubs(accountG.account.pub);
-    const decidedAfter = /taken shard|is held by/.test(incumbent.stderr);
+    const decidedAfter = DECIDED.test(incumbent.stderr);
     if (subs !== undefined) {
       answeredSubs += 1;
       peakBound = Math.max(peakBound, subs);
@@ -906,8 +919,13 @@ try {
     overlapEndedUndecided, { overlapEndedAlive, overlapEndedUndecided, tail: tail(incumbent) });
   check("G7f and serving never resumed during the arbitration — no re-arm without proof",
     !overlapReturned, { overlapReturned });
+  // REQUIRES A READING. `peakPulls === undefined` means the sampler could not get an answer off the
+  // broker, and scoring that as a pass would be the unknown-is-a-negative rule this whole suite
+  // exists to refuse - applied to the suite instead of to the daemon. The daemon is not allowed to
+  // treat "I could not ask" as "nothing is there", and neither is its test. A genuinely unobtainable
+  // reading should fail this cell loudly and be investigated, not absorbed.
   check("G7g and once it is over, the fan-out durable carries one daemon's pulls again",
-    peakPulls === undefined || servingBefore === undefined || peakPulls.fanout <= servingBefore.fanout,
+    peakPulls !== undefined && servingBefore !== undefined && peakPulls.fanout <= servingBefore.fanout,
     { peakPulls, baseline: servingBefore });
   // Said in the loser's own words too: it must announce going quiet, and it must do so BEFORE it
   // announces losing the shard. An implementation that quiesced only inside shutdown would exit
