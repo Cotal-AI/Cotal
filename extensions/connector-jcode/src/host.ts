@@ -401,6 +401,59 @@ export async function runJcodeHost(): Promise<void> {
    * This serialises HANDOVERS, not the seat. Nothing here holds the provider or delays the model.
    */
   let sessionDispatch: Promise<unknown> = Promise.resolve();
+  /**
+   * How many dispatches left the gate WITHOUT ever seeing their own acknowledgement, and have not
+   * settled since.
+   *
+   * This exists because the gate alone is not sufficient, which a reviewer proved against the real
+   * SDK: the run gate releases on a 10s lapse so a silent Harness cannot starve the queue, and the
+   * next send then enters a session where the LAPSED send is still open and can still acknowledge
+   * later. The measured result was `bAcknowledgedWithoutBAcceptance: true` from a single late
+   * `message_accepted` belonging to A. A timeout proves only that A has not acknowledged YET, never
+   * that it can no longer do so, and with no correlation in the event there is nothing to tell the
+   * two apart when it arrives.
+   *
+   * So exclusivity is necessary and not sufficient, and the missing half is this: an acceptance is
+   * attributable only when no OTHER send on this session could still be the one emitting it. A send
+   * that lapsed and is still open is exactly such a sender, and it stays one until its own promise
+   * settles, at which point the Harness has finished with that request and can no longer answer it.
+   *
+   * THE ASYMMETRY IS WHY THIS IS SAFE RATHER THAN MERELY CAUTIOUS. Refusing to trust an acceptance
+   * that was genuinely ours costs one redelivery, because the batch stays owed and the
+   * level-triggered loop re-attempts it. Trusting one that was not ours acks a message the session
+   * never ran. The first is late delivery, the second is loss, and this issue exists because they
+   * were treated as interchangeable.
+   */
+  let unsettledLapsedDispatches = 0;
+  /** Note a dispatch that is leaving the gate unacknowledged, and clear the debt when it settles.
+   *
+   *  Only pass a promise whose settlement PROVES the Harness is finished with the request. A turn's
+   *  `run()` qualifies: it resolves when the turn is over. `sendMessage` does NOT, because the SDK
+   *  resolves it on its own accept timeout while the request is still live at the Harness and can
+   *  still emit; that case uses `suspectUntilBridgeReplaced` below. */
+  const oweAcceptanceDebt = (settledWhenHarnessDone: Promise<unknown>): void => {
+    unsettledLapsedDispatches += 1;
+    void settledWhenHarnessDone.then(
+      () => { unsettledLapsedDispatches -= 1; },
+      () => { unsettledLapsedDispatches -= 1; },
+    );
+  };
+  /**
+   * A send lapsed with no acknowledgement and NOTHING can prove the Harness has finished with it.
+   *
+   * The SDK's `sendMessage` resolves on its own 10s accept wait, so its promise settling says only
+   * that we stopped waiting. The request is still live and may still emit the session-only event.
+   * There is no timeout that fixes this, because the event carries no correlation and the protocol
+   * offers no ordering guarantee we could substitute for one, which a reviewer looked for and did
+   * not find.
+   *
+   * The one boundary that genuinely holds is the CONNECTION: a replaced bridge cannot deliver an
+   * event for a request made on the old one. So after such a lapse, acceptance on this client is no
+   * longer attributable, and every later batch stays owed and retried rather than being acked on an
+   * event that might belong to the lapsed send. Cleared when the bridge is replaced, which is the
+   * same path that redrives the durable batch, so delivery still happens: it is late, not lost.
+   */
+  let acceptanceSuspectUntilBridgeReplaced = false;
   const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
     const previous = sessionDispatch;
     let release!: () => void;
@@ -789,10 +842,29 @@ export async function runJcodeHost(): Promise<void> {
         // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
         // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
         // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
-        await Promise.race([
-          dispatched.then(() => undefined, () => undefined),
-          onceAccepted(turnClient!, sessionId!, RUN_ACCEPT_WINDOW_MS),
-        ]);
+        let acknowledgedHere = false;
+        const noteAccepted = (event: ApiEvent): void => {
+          if ("session_id" in event && event.session_id === sessionId) acknowledgedHere = true;
+        };
+        turnClient!.on("message_accepted", noteAccepted);
+        try {
+          await Promise.race([
+            dispatched.then(() => undefined, () => undefined),
+            onceAccepted(turnClient!, sessionId!, RUN_ACCEPT_WINDOW_MS),
+          ]);
+        } finally {
+          turnClient!.off("message_accepted", noteAccepted);
+        }
+        // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
+        // can still emit its acceptance after the next dispatch has begun, which is precisely how a
+        // reviewer produced an acknowledgement for a send that never received one. Releasing the
+        // gate is still right, because a silent Harness must not be able to starve the queue, but
+        // the NEXT send must know that an unattributable event is possible until this one settles.
+        //
+        // `dispatched` is the TURN, and its settling does prove the Harness is finished with this
+        // request, so the debt clears itself on the ordinary path. It is not a timeout standing in
+        // for a proof.
+        if (!acknowledgedHere) oweAcceptanceDebt(dispatched);
         return { dispatched };
       });
       await runTurn;
@@ -1010,8 +1082,13 @@ export async function runJcodeHost(): Promise<void> {
     // The listener is attached and removed INSIDE the gate, so the window in which an acceptance can
     // be attributed to this send is exactly the window in which no other send can produce one.
     let acknowledged = false;
+    // Captured INSIDE the gate, below, at the moment this send begins: if any earlier dispatch is
+    // still open having never acknowledged, then an event arriving now may belong to it, and this
+    // send's acceptance is not attributable no matter how exclusive the gate is.
+    let attributable = false;
     try {
       await withExclusiveDispatch(async () => {
+        attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
         const onAccepted = (event: ApiEvent): void => {
           if ("session_id" in event && event.session_id === session) acknowledged = true;
         };
@@ -1033,13 +1110,26 @@ export async function runJcodeHost(): Promise<void> {
         release();
         return;
       }
-      if (!acknowledged) {
-        // Written but never acknowledged. Recording this as accepted is what turned a stall into
-        // LOSS, so it is refused: released, un-acked, still owed, retried by the loop.
+      if (!acknowledged || !attributable) {
+        // Written but never acknowledged, OR acknowledged while an earlier lapsed send could still
+        // have been the sender. Recording either as accepted is what turned a stall into LOSS, so
+        // both are refused: released, un-acked, still owed, retried by the loop.
+        //
+        // AND IF IT WAS NEVER ACKNOWLEDGED, THIS SEND IS NOW ITSELF A LAPSED ONE. The SDK resolved
+        // our `sendMessage` on its own accept wait, which proves only that we stopped listening: the
+        // request is still live at the Harness and may emit its session-only acceptance at any
+        // later point, when some other batch is the one waiting. Nothing settles that promise in a
+        // way that proves otherwise, so the debt cannot be discharged by waiting. Until the bridge
+        // is replaced, acceptance on this client is not attributable to anyone.
+        if (!acknowledged) acceptanceSuspectUntilBridgeReplaced = true;
         release();
         writeJcodeDiagnostic(
-          `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
-            `automatic message(s) remain queued for redelivery\n`,
+          acknowledged
+            ? `[cotal-jcode] queued turn was acknowledged but an earlier unacknowledged send is still ` +
+              `open, so the acknowledgement is not attributable; ${items.length} automatic ` +
+              `message(s) remain queued for redelivery\n`
+            : `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
+              `automatic message(s) remain queued for redelivery\n`,
         );
         return;
       }
@@ -1158,6 +1248,12 @@ export async function runJcodeHost(): Promise<void> {
             if (attachDeadline !== undefined) clearTimeout(attachDeadline);
           }
           client = replacement;
+          // A new connection cannot deliver an event for a request made on the old one, so whatever
+          // lapsed sends were still outstanding there can no longer emit into this session's
+          // listeners. That is the only boundary in this protocol that genuinely restores
+          // attributability, and crossing it is what lets acceptance be trusted again.
+          acceptanceSuspectUntilBridgeReplaced = false;
+          unsettledLapsedDispatches = 0;
           watchClient(replacement);
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
           void agent.setStatus("idle").catch(() => {});

@@ -549,6 +549,19 @@ const server = createServer((socket) => {
             const swallowMatch = process.env.FAKE_JCODE_SWALLOW_QUEUED_SEND;
             if (swallowMatch && String(frame.content).includes(swallowMatch)) {
               log({ ev: "queued_send_swallowed", session_id: frame.session_id });
+              // A LATE acceptance for a send that was already given up on. The request is never
+              // answered in time, so the host's window lapses, and only afterwards does the Harness
+              // emit the session-only `message_accepted` that belongs to THIS send. Nothing about
+              // the event says so, which is the whole difficulty: by the time it arrives, a later
+              // send may be the one listening. A real Harness under load does exactly this, and a
+              // reviewer reproduced the consequence against the SDK directly.
+              const lateMs = Number(process.env.FAKE_JCODE_LATE_ACCEPT_AFTER_MS ?? "0");
+              if (lateMs > 0) {
+                setTimeout(() => {
+                  log({ ev: "late_accept_emitted", session_id: frame.session_id });
+                  event({ ev: "message_accepted", session_id: frame.session_id });
+                }, lateMs).unref();
+              }
               break;
             }
             const accept = () => {

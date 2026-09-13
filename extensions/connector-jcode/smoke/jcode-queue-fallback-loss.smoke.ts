@@ -82,6 +82,9 @@ const busyReleaseFile = join(root, "busy-release");
 const softInterruptTimeoutMs = 3_000;
 /** Declared here because the fake's swallow knob is scoped to this exact text. */
 const marker = "SWALLOWED_QUEUED_TURN_1233";
+// Comfortably past the SDK's 10s acceptance wait, so the host has definitively stopped listening
+// for this send before its acknowledgement finally arrives.
+const lateAcceptAfterMs = 14_000;
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
 let child: ChildProcess | undefined;
@@ -163,6 +166,11 @@ try {
       // acknowledged. Scoped by content so the host's own readiness traffic still works and the seat
       // reaches the mesh; otherwise this would grade a boot failure instead of the loss.
       FAKE_JCODE_SWALLOW_QUEUED_SEND: marker,
+      // A LATE acceptance for that swallowed send, emitted long after the host's window has lapsed.
+      // This is the reviewer's sequence: the host gives up waiting, a later batch becomes the one
+      // listening, and only then does the Harness answer the ORIGINAL request. The event is
+      // session-only, so nothing in it says which send it belongs to.
+      FAKE_JCODE_LATE_ACCEPT_AFTER_MS: String(lateAcceptAfterMs),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodeqfloss",
       COTAL_NAME: "jcodepeer",

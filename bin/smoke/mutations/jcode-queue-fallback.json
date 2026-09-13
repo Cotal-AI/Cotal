@@ -107,6 +107,16 @@
       "cell": "a message reaches the session while an earlier turn is still open, so the dispatch gate is bounded by acceptance rather than by the turn (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback",
       "note": "The defect is INVISIBLE IN A DIFF: an async callback returning a bare promise is adopted by both async boundaries, so `return await operation()` waits for the TURN rather than the acceptance race inside it. The race, the timeout and every other line stay exactly as shipped; only the handle's wrapper is removed. Reviewer-found after the suite passed 15/15, 4/4, 35/35 and eight mutations at the defective head, which is why this mutation exists. NOTE ON THE WITNESS, because the first cell I wrote for this did not discriminate and its control PASSED: the predicate must be the fallback's own queued-turn `send_message`, not the union of handovers. The soft interrupt is deliberately ungated, being correlated by reply_to, so its frame arrives whatever the gate is doing; watching it grades a path the defect cannot reach. On the mutated tree the cell now reports queuedSends 0 against handoversIncludingUngatedSteer 1, which is that distinction stated in the diagnostics."
+    },
+    {
+      "name": "M11 a lapsed unacknowledged send leaves acceptance trustworthy, so a late ack settles another batch",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        if (!acknowledged) acceptanceSuspectUntilBridgeReplaced = true;\n",
+      "replace": "        void acknowledged;\n",
+      "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
+      "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback-loss",
+      "note": "Reviewer-found against the SDK and then reproduced through the shipped host. The exclusion gate alone does NOT fix this: the gate releases on a 10s lapse so a silent Harness cannot starve the queue, and the lapsed send is still live and can emit its session-only acceptance later, when a different batch is the one listening. A timeout proves only that a send has not acknowledged YET. This mutation removes the one line that records the lapse, keeping the gate, the listener and the refusal path intact, so what is severed is exactly the knowledge that a late event may belong to someone else."
     }
   ]
 }
