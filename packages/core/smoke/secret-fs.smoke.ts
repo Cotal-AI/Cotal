@@ -6,13 +6,34 @@
  * (the local regression guard — mode bits after write/harden). The win32 `icacls` readback (the real
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { __setPublishLinkForTest, hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
 
+// THE RACE ITSELF, which no single-process cell can reach. `lstatSync` refuses a name that is
+// already there, but on its own that is a CHECK followed by a WRITE: two creators that both pass
+// the check would both write, and both would believe they created the name. Only `O_EXCL` makes
+// the decision one syscall, and only concurrency can tell the two apart.
+//
+// N real processes are released on a barrier against one fresh path. Exactly one may succeed.
+if (process.env.COTAL_SECRETFS_RACE_WORKER === "1") {
+  const target = process.env.COTAL_SECRETFS_RACE_PATH!;
+  const barrier = process.env.COTAL_SECRETFS_RACE_BARRIER!;
+  const there = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
+  while (!there(barrier)) { /* spin to the barrier: the tightest release available */ }
+  try {
+    writeSecretFileCreateOnly(target, `${process.pid}\n`);
+    process.stdout.write("WON\n");
+  } catch {
+    process.stdout.write("LOST\n");
+  }
+  process.exit(0);
+}
 const isWin = process.platform === "win32";
+const TSX = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
 let failures = 0;
 function check(label: string, cond: boolean): void {
@@ -191,6 +212,51 @@ check("REFUSE: a link error outside ENOTSUP/EPERM/ENOSYS propagates instead of f
 check("...and that failure left no .tmp litter",
   readdirSync(propagateDir).filter((n) => n.endsWith(".tmp")).length === 0);
 
+{
+  const RACERS = 8;
+  const ROUNDS = 12;
+  let multiWinner = 0;
+  let observed = 0;
+  for (let r = 0; r < ROUNDS; r++) {
+    const raceDir = join(dir, `race-${r}`);
+    mkSecretDir(raceDir);
+    const target = join(raceDir, "contested.secret");
+    const barrier = join(raceDir, "go");
+    const outcomes: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      let left = RACERS;
+      const timer = setTimeout(() => reject(new Error("race workers did not report")), 60_000);
+      for (let i = 0; i < RACERS; i++) {
+        // spawnSync would serialise the racers and could never observe a conflict; these run
+        // concurrently and are released together by the barrier below.
+        const child = spawn(TSX, [process.argv[1]!], {
+          env: {
+            ...process.env,
+            COTAL_SECRETFS_RACE_WORKER: "1",
+            COTAL_SECRETFS_RACE_PATH: target,
+            COTAL_SECRETFS_RACE_BARRIER: barrier,
+          },
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        let buf = "";
+        child.stdout.on("data", (c: Buffer) => { buf += c.toString(); });
+        child.on("error", (e) => { clearTimeout(timer); reject(e); });
+        child.on("exit", () => {
+          outcomes.push(buf.trim());
+          if (--left === 0) { clearTimeout(timer); resolve(); }
+        });
+      }
+      // Let every child reach its spin loop before releasing them.
+      setTimeout(() => writeFileSync(barrier, "go"), 300);
+    });
+    const winners = outcomes.filter((o) => o === "WON").length;
+    observed += outcomes.length;
+    if (winners !== 1) multiWinner++;
+  }
+  check(`REFUSE: of ${RACERS} concurrent creators over ${ROUNDS} rounds exactly one ever creates the name`,
+    multiWinner === 0 && observed === RACERS * ROUNDS);
+}
+
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");
 mkSecretDir(sub);
@@ -231,3 +297,4 @@ if (!isWin) {
 rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
+(failures ? 1 : 0);
