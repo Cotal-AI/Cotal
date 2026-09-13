@@ -1,0 +1,63 @@
+{
+  "grades": "tool",
+  "suite": [
+    "scripts/upgrade-section-gate.mjs"
+  ],
+  "guard": "a breaking change that lands with no matching section in docs/UPGRADING.md is refused, while a breaking change WITH its section and a non-breaking change with no section both pass",
+  "command": "node scripts/upgrade-section-gate.mjs --self-test",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/upgrade-section-gate.json",
+  "why": [
+    "Cotal #1578: 0.49.0 changed how a credential's authority is recorded, the repository carried no UPGRADING.md, and an operator with a live 30-agent deployment could not tell whether their credentials survived or which side of a split topology to upgrade first. Nothing in CI noticed. This gate is what notices.",
+    "A gate like this has two ways to be useless and each needs its own mutation. It can stop DETECTING, in which case the breaking change sails through and the operator is back where the issue started. Or it can start firing on EVERYTHING, in which case it is turned off within a week and the first failure mode returns by another route. M1 and M2 are those two directions.",
+    "M3 and M4 attack the two readers rather than the verdict. A marker reader that never fires and a section reader that always finds coverage both leave the verdict logic perfectly correct and grading nothing, which is the shape this repository has been catching all week: the gate is armed, and its accept control returns zero.",
+    "M5 is the cheapest way to satisfy a gate that only checked whether the file was touched. If an empty heading counted, the rule would decay into adding a heading at release time, and the document would stop being the thing the reporter actually needed.",
+    "The self-test drives the real exported functions in the mutated file, so the code under test is the gate itself and not a copy of its logic."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the gate stops detecting: a breaking change with no section passes",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (!upgradingChanged)\n    return { ok: false, reason: `${breaking.length} breaking change(s) and no ${UPGRADING_PATH} edit in the same range` };",
+      "replace": "  if (!upgradingChanged)\n    return { ok: true, reason: `${breaking.length} breaking change(s) and no ${UPGRADING_PATH} edit in the same range` };",
+      "expectRed": "ACCEPT CONTROL: a breaking change with no UPGRADING.md edit is REFUSED",
+      "cell": "ACCEPT CONTROL: a breaking change with no UPGRADING.md edit is REFUSED",
+      "note": "The tree exactly as it stood when #1578 was filed: 0.49.0's two breaking commits land, no upgrade page exists, and nothing objects. This is a revert-check rather than a contrived edit."
+    },
+    {
+      "name": "M2 the gate fires on everything: a non-breaking change is refused too",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (breaking.length === 0) return { ok: true, reason: \"no breaking commits in range\" };",
+      "replace": "  if (breaking.length === 0 && upgradingChanged) return { ok: true, reason: \"no breaking commits in range\" };",
+      "expectRed": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
+      "cell": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
+      "note": "The other failure direction, and the one that kills the gate socially rather than technically. Both accept cells stay GREEN under this mutation, so only the third leg catches it: without that leg, 'detects breaking changes' and 'reds on every changeset' are the same measurement."
+    },
+    {
+      "name": "M3 the breaking-marker reader never fires on a conventional `!`",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (/^[a-z]+(?:\\([^)]*\\))?!:/.test(subject.trim())) return true;",
+      "replace": "  if (false && /^[a-z]+(?:\\([^)]*\\))?!:/.test(subject.trim())) return true;",
+      "expectRed": "a `!` in the conventional type is read as breaking",
+      "cell": "a `!` in the conventional type is read as breaking",
+      "note": "The verdict logic is untouched and perfectly correct under this mutation; it is simply never handed a positive. That is the exact shape of an armed gate grading nothing, and it is invisible to any cell that only exercises the verdict."
+    },
+    {
+      "name": "M4 the section reader counts the page's own structural headings as coverage",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return out.filter((s) => !STRUCTURAL_HEADINGS.includes(s.title));",
+      "replace": "  return out;",
+      "expectRed": "…and excludes the page's own structural headings",
+      "cell": "…and excludes the page's own structural headings",
+      "note": "With this mutation the page's permanent furniture (the contract section and the how-to-add-a-section section) counts as a release section forever, so every future breaking change is pre-covered by headings nobody wrote for it."
+    },
+    {
+      "name": "M5 an empty heading counts as an upgrade section",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return sectionsOf(markdown).filter((s) => s.body.trim().length > 0).map((s) => s.title);",
+      "replace": "  return sectionsOf(markdown).map((s) => s.title);",
+      "expectRed": "REFUSE CONTROL: an empty section is not coverage",
+      "cell": "REFUSE CONTROL: an empty section is not coverage",
+      "note": "The cheapest possible way to satisfy the rule without doing the work. A heading with nothing under it tells an operator nothing, and a gate that accepts one teaches the release process to add headings rather than write upgrade notes."
+    }
+  ]
+}
