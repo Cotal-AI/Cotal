@@ -258,7 +258,8 @@ cotal supervise --space <space> --server nats://<broker>:4222
 # 2. broker host: stop the stack.
 #    NOT `--preserve-state` on a split topology: it needs a manager alive on
 #    THIS host to attest its children stopped, and yours is on the other one.
-#    Your rollback is the volume snapshot from step 0, not `cotal backup`.
+#    Your rollback is the volume snapshot from "Snapshot this before you
+#    start", not `cotal backup`.
 #    See "cotal backup on a split topology" above.
 cotal down
 
@@ -282,8 +283,8 @@ cotal channels list # compare against channels.before
 #    credentials are re-minted as issuances and can renew
 ```
 
-The mesh is down from step 2 until step 3 finishes. That is the window, and the preserved cut and
-backup sit inside it, so budget for the backup's duration when you schedule.
+The mesh is down from step 2 until step 3 finishes. That is the window. On a split topology there is
+no cut and no backup inside it, so the window is the stop, the install and the restart, nothing more.
 
 ## Adding a section for a future release
 
