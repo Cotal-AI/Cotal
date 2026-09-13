@@ -4,7 +4,7 @@
   ],
   "guard": "a directed DM reaching a busy Jcode session is accepted through soft_interrupt even when the host is not inside drive() or session_status pulses idle, and a growing automatic queue is published on presence activity",
   "command": "pnpm smoke:jcode-inbound-wedge",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "minTicks": 5,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/inbound-wedge.json",
   "why": [
@@ -46,10 +46,11 @@
     {
       "name": "M4 do not publish the initial drive batch",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    turnActive = true;\n    surfacedIds = [...ids];\n    publishInboundHealth();",
-      "replace": "    turnActive = true;\n    surfacedIds = [...ids];\n    void agent.setStatus(\"working\").catch(() => {});",
+      "find": "    releaseUnheldReservations();\n    publishInboundHealth();",
+      "replace": "    releaseUnheldReservations();\n    void agent.setStatus(\"working\").catch(() => {});",
       "expectRed": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
-      "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)"
+      "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
+      "note": "Re-anchored for #1233: the reservation fix inserted `releaseUnheldReservations()` between `surfacedIds = [...ids]` and this call, so the old three-line anchor no longer matched and the mutation ERRORed instead of running. The line severed is unchanged: `publishInboundHealth()` is still replaced by the bare status write, so the mutant still publishes presence without naming the batch."
     }
   ]
 }
