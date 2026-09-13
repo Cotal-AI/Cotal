@@ -338,6 +338,21 @@ try {
     turnsCarrying(marker).length === 1 && !wentIdle(),
     { deliveries: turnsCarrying(marker).length, seatWentIdle: wentIdle() },
   );
+  // Separately: the batch must stop being OWED once it is accepted. The cell above counts deliveries
+  // of one marker; this one asks whether the acceptance was recorded at all, which is what makes the
+  // level-triggered loop terminate for this batch instead of re-handing it over on every tick. They
+  // fail for different reasons, so they are not interchangeable: a host that delivers once but never
+  // records keeps offering the same batch forever, and a host that records without the exclusion lets
+  // a concurrent path offer it twice.
+  {
+    const handoversBefore = handoversCarrying(marker).length;
+    await sleep(4_000);
+    check(
+      "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
+      handoversCarrying(marker).length === handoversBefore,
+      { handoversBefore, handoversAfter: handoversCarrying(marker).length },
+    );
+  }
 
   // --- Cell B2: the acceptance window is not a duplicate-delivery window ----------------------
   // Found by review, not by me. `queueTurnFallback` awaits `sendMessage`, and the real SDK resolves
