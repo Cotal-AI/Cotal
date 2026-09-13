@@ -14,7 +14,8 @@
     "The named cell counts source reads in a window longer than the 5s floor and shorter than the 15s",
     "backoff, so it grades the loop itself rather than the message. The sibling cells - the warning text",
     "and the cache staying on the last good token - cannot grade it alone: a future change could emit",
-    "that message, or leave the cache alone, and still re-read at the floor."
+    "that message, or leave the cache alone, and still re-read at the floor.",
+    "This fixture cannot tell the narrowed rule from the original one: its stale token does not advance the expiry, so BOTH rules refuse it. What tells them apart is `smoke:expiry-renewal:auth`, which mints 5s bearers against the 60s margin — the original rule turned that suite red, the narrowed one leaves it green. The pair is the evidence, not a mutation here."
   ],
   "mutations": [
     {
@@ -25,15 +26,6 @@
       "expectRed": "the refusal backs off past the 5s floor (no re-read in 12s)",
       "cell": "the refusal backs off past the 5s floor (no re-read in 12s)",
       "note": "Flipping the advance test, not deleting the guard: a deleted guard also reds the cell, but so would any change that stops the refusal firing. Inverting it keeps the refusal armed for exactly the tokens that ARE fresh — the shape `expiry-renewal` depends on — so the cell fails if the rule ever goes back to refusing a short lifetime."
-    },
-    {
-      "name": "the rule reverts to refusing any short-lived token",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!initial && nextRefreshMs <= 0 && !advanced)",
-      "replace": "      if (!initial && nextRefreshMs <= 0)",
-      "expectRed": "a token that does not advance the expiry is NOT adopted",
-      "cell": "a token that does not advance the expiry is NOT adopted",
-      "note": "The first form of this guard. It reds nothing here — the fixture's stale token does not advance either — which is the point: this fixture alone cannot tell the two rules apart, and `smoke:expiry-renewal:auth` is what does. Kept so the pair is on the record."
     }
   ]
 }
