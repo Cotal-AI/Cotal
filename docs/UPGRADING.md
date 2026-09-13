@@ -262,6 +262,10 @@ cotal down manager                        # the 0.48.2 CLI, still installed.
                                           # `cotal down --with-agents` after
                                           # installing is the alternative.
 npm install -g cotal-ai@0.49.0            # ONLY after the stop above
+#    `supervise` RUNS IN THE FOREGROUND and holds the terminal until you stop
+#    it. There is no --detach on this command. Start it under whatever keeps
+#    your manager alive normally (systemd unit, container entrypoint, or a
+#    second terminal), and run the remaining steps from another shell.
 cotal supervise --space <space> --server nats://<broker>:4222
 
 # 2. broker host: stop the stack.
