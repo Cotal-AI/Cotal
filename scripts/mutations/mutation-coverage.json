@@ -84,10 +84,10 @@
       "cell": "a path after -e is not a launched script"
     },
     {
-      "name": "eval flags still look for a later script path",
+      "name": "a separator is scanned before the flags preceding it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (NODE_EVAL_FLAGS.has(flag)) return undefined;\n",
-      "replace": "",
+      "find": "  for (let i = 0; i < tokens.length; i++) {\n    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);\n    const text = typeof raw === \"string\" ? raw : \"\";\n    if (text === \"--\") return tokens[i + 1];\n",
+      "replace": "  const sep = tokens.findIndex((token) => (stringValue(token) ?? evalPath(token)) === \"--\");\n  if (sep >= 0) return tokens[sep + 1];\n  for (let i = 0; i < tokens.length; i++) {\n    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);\n    const text = typeof raw === \"string\" ? raw : \"\";\n",
       "expectRed": "a path after -e and -- is not a launched script",
       "cell": "a path after -e and -- is not a launched script"
     },
