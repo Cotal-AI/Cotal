@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "packages/core/smoke/membership-rw-renewal.smoke.ts"
+  ],
+  "guard": "the membership feed's conn B never presents its cached rw credential after that credential has expired",
+  "command": "pnpm smoke:membership-rw-renewal",
+  "completionMarker": "MEMBERSHIP-RW RENEWAL",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-rw-expiry.json",
+  "why": [
+    "The cache only advances through a preflight-proven adoption, so it can never hold an UNPROVEN",
+    "generation. It can hold a proven one the clock has since expired. Disarming the guard restores the",
+    "reported behavior: the client's own redial presents credential material already decoded as dead.",
+    "The named cell counts the broker-side connections that carried this feed's nkey into an expiry",
+    "decision, so it grades what reached the BROKER rather than what the feed logged.",
+    "The sibling cell asserting the refusal text cannot grade this alone: it reads the feed's log, which",
+    "a future change could emit without the dial ever being refused."
+  ],
+  "mutations": [
+    {
+      "name": "the rw expiry checkpoint never fires",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "    if (typeof exp !== \"number\" || exp * 1000 > Date.now()) return;",
+      "replace": "    if (typeof exp !== \"number\" || exp * 1000 > 0) return;",
+      "expectRed": "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
+      "cell": "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
+      "note": "A real cred's exp is always > 0, so the guard returns before it can refuse: the issue's pre-fix behavior with the tree still compiling and the helper still referenced. Under the mutation the cell reports two distinct cids on the feed's nkey (the original wire plus the redial); with the guard armed it reports one."
+    }
+  ]
+}

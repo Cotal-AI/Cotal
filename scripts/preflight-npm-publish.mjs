@@ -23,8 +23,15 @@
  *
  * There is no non-writing PUT that proves createPackage: a complete packument would publish, and
  * an incomplete one can 400 before the policy check. This script therefore never PUT/POSTs a
- * packument. GET trust is the authorization census. If that read cannot be obtained, the run
- * refuses rather than treating OIDC 201 as publish-ready.
+ * packument. GET trust is the authorization census when the registry serves it to this credential.
+ *
+ * npm documents `GET /-/package/<name>/trust` as a trusted-publisher management route that takes an
+ * npm access token with a one-time password, so an exchanged OIDC token is answered 401 there. That
+ * 401 is a fact about the credential, not about the publisher record: the exchange itself already
+ * matched this workflow's claims against the trusted-publisher configuration. A 401 on the trust
+ * read is recorded as `unverifiable:trust-endpoint-needs-npm-token` and does not refuse; the
+ * OIDC exchange stays the gate. Any other non-200 answer still refuses, and a 200 body that shows
+ * a stage-only or foreign publisher still refuses.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -266,6 +273,7 @@ async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImp
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       redirect: "manual",
     });
+    if (response.status === 401) return "unverifiable:trust-endpoint-needs-npm-token";
     if (response.status !== 200) return `refused:${response.status}`;
     const body = await response.json();
     return classifyDirectPublishPermission(body, {
@@ -376,7 +384,9 @@ export async function preflightNpmPublish({
   if (refusedDirect.length) {
     throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);
   }
-  const unproven = rows.filter((row) => row.direct !== "createPackage" && row.direct !== "not-available:classic-token");
+  const unproven = rows.filter((row) => row.direct !== "createPackage"
+    && row.direct !== "not-available:classic-token"
+    && row.direct !== "unverifiable:trust-endpoint-needs-npm-token");
   if (unproven.length) {
     throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);
   }

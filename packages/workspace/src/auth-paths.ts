@@ -7,6 +7,7 @@ import {
   validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
+  writeSecretFileCreateOnly,
   type BrokerAuth,
   type SecretStore,
   type SpaceAccountAuth,
@@ -388,6 +389,31 @@ export function saveManagerInstanceIdentity(root: string, space: string, identit
   const dir = authDir(root);
   mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
   writeSecretFile(managerInstanceFile(root, space), JSON.stringify(identity, null, 2));
+}
+
+/**
+ * First-start identity mint: of N concurrent creators on a fresh root, exactly one creates the
+ * file and the others adopt the winner. The publication primitive is exclusive create
+ * (`writeSecretFileCreateOnly` / `link` or `O_EXCL`), not a read-then-write and not an atomic
+ * rename. A loser never keeps the identity it minted in memory: it re-reads the winner or
+ * refuses with a named error (`manager-instance-identity-create-lost`).
+ */
+export function createManagerInstanceIdentity(root: string, space: string, candidate: ManagerInstanceIdentity): ManagerInstanceIdentity {
+  const dir = authDir(root);
+  mkSecretDir(dir);
+  const path = managerInstanceFile(root, space);
+  try {
+    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
+    return candidate;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const winner = loadManagerInstanceIdentity(root, space);
+    if (winner === undefined)
+      throw new Error(
+        `manager-instance-identity-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`,
+      );
+    return winner;
+  }
 }
 
 /** The account file's key IS {@link spaceKey} — one injective, case-safe encoder for every

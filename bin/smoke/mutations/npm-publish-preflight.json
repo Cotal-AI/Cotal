@@ -79,12 +79,12 @@
       "cell": "one stage-only Allowed-actions sibling refuses the whole preflight"
     },
     {
-      "name": "a 401 trust census is treated as direct-publish proof",
+      "name": "a non-401 trust read failure is treated as direct-publish proof",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    if (response.status !== 200) return `refused:${response.status}`;\n",
       "replace": "    if (response.status !== 200) return \"createPackage\";\n",
-      "expectRed": "a 401 trust census refuses before any publish call",
-      "cell": "a 401 trust census refuses before any publish call"
+      "expectRed": "a non-401 trust read failure still refuses before any publish call",
+      "cell": "a non-401 trust read failure still refuses before any publish call"
     },
     {
       "name": "empty Allowed-actions lists are treated as direct publish",
@@ -133,6 +133,22 @@
       "replace": "",
       "expectRed": "an OIDC token without the environment claim refuses the whole preflight",
       "cell": "an OIDC token without the environment claim refuses the whole preflight"
+    },
+    {
+      "name": "a 401 trust read under OIDC refuses the release again",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 401) return \"unverifiable:trust-endpoint-needs-npm-token\";\n",
+      "replace": "",
+      "expectRed": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
+      "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
+    },
+    {
+      "name": "an unverifiable trust read is admitted as createPackage proof",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 401) return \"unverifiable:trust-endpoint-needs-npm-token\";\n",
+      "replace": "    if (response.status === 401) return \"createPackage\";\n",
+      "expectRed": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
+      "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
     }
   ]
 }

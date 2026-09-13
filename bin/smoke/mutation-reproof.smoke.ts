@@ -16,7 +16,7 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -94,7 +94,36 @@ const okCounts = (out: string): { discriminated: number; preRed: number; inconcl
   const m = out.match(/MUTATION REPROOF OK \(\d+ fixture\(s\) selected; (\d+) discriminated, (\d+) inherited pre-red, 0 attributable pre-red, 0 unmeasured pre-red, (\d+) inconclusive\)/);
   return m ? { discriminated: Number(m[1]), preRed: Number(m[2]), inconclusive: Number(m[3]) } : null;
 };
-
+/** Parse configs the zero-discrimination floor named as expected kills. */
+const zeroDiscExpected = (out: string): string[] => {
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED .*expected a kill from: ([^;\n]+)/m);
+  return m ? m[1].split(", ") : [];
+};
+/** Parse configs named by the COULD NOT arm: present, but never in a position to kill. */
+const zeroDiscUnable = (out: string): string[] => {
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT .*re-shard or repair the already-red commands: (.+)$/m);
+  return m ? m[1].split(", ") : [];
+};
+/**
+ * Parse the ORDINARY arm's trailing attribution clause. It needs its own parser: `zeroDiscUnable`
+ * requires the literal `, COULD NOT`, so asking it about an ordinary banner returns empty whether
+ * the clause is present or absent, and an assertion built on that is vacuously true. Deleting the
+ * clause from the emit left the whole suite green until this parser existed.
+ */
+const zeroDiscNotAttributable = (out: string): string[] => {
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED \(.*; not attributable to \(could not discriminate\): (.+)$/m);
+  return m ? m[1].split(", ") : [];
+};
+/**
+ * Vacuous all-clear refused where NO proven fixture could have killed: pre-red, inconclusive or
+ * zero-graded. Still a red, but attributed to the unit's composition rather than to a fixture that
+ * was never in a position to produce a kill, and never collapsed into SURVIVED/FAILED.
+ */
+const floorCouldNot = (out: string, paths: string[]): boolean =>
+  eq(zeroDiscUnable(out), paths)
+  && zeroDiscExpected(out).length === 0
+  && !out.includes("MUTATION REPROOF OK")
+  && !/^MUTATION REPROOF FAILED /m.test(out);
 const networkSetupEnv = (): NodeJS.ProcessEnv => {
   const env = childEnv();
   delete env.pnpm_config_offline;
@@ -111,8 +140,10 @@ const scan = (root: string, base: string, head: string, env = childEnv(), shard?
   const run = spawnSync(process.execPath, args, { encoding: "utf8", env });
   return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 };
-const scanAll = (root: string): { status: number | null; out: string } => {
-  const run = spawnSync(process.execPath, [SCAN, "--root", root, "--all"], { encoding: "utf8", env: childEnv() });
+const scanAll = (root: string, shard?: string): { status: number | null; out: string } => {
+  const args = [SCAN, "--root", root, "--all"];
+  if (shard !== undefined) args.push("--shard", shard);
+  const run = spawnSync(process.execPath, args, { encoding: "utf8", env: childEnv() });
   return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 };
 
@@ -342,10 +373,18 @@ try {
       if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = previousNodeOptions;
     }
-    const scannerObserved = readFileSync(join(root, "scanner.env"), "utf8");
+    // The probe files exist only if the scan actually reached the scanner and the fixture child.
+    // Reading them unguarded turns "the scan selected nothing" into an uncaught ENOENT that aborts
+    // the whole suite at this line, so a later cell's failure is never reported and the run reds
+    // for a reason that names nothing. Report the absence as this cell's own failure instead.
+    const readProbe = (name: string): string => {
+      try { return readFileSync(join(root, name), "utf8"); }
+      catch { return `ABSENT: ${name} was never written, so the scan did not reach that child`; }
+    };
+    const scannerObserved = readProbe("scanner.env");
     check("scanner children do not inherit Cotal session credentials",
       scannerObserved === "CLEAN", scannerObserved);
-    const observed = readFileSync(join(root, "probe.env"), "utf8");
+    const observed = readProbe("probe.env");
     check("fixture children do not inherit Cotal session credentials",
       observed === "CLEAN" && probe.status === 0 && okCounts(probe.out)?.discriminated === 1,
       JSON.stringify({ observed, status: probe.status, counts: okCounts(probe.out) }));
@@ -1053,12 +1092,12 @@ try {
     );
     const { status, out } = scan(root, base, head);
     check(
-      "an unchanged pre-red suite selected only by a guarded-source change remains nonfatal",
-      status === 0
+      "an unchanged pre-red suite selected only by a guarded-source change remains PRE-RED and fails the zero-discrimination floor",
+      status === 1
         && eq(selectedPaths(out), ["smoke/mutations/p.mutations.json"])
         && eq(preRedPaths(out), ["smoke/mutations/p.mutations.json"])
         && attributablePreRedPaths(out).length === 0
-        && JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 0, preRed: 1, inconclusive: 0 }),
+        && floorCouldNot(out, ["smoke/mutations/p.mutations.json"]),
       `status=${status} selected=${JSON.stringify(selectedPaths(out))} preRed=${JSON.stringify(preRedPaths(out))} attributable=${JSON.stringify(attributablePreRedPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
     );
   }
@@ -1089,8 +1128,8 @@ try {
     );
     const { status, out } = scan(root, base, head);
     check(
-      "an untouched already-red per-mutation command stays nonfatal when only the declared GREEN suite changed",
-      status === 0
+      "an untouched already-red per-mutation command stays PRE-RED when only the declared GREEN suite changed",
+      status === 1
         && eq(preRedPaths(out), ["smoke/mutations/a.mutations.json"])
         && attributablePreRedPaths(out).length === 0
         && !out.includes("suite: suites/a.suite.mjs"),
@@ -1155,7 +1194,7 @@ try {
     const { status, out } = scan(root, base, installedHead);
     check(
       "a dist-backed inherited red command is comparable after the disposable base performs its own install and build",
-      status === 0
+      status === 1
         && eq(preRedPaths(out), ["smoke/mutations/built.mutations.json"])
         && !/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND/.test(out),
       `status=${status} preRed=${JSON.stringify(preRedPaths(out))}\n${out}`,
@@ -1239,7 +1278,7 @@ try {
     });
     check(
       "prepared snapshots scrub head-only PATH and NODE_PATH entries while preserving pnpm and nats-server",
-      status === 0 && !out.includes("HEAD_SENTINEL_REACHED") && !out.includes("pnpm missing") && !out.includes("nats-server missing"),
+      status === 1 && !out.includes("HEAD_SENTINEL_REACHED") && !out.includes("pnpm missing") && !out.includes("nats-server missing") && eq(preRedPaths(out), ["smoke/mutations/sentinel.mutations.json"]),
       `status=${status}\n${out}`,
     );
   }
@@ -1291,7 +1330,7 @@ try {
       (r) => writeFileSync(join(r, "state.mjs"), "// select\nexport const state = 1;\n"),
     );
     const { status, out } = scan(root, base, head);
-    check("head and base run every command in the same order before comparing stateful red output", status === 0 && out.includes("base RED (exit 1) -> head RED (exit 1)") && !out.includes("B saw NO marker"), `status=${status}\n${out}`);
+    check("head and base run every command in the same order before comparing stateful red output", status === 1 && out.includes("base RED (exit 1) -> head RED (exit 1)") && !out.includes("B saw NO marker") && eq(preRedPaths(out), ["smoke/mutations/state.mutations.json"]), `status=${status}\n${out}`);
   }
 
   // 18. Failure signatures retain first-party file/function origin, ignore line/column displacement,
@@ -1323,7 +1362,7 @@ try {
   );
   {
     const { root, base, head } = stackRepo("line"); const { status, out } = scan(root, base, head);
-    check("an uncaught throw shifted only by line and column remains inherited", status === 0 && eq(preRedPaths(out), ["smoke/mutations/stack.mutations.json"]), `status=${status}\n${out}`);
+    check("an uncaught throw shifted only by line and column remains inherited", status === 1 && eq(preRedPaths(out), ["smoke/mutations/stack.mutations.json"]), `status=${status}\n${out}`);
   }
   {
     const { root, base, head } = stackRepo("file"); const { status, out } = scan(root, base, head);
@@ -1335,7 +1374,7 @@ try {
   }
   {
     const { root, base, head } = stackRepo("line", true); const { status, out } = scan(root, base, head);
-    check("a caught throw shifted only by line and column remains inherited", status === 0 && eq(preRedPaths(out), ["smoke/mutations/stack.mutations.json"]), `status=${status}\n${out}`);
+    check("a caught throw shifted only by line and column remains inherited", status === 1 && eq(preRedPaths(out), ["smoke/mutations/stack.mutations.json"]), `status=${status}\n${out}`);
   }
   {
     const { root, base, head } = stackRepo("file", true); const { status, out } = scan(root, base, head);
@@ -1351,7 +1390,7 @@ try {
   }
   {
     const { root, base, head } = stackRepo("loader"); const { status, out } = scan(root, base, head);
-    check("clone-local dependency and loader frame differences do not change a first-party failure signature", status === 0 && eq(preRedPaths(out), ["smoke/mutations/stack.mutations.json"]), `status=${status}\n${out}`);
+    check("clone-local dependency and loader frame differences do not change a first-party failure signature", status === 1 && eq(preRedPaths(out), ["smoke/mutations/stack.mutations.json"]), `status=${status}\n${out}`);
   }
   {
     const { root, base, head } = stackRepo("semantic-number"); const { status, out } = scan(root, base, head);
@@ -1415,7 +1454,7 @@ try {
     // Without a DIFFER arm, dropping the carrier makes every MATCH arm pass for the wrong reason.
     check(`a different external ${kind} file remains attributable`, fileRun.status === 1 && unmeasuredPreRedPaths(fileRun.out).length === 1, fileRun.out);
     const line = externalOriginRepo(kind, "line"); const lineRun = scan(line.root, line.base, line.head);
-    check(`an external ${kind} line shift remains inherited`, lineRun.status === 0 && eq(preRedPaths(lineRun.out), ["smoke/mutations/external.mutations.json"]), lineRun.out);
+    check(`an external ${kind} line shift remains inherited`, lineRun.status === 1 && eq(preRedPaths(lineRun.out), ["smoke/mutations/external.mutations.json"]), lineRun.out);
   }
 
   const scratchOriginRepo = (variant: "same" | "file", symlinked = false): { root: string; base: string; head: string; env?: NodeJS.ProcessEnv } => {
@@ -1448,7 +1487,7 @@ try {
   };
   for (const symlinked of [false, true]) {
     const same = scratchOriginRepo("same", symlinked); const sameRun = scan(same.root, same.base, same.head, same.env);
-    check(`${symlinked ? "raw and resolved temp spellings" : "per-run temp directories"} collapse the randomized segment`, sameRun.status === 0 && eq(preRedPaths(sameRun.out), ["smoke/mutations/scratch.mutations.json"]), sameRun.out);
+    check(`${symlinked ? "raw and resolved temp spellings" : "per-run temp directories"} collapse the randomized segment`, sameRun.status === 1 && eq(preRedPaths(sameRun.out), ["smoke/mutations/scratch.mutations.json"]), sameRun.out);
     const file = scratchOriginRepo("file", symlinked); const fileRun = scan(file.root, file.base, file.head, file.env);
     // P5b is the other sole guard, with P1a above, against erasing external origins entirely.
     check(`a different file within ${symlinked ? "a symlinked temp root" : "per-run temp directories"} remains attributable`, fileRun.status === 1 && unmeasuredPreRedPaths(fileRun.out).length === 1, fileRun.out);
@@ -1489,7 +1528,7 @@ try {
       (r) => writeFileSync(join(r, "dep.mjs"), "export const suffix = 'peer';\n"),
     );
     const { status, out } = scan(root, base, head);
-    check("dependency-origin source headers with divergent .pnpm layouts remain inherited", status === 0 && eq(preRedPaths(out), ["smoke/mutations/dep.mutations.json"]), `status=${status}\n${out}`);
+    check("dependency-origin source headers with divergent .pnpm layouts remain inherited", status === 1 && eq(preRedPaths(out), ["smoke/mutations/dep.mutations.json"]), `status=${status}\n${out}`);
   }
 
   // 22. A fixture and red command introduced only at head have no runnable base command. That is not
@@ -1537,12 +1576,254 @@ try {
     );
     const { status, out } = scanAll(root);
     check(
-      "--all keeps every pre-red nonfatal because no base transition can be measured",
-      status === 0
+      "--all keeps every pre-red as PRE-RED (not attributable) and reds the zero-discrimination floor naming the config",
+      status === 1
         && eq(preRedPaths(out), ["smoke/mutations/all.mutations.json"])
         && attributablePreRedPaths(out).length === 0
-        && unmeasuredPreRedPaths(out).length === 0,
+        && unmeasuredPreRedPaths(out).length === 0
+        && floorCouldNot(out, ["smoke/mutations/all.mutations.json"]),
       `status=${status} preRed=${JSON.stringify(preRedPaths(out))}\n${out}`,
+    );
+  }
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "d.mjs"), "export function cap(input) {\n  return Math.min(input, 32);\n}\n");
+        writeFileSync(join(r, "suites", "d.suite.mjs"), "import { cap } from '../d.mjs';\nif (cap(100) !== 32) { console.error('✗ FAIL: the d cap holds'); process.exit(1); }\nconsole.log('✓ the d cap holds');\n");
+        writeFileSync(join(r, "smoke", "mutations", "d.mutations.json"), JSON.stringify({
+          suite: ["suites/d.suite.mjs"], command: "node suites/d.suite.mjs", mutations: [{
+            name: "the d cap is removed", file: "d.mjs", find: "  return Math.min(input, 32);",
+            replace: "  return input;", expectRed: "the d cap holds",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const { status, out } = scanAll(root);
+    check(
+      "a --all sweep that kills one fixture reaches OK with discriminated 1",
+      status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(out)
+        && offenderPaths(out).length === 0,
+      `status=${status}\n${out}`,
+    );
+  }
+  // 23c. The floor must be satisfiable only by an OBSERVED kill, not by a bare exit 0. A fixture
+  //     whose `mutations` array is empty makes mutation-proof print "All 0 mutation(s) killed" and
+  //     exit 0, which would earn a free discrimination credit and hold the floor up for a corpus
+  //     that killed nothing. Two independent guards: the corpus refuses to admit such a fixture,
+  //     and the floor refuses to credit an exit 0 with no KILLED parsed. Each is proven separately
+  //     so neither can be shadowed by the other.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "k.mjs"), "export const k = () => 1;\n");
+        writeFileSync(join(r, "suites", "k.suite.mjs"), "import { k } from '../k.mjs';\nif (k() !== 1) { console.error('✗ FAIL: k is one'); process.exit(1); }\nconsole.log('✓ k is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "k.mutations.json"), JSON.stringify({
+          suite: ["suites/k.suite.mjs"], command: "node suites/k.suite.mjs", mutations: [],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const { status, out } = scanAll(root);
+    check(
+      "a fixture with an empty mutations array is refused by the corpus instead of grading nothing",
+      status === 1
+        && out.includes("mutation reproof: UNMEASURED — 1 malformed fixture(s)")
+        && out.includes("\"mutations\" array is empty")
+        && out.includes("smoke/mutations/k.mutations.json")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status}\n${out}`,
+    );
+  }
+  // 23d. REFUSING contrast to 23c, differing only by the array having one member: an otherwise
+  //     identical fixture with a real mutation is admitted and discriminates.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "k.mjs"), "export const k = () => 1;\n");
+        writeFileSync(join(r, "suites", "k.suite.mjs"), "import { k } from '../k.mjs';\nif (k() !== 1) { console.error('✗ FAIL: k is one'); process.exit(1); }\nconsole.log('✓ k is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "k.mutations.json"), JSON.stringify({
+          suite: ["suites/k.suite.mjs"], command: "node suites/k.suite.mjs", mutations: [{
+            name: "k stops returning one", file: "k.mjs", find: "export const k = () => 1;",
+            replace: "export const k = () => 2;", expectRed: "k is one",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const { status, out } = scanAll(root);
+    check(
+      "the same fixture carrying one real mutation is admitted and discriminates",
+      status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(out)
+        && !out.includes("ZERO GRADED"),
+      `status=${status}\n${out}`,
+    );
+  }
+  // 23d-ii. The corpus guard and the kill-credit guard are independent, and until now only the
+  //     corpus guard was driven from a cell: an external probe proved the second one, so replacing
+  //     the credit test with a bare `discriminated.push(path)` left every cell green. That is this
+  //     PR's own defect one layer in, a guard whose proof lives outside the suite that claims it.
+  //     Reaching the credit needs a proof child that exits 0 having printed no KILLED verdict,
+  //     which is what `All 0 mutation(s) killed` does in the wild. The real child cannot be talked
+  //     into that from a fixture, since anything it cannot grade exits 1 as UNGRADABLE, so the
+  //     scan under test is copied beside a stub child that reproduces exactly that transcript.
+  //     The scan resolves its child next to ITSELF, and its sibling helper modules must come too:
+  //     without them it dies on ERR_MODULE_NOT_FOUND and exits 1 for a reason that has nothing to
+  //     do with the floor, which would read as a pass whether the guard was present or not.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        mkdirSync(join(r, "scripts"), { recursive: true });
+        writeFileSync(join(r, "scripts", "mutation-proof.mjs"),
+          "console.log('All 0 mutation(s) killed. The suite discriminates.');\nprocess.exit(0);\n");
+        for (const entry of readdirSync(join(ROOT, "scripts"))) {
+          if (!entry.startsWith("mutation-") || !entry.endsWith(".mjs")) continue;
+          if (entry === "mutation-proof.mjs") continue;
+          copyFileSync(join(ROOT, "scripts", entry), join(r, "scripts", entry));
+        }
+        writeFileSync(join(r, "z.mjs"), "export const z = () => 1;\n");
+        writeFileSync(join(r, "suites", "z.suite.mjs"), "import { z } from '../z.mjs';\nif (z() !== 1) { console.error('x FAIL: z is one'); process.exit(1); }\nconsole.log('+ z is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "z.mutations.json"), JSON.stringify({
+          suite: ["suites/z.suite.mjs"], command: "node suites/z.suite.mjs", mutations: [{
+            name: "z stops returning one", file: "z.mjs", find: "export const z = () => 1;",
+            replace: "export const z = () => 2;", expectRed: "z is one",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const localScan = join(root, "scripts", "mutation-reproof.mjs");
+    copyFileSync(SCAN, localScan);
+    const run = spawnSync(process.execPath, [localScan, "--all", "--root", root], { encoding: "utf8", env: childEnv() });
+    const out = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+    check(
+      "a fixture the corpus admits whose proof exits 0 without a KILLED is named ZERO GRADED and cannot hold the floor up",
+      run.status === 1
+        && out.includes("ZERO GRADED (1 fixture(s))")
+        && out.includes("smoke/mutations/z.mutations.json")
+        && !out.includes("MUTATION REPROOF OK")
+        && !out.includes("ERR_MODULE_NOT_FOUND"),
+      `status=${run.status}\n${out}`,
+    );
+    // REFUSING twin, differing ONLY in what the stub child prints: the identical corpus, scan copy
+    // and helper set, with a transcript that carries a real KILLED line, reaches OK. So the red
+    // above is the absent kill and not the stub, the copied tree, or the module resolution.
+    writeFileSync(join(root, "scripts", "mutation-proof.mjs"),
+      "console.log('KILLED       z stops returning one');\nconsole.log('All 1 mutation(s) killed. The suite discriminates.');\nprocess.exit(0);\n");
+    const killRun = spawnSync(process.execPath, [localScan, "--all", "--root", root], { encoding: "utf8", env: childEnv() });
+    const killOut = `${killRun.stdout ?? ""}${killRun.stderr ?? ""}`;
+    check(
+      "the same run whose child prints a KILLED is credited and prints no ZERO GRADED",
+      killRun.status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(killOut)
+        && !killOut.includes("ZERO GRADED"),
+      `status=${killRun.status}\n${killOut}`,
+    );
+  }
+  // 23e. The floor's question is corpus-shaped but its scope is the unit it runs in. Under the
+  //     sharded fan-out a shard can draw ONLY work that cannot discriminate, while the corpus as a
+  //     whole kills. That still reds, because a unit with no verdict has not earned an all-clear
+  //     and exempting an all-PRE-RED set is the exact vacuity #1347 is about, but it must not blame a
+  //     fixture that was never in a position to kill. Same corpus, two shards, opposite outcomes.
+  {
+    const { root } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "d.mjs"), "export function cap(input) {\n  return Math.min(input, 32);\n}\n");
+        writeFileSync(join(r, "suites", "d.suite.mjs"), "import { cap } from '../d.mjs';\nif (cap(100) !== 32) { console.error('✗ FAIL: the d cap holds'); process.exit(1); }\nconsole.log('✓ the d cap holds');\n");
+        writeFileSync(join(r, "smoke", "mutations", "d.mutations.json"), JSON.stringify({
+          suite: ["suites/d.suite.mjs"], command: "node suites/d.suite.mjs", mutations: [{
+            name: "the d cap is removed", file: "d.mjs", find: "  return Math.min(input, 32);",
+            replace: "  return input;", expectRed: "the d cap holds",
+          }],
+        }, null, 2));
+        writeFileSync(join(r, "p.mjs"), "export const p = () => 1;\n");
+        writeFileSync(join(r, "suites", "p.suite.mjs"), "console.error('✗ FAIL: pre-red before any mutation'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "p.mutations.json"), JSON.stringify({
+          suite: ["suites/p.suite.mjs"], command: "node suites/p.suite.mjs", mutations: [{
+            name: "p", file: "p.mjs", find: "export const p = () => 1;",
+            replace: "export const p = () => 2;", expectRed: "pre-red",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "head-note"), "head\n"),
+    );
+    const preRedShard = scanAll(root, "0/3");
+    check(
+      "a shard holding only an inherited pre-red fixture reds as COULD NOT without blaming that fixture",
+      preRedShard.status === 1
+        && preRedShard.out.includes("MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT")
+        && preRedShard.out.includes("re-shard or repair the already-red commands: smoke/mutations/p.mutations.json")
+        && !/expected a kill from/.test(preRedShard.out),
+      `status=${preRedShard.status}\n${preRedShard.out}`,
+    );
+    // REFUSING twin, same corpus and same command, differing only by which shard is asked: the
+    // shard holding the killing fixture is green, so the red above is shard composition and not a
+    // corpus-wide failure.
+    const killShard = scanAll(root, "1/3");
+    check(
+      "the sibling shard holding the killing fixture is green on the same corpus",
+      killShard.status === 0
+        && /MUTATION REPROOF OK \(1 fixture\(s\) selected; 1 discriminated/.test(killShard.out)
+        && !killShard.out.includes("ZERO DISCRIMINATED"),
+      `status=${killShard.status}\n${killShard.out}`,
+    );
+  }
+  // 23e-ii. The two arms of the floor banner were split so a shard that COULD NOT kill is not
+  //     blamed, but every end-to-end cell above reaches the COULD NOT arm: the ordinary
+  //     `expected a kill from` arm was asserted only by unit-level parser cells fed hand-written
+  //     strings. So routing EVERY floor red through COULD NOT left the suite green, and a real
+  //     unit that should have killed would have been excused as unable. Reaching the ordinary arm
+  //     needs a proven fixture that is neither pre-red, inconclusive, nor zero-graded and that
+  //     still produced no kill. An INHERITED fatal is exactly that: its survivor is nonfatal
+  //     because it predates the diff, so the run continues to the floor with a fixture that was in
+  //     a position to kill and did not, alongside a pre-red that was not.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "e.mjs"), "export const e = () => 1;\n");
+        writeFileSync(join(r, "suites", "e.suite.mjs"), "import { e } from '../e.mjs';\nif (e() !== 1) { console.error('x FAIL: e is one'); process.exit(1); }\nconsole.log('+ e is one');\n");
+        writeFileSync(join(r, "smoke", "mutations", "e.mutations.json"), JSON.stringify({
+          suite: ["suites/e.suite.mjs"], command: "node suites/e.suite.mjs", mutations: [{
+            name: "equivalent survivor", file: "e.mjs", find: "export const e = () => 1;",
+            replace: "export const e = () => 1 + 0;", expectRed: "e is one",
+          }],
+        }, null, 2));
+        writeFileSync(join(r, "q.mjs"), "export const q = () => 1;\n");
+        writeFileSync(join(r, "suites", "q.suite.mjs"), "console.error('x FAIL: pre-red before any mutation'); process.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "q.mutations.json"), JSON.stringify({
+          suite: ["suites/q.suite.mjs"], command: "node suites/q.suite.mjs", mutations: [{
+            name: "q", file: "q.mjs", find: "export const q = () => 1;",
+            replace: "export const q = () => 2;", expectRed: "pre-red",
+          }],
+        }, null, 2));
+      },
+      (r) => {
+        writeFileSync(join(r, "e.mjs"), "// select without moving the survivor\nexport const e = () => 1;\n");
+        writeFileSync(join(r, "q.mjs"), "// select without moving the pre-red\nexport const q = () => 1;\n");
+      },
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a floor red naming a fixture that could have killed uses the ordinary arm, not COULD NOT",
+      status === 1
+        && /MUTATION REPROOF ZERO DISCRIMINATED \(/.test(out)
+        && !out.includes("ZERO DISCRIMINATED, COULD NOT")
+        && zeroDiscExpected(out).includes("smoke/mutations/e.mutations.json")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status} expected=${JSON.stringify(zeroDiscExpected(out))}\n${out}`,
+    );
+    // The ordinary arm also has to SAY which fixtures it is not blaming, and that clause needs a
+    // parser of its own: asking the COULD NOT parser returns empty for an ordinary banner whether
+    // the clause is there or not, so an emptiness assertion would pass with the clause deleted.
+    // Assert the positive content instead, and assert the two lists are disjoint, since a fixture
+    // cannot both have been expected to kill and have been unable to.
+    check(
+      "the ordinary arm names the fixtures it is not attributing the miss to, disjoint from the ones it expected",
+      eq(zeroDiscNotAttributable(out), ["smoke/mutations/q.mutations.json"])
+        && !zeroDiscNotAttributable(out).some((path) => zeroDiscExpected(out).includes(path)),
+      `expected=${JSON.stringify(zeroDiscExpected(out))} notAttributable=${JSON.stringify(zeroDiscNotAttributable(out))}\n${out}`,
     );
   }
   {
@@ -1566,7 +1847,7 @@ try {
     else process.env.COTAL_MUTATION_REPROOF_SENTINEL = previous;
     if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = previousNodeOptions;
-    check("the --all scan child strips parent COTAL_ material through the shared ambient-env chokepoint", status === 0 && !out.includes("COTAL_SCAN_PROCESS_LEAKED") && !out.includes("COTAL ambient leaked"), `status=${status}\n${out}`);
+    check("the --all scan child strips parent COTAL_ material through the shared ambient-env chokepoint", status === 1 && !out.includes("COTAL_SCAN_PROCESS_LEAKED") && !out.includes("COTAL ambient leaked") && floorCouldNot(out, ["smoke/mutations/ambient.mutations.json"]), `status=${status}\n${out}`);
   }
   {
     const { root, base, head } = makeSingle(
@@ -1651,9 +1932,8 @@ try {
 
   // 18. INCONCLUSIVE (not a timeout — deterministic): a mutation that leaves the suite exiting 0 but
   //    never printing its named assertion. mutation-proof grades that INCONCLUSIVE, "a green status
-  //    is not a pass". The gate must report it as INCONCLUSIVE, not fail, and NOT collapse it into
-  //    SURVIVED (false blocker) or KILLED (false clearance). This is the outcome the reviewer flagged
-  //    as most likely to be lost, so it is proven with a real verdict rather than asserted.
+  //    is not a pass". The gate must still REPORT it as INCONCLUSIVE (not SURVIVED, not FAILED), and
+  //    the discrimination floor must RED the run for naming that config: zero kills is not an all-clear.
   {
     const { root, base, head } = makeSingle(
       (r) => {
@@ -1681,12 +1961,58 @@ try {
     );
     const { status, out } = scan(root, base, head);
     check(
-      "an INCONCLUSIVE proof is reported as INCONCLUSIVE, does NOT fail the gate, and is not treated as SURVIVED",
-      status === 0
+      "an INCONCLUSIVE proof is reported as INCONCLUSIVE, fails the zero-discrimination floor naming the config, and is not treated as SURVIVED",
+      status === 1
         && eq(inconclusivePaths(out), ["smoke/mutations/c.mutations.json"])
         && offenderPaths(out).length === 0
-        && JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 0, preRed: 0, inconclusive: 1 }),
-      `status=${status} inconclusive=${JSON.stringify(inconclusivePaths(out))} offenders=${JSON.stringify(offenderPaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
+        && floorCouldNot(out, ["smoke/mutations/c.mutations.json"])
+        && !/^SURVIVED /m.test(out.replace(/\x1b\[[0-9;]*m/g, "")),
+      `status=${status} inconclusive=${JSON.stringify(inconclusivePaths(out))} offenders=${JSON.stringify(offenderPaths(out))} zero=${JSON.stringify(zeroDiscExpected(out))}\n${out}`,
+    );
+  }
+
+  // 18b. REFUSING contrast to 18: mixed KILLED+INCONCLUSIVE is not vacuous. The kill counts, so the
+  //     floor must PASS. Differing only by a sibling mutant that does print the named red.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "c.mjs"), "export const c = () => 1;\n");
+        writeFileSync(join(r, "suites", "c.suite.mjs"), [
+          "import { c } from '../c.mjs';",
+          "const v = c();",
+          "if (v === 1) console.log('✓ c is one');",
+          "else if (v === 3) { console.error('✗ FAIL: c is one'); process.exit(1); }",
+          "else console.log('c changed but the suite still exits zero');",
+          "",
+        ].join("\n"));
+        writeFileSync(join(r, "smoke", "mutations", "c.mutations.json"), JSON.stringify({
+          suite: ["suites/c.suite.mjs"],
+          command: "node suites/c.suite.mjs",
+          mutations: [{
+            name: "c returns three, so the named assertion prints and the suite exits 1",
+            file: "c.mjs",
+            find: "export const c = () => 1;",
+            replace: "export const c = () => 3;",
+            expectRed: "c is one",
+          }, {
+            name: "c returns two, so the named assertion never prints and the suite still exits 0",
+            file: "c.mjs",
+            find: "export const c = () => 1;",
+            replace: "export const c = () => 2;",
+            expectRed: "c is one",
+          }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "c.mjs"), "export const c = () => 1; // touched so c's fixture is selected\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a mixed KILLED+INCONCLUSIVE fixture reaches the OK summary with a non-zero discriminated count",
+      status === 0
+        && inconclusivePaths(out).length === 0
+        && offenderPaths(out).length === 0
+        && JSON.stringify(okCounts(out)) === JSON.stringify({ discriminated: 1, preRed: 0, inconclusive: 0 }),
+      `status=${status} inconclusive=${JSON.stringify(inconclusivePaths(out))} counts=${JSON.stringify(okCounts(out))}\n${out}`,
     );
   }
 
@@ -1778,7 +2104,7 @@ try {
     const { status, out } = scan(root, base, head, { ...childEnv(), COTAL_MUTATION_REPROOF_SENTINEL: "opposite-host-value" });
     check(
       "clean snapshot commands strip injected parent COTAL_ material independently of the root proof child",
-      status === 0
+      status === 1
         && eq(preRedPaths(out), ["smoke/mutations/env-match.mutations.json"])
         && !out.includes("snapshot inherited COTAL sentinel"),
       `status=${status}\n${out}`,
@@ -1830,7 +2156,7 @@ try {
     const { status, out } = scan(root, base, head);
     check(
       "a pinned root lacking node_modules matches the prepared clean-head verdict instead of false-blocking on pnpm's environment warning",
-      status === 0
+      status === 1
         && eq(preRedPaths(out), ["smoke/mutations/stale.mutations.json"])
         && !out.includes("root execution-state contamination detected"),
       `status=${status}\n${out}`,
@@ -1907,7 +2233,7 @@ try {
     const { status, out } = scan(root, base, head);
     check(
       "clean-head command confirmation uses the snapshot cwd rather than ignored root execution state",
-      status === 0
+      status === 1
         && eq(preRedPaths(out), ["smoke/mutations/cwd-isolation.mutations.json"])
         && attributablePreRedPaths(out).length === 0
         && !out.includes("root cwd leaked into head confirmation"),
@@ -1976,6 +2302,56 @@ check(
     && spawnsWith(rootProofSpawn, "PROOF_TIMEOUT_MS")
     && spawnsWith(runCommandBody, "COMMAND_TIMEOUT_MS"),
   `runProof and the root PROOF spawn must pass timeout: PROOF_TIMEOUT_MS; runCommand keeps COMMAND_TIMEOUT_MS (runProof body ${runProofBody.length} chars, runCommand body ${runCommandBody.length} chars, root spawn ${rootProofSpawn.length} chars)`,
+);
+
+check(
+  "a ZERO DISCRIMINATED banner names the configs it expected to kill",
+  eq(zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n"), ["smoke/mutations/c.mutations.json"]),
+);
+check(
+  "a prose mention of ZERO DISCRIMINATED does not mint expected configs",
+  zeroDiscExpected("historically MUTATION REPROOF ZERO DISCRIMINATED expected a kill from: fake.json in yesterday's run\n").length === 0,
+);
+// The expected-kill list stops at the `;` that introduces the not-attributable tail, so a mixed
+// banner never reports an unable fixture as one that should have killed.
+check(
+  "the expected-kill list stops before the not-attributable tail",
+  eq(
+    zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 2 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/d.mutations.json; not attributable to (could not discriminate): smoke/mutations/p.mutations.json\n"),
+    ["smoke/mutations/d.mutations.json"],
+  ),
+);
+// REFUSING twin for the COULD NOT parser: the ordinary banner carries no COULD NOT marker, so a
+// run that DID have a fixture able to kill can never be read as one that could not.
+check(
+  "an ordinary ZERO DISCRIMINATED banner mints no COULD NOT configs",
+  zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
+);
+// The attribution clause on the ORDINARY arm, and its REFUSING twin differing only in whether the
+// clause is present. The emptiness half alone would be satisfied by a parser that never matches,
+// which is exactly how the clause went untested: the COULD NOT parser answered "absent" for every
+// ordinary banner, so an assertion that it was empty could not fail.
+check(
+  "the ordinary arm's attribution clause is parsed and stops at the clause it introduces",
+  eq(
+    zeroDiscNotAttributable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 2 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/d.mutations.json; not attributable to (could not discriminate): smoke/mutations/p.mutations.json, smoke/mutations/r.mutations.json\n"),
+    ["smoke/mutations/p.mutations.json", "smoke/mutations/r.mutations.json"],
+  ),
+);
+check(
+  "an ordinary banner carrying no attribution clause mints no not-attributable configs",
+  zeroDiscNotAttributable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
+);
+check(
+  "the COULD NOT arm's own list is not read as an ordinary attribution clause",
+  zeroDiscNotAttributable("MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: smoke/mutations/p.mutations.json\n").length === 0,
+);
+check(
+  "a COULD NOT banner names the fixtures that were never in a position to kill",
+  eq(
+    zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: smoke/mutations/p.mutations.json\n"),
+    ["smoke/mutations/p.mutations.json"],
+  ),
 );
 
 console.log(`mutation-reproof smoke: ${passed} passed, ${failed} failed`);
