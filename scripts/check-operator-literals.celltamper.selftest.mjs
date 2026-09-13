@@ -591,11 +591,24 @@ try {
     }
     return undefined;
   };
-  const unaccountedCells = declaredCells.filter((cellId) => accountFor(cellId) === undefined);
+  const findUnaccounted = (cellIds) => cellIds.filter((cellId) => accountFor(cellId) === undefined);
+  const unaccountedCells = findUnaccounted(declaredCells);
   check(
     "census: every declared cell is graded, covered by its factory, or named as ungraded",
     declaredCells.length > 0 && unaccountedCells.length === 0,
     `declared=${declaredCells.length} unaccounted=${unaccountedCells.length}${unaccountedCells.length ? ` [${unaccountedCells.join(", ")}]` : ""}`,
+  );
+
+  // The accounting reader's own planted positive. With every cell accounted for, a working filter
+  // and a hardcoded empty list print the identical `unaccounted=0`, so the check above cannot tell
+  // them apart and mutation-proof correctly reported a SURVIVOR when this control was missing.
+  // That is this fixture's own subject turned on itself: an absence-detector emits the same output
+  // whether it is working or blinded, so it can only be graded against a planted subject.
+  const plantedUngraded = findUnaccounted([...declaredCells, "planted-ungraded-cell"]);
+  check(
+    "census control: a cell nothing grades is reported, so the accounting above is a reading",
+    plantedUngraded.length === 1 && plantedUngraded[0] === "planted-ungraded-cell",
+    `planted_reported=${plantedUngraded.length}/1 [${plantedUngraded.join(", ")}]`,
   );
 
   // The reverse direction. A name this suite claims must actually exist in the scanner, or a cell

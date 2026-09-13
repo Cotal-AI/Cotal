@@ -131,16 +131,16 @@
     {
       "name": "the cell census is blinded, so a cell that nothing grades is never reported",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  const unaccountedCells = declaredCells.filter((cellId) => accountFor(cellId) === undefined);",
-      "replace": "  const unaccountedCells = [];",
-      "expectRed": "census: every declared cell is graded, covered by its factory, or named as ungraded",
-      "cell": "census: every declared cell is graded, covered by its factory, or named as ungraded"
+      "find": "  const findUnaccounted = (cellIds) => cellIds.filter((cellId) => accountFor(cellId) === undefined);",
+      "replace": "  const findUnaccounted = () => [];",
+      "expectRed": "census control: a cell nothing grades is reported, so the accounting above is a reading",
+      "cell": "census control: a cell nothing grades is reported, so the accounting above is a reading"
     },
     {
       "name": "a cell tamper that changes nothing is accepted as a tamper that was applied",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  const tamperedBlock = block.split(find).join(replace);\n  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);\n  return source.slice(0, from) + tamperedBlock + source.slice(to);",
-      "replace": "  return source;",
+      "find": "  const tamperedBlock = block.split(find).join(replace);\n  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);\n  return source.slice(0, from) + tamperedBlock + source.slice(to);\n};\n\n/**\n * Tamper inside a named HELPER FUNCTION",
+      "replace": "  return source;\n};\n\n/**\n * Tamper inside a named HELPER FUNCTION",
       "expectRed": "the tamper lands inside the named cell block",
       "cell": "host-planted: the tamper lands inside the named cell block"
     }
