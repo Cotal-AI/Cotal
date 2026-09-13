@@ -88,6 +88,16 @@ type Target = {
   auth: { bearer?: unknown };
 };
 type Material = { kind: "bare" } | { kind: "mint"; auth: SpaceAuth } | { kind: "fatal"; message: string };
+/** What the RESOLVER returns, which is NOT `Target`: here `auth` is the space's TRUST material,
+ *  while `Target.auth` is the CONNECTION's credentials and the trust material rides in `spaceAuth`.
+ *  Keeping them as two types is what makes the adapter below a visible, checkable step. */
+type Resolved = {
+  space: string;
+  server: string;
+  root?: string;
+  mode?: "auth" | "open" | "user";
+  auth?: SpaceAuth;
+};
 type Link = { mode: "bare"; tls: boolean } | { mode: "session-caller"; tls: boolean; creds: string };
 
 const agentsMod = (await import("../../implementations/cli/src/commands/agents.js")) as Record<string, unknown>;
@@ -97,6 +107,17 @@ const controlMod = (await import("../../implementations/cli/src/lib/control.js")
 const scatterProbe = controlMod.scatterProbeMaterial as
   | ((auth: { creds?: string; bearer?: string }, spaceAuth?: SpaceAuth) => { kind: string })
   | undefined;
+/** The RESOLVER, driven for real rather than hand-built. `localTarget` derives `mode` from whether
+ *  a seed loaded (`mode: auth ? "auth" : "open"`), and that derived mode is the SOLE input to the
+ *  redeem decision. So the resolver decides the redeem contract one step before the decision does,
+ *  and a cell that hand-builds a `Target` cannot see it. Found in review, third round. */
+const targetMod = (await import("../../packages/workspace/src/mesh-target.js")) as Record<string, unknown>;
+const resolveTarget = targetMod.resolveMeshTarget as
+  | ((cwd: string, flags?: { server?: string }) => Resolved)
+  | undefined;
+const authPathsMod = (await import("../../packages/workspace/src/auth-paths.js")) as Record<string, unknown>;
+const saveSpaceAuth = authPathsMod.saveSpaceAuth as (dir: string, auth: SpaceAuth) => void;
+const authDirOf = authPathsMod.authDir as (root: string) => string;
 
 let pass = 0;
 let fail = 0;
@@ -137,6 +158,20 @@ const BIN = join(import.meta.dirname, "..", "cotal.ts");
 const rootOpen = mkdtempSync(join(tmpdir(), "cotal-openattach-root-"));
 const rootOpenWithSeed = mkdtempSync(join(tmpdir(), "cotal-openseeded-root-"));
 const rootSealedNoSeed = mkdtempSync(join(tmpdir(), "cotal-sealednoseed-root-"));
+// Fixtures for the RESOLVER cells (1b). These are roots the registry has never heard of, which is
+// what an operator has after `cotal up --open` in a fresh directory: a genuine `.cotal/` and no
+// entry anywhere. The pair differs ONLY by whether a seed is on disk, because that single bit is
+// what `localTarget` turns into the mode, and the mode is what decides the redeem.
+const rootUnregisteredNoSeed = mkdtempSync(join(tmpdir(), "cotal-unregistered-noseed-"));
+const rootUnregisteredWithSeed = mkdtempSync(join(tmpdir(), "cotal-unregistered-seeded-"));
+mkdirSync(join(rootUnregisteredNoSeed, ".cotal", "auth"), { recursive: true });
+mkdirSync(join(rootUnregisteredWithSeed, ".cotal", "auth"), { recursive: true });
+// An EMPTY registry, so a mesh recorded on the developer's own box cannot answer in place of the
+// fixture. Without this the resolver returns `source: "current"` off the real machine and the cells
+// silently grade someone else's mesh - which is exactly how the first draft of this probe fooled me.
+const emptyRegistryHome = join(mkdtempSync(join(tmpdir(), "cotal-emptyreg-")), ".cotal");
+mkdirSync(emptyRegistryHome, { recursive: true });
+writeFileSync(join(emptyRegistryHome, "meshes.json"), JSON.stringify({ meshes: [] }));
 mkdirSync(join(rootOpen, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(rootOpen, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\n---\nA supervised seat.\n");
 
@@ -216,6 +251,9 @@ try {
   const decideOn: (t: Target) => Material =
     decide ?? (() => ({ kind: "fatal", message: "attachSessionMaterial is not exported by this tree" }));
   const seed = await createSpaceAuth(SPACE);
+  // Give the seeded unregistered fixture a REAL composed seed on disk, written through the product's
+  // own writer, so the resolver loads it the way it would in the field rather than from a stub.
+  saveSpaceAuth(authDirOf(rootUnregisteredWithSeed), seed);
 
   const openNoSeed = decideOn({ space: SPACE, server: OPEN_SERVER, root: rootOpen, mode: "open", auth: {} });
   ok("ACCEPT: an open mesh with no seed redeems bare", openNoSeed.kind === "bare", openNoSeed);
@@ -247,11 +285,85 @@ try {
     sealedWithSeed.kind === "mint" && sealedWithSeed.auth === seed,
     sealedWithSeed,
   );
+  // The hand-built `mode: undefined` case: still worth a cell, because the DECISION must take the
+  // conservative arm for a mode it does not recognise. But it is NOT the shape the real resolver
+  // produces, so it is labelled for what it is and paired below with the resolver's actual output.
   const unrecordedNoSeed = decideOn({ space: SPACE, server: SEALED_SERVER, root: rootSealedNoSeed, auth: {} });
   ok(
-    "REFUSE (no recorded mode at all): an unrecorded target takes the sealed arm, never the open one",
+    "REFUSE (mode absent from the value itself): the DECISION takes the sealed arm for a mode it cannot read",
     unrecordedNoSeed.kind === "fatal",
     unrecordedNoSeed,
+  );
+
+  // ---- 1b. the RESOLVER decides the redeem contract, so grade IT, not a hand-built value -------
+  // Found in review (third round). `localTarget` sets `mode: auth ? "auth" : "open"` — it SYNTHESISES
+  // the mode from whether a seed loaded, and that mode is the sole input to the decision above. So an
+  // unregistered root reaches the redeem as a genuine `"open"`, never as an absent mode, and the cell
+  // above cannot observe that. Pre-fix this same input was a fatal refusal; it is now a bare redeem.
+  // Driving the real resolver is the only way a cell can see it, and COTAL_HOME is redirected at an
+  // EMPTY registry so a mesh recorded on the developer's box cannot answer instead of the fixture.
+  ok("the resolver is exported for grading", typeof resolveTarget === "function", typeof resolveTarget);
+  const resolveOn = (cwd: string): Resolved | { failed: string } => {
+    if (!resolveTarget) return { failed: "resolveMeshTarget is not exported by this tree" };
+    const savedHome = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = emptyRegistryHome;
+    try {
+      return resolveTarget(cwd, { server: OPEN_SERVER });
+    } catch (e) {
+      return { failed: (e as Error).message };
+    } finally {
+      if (savedHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = savedHome;
+    }
+  };
+
+  // `resolveMeshTarget` returns a MeshTarget, and the decision takes a ControlTarget. Those are NOT
+  // the same shape: MeshTarget.auth is the space's TRUST material, ControlTarget.auth is the
+  // CONNECTION's credentials (`bearer`/`tls`). Feed one to the other raw and the trust chain gets
+  // read as a bearer token. So adapt exactly the way `resolveControlTarget` does: take `mode` and
+  // `root` from the resolution, carry the trust material across as `spaceAuth`, and leave the
+  // connection credentials empty, which is what a credless attach actually holds. Caught by the
+  // #1205 mutation, which threw here rather than reddening its cell.
+  const asControlTarget = (m: Resolved): Target => ({
+    space: m.space,
+    server: m.server,
+    ...(m.root !== undefined ? { root: m.root } : {}),
+    ...(m.mode !== undefined ? { mode: m.mode } : {}),
+    ...(m.auth ? { spaceAuth: m.auth } : {}),
+    auth: {},
+  });
+
+  const resolvedUnrecorded = resolveOn(rootUnregisteredNoSeed);
+  const unrecMode = "failed" in resolvedUnrecorded ? `resolve failed: ${resolvedUnrecorded.failed}` : resolvedUnrecorded.mode;
+  ok(
+    'ACCEPT: an UNREGISTERED root with no seed resolves to mode "open", not to an absent mode',
+    unrecMode === "open",
+    unrecMode,
+  );
+  const resolvedRedeem = "failed" in resolvedUnrecorded ? { kind: "fatal", message: resolvedUnrecorded.failed } as Material : decideOn(asControlTarget(resolvedUnrecorded));
+  ok(
+    "ACCEPT: and it therefore redeems BARE through the real resolver, which is #1205's own scenario",
+    resolvedRedeem.kind === "bare",
+    resolvedRedeem,
+  );
+  // The refusing partner, differing ONLY by trust material being present in the same unregistered
+  // root: the resolver then synthesises "auth", and the redeem MINTS from that material rather than
+  // going bare. Twice-measured, and the wobble is worth recording: with the MeshTarget fed in raw
+  // this cell read as a by-name refusal, which looked like a real finding about the product. It was
+  // an artifact of my adapter dropping the trust material on the floor. The shapes differ, so the
+  // adapter above is load-bearing and a cell can be wrong in either direction without it.
+  const resolvedSeeded = resolveOn(rootUnregisteredWithSeed);
+  const seededMode = "failed" in resolvedSeeded ? `resolve failed: ${resolvedSeeded.failed}` : resolvedSeeded.mode;
+  ok(
+    'REFUSE the bare arm (same unregistered root, trust material present): the resolver synthesises "auth" instead of "open"',
+    seededMode === "auth",
+    seededMode,
+  );
+  const seededRedeem = "failed" in resolvedSeeded ? { kind: "fatal", message: resolvedSeeded.failed } as Material : decideOn(asControlTarget(resolvedSeeded));
+  ok(
+    "REFUSE the bare arm (same root, trust material present): the redeem MINTS from THAT material and never goes bare",
+    seededRedeem.kind === "mint" && seededRedeem.auth !== undefined,
+    seededRedeem.kind,
   );
 
   // ---- 2. the CONNECT OPTIONS: nothing invented, nothing dropped -------------------------------
