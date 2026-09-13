@@ -60,7 +60,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1305,6 +1305,12 @@ export class Manager {
     // refused loud (no-fallbacks - a restart never silently becomes a fresh instance). A second
     // manager in a DIFFERENT workspace root is a DIFFERENT logical id by construction (its own state
     // dir) - two managers in ONE space are two workspace roots.
+    //
+    // First mint on a fresh root is exclusive create (#1263). Two processes that both observe no
+    // file must not keep different in-memory ids: of N concurrent starts exactly one creates the
+    // file (`link` / O_EXCL) and the others adopt that identity before taking a lease, or refuse
+    // with manager-instance-identity-create-lost. Atomic rename is not enough, because the loser
+    // of a replace would still serve under the id it minted.
     {
       if (this.remoteAuthority) {
         this.managerInstanceId = this.remoteAuthority.instanceId;
@@ -1315,9 +1321,12 @@ export class Manager {
         this.managerInstanceId = persisted.instanceId;
         this.managerServeIdentity = persisted.serveIdentity;
       } else {
-        this.managerInstanceId = mintLifecycleUid();
-        this.managerServeIdentity = newIdentity();
-        saveManagerInstanceIdentity(this.workspaceRoot, this.space, { instanceId: this.managerInstanceId, serveIdentity: this.managerServeIdentity });
+        const claimed = createManagerInstanceIdentity(this.workspaceRoot, this.space, {
+          instanceId: mintLifecycleUid(),
+          serveIdentity: newIdentity(),
+        });
+        this.managerInstanceId = claimed.instanceId;
+        this.managerServeIdentity = claimed.serveIdentity;
       }
       }
     }
