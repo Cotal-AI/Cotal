@@ -19,7 +19,7 @@
  * the load at which the misattribution happens. The distinction has to come from a DIFFERENT
  * measurement, and there is one the process can take about itself: whether its own event loop ran.
  *
- * TWO INDEPENDENT SIGNALS, and they are independent on purpose:
+ * TWO INDEPENDENT SIGNALS, and the independence is structural rather than hopeful:
  *
  *   - LAG: a repeating tick records how late it was against the instant it was scheduled for. A
  *     loop that is running answers within a few ms; a loop that is blocked answers with the whole
@@ -27,12 +27,50 @@
  *   - TICK SHORTFALL: how many ticks the window should have contained against how many it did. A
  *     blocked loop loses ticks outright.
  *
- * Lag alone would be fooled by a wall clock that jumped forward, which inflates every interval
- * measured against it while the loop was in fact running fine and losing no ticks. Requiring the
- * shortfall too means a clock jump reads as what it is — not starvation — because the ticks are
- * still all there. That case has its own refusing cell.
+ * Lag alone would be fooled by a clock that steps forward, which inflates every interval measured
+ * against it while the loop was in fact running fine and losing no ticks. The shortfall is what
+ * refuses that case, and it can only refuse it if the two are measured against DIFFERENT clocks.
+ *
+ * SO THE WINDOW IS MONOTONIC, and this is the correction a reviewer measured rather than argued.
+ * An earlier draft derived `ticksExpected` from `Date.now()`, the same reading that inflates the
+ * lag, so a forward step inflated BOTH while `ticksObserved` could not follow and a perfectly
+ * healthy loop read as starved. Measured on this tree before the repair, loop healthy throughout:
+ * a +10s step over a 1.2s window gave `{elapsed 11201, lag 10003, expected 44, observed 4}` and
+ * classified `starved`, and +60s gave `{elapsed 61201, lag 60000, expected 244, observed 4}`. Worse
+ * in the direction that matters here, a BACKWARD step during a genuine 3s block gave
+ * `{elapsed 0, lag 0, expected 0, observed 1}` and classified `fault`, which is #1508's own
+ * misattribution returning under an NTP correction. Both are gone once the window is measured on a
+ * clock that only moves forward at its own rate.
  */
 import { EffectError } from "@cotal-ai/lang";
+
+/**
+ * The host's two clocks, as ONE injectable object.
+ *
+ * Deliberately a single source rather than two independent `now`/`wall` parameters. With two, a
+ * suite could step the wall while handing the window a clock that by construction never moved, so
+ * the clock-step cells passed just as happily against the very wall-clock window they were written
+ * to refuse — measured on this tree: with `now` and `wall` separate, forcing the window back onto
+ * `Date.now()` left all 41 cells GREEN. One clock means a test steps THE HOST, and which member the
+ * window reads becomes the implementation's own choice, which a cell can therefore grade.
+ */
+export interface HostClock {
+  /**
+   * Never steps, counts only forward at its own rate, origin arbitrary. Every window is measured
+   * on this. Not `Date.now()`, and that is the whole correction above: a wall clock states what
+   * time it IS, which an operator or NTP daemon may revise at any moment, while this file asks how
+   * much time PASSED and whether this process got to run during it.
+   */
+  monotonic(): number;
+  /** Wall time. Steps under NTP, operator edits, VM resume. Reported in the window, never measured on. */
+  wall(): number;
+}
+
+/** The real host. */
+export const systemClock: HostClock = {
+  monotonic: () => performance.now(),
+  wall: () => Date.now(),
+};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // The measurement
@@ -44,7 +82,10 @@ export const LOOP_TICK_MS = 250;
 
 /** A point in the observer's history. Windows are differences between two of these. */
 export interface LoopLagMark {
+  /** Monotonic. The window's length is a difference of these, never of wall readings. */
   readonly at: number;
+  /** The WALL reading at the same instant, carried only so a step can be NOTICED. */
+  readonly wallAt: number;
   readonly lagMs: number;
   readonly ticks: number;
 }
@@ -59,6 +100,15 @@ export interface LoopLagWindow {
   readonly ticksExpected: number;
   /** Ticks that actually ran. */
   readonly ticksObserved: number;
+  /**
+   * How far the WALL clock disagreed with the monotonic window across this interval.
+   *
+   * Reported rather than acted on, and that is the point: the verdict does not depend on it, so a
+   * step cannot change the answer. It exists so an operator reading a starvation notice under a
+   * simultaneous NTP correction can see that both happened, and so the suite can assert that the
+   * step occurred and the window did NOT move with it.
+   */
+  readonly wallSkewMs: number;
 }
 
 export interface LoopLagObserver {
@@ -83,7 +133,8 @@ class TickLoopLag implements LoopLagObserver {
 
   constructor(
     private readonly tickMs: number = LOOP_TICK_MS,
-    private readonly now: () => number = Date.now,
+    /** The host's clock. One object, so a suite steps the HOST and not one chosen reading. */
+    private readonly clock: HostClock = systemClock,
   ) {}
 
   start(): this {
@@ -98,12 +149,12 @@ class TickLoopLag implements LoopLagObserver {
   }
 
   private schedule(): void {
-    const due = this.now() + this.tickMs;
+    const due = this.clock.monotonic() + this.tickMs;
     const timer = setTimeout(() => {
       // Lateness against the instant this tick was SCHEDULED for, not against the previous tick:
       // measuring tick-to-tick would report a healthy loop's own jitter as lag and would miss a
       // block that straddled exactly one tick.
-      const late = this.now() - due;
+      const late = this.clock.monotonic() - due;
       if (late > 0) this.lagMs += late;
       this.ticks += 1;
       this.schedule();
@@ -115,23 +166,35 @@ class TickLoopLag implements LoopLagObserver {
   }
 
   mark(): LoopLagMark {
-    return { at: this.now(), lagMs: this.lagMs, ticks: this.ticks };
+    return {
+      at: this.clock.monotonic(),
+      wallAt: this.clock.wall(),
+      lagMs: this.lagMs,
+      ticks: this.ticks,
+    };
   }
 
   since(mark: LoopLagMark): LoopLagWindow {
-    const elapsedMs = Math.max(0, this.now() - mark.at);
+    const elapsedMs = Math.max(0, this.clock.monotonic() - mark.at);
     return {
       elapsedMs,
       lagMs: Math.max(0, this.lagMs - mark.lagMs),
       ticksExpected: Math.floor(elapsedMs / this.tickMs),
       ticksObserved: Math.max(0, this.ticks - mark.ticks),
+      // Signed, and NOT clamped: a backward step is as much a fact as a forward one, and the
+      // operator reading the notice wants to know which way it went.
+      wallSkewMs: (this.clock.wall() - mark.wallAt) - elapsedMs,
     };
   }
 }
 
-/** An observer for a test to drive, with its own clock and no real timer. */
-export function loopLagObserver(tickMs: number = LOOP_TICK_MS, now: () => number = Date.now): LoopLagObserver & { stop(): void } {
-  return new TickLoopLag(tickMs, now).start();
+/** An observer for a test to drive. Pass a `clock` whose `monotonic` STEPS and you are grading
+ *  exactly the failure mode the real `systemClock` exists to remove. */
+export function loopLagObserver(
+  tickMs: number = LOOP_TICK_MS,
+  clock: HostClock = systemClock,
+): LoopLagObserver & { stop(): void } {
+  return new TickLoopLag(tickMs, clock).start();
 }
 
 /**

@@ -344,25 +344,105 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     !isDeadlineShaped(Object.assign(new Error("request"), { name: "RequestError", cause: Object.assign(new Error("no responders"), { name: "NoResponders" }) })));
 
   // A3 accept / refuse: the starved window, then four windows each failing one condition.
-  const starvedWindow: LoopLagWindow = { elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 3 };
+  const starvedWindow: LoopLagWindow = { elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 3, wallSkewMs: 0 };
   c("A3 accepts a window that is both laggy and short of its ticks", wasStarved(starvedWindow));
   c("A3 refuses a window whose lag is under the floor", !wasStarved({ ...starvedWindow, lagMs: 400, elapsedMs: 900, ticksExpected: 3, ticksObserved: 0 }));
   c("A3 refuses lag that is real but a small share of a long window",
-    !wasStarved({ elapsedMs: 240_000, lagMs: 2_000, ticksExpected: 960, ticksObserved: 8 }));
+    !wasStarved({ elapsedMs: 240_000, lagMs: 2_000, ticksExpected: 960, ticksObserved: 8, wallSkewMs: 0 }));
   // THE CLOCK-JUMP REFUSAL, and the reason the tick count exists: every tick ran, so the loop was
   // fine and the wall clock moved. Lag alone would call this starvation.
   c("A3 refuses a window with large lag whose ticks all ran: a clock that jumped, not a loop that stopped",
-    !wasStarved({ elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 40 }));
+    !wasStarved({ elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 }));
   c("A3 refuses a window too short to have contained a tick at all",
-    !wasStarved({ elapsedMs: 30, lagMs: 30_000, ticksExpected: 0, ticksObserved: 0 }));
+    !wasStarved({ elapsedMs: 30, lagMs: 30_000, ticksExpected: 0, ticksObserved: 0, wallSkewMs: 0 }));
 
   // And the composition: the classifier needs BOTH, so each half alone is a fault.
   c("the classifier calls it starved only when the shape AND the evidence agree",
     classifyPauseFailure(timeoutError, starvedWindow).condition === "starved");
   c("a deadline on a loop that was RUNNING is a fault, not starvation",
-    classifyPauseFailure(timeoutError, { elapsedMs: 10_000, lagMs: 12, ticksExpected: 40, ticksObserved: 40 }).condition === "fault");
+    classifyPauseFailure(timeoutError, { elapsedMs: 10_000, lagMs: 12, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 }).condition === "fault");
   c("a non-deadline failure on a starved loop is still a fault: starvation does not launder it",
     classifyPauseFailure(new Error("stream not found"), starvedWindow).condition === "fault");
+}
+
+// ── 3b) the clock steps, driven through a REAL observer rather than a hand-built window ──────
+//
+// Cell 3's A3 windows are literals, and a literal proves the predicate and nothing about whether
+// the observer can produce it. A reviewer measured that the hand-built clock-jump window
+// {10000, 9000, 40, 40} is in fact UNREACHABLE from the real observer — lag only accrues on ticks
+// that RAN, so forty of forty ticks running while accumulating nine seconds of lateness is
+// self-contradictory — and that the case it was named for behaved the opposite way in reality:
+// with the window measured on the wall clock, a forward step inflated `elapsedMs` and therefore
+// `ticksExpected` from the SAME reading that inflates `lagMs`, so a healthy loop read as STARVED.
+// Measured before the repair: +10s over a 1.2s window gave {elapsed 11201, lag 10003, expected 44,
+// observed 4}, classified `starved`.
+//
+// So these cells drive the real `TickLoopLag` under a steppable clock. They are the cells that
+// would have caught it, and they are the reason the window is now monotonic.
+{
+  console.log("• 3b — a stepped clock, through the real observer");
+  let offset = 0;
+  // ONE host clock, stepped as a real host steps: BOTH readings come from it, and it is the
+  // implementation that decides which one a window is measured on. That is what makes these cells
+  // falsifiable — point the window at `wall` and they go red.
+  const host = {
+    monotonic: () => performance.now(),
+    wall: () => Date.now() + offset,
+  };
+
+  // THE CONTROL FIRST, and it is load-bearing: if the probe cannot say "not starved" for a healthy
+  // loop, every refusal below is vacuous and would hold for a broken observer too.
+  {
+    offset = 0;
+    const lag = loopLagObserver(50, host);
+    const mark = lag.mark();
+    await wait(600);
+    const w = lag.since(mark);
+    lag.stop();
+    c("3b control: a healthy loop with no step is refused", !wasStarved(w), JSON.stringify(w));
+  }
+
+  // FORWARD: the wall clock jumps ahead while the loop runs perfectly. The window must not grow
+  // with it, so the ticks are all present and the lag is not real.
+  {
+    offset = 0;
+    const lag = loopLagObserver(50, host);
+    const mark = lag.mark();
+    await wait(300);
+    offset += 10_000;
+    await wait(300);
+    const w = lag.since(mark);
+    lag.stop();
+    c("a forward clock step on a healthy loop is NOT starvation, measured through the real observer",
+      !wasStarved(w), JSON.stringify(w));
+    // THE STEP REALLY HAPPENED, and without this the refusal above is vacuous: a cell that stepped
+    // nothing would refuse too, and would refuse just as confidently against a wall-clock window.
+    c("and the step is visible in the skew while the window did not move with it",
+      w.wallSkewMs > 9_000 && w.elapsedMs < 2_000, JSON.stringify(w));
+    c("and the classifier agrees, so a stepped clock cannot absorb a real deadline",
+      classifyPauseFailure(Object.assign(new Error("timeout"), { name: "TimeoutError" }), w).condition === "fault",
+      JSON.stringify(w));
+  }
+
+  // BACKWARD, and this is the direction that matters for #1508: an NTP correction during a genuine
+  // block must not ERASE the starvation and hand the run back its original misattribution.
+  {
+    offset = 0;
+    const lag = loopLagObserver(50, host);
+    const mark = lag.mark();
+    starveLoop(2_000);
+    offset -= 4_000;
+    await wait(60);
+    const w = lag.since(mark);
+    lag.stop();
+    c("a backward clock step during a REAL block does not hide the starvation",
+      wasStarved(w), JSON.stringify(w));
+    c("and that step really happened: the skew is negative while the window kept its own length",
+      w.wallSkewMs < -3_000 && w.elapsedMs > 1_500, JSON.stringify(w));
+    c("so the sleep is still absorbed rather than failing, which is the defect returning under NTP",
+      classifyPauseFailure(Object.assign(new Error("timeout"), { name: "TimeoutError" }), w).condition === "starved",
+      JSON.stringify(w));
+  }
 }
 
 // ── 4) a caller that truly cannot be served FAILS, and says what it measured ──────────────────
@@ -372,8 +452,8 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 {
   console.log("• 4 — an unservable caller fails, bounded, under its own code");
   const alwaysStarved: LoopLagObserver = {
-    mark: () => ({ at: 0, lagMs: 0, ticks: 0 }),
-    since: () => ({ elapsedMs: 10_000, lagMs: 9_500, ticksExpected: 40, ticksObserved: 1 }),
+    mark: () => ({ at: 0, wallAt: 0, lagMs: 0, ticks: 0 }),
+    since: () => ({ elapsedMs: 10_000, lagMs: 9_500, ticksExpected: 40, ticksObserved: 1, wallSkewMs: 0 }),
   };
   let attempts = 0;
   const out = await withDeadline(
