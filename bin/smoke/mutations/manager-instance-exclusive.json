@@ -90,6 +90,17 @@
       "note": "Raised by review as the last accepting branch with no refusing case. Where link is unavailable this IS the exclusive-create primitive; a plain write there makes every guarantee POSIX-only.",
       "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "M7 O_EXCL becomes a REFUSING userspace check-then-write (lstat then plain write)",
+      "file": "packages/core/src/secret-fs.ts",
+      "find": "  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });\n  if (!isWin) return;",
+      "replace": "  try { lstatSync(path); const t: NodeJS.ErrnoException = new Error(\"EEXIST\"); t.code = \"EEXIST\"; throw t; } catch (e) { if ((e as NodeJS.ErrnoException).code === \"EEXIST\") throw e; }\n  writeFileSync(path, data, { mode: 0o600 });\n  if (!isWin) return;",
+      "expectRed": "REFUSE: concurrent creators never both win a name \u2014 total wins equals names created",
+      "cell": "REFUSE: concurrent creators never both win a name \u2014 total wins equals names created",
+      "note": "The hardest mutant and the reason the contention cell is kept: this one REFUSES an existing name exactly as O_EXCL does, so every single-process cell passes against it. Only overlapping creators separate them, as excess wins.",
+      "command": "pnpm smoke:secret-fs",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }
