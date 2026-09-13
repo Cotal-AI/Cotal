@@ -86,14 +86,14 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
  */
 export function writeSecretFile(path: string, data: string | Buffer): void {
   writeFileSync(path, data, { mode: 0o600 });
-  if (!isWin) return; // POSIX mode set at create — nothing more to do
+  if (!isWin) return; // POSIX mode set at create, nothing more to do
   try {
     hardenPrivate(path, "file");
   } catch (e) {
     try {
       unlinkSync(path); // best-effort cleanup; the hardening error below is what the caller sees
     } catch {
-      /* ignore — surface the original hardening failure, not a secondary unlink error */
+      /* ignore: surface the original hardening failure, not a secondary unlink error */
     }
     throw e;
   }
@@ -124,7 +124,7 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
 
 /**
  * {@link writeSecretFile} with `O_EXCL`: the bytes land only if this caller created the name.
- * Same fail-closed hardening contract as {@link writeSecretFile} — a win32 ACL failure propagates
+ * Same fail-closed hardening contract as {@link writeSecretFile}: a win32 ACL failure propagates
  * and the just-written file is best-effort removed, so a caller never proceeds as if the secret
  * were private. EEXIST propagates to the caller, which is the point: the name was already taken.
  *
@@ -168,14 +168,14 @@ function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void
     }
   }
   writeFileSync(path, data, { flag: "wx", mode: 0o600 });
-  if (!isWin) return; // POSIX mode set at create — nothing more to do
+  if (!isWin) return; // POSIX mode set at create, nothing more to do
   try {
     hardenPrivate(path, "file");
   } catch (e) {
     try {
       unlinkSync(path); // best-effort cleanup; the hardening error below is what the caller sees
     } catch {
-      /* ignore — surface the original hardening failure, not a secondary unlink error */
+      /* ignore: surface the original hardening failure, not a secondary unlink error */
     }
     throw e;
   }
@@ -215,7 +215,7 @@ export function __setPublishLinkForTest(fn: ((from: string, to: string) => void)
  * probability (pid plus clock plus `Math.random`), and probability is not a concurrency argument:
  * two creators that collided on the name would plain-overwrite each other's bytes, and then the
  * one whose `link` succeeded would return the candidate IT minted while the published file held
- * the OTHER one's identity — the exact split this function exists to prevent, reintroduced one
+ * the OTHER one's identity: the exact split this function exists to prevent, reintroduced one
  * step earlier. `wx` on the temp makes a collision fail loudly instead of silently swapping bytes.
  */
 export function writeSecretFileCreateOnly(path: string, data: string | Buffer): void {
@@ -238,7 +238,7 @@ export function writeSecretFileCreateOnly(path: string, data: string | Buffer): 
     try {
       unlinkSync(tmp);
     } catch {
-      /* ignore — surface the original exclusive-create error */
+      /* ignore: surface the original exclusive-create error */
     }
     throw e;
   }

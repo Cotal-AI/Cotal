@@ -47,7 +47,7 @@ check("...and the first writer's bytes are unchanged", readSafe(exclusive) === "
 
 // The TEMP write is exclusive too. A temp-name collision that plain-overwrote would destroy the
 // other creator's bytes, and the caller whose link then succeeded would return the candidate IT
-// minted while the file held the OTHER identity — the split, one step earlier.
+// minted while the file held the OTHER identity: the split, one step earlier.
 //
 // The temp name is internal (pid + clock + Math.random), so pin the clock and the RNG, compute the
 // exact name this call will choose, and squat it with another creator's bytes. The destination is
@@ -107,8 +107,8 @@ const tmpVictim = join(dir, "tmp-symlink-victim");
 const danglingDest = join(dir, "dangling.secret");
 {
   // No platform gate on the ASSERTION: `lstatSync` makes the refusal portable, so EEXIST must hold
-  // on every platform. Only the SETUP can be unavailable — creating a symlink needs a privilege on
-  // Windows — and that is reported as a named skip rather than a pass, so it can never read as a
+  // on every platform. Only the SETUP can be unavailable, since creating a symlink needs a privilege
+  // on Windows, and that is reported as a named skip rather than a pass, so it can never read as a
   // green that proves something it did not test.
   let linkPlanted = true;
   const realRandom2 = Math.random;
@@ -136,7 +136,7 @@ const danglingDest = join(dir, "dangling.secret");
       danglingCode === "EEXIST");
     check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
   } else {
-    console.log("· dangling-symlink atomicity cell could not PLANT a symlink (no privilege) — skipped, setup only");
+    console.log("· dangling-symlink atomicity cell could not PLANT a symlink (no privilege): skipped, setup only");
   }
 }
 
