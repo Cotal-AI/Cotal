@@ -55,11 +55,12 @@
     {
       "name": "the kickoff is consumed only after completion and duplicates across recovery",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      pendingKickoff = undefined;\n      await turnClient.run(sessionId, parts.join(\"\\n\\n\"), { autoApprove: true });",
-      "replace": "      await turnClient.run(sessionId, parts.join(\"\\n\\n\"), { autoApprove: true });\n      pendingKickoff = undefined;",
+      "find": "      pendingKickoff = undefined;\n      // The RUN's own acceptance window is gated",
+      "replace": "      // The RUN's own acceptance window is gated",
       "expectRed": "a kickoff request closed after dispatch is attempted at most once across recovery",
       "cell": "a kickoff request closed after dispatch is attempted at most once across recovery",
-      "command": "pnpm smoke:jcode-provider-disconnect --startup-only"
+      "command": "pnpm smoke:jcode-provider-disconnect --startup-only",
+      "note": "Re-anchored for #1233: the acceptance-serialisation change moved the run behind a dispatch gate, so the old two-line anchor no longer matched and this ERRORed instead of running. Same severing: the kickoff is no longer cleared BEFORE dispatch, so a recovery re-sends it."
     },
     {
       "name": "kickoff discards the wake for ordinary deferred dnd traffic",
