@@ -12,11 +12,12 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync, realpathSync } from "node:fs";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-proof.mjs");
 const root = mkdtempSync(join(tmpdir(), "mutation-selftest-"));
@@ -730,6 +731,90 @@ r = runTool([
 ]);
 check("an ERROR raised before the run says there was no run, not that the run was silent",
   stripAnsi(r.stdout).includes("(no run:") && !stripAnsi(r.stdout).includes("produced NO output"), r.stdout.slice(-400));
+
+
+// ---------------------------------------------------------------------------
+// The working tree is a shared mutable resource while a proof runs (#1574).
+// ---------------------------------------------------------------------------
+
+// Keyed the way the tool keys it: on the REAL path, so `/var/...` and
+// `/private/var/...` do not become two locks on one tree.
+const lockFor = (dir) =>
+  join(tmpdir(), `mutation-proof-lock-${createHash("sha1").update(realpathSync(dir)).digest("hex").slice(0, 12)}.json`);
+
+const plantLock = (dir, pid) =>
+  writeFileSync(lockFor(dir), JSON.stringify({ pid, started: "2026-01-01T00:00:00Z", cwd: dir, command: "an earlier proof" }));
+
+const adHoc = [
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)",
+  "--replace", "if (false)",
+  "--expect-red", "oversized values are refused",
+];
+
+// A LIVE peer: this process is the one holding it, and it is certainly alive.
+plantLock(root, process.pid);
+r = runTool(adHoc);
+// Graded on WHICH refusal, not merely on the exit code: the stale branch below
+// also refuses with 3, so `status === 3` alone passes for a tool that lost the
+// live check entirely and mistook a running peer for a corpse.
+check("a second proof refuses while another holds the tree",
+  r.status === 3 && stripAnsi(r.stdout).includes("already running against this tree"), r.stdout.slice(-300));
+check("...and names the live pid, so the refusal is actionable",
+  stripAnsi(r.stdout).includes(`pid ${process.pid}`), r.stdout.slice(-300));
+check("...and does NOT report it as a run that died, which would send the reader hunting a corpse",
+  !stripAnsi(r.stdout).includes("died without restoring"), r.stdout.slice(-300));
+r = runTool([...adHoc, "--clear-lock"]);
+check("--clear-lock refuses to clear a LIVE lock", r.status === 3 && stripAnsi(r.stdout).includes("still alive"), r.stdout.slice(-300));
+
+// A STALE lock: the pid is gone, so a previous run died without restoring. No
+// handler can catch SIGKILL, which makes this the only defence against it.
+rmSync(lockFor(root), { force: true });
+plantLock(root, 0x7ffffffe);  // a pid that cannot be running
+r = runTool(adHoc);
+check("a stale lock refuses rather than proceeding into a possibly mutated tree",
+  r.status === 3 && stripAnsi(r.stdout).includes("died without restoring"), r.stdout.slice(-400));
+check("...and says how to recover instead of leaving the reader to guess",
+  stripAnsi(r.stdout).includes("--clear-lock"), r.stdout.slice(-400));
+
+r = runTool([...adHoc, "--clear-lock"]);
+check("--clear-lock clears a stale lock and the proof runs", r.status === 0 && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
+check("...and the tree is clean afterwards, which is the accept control for the whole section",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "", "tree dirty after a normal run");
+check("...and the lock is released, so the next proof is not refused by this one",
+  !existsSync(lockFor(root)), lockFor(root));
+
+// A killed proof must leave the tree byte-identical. Gated on an OBSERVED
+// applied mutation, not on a fixed delay: a timer that lands between fixtures
+// reads clean and would pass as a clean bill of health (#1581).
+const slow = join(root, "slow-suite.mjs");
+// Long enough that the kill can land inside the MUTATED run, short enough that
+// the baseline before it does not dominate this suite's own runtime.
+writeFileSync(slow, "console.log('  ✓ started'); setTimeout(() => { console.log('  ✓ done'); }, 4_000);\n");
+// Committed, so the only thing `git status` can report during the run is the
+// mutation itself — an untracked fixture would read as a failed restore.
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm slow-suite", { cwd: root });
+const child = spawn(process.execPath, [TOOL,
+  "--command", `${process.execPath} slow-suite.mjs`,
+  "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
+  "--expect-red", "oversized values are refused",
+], { cwd: root, stdio: "ignore" });
+let observedApplied = false;
+for (let i = 0; i < 600 && !observedApplied; i++) {
+  observedApplied = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() !== "";
+  if (!observedApplied) await new Promise((done) => setTimeout(done, 50));
+}
+check("the kill lands while a mutation is really applied (the control that would otherwise lie)", observedApplied);
+child.kill("SIGTERM");
+await new Promise((done) => child.once("exit", done));
+await new Promise((done) => setTimeout(done, 250));
+check("a killed proof leaves the tree byte-identical to its pre-run state",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }));
+check("...and releases the lock, so the next proof is not blocked by a corpse",
+  !existsSync(lockFor(root)), lockFor(root));
+
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);

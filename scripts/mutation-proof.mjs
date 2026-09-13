@@ -46,7 +46,7 @@
  * Measured here: a subset config keyed on `expectRed` outlived a cell rename and re-ran the
  * pre-fix mutation for a minute before the mismatch was noticed.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, readdirSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -118,6 +118,137 @@ function parseArgs(argv) {
  * separate lines, so a single-line pattern misses exactly the guards worth proving.
  */
 const countOccurrences = (hay, needle) => hay.split(needle).length - 1;
+
+// ---------------------------------------------------------------------------
+// The working tree is a SHARED MUTABLE RESOURCE while a proof runs, in space
+// and in time (#1574, #1581).
+//
+// In space: two proofs in one tree mutate and restore the same files, and
+// every verdict either produces is uninterpretable — each was reading a file
+// the other was rewriting. Both still print ordinary KILLED/SURVIVED lines,
+// so a wrong verdict is indistinguishable from a real one.
+//
+// In time: a killed proof never reaches `restore()`, and the tree is left
+// carrying a deliberately broken product file. The next command is then
+// grading a file somebody broke on purpose. If it is another proof you get a
+// loud refusal, which is the lucky case; if it is a suite, a typecheck or a
+// push, nothing says a word.
+//
+// The lock lives in `tmpdir()`, NOT in the repo: this tool refuses to start on
+// a dirty tree, so a lockfile in the worktree would refuse itself.
+// ---------------------------------------------------------------------------
+
+// `realpathSync`, not `resolve`: two invocations reaching the same tree by
+// different spellings must share one lock, and on macOS they routinely do —
+// `/var/folders/...` and `/private/var/folders/...` are one directory. A key
+// that distinguishes them hands each run its own lock, which is the exact
+// failure the lock exists to prevent.
+const lockPath = (cwd) =>
+  join(tmpdir(), `mutation-proof-lock-${createHash("sha1").update(realpathSync(resolve(cwd))).digest("hex").slice(0, 12)}.json`);
+
+/** Is `pid` a live process? `kill(pid, 0)` signals nothing and only asks. */
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists and belongs to someone else — alive for our purpose.
+    return error.code === "EPERM";
+  }
+}
+
+/** Backups this tool left behind, newest first. Named so a stale lock is one line to diagnose. */
+function strandedBackups() {
+  try {
+    return readdirSync(tmpdir())
+      .filter((n) => /^mutation-proof-[0-9a-f]{12}\.bak$/.test(n))
+      .map((n) => join(tmpdir(), n));
+  } catch {
+    return [];
+  }
+}
+
+function acquireTreeLock(cwd, clearLock) {
+  const path = lockPath(cwd);
+  if (existsSync(path)) {
+    let held = null;
+    try {
+      held = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      held = null;  // an unreadable lock is still a lock; treat it as stale
+    }
+    const live = held && typeof held.pid === "number" && pidAlive(held.pid);
+    if (clearLock) {
+      if (live) {
+        say(`${C.red}REFUSING: --clear-lock, but pid ${held.pid} is still alive.${C.off}`);
+        say("Stop that proof first; clearing a LIVE lock is how two proofs corrupt one tree.");
+        process.exit(3);
+      }
+      rmSync(path, { force: true });
+      say(`${C.yellow}! cleared a stale lock from pid ${held?.pid ?? "unknown"}${C.off}`);
+    } else if (live) {
+      say(`${C.red}REFUSING: a mutation proof is already running against this tree (pid ${held.pid}).${C.off}`);
+      say(`Started ${held.started ?? "unknown"} · command: ${held.command ?? "unknown"}`);
+      say("Two proofs mutate and restore the same files, so EVERY verdict from either is");
+      say("uninterpretable — each reads a file the other is rewriting, and both still print");
+      say("ordinary KILLED/SURVIVED lines. Wait for it, or work in your own clone.");
+      process.exit(3);
+    } else {
+      // The lock is stale: the run that wrote it died without restoring. That is the
+      // SIGKILL case no handler can catch, so the only defence is to say so here.
+      say(`${C.red}REFUSING: a previous proof (pid ${held?.pid ?? "unknown"}) died without restoring.${C.off}`);
+      say("Its mutation may still be applied to a product file in this tree.");
+      const backups = strandedBackups();
+      if (backups.length) {
+        say("Backups it may have left (a byte copy of the original, hash it to identify the target):");
+        for (const b of backups.slice(0, 10)) say(`  ${b}`);
+      }
+      say("Recover with `git status` / `git checkout -- <file>`, then re-run with --clear-lock.");
+      process.exit(3);
+    }
+  }
+  writeFileSync(path, JSON.stringify({
+    pid: process.pid,
+    started: new Date().toISOString(),
+    cwd: resolve(cwd),
+    command: process.argv.slice(1).join(" "),
+  }) + "\n");
+  return path;
+}
+
+/** Every mutation currently written to disk, by the restore that undoes it. */
+const liveRestores = new Set();
+let heldLockPath = null;
+
+function releaseEverything() {
+  for (const undo of [...liveRestores]) {
+    liveRestores.delete(undo);
+    try {
+      undo();
+    } catch {
+      // Nothing useful to do from an exit handler; the next run's stale-lock
+      // refusal is what catches a restore that could not complete.
+    }
+  }
+  if (heldLockPath) {
+    rmSync(heldLockPath, { force: true });
+    heldLockPath = null;
+  }
+}
+
+// `exit` covers a normal return and an uncaught throw; the signals cover the kill
+// that skips it. Re-raised with the default disposition afterwards, so the exit
+// status still reports the signal rather than becoming a tidy 0 — a wrapper
+// reading `$?` must not be told the run merely finished.
+process.on("exit", releaseEverything);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    say(`${C.yellow}! ${signal} — restoring ${liveRestores.size} mutated file(s) before exit${C.off}`);
+    releaseEverything();
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  });
+}
 
 /** The tree must be recoverable WITHOUT this tool before a destructive experiment starts. */
 function assertCleanTree(cwd, allowDirty) {
@@ -248,6 +379,10 @@ function proveOne(m, opts) {
   // insists on before it starts. `afterRestore` runs AFTER the source is back, so whatever it
   // regenerates is regenerated from the original.
   const restore = () => {
+    // Self-deregistering: once the bytes are back, the exit and signal handlers
+    // have nothing left to undo for this file, and a second restore from them
+    // would re-copy a backup this call is about to delete.
+    liveRestores.delete(restore);
     copyFileSync(backup, path);
     const ok = sha(path) === shaBefore;
     // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime
@@ -278,6 +413,9 @@ function proveOne(m, opts) {
   // before the run, and the excerpt for a throw after it.
   let transcript;
   try {
+    // Registered BEFORE the write, so a signal landing between the two finds a
+    // restore that is a no-op rather than no restore at all.
+    liveRestores.add(restore);
     writeFileSync(path, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
     // sound only by accident.
@@ -485,6 +623,10 @@ if (a.config) {
 if (!opts.command) usage("no --command given (and none in the config)");
 
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
+// After the clean-tree gate: a stale lock is about recovery, and recovery is what that
+// gate has just established. Before the baseline, which is the first thing that runs a
+// suite against a tree another proof may be mutating.
+heldLockPath = acquireTreeLock(cwd, a["clear-lock"] !== undefined);
 
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
 //
