@@ -29,6 +29,7 @@ import {
   fallbackStillOwed,
   nextFallbackAction,
   nextFallbackDelay,
+  attributionBlockedByOpenRun,
   refusalNeedsBoundary,
   type FallbackState,
 } from "../src/queue-fallback.js";
@@ -215,47 +216,49 @@ console.log("\n12. NO branch drops a delivery");
   check("and the delivering actions are all reachable from the incident state", actions.has("queue-turn") && actions.has("steer") && actions.has("drive"), [...actions]);
 }
 
-console.log("\n13. EVERY refusal forces a boundary, not only the unacknowledged one");
+console.log("\n13. the two measured failure modes, and the state that separates them");
 {
-  // A reviewer reproduced this against the live host: a RUN whose acceptance window lapses owes
-  // debt that clears only when that TURN ends. Meanwhile the fallback's own sends are genuinely
-  // acknowledged, so the old `!acknowledged` trigger never fired, while `attributable` stayed false
-  // because the run debt was outstanding. The batch was refused, stayed owed, and was re-delivered
-  // into a healthy Harness that accepted and RAN each copy: 4 executions from 4 send frames.
-  //
-  // THE ACCEPTING BRANCH THIS CELL EXISTS FOR is `acknowledged && !attributable`. It is listed
-  // first because it is the one that was wrong, and the exhaustive table below is what keeps a
-  // future edit from narrowing the trigger back to the flag instead of the refusal.
+  // TWO REVIEWERS MEASURED OPPOSITE FAILURES AND BOTH WERE RIGHT.
+  //   trigger only on `!acknowledged`  -> 4 executions from 4 send frames (run-debt duplicate)
+  //   trigger on every refusal         -> 0 executions from 0 send frames (silent starvation)
+  // The second is what an earlier version of THIS cell failed to catch, because it graded
+  // `refusalNeedsBoundary(ack, attr)` as a pure function while the call site sat inside
+  // `if (!acknowledged || !attributable)`, where that expression is TAUTOLOGICALLY TRUE. The unit
+  // test passed on a predicate the branch could never consult. A pure-function cell proves nothing
+  // about a call site that cannot disagree with it, which is why these cells now grade the two
+  // decisions separately and the live suites carry the behaviour.
   check(
-    "an ACKNOWLEDGED but unattributable refusal forces the boundary (the measured 4-execution case)",
-    refusalNeedsBoundary(true, false) === true,
-    { acknowledged: true, attributable: false, boundary: refusalNeedsBoundary(true, false) },
+    "a lapsed SEND forces the boundary: nothing can ever settle it",
+    refusalNeedsBoundary(true) === true,
+    { sendLapsed: true, boundary: refusalNeedsBoundary(true) },
   );
+  // The refusing half. Without it, `return true` satisfies the line above.
   check(
-    "an unacknowledged refusal still forces it",
-    refusalNeedsBoundary(false, false) === true,
-    { acknowledged: false, attributable: false },
+    "and a send that WAS acknowledged does not: the boundary is for the unsettleable case only",
+    refusalNeedsBoundary(false) === false,
+    { sendLapsed: false, boundary: refusalNeedsBoundary(false) },
   );
+  // The deferral is the half that prevents sol's duplicate at its SOURCE. A send issued while a run
+  // is open can never be attributed, so it is refused on arrival and re-sent forever, and every
+  // refused copy is still accepted and RUN by the Harness.
   check(
-    "an unacknowledged send whose acceptance would otherwise be attributable also forces it",
-    refusalNeedsBoundary(false, true) === true,
-    { acknowledged: false, attributable: true },
+    "an open run defers the send, so no unattributable frame is ever written",
+    attributionBlockedByOpenRun(1) === true,
+    { unsettledRunDispatches: 1, deferred: attributionBlockedByOpenRun(1) },
   );
-  // THE REFUSING CASE, and without it every assertion above is satisfied by `return true`. This is
-  // the ONLY combination that is not a refusal at the call site, so it must be the only one that
-  // declines the boundary: a healthy delivery must never replace the connection, or the fallback
-  // becomes a reconnect loop against a seat that is working.
+  // Its refusing half, and the one that keeps the deferral from becoming opus's starvation: with no
+  // run open the queue MUST be served. If this ever returned true the seat would stop consuming.
   check(
-    "and a genuinely attributable acknowledgement does NOT force one",
-    refusalNeedsBoundary(true, true) === false,
-    { acknowledged: true, attributable: true, boundary: refusalNeedsBoundary(true, true) },
+    "and with no run open the send proceeds, so the queue is never suppressed",
+    attributionBlockedByOpenRun(0) === false,
+    { unsettledRunDispatches: 0, deferred: attributionBlockedByOpenRun(0) },
   );
-  // Exhaustive, so the pair above cannot drift apart from the shipped predicate.
-  const table = [true, false].flatMap((a) => [true, false].map((t) => [a, t, refusalNeedsBoundary(a, t)] as const));
+  // THE SEPARATION ITSELF. Run debt clears when the turn ends; a lapsed send's never does. If a
+  // future edit routes run debt into the boundary, this is the cell that reddens.
   check(
-    "exactly one of the four combinations declines the boundary",
-    table.filter(([, , b]) => b === false).length === 1,
-    table.map(([a, t, b]) => `ack=${a} attr=${t} -> ${b}`),
+    "run debt NEVER forces a boundary, however deep, because it clears itself",
+    [1, 2, 7].every((n) => refusalNeedsBoundary(false) === false && attributionBlockedByOpenRun(n) === true),
+    { checked: [1, 2, 7] },
   );
 }
 

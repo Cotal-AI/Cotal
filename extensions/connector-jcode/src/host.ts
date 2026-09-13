@@ -31,6 +31,7 @@ import {
   FALLBACK_INITIAL_MS,
   fallbackStillOwed,
   nextFallbackAction,
+  attributionBlockedByOpenRun,
   nextFallbackDelay,
   refusalNeedsBoundary,
   type FallbackState,
@@ -1072,6 +1073,17 @@ export async function runJcodeHost(): Promise<void> {
     // owed and the level-triggered loop re-arms, so the next tick delivers it on the replacement
     // where acceptance is attributable again: this defers one attempt rather than dropping it.
     if (acceptanceSuspectUntilBridgeReplaced || reconnecting) return;
+    // DO NOT WRITE A FRAME THAT CANNOT BE ATTRIBUTED. While a run's acceptance window has lapsed,
+    // any `message_accepted` may belong to that run, so a send issued now is refused on arrival no
+    // matter how healthy it is, stays owed, and is re-sent next tick -- while the Harness accepts
+    // and EXECUTES every copy. A reviewer measured 4 executions from 4 send frames that way.
+    //
+    // Deferring costs one turn of latency and nothing else: the run's promise settles when the turn
+    // ends, which proves the Harness is finished with it, and the next tick sends ONCE and can
+    // attribute the answer. The batch stays owed and unacked throughout, so this defers delivery
+    // rather than dropping it, and unlike a forced boundary it can neither suppress the queue for a
+    // whole turn nor end in seat shutdown once the one recovery is spent.
+    if (attributionBlockedByOpenRun(unsettledLapsedDispatches)) return;
     const injection = formatInjection(items);
     if (!injection) return;
     const current = client;
@@ -1189,7 +1201,7 @@ export async function runJcodeHost(): Promise<void> {
         // session, drops the old connection's still-open request with it, and the batch is redriven
         // once where an acknowledgement means something. The one-shot guard governs it, so widening
         // the trigger cannot turn into a reconnect loop.
-        if (refusalNeedsBoundary(acknowledged, attributable)) acceptanceSuspectUntilBridgeReplaced = true;
+        if (refusalNeedsBoundary(!acknowledged)) acceptanceSuspectUntilBridgeReplaced = true;
         release();
         writeJcodeDiagnostic(
           acknowledged
