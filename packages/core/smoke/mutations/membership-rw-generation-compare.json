@@ -12,9 +12,11 @@
     "back to the byte comparison it used to be, so the cell that reddens is the one about generations.",
     "Scenario 5 serves one exact string and stays GREEN under the mutation: byte equality and generation",
     "equality agree there, which is why it could never have caught this.",
+    "Scenario 9 serves a byte-DISTINCT envelope on every read for the same reason at one remove: a fixed",
+    "reformatted string lets the byte-comparing mutant arrest itself after a single adoption, and the read",
+    "count then lands inside the bound the fixed code produces.",
     "The sibling cell asserting the refusal MESSAGE cannot grade this either, and is kept for what it",
-    "documents rather than for what it discriminates: under the mutation the message still appears, one",
-    "1s tick later, once the adopted envelope has become the cached one."
+    "documents rather than for what it discriminates."
   ],
   "mutations": [
     {
@@ -24,7 +26,7 @@
       "replace": "    if (candidate === currentRwCreds && delay <= 0)",
       "expectRed": "the refusal keeps the 60s backoff \u2014 no 1s re-read of the source (#1563)",
       "cell": "the refusal keeps the 60s backoff \u2014 no 1s re-read of the source (#1563)",
-      "note": "Exactly the pre-fix line: the tree compiles and scenario 5 still passes, because byte equality and generation equality agree on the one exact string it serves. Graded on the READ COUNT, not on the refusal message: under the mutation the first tick adopts the reformatted read, and the tick 1s later compares bytes-equal and emits the refusal after all - so the message appears either way, one tick late. The 1s re-read is what only happens when the adoption went through."
+      "note": "Exactly the pre-fix line: the tree compiles and scenario 5 still passes, because byte equality and generation equality agree on the one exact string it serves. Graded on the READ COUNT, not on the refusal message. Under the mutation every read is a new generation by bytes, so each adoption floors the next tick to 1s and the source is re-read every second; the fixed code refuses all of them and keeps the 60s backoff. The read count is the only signal that separates the two."
     }
   ]
 }

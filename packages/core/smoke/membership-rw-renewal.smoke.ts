@@ -407,18 +407,24 @@ try {
   // read looks like a NEW generation: it is adopted past its own renewal point, `delay <= 0` floors the
   // next tick to 1s, and the feed re-reads the store every second - the churn scenario 5 exists to stop.
   //
-  // Same JWT, same seed, different bytes: one extra newline at EOF, the shape a store or an editor adds on
-  // a round trip. `jwtFromCreds` trims it away; `===` does not. Deliberately a difference the BROKER still
-  // accepts - a CRLF envelope also differs in bytes, but the broker refuses it, and the preflight would
-  // then mask the defect by refusing the adoption for an unrelated reason.
-  const reformatEnvelope = (creds: string): string => creds + "\n";
+  // Same JWT, same seed, different bytes: extra newlines at EOF, the shape a store or an editor adds on
+  // a round trip. `jwtFromCreds` trims them away; `===` does not. Deliberately a difference the BROKER
+  // still accepts - a CRLF envelope also differs in bytes, but the broker refuses it, and the preflight
+  // would then mask the defect by refusing the adoption for an unrelated reason.
+  //
+  // EVERY read is byte-distinct, keyed on the read counter, and that is load-bearing for the grading:
+  // serving one fixed reformatted string lets the byte-comparing mutant ARREST ITSELF. It adopts the
+  // second read, and the 1s tick that follows compares the third read against the adopted second - equal
+  // bytes - so it refuses, restores the 60s backoff, and the read count lands inside the same bound the
+  // fixed code produces. The cell then passes under the mutation and grades nothing.
+  const reformatEnvelope = (creds: string, read: number): string => creds + "\n".repeat(read);
   const reformatTtl = 20;
   const reformatCred = await mintCreds(auth, feedId, "membership-rw", { expiresInSeconds: reformatTtl });
   let reformatReads = 0;
   const reformatLog: string[] = [];
   const reformatSource = async (): Promise<string> => {
     reformatReads++;
-    return reformatReads === 1 ? reformatCred : reformatEnvelope(reformatCred);
+    return reformatReads === 1 ? reformatCred : reformatEnvelope(reformatCred, reformatReads);
   };
   const feed6 = await startMembershipFeed({
     servers: SERVERS, space, accountId, observerCreds, rwCreds: reformatSource, intervalMs: 60_000,
@@ -426,11 +432,15 @@ try {
   });
   feed = feed6;
   check("reformat feed starts (source read once)", reformatReads === 1, reformatReads);
+  // Both halves of the control: consecutive reads differ from the first AND from each other (or the
+  // mutant self-arrests), and all of them carry the same generation (or the refusal proves nothing).
+  const [reform2, reform3] = [reformatEnvelope(reformatCred, 2), reformatEnvelope(reformatCred, 3)];
   check(
     "the reformatted envelope really is the same generation (accept control)",
-    reformatEnvelope(reformatCred) !== reformatCred
-      && credsFingerprint(reformatEnvelope(reformatCred)) === credsFingerprint(reformatCred),
-    { differs: reformatEnvelope(reformatCred) !== reformatCred },
+    reform2 !== reformatCred && reform3 !== reform2
+      && credsFingerprint(reform2) === credsFingerprint(reformatCred)
+      && credsFingerprint(reform3) === credsFingerprint(reformatCred),
+    { differsFromFirst: reform2 !== reformatCred, differsFromPrevious: reform3 !== reform2 },
   );
   await wait(14_500);  // just past 75% (15s) minus setup slack — the timer has not fired yet
   const reformatBaseline = reformatReads;
