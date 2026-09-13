@@ -198,10 +198,12 @@ function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extr
     { cwd: wsRoot, stdio: ["ignore", "pipe", "pipe"], detached: true, env },
   );
   const d: Daemon = { proc, exited: false, code: null, stderr: "" };
-  // FREEZE-ON-SIGHT. `onLine` runs INSIDE the stderr data event, before this process returns to its
-  // own event loop — which is the only way to catch a state that lasts a couple of broker round
-  // trips. Polling `d.stderr` on a timer cannot: under load the daemon had already printed its next
-  // line before the poll came round, and cell G7e reddened on a state that had genuinely existed.
+  // FREEZE-ON-SIGHT, AND ITS LIMIT. `onLine` runs INSIDE the stderr data event, before this process
+  // returns to its own event loop, which is earlier than any timer poll could manage. It is still
+  // only best effort: being early in the PARENT says nothing about the CHILD, which has been running
+  // since it wrote those bytes, so a daemon can already have printed its next line before this
+  // handler is reached at all (measured at 3 of 8 and 6 of 8 by two reviewers). The cell that used
+  // to depend on winning that race has been deleted; what remains is used for context, never to pass.
   const sink = (b: Buffer) => {
     const text = b.toString();
     d.stderr += text;
@@ -835,7 +837,7 @@ try {
   // must end while the loser is still ALIVE and then stay ended across the ownership read and the
   // refused create. That difference is the fix, it is observable, and it is what these cells grade:
   // the overlap must resolve to exactly one responder BEFORE the loser exits, and must not come
-  // back afterwards. A daemon that only stopped serving by exiting fails G7d and G7e; a daemon that
+  // back afterwards. A daemon that only stopped serving by exiting fails G7d; a daemon that
   // re-armed mid-arbitration fails G7f.
   let sawLoserAlive = false;
   let sawOverlap = false;
@@ -857,23 +859,23 @@ try {
   // loaded box, and it was the reasoning behind a cell that reddened on CI for the wrong reason.
   //
   // The freeze is still worth keeping: when it does win it holds the quiesced state still and makes
-  // the sampled reading below meaningful. But nothing PASSES on it any more. G7e now grades the
+  // the sampled reading below meaningful. But nothing PASSES on it any more. G8/G9 grade the
   // ordering the daemon itself recorded, which no scheduler can alter.
   //
-  // SIGSTOP at that moment changes nothing about what the daemon DID. Its subscriptions are already
-  // gone or already there; freezing a process does not unbind it, and the broker's answer is about
-  // the connection, not about whether the process is scheduled. What it buys is an arbitrarily long
-  // interval in which the state is provably "quiesced, ownership not yet decided" — the exact state
-  // this cell exists to observe, held still instead of chased.
-  //
-  // The mutation is still killed, and killed harder: a daemon that never quiesces never prints the
-  // line, so the trigger never fires, the loop below falls through on its deadline, and G7e reds
-  // with zero bracketed readings rather than with a lost race.
+  // SIGSTOP, WHEN IT DOES LAND, changes nothing about what the daemon DID. Its subscriptions are
+  // already gone or already there; freezing a process does not unbind it, and the broker's answer is
+  // about the connection, not about whether the process is scheduled. What it buys is an arbitrarily
+  // long interval in which the state is held still instead of chased.
   let froze = false;
   incumbent.onLine = (chunk, d) => {
-    // Synchronous, inside the data event: SIGSTOP lands before this process yields, so the daemon
-    // cannot get another slice in which to answer the ownership question. A 20ms poll could not
-    // keep up under load — measured, and it is why this hook exists at all.
+    // BEST EFFORT, AND THAT IS ALL. The text here used to claim that because this handler is
+    // synchronous inside the parent's data event, "SIGSTOP lands before this process yields, so the
+    // daemon cannot get another slice". THAT IS FALSE, and it is the reasoning that made the race
+    // look impossible: synchronous in the PARENT says nothing about the CHILD, which has been
+    // running freely since it wrote those bytes. A pipe read is not an execution fence. Measured by
+    // two reviewers on the real suite and on an isolated primitive: the child had already decided in
+    // 3 of 8 and 6 of 8 trials respectively. Nothing asserts on `froze` any more, so losing this
+    // race now costs only the sampled context line below.
     if (froze || !chunk.includes("stopped serving shard")) return;
     signalGroup(d, "SIGSTOP");
     froze = true;
@@ -954,26 +956,6 @@ try {
   // call and watching every G cell stay green. What only the repair can do is stop serving BEFORE
   // the ownership question has been answered at all, and G8/G9 below grade exactly that on the
   // daemon's own transcript rather than on a sampled instant.
-  // G7e, RE-MEASURED AFTER A CI RED. The claim is unchanged; the way it is observed is not.
-  //
-  // The sampled form asked: at the moment the responder count fell to 1, had the daemon printed its
-  // ownership verdict yet? That question is only answerable if OUR READER gets scheduled between the
-  // daemon's two announcements. It does not always: CI job 103789248360 reddened here with the tail
-  // `... is held by local.UAV4... (renew: wrong last sequence: 12) - exiting so the holder is single`,
-  // i.e. by the time this process handled the quiesce chunk the daemon had ALREADY decided. The
-  // SIGSTOP hook exists to stop the daemon running on, and it cannot: it fires on a data event, and
-  // the data event is itself the thing that arrived late. Freezing a process after it has spoken
-  // does not unspeak it. That is the same defect as the 1ms sleep the lease suite's V5/V6 used to
-  // race, and the same repair: stop timing the observation, and observe an ordering instead.
-  //
-  // THE DAEMON'S OWN SEQUENCING IS THE EVIDENCE. It announces going quiet ("stopped serving shard
-  // ... while it re-checks who owns the lease") and only afterwards announces a verdict ("exiting so
-  // the holder is single"). That order is a fact about what the daemon DID, fixed in the transcript
-  // before this process reads any of it, so no amount of scheduling luck can change it. And it is
-  // exactly the claim: quiescing came first, the conclusion came second.
-  //
-  // IT STILL KILLS THE MUTATION, which is the only reason to accept a re-measurement. A daemon that
-  // never quiesces never prints the first line at all, so there is no ordering to satisfy.
   // G7e IS GONE, AND THE REASON MATTERS MORE THAN THE DELETION.
   //
   // It asked: at the instant the responder count fell to 1, had the daemon printed its ownership
