@@ -45,9 +45,32 @@
  * and that exactly one block matched, so a tamper that becomes a no-op fails loudly instead of
  * reporting a pass it did not earn.
  *
- * Exit 0 all checks passed, 1 a check failed.
+ * REQUIRES AN INSTALL: `pnpm install --frozen-lockfile` before `node scripts/...selftest.mjs`.
+ *
+ * This suite imports `typescript`, which is a devDependency, not a node builtin. An earlier version
+ * imported only builtins and ran in a bare checkout, and that property was RETIRED here rather than
+ * lost: reading source structure is what defeats the attacks below, and no amount of text matching
+ * substitutes for it. Two reviewers measured the regression independently in clones with no
+ * node_modules, and both recorded the direction correctly as ALARMING: it fails at once with
+ * ERR_MODULE_NOT_FOUND, never as a false pass. The import is guarded below so the failure names the
+ * cause instead of looking like a broken fixture. `scripts/mutation-coverage.mjs` and
+ * `scripts/doc-binding.mjs` already import typescript, so the dependency is house-normal; the
+ * defect was leaving the change undeclared, which is this file's own subject.
+ *
+ * Exit 0 all checks passed, 1 a check failed, 2 a prerequisite is missing.
  */
-import ts from "typescript";
+let ts;
+try {
+  ({ default: ts } = await import("typescript"));
+} catch (error) {
+  if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+  process.stderr.write(
+    "check-operator-literals.celltamper.selftest: cannot find package 'typescript'.\n"
+    + "This suite parses the scanner's source, so it needs the repository's devDependencies.\n"
+    + "Run `pnpm install --frozen-lockfile` first, then re-run this command.\n",
+  );
+  process.exit(2);
+}
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -555,19 +578,125 @@ try {
   // and that reader was probed hard in review: a renamed cell reports `found 0/0`, a reformatted
   // one reports `occurs 0 time(s)`, and a marker quoted in a comment reports `found 2/2`. It
   // refuses ambiguity instead of guessing, which is exactly what a denominator needs to do.
-  const readCellIds = (source) =>
-    [...source.matchAll(/^\s*\/\/ SELFTEST_CELL (\S+) START$/gm)].map((match) => match[1]);
+  //
+  // MARKERS ARE READ AS COMMENT TRIVIA FROM THE AST, not as lines of text.
+  //
+  // A line-anchored regex cannot tell a COMMENT from a LINE INSIDE A STRING, and a reviewer proved
+  // the distinction is reachable: deleting the real `ip-zero START` marker and planting that exact
+  // line inside a multi-line template literal left every row unchanged at `starts=34 ends=34
+  // duplicates=0 unpaired=0` while the cell's real marker was gone. The suite even carried a
+  // control claiming the reader "refuses a marker quoted in a string", and that control passed,
+  // because it only ever fed the reader a ONE-LINE string. A control that tests a narrower case
+  // than the claim it is attached to is worse than no control: it converts an untested claim into
+  // an apparently tested one.
+  //
+  // This is the third time in this lane that reading characters instead of code lost a denominator
+  // in silence, after `function matchCell (` and the declaration-shaped template literal. The
+  // scanner is parsed once here and comment trivia is enumerated from the tree, so a marker inside
+  // a string of any shape is not trivia and cannot be seen, while a real comment always is.
+  // EVERY TOKEN is visited, via `getChildren()`, not every NODE.
+  //
+  // Trivia attaches to tokens, and punctuation tokens are not nodes. The scanner's cell array ends
+  // with `];`, so its last END marker is leading trivia of that `]`. A node-only walk therefore
+  // reported `starts=34 ends=33 unpaired=1 [missing-subject]` on a perfectly healthy file, and my
+  // own planted control caught the same hole in the same run at `planted_unpaired=0/1`.
+  //
+  // A RAW TOKEN SCANNER IS NOT THE ANSWER EITHER, and it was tried: `ts.createScanner` over the
+  // text has no parser context, so it cannot resolve whether `/` opens a regex or divides, and it
+  // desynced and found 3 of 34 markers. That failed loudly, in the ALARMING direction, and the
+  // fix was to take positions from the parsed tree instead of re-deciding them.
+  const readMarkers = (source) => {
+    const sf = ts.createSourceFile("scanner.mjs", source, ts.ScriptTarget.Latest, true);
+    const text = sf.getFullText();
+    const found = [];
+    const seen = new Set();
+    const collect = (fullStart) => {
+      for (const range of ts.getLeadingCommentRanges(text, fullStart) ?? []) {
+        if (seen.has(range.pos)) continue;
+        seen.add(range.pos);
+        const match = /^\/\/ SELFTEST_CELL (\S+) (START|END)$/.exec(text.slice(range.pos, range.end).trim());
+        if (match) found.push({ id: match[1], kind: match[2], pos: range.pos });
+      }
+    };
+    const visit = (node) => {
+      collect(node.getFullStart());
+      for (const child of node.getChildren(sf)) visit(child);
+    };
+    visit(sf);
+    // Deduplicated by SOURCE POSITION, never by id: two markers sharing an id are exactly the
+    // defect this reader exists to report, and collapsing them by id would hide it.
+    return found.sort((a, b) => a.pos - b.pos);
+  };
+
+  const readMarkerIntegrity = (source) => {
+    const markers = readMarkers(source);
+    const starts = markers.filter((marker) => marker.kind === "START").map((marker) => marker.id);
+    const ends = markers.filter((marker) => marker.kind === "END").map((marker) => marker.id);
+    return {
+      starts,
+      ends,
+      duplicates: starts.filter((id, index) => starts.indexOf(id) !== index),
+      unpaired: [
+        ...starts.filter((id) => !ends.includes(id)),
+        ...ends.filter((id) => !starts.includes(id)),
+      ],
+    };
+  };
+  const readCellIds = (source) => readMarkerIntegrity(source).starts;
   const declaredCells = readCellIds(tracked);
   const inventory = readCellInventory(tracked);
   const factoryCellIds = inventory.byFactory;
 
-  // The two readers must agree on how many cells exist. They are independent (marker comments
-  // versus the parsed SELFTEST_CELLS array), so a disagreement means one of them is wrong and the
-  // denominator is unsafe to quantify over. Catching that here is cheaper than trusting either.
+  // EVERY MARKER ID MUST BE UNIQUE AND PAIRED. A COUNT IS NOT A SET, and that distinction was a
+  // BLOCK: an earlier version compared only how MANY markers and parsed cells existed, and a
+  // reviewer defeated it with a single-token edit. Renaming one START marker
+  // (`ip-zero` -> `ip-private`, a cell id already in use) kept the count at 34 while LOSING one id
+  // and DUPLICATING another, leaving a START/END pair mismatched. Every row still read
+  // `markers=34 parsed_cells=34 ... unaccounted=0` and the suite passed in full.
+  //
+  // Two totals can agree while the things they count differ, so equal counts prove nothing about
+  // membership. Duplicates are what make that possible, and a duplicate id is independently fatal:
+  // `tamperCell` requires exactly one START/END pair, so a duplicated id silently disarms the
+  // tamper for BOTH cells that share it.
+  const integrity = readMarkerIntegrity(tracked);
   check(
-    "census: the marker reader and the parsed cell array agree on how many cells exist",
-    declaredCells.length > 0 && declaredCells.length === inventory.total,
-    `markers=${declaredCells.length} parsed_cells=${inventory.total} (factory=${inventory.total - inventory.inline.length} inline=${inventory.inline.length})`,
+    "census: every cell marker id is unique and has a matching START and END",
+    integrity.starts.length > 0 && integrity.duplicates.length === 0 && integrity.unpaired.length === 0,
+    `starts=${integrity.starts.length} ends=${integrity.ends.length} duplicates=${integrity.duplicates.length}${integrity.duplicates.length ? ` [${[...new Set(integrity.duplicates)].join(", ")}]` : ""} unpaired=${integrity.unpaired.length}${integrity.unpaired.length ? ` [${[...new Set(integrity.unpaired)].join(", ")}]` : ""}`,
+  );
+
+  // The two readers must agree on WHICH cells exist, compared as sets in both directions. They are
+  // independent (marker comments versus the SELFTEST_CELLS array parsed from the AST), so any
+  // disagreement means one of them is wrong and the denominator is unsafe to quantify over.
+  const parsedIds = [...inventory.byFactory.values()].flat().concat(inventory.inline);
+  const onlyInMarkers = declaredCells.filter((id) => !parsedIds.includes(id));
+  const onlyInParsed = parsedIds.filter((id) => !declaredCells.includes(id));
+  check(
+    "census: the marker reader and the parsed cell array name the same cells, not merely as many",
+    declaredCells.length > 0 && onlyInMarkers.length === 0 && onlyInParsed.length === 0,
+    `markers=${declaredCells.length} parsed=${parsedIds.length} (factory=${parsedIds.length - inventory.inline.length} inline=${inventory.inline.length})${onlyInMarkers.length ? ` MARKER ONLY [${onlyInMarkers.join(", ")}]` : ""}${onlyInParsed.length ? ` PARSED ONLY [${onlyInParsed.join(", ")}]` : ""}`,
+  );
+
+  // The integrity reader's planted positive, fed the REVIEWER'S EXACT ATTACK in miniature rather
+  // than a hand-built array: one START renamed to an id already in use, which is a loss and a
+  // duplicate at once and leaves the total unchanged. The control must reach the real reader,
+  // because a control built from literals grades nothing but itself.
+  const plantedIntegrity = readMarkerIntegrity([
+    "const cells = [",
+    "  // SELFTEST_CELL alpha START",
+    "  realCell('alpha'),",
+    "  // SELFTEST_CELL alpha END",
+    "  // SELFTEST_CELL alpha START",   // was `beta`: same count, one id lost, one duplicated
+    "  realCell('beta'),",
+    "  // SELFTEST_CELL beta END",
+    "];",
+  ].join("\n"));
+  check(
+    "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading",
+    plantedIntegrity.starts.length === 2
+      && plantedIntegrity.duplicates.length === 1 && plantedIntegrity.duplicates[0] === "alpha"
+      && plantedIntegrity.unpaired.length === 1 && plantedIntegrity.unpaired[0] === "beta",
+    `planted_starts=${plantedIntegrity.starts.length}/2 planted_duplicate=${plantedIntegrity.duplicates.length}/1 [${plantedIntegrity.duplicates.join(", ")}] planted_unpaired=${plantedIntegrity.unpaired.length}/1 [${plantedIntegrity.unpaired.join(", ")}]`,
   );
 
   // EVERY cell must be accounted for: graded by a case, covered by its factory's case, or named in
@@ -641,18 +770,29 @@ try {
   );
 
   // The marker reader's own planted positive, with a REFUSE half. A reader loose enough to match a
-  // marker mentioned in prose would report cells that do not exist and mask the loss of one that
-  // does, which is the exact shape that defeated the previous source reader.
+  // marker mentioned in prose or quoted in a string would report cells that do not exist and mask
+  // the loss of one that does.
+  //
+  // THE MULTI-LINE STRING CASE IS THE POINT. An earlier version of this control fed the reader only
+  // a one-line string while claiming the reader "refuses a marker quoted in a string", and a
+  // reviewer defeated exactly that gap with a multi-line template. The control must be at least as
+  // wide as the claim attached to it, so both shapes are exercised here.
   const plantedMarkers = readCellIds([
+    "const cells = [",
     "  // SELFTEST_CELL planted-accept START",
+    "  realCell('planted-accept'),",
     "  // SELFTEST_CELL planted-accept END",
     "  // a comment discussing // SELFTEST_CELL planted-prose START inline",
-    "  const s = `// SELFTEST_CELL planted-string START`;",
+    "  ...(() => { const oneLine = `// SELFTEST_CELL planted-string START`; return []; })(),",
+    "  ...(() => { const multiLine = `",
+    "  // SELFTEST_CELL planted-multiline-string START",
+    "  `; return []; })(),",
+    "];",
   ].join("\n"));
   check(
-    "census control: the marker reader finds a real marker and refuses one quoted in prose or a string",
+    "census control: the marker reader finds a real marker and refuses one in prose or any string",
     plantedMarkers.length === 1 && plantedMarkers[0] === "planted-accept",
-    `found=${plantedMarkers.length}/1 [${plantedMarkers.join(", ")}] (prose and string mentions must be refused)`,
+    `found=${plantedMarkers.length}/1 [${plantedMarkers.join(", ")}] (prose, one-line string and multi-line string mentions must all be refused)`,
   );
 
   // Every factory carrying a discriminator must have a case that drives it. Nothing is exempt: the
