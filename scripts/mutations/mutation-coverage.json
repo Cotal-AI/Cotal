@@ -70,15 +70,15 @@
     {
       "name": "a bound entry anywhere after a launcher is treated as its argument",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        const script = launchedScriptArg(evalPath, argv);\n        const value = script ? evalPath(script) : undefined;\n        if (typeof value === \"string\") found.push(value);",
-      "replace": "        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(sf);",
+      "find": "        for (const candidate of argvCandidates(argv, arrays)) {\n          const script = launchedScriptArg(evalPath, candidate);\n          const value = script ? evalPath(script) : undefined;\n          if (typeof value === \"string\") found.push(value);\n        }\n      }\n    }\n    ts.forEachChild(node, visit);",
+      "replace": "        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(sf);\n      }\n    }\n    ts.forEachChild(node, visit);",
       "expectRed": "a name bound to the target but never passed to a launcher is still refused",
       "cell": "a name bound to the target but never passed to a launcher is still refused"
     },
     {
       "name": "any spawn-arg subtree is treated as the launched script",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      if (command && isNodeExecutable(evalPath, command) && argv) {\n        const script = launchedScriptArg(evalPath, argv);\n        const value = script ? evalPath(script) : undefined;\n        if (typeof value === \"string\") found.push(value);\n      }",
+      "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      if (command && isNodeExecutable(evalPath, command) && argv) {\n        for (const candidate of argvCandidates(argv, arrays)) {\n          const script = launchedScriptArg(evalPath, candidate);\n          const value = script ? evalPath(script) : undefined;\n          if (typeof value === \"string\") found.push(value);\n        }\n      }",
       "replace": "      for (const arg of node.arguments) {\n        if (ts.isSpreadElement(arg)) continue;\n        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(arg);\n      }",
       "expectRed": "a path after -e is not a launched script",
       "cell": "a path after -e is not a launched script"
@@ -290,6 +290,14 @@
       "replace": "  for (const segment of command.split(/&&|;/)) {",
       "expectRed": "a build named indirectly through a package script still counts",
       "cell": "a build named indirectly through a package script still counts"
+    },
+    {
+      "name": "a bound argument list is not resolved, so a real launch is missed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (ts.isIdentifier(node)) return (arrays.get(node.text) ?? []);\n",
+      "replace": "",
+      "expectRed": "a launch whose argument list is bound first still witnesses the script",
+      "cell": "a launch whose argument list is bound first still witnesses the script"
     }
   ]
 }
