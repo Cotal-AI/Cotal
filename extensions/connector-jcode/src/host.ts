@@ -413,6 +413,17 @@ export async function runJcodeHost(): Promise<void> {
     for (const batch of heldReservations) for (const key of batch) held.add(key);
     reservedIds = held;
   };
+  /** Promote accepted keys into the acked ledger WITHOUT ever recording one twice.
+   *
+   *  Review found the shape that needs this: with a handover in flight across a new-turn boundary,
+   *  `drive` could put a key into `surfacedIds` and the fallback's own acceptance could then push
+   *  the same key again. `drainInboxDeliveries` is what consumes this list at the boundary, so a
+   *  duplicate key is a duplicate ack of one delivery. The reservation fix stops the two paths from
+   *  both owning an item, and this makes the ledger unable to represent the error regardless. */
+  const promoteToSurfaced = (keys: string[]): void => {
+    const known = new Set(surfacedIds);
+    for (const key of keys) if (!known.has(key)) surfacedIds.push(key);
+  };
   /** Reserve a batch for the duration of one handover, returning its release. Idempotent per key:
    *  a key already reserved by another path is not selected, so double reservation cannot arise. */
   const reserveForHandover = (keys: string[]): (() => void) => {
@@ -794,7 +805,7 @@ export async function runJcodeHost(): Promise<void> {
         }
         // Accepted by the live session: promote the reservation into the accepted ledger, which the
         // containing turn's clean boundary will ack. Promotion and release are exclusive.
-        surfacedIds.push(...keys);
+        promoteToSurfaced(keys);
         release();
       }
     } catch (error) {
@@ -913,7 +924,7 @@ export async function runJcodeHost(): Promise<void> {
         );
         return;
       }
-      surfacedIds.push(...keys);
+      promoteToSurfaced(keys);
       release();
       publishInboundHealth();
     } catch (error) {
