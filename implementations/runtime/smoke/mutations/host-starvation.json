@@ -31,10 +31,10 @@
     {
       "name": "MP1 the pre-fix tree: the starved wait is not re-entered, so the client's deadline escapes as the effect's failure",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`);",
+      "find": "    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);",
       "replace": "    return await this.settleOnce(ref, signal);",
-      "expectRed": "the sleep COMPLETES: a lower-bound wait that was late is not a failed wait",
-      "cell": "the sleep COMPLETES: a lower-bound wait that was late is not a failed wait"
+      "expectRed": "and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck",
+      "cell": "and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck"
     },
     {
       "name": "MP2 the deadline is recognised by its MESSAGE instead of its class",
@@ -80,17 +80,17 @@
       "name": "MP11 a window too short to contain a tick is read as a total shortfall rather than as no evidence",
       "file": "implementations/runtime/src/host-starvation.ts",
       "find": "  if (w.ticksExpected === 0) return false;",
-      "replace": "  if (false) return false;",
+      "replace": "  if (w.ticksExpected === 0) return true;",
       "expectRed": "A3 refuses a window too short to have contained a tick at all",
       "cell": "A3 refuses a window too short to have contained a tick at all"
     },
     {
       "name": "MP12 the ARM half of the pause is not re-entered either, so a starved mint fails the step",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`);",
+      "find": "    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);",
       "replace": "    return await this.armOnce(ref, deadline);",
-      "expectRed": "the sleep COMPLETES: a lower-bound wait that was late is not a failed wait",
-      "cell": "the sleep COMPLETES: a lower-bound wait that was late is not a failed wait"
+      "expectRed": "and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck",
+      "cell": "and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck"
     },
     {
       "name": "MP7 THE BAND-AID: every failure is retried, so a broken plane is swallowed as starvation",

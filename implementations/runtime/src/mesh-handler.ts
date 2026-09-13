@@ -225,6 +225,13 @@ export class MeshHandler {
      * is the only honest source outside a test.
      */
     private readonly lag: LoopLagObserver = loopLag(),
+    /**
+     * Where the operator notice for an absorbed starvation goes (#1508). A daemon routes it to its
+     * own log rather than stderr, and a suite counts it: an absorbed starvation is otherwise
+     * INVISIBLE, and a cell asserting "the sleep completed" cannot tell a completion that survived
+     * starvation from one that was never starved at all.
+     */
+    private readonly onStarved: (note: string) => void = (note) => console.error(note),
   ) {}
 
   /**
@@ -2017,7 +2024,7 @@ export class MeshHandler {
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
     // #1508: every read and write below rides a client-side deadline, and a deadline that elapsed
     // because THIS PROCESS was off the CPU is not evidence about the plane. See `host-starvation`.
-    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`);
+    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);
   }
 
   private async armOnce(ref: CheckpointRef, deadline: number): Promise<void> {
@@ -2211,7 +2218,7 @@ export class MeshHandler {
     // is where a starved host was reporting its own scheduling as the effect's failure. The pause
     // and its timer are durable facts on the plane; re-reading them observes the same world, and a
     // sleep whose deadline passed while this process was blocked settles `ok`, late.
-    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`);
+    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
   }
 
   private async settleOnce(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {

@@ -98,21 +98,33 @@ const starveLoop = (ms: number): void => {
  * Starve the loop ACROSS a window, in rounds, and the shape is the difference between a cell that
  * proves something and a cell that is merely lucky.
  *
- * A single long spin only catches a plane read that was ALREADY in flight when the spin began, and
- * whether one was is a race against the pump's own poll timer. MEASURED: the first draft of cell 1
- * passed with the repair removed, because during one 11s block no request happened to be in flight
- * to time out. A green that depends on that coin landing is exactly the vacuity this lane was
- * warned about — the cell would have reported the defect repaired while the defect was present.
+ * A spin only produces a client-side timeout if a request was ALREADY IN FLIGHT when the spin
+ * began — the deadline it blocks is that request's own. MEASURED, twice: a single 11s spin, and
+ * then rounds separated by a 20ms yield, both completed the sleep with ZERO starvations absorbed,
+ * because in each gap the overdue poll timers fired, issued their requests, AND the local broker's
+ * replies landed before the next spin. The cell was green with nothing starved. That is why the
+ * witness in cell 1 exists.
  *
- * Rounds make it deterministic. Each spin outlasts the client's 5s deadline, and the short yield
- * between them is long enough for the poll timers the previous spin made overdue to fire and issue
- * their requests, which the NEXT spin then starves past that deadline. After the first yield there
- * is always a read in flight to be starved.
+ * The repair is WHERE the spin runs. Node's loop is phases in order: timers, then poll (where a
+ * socket reply is read), then check (`setImmediate`). Spinning from a `setImmediate` scheduled
+ * before the yield puts the block in the CHECK phase of the same turn whose TIMERS phase issued the
+ * poll requests — after they are on the wire, before their replies can be processed. The spin then
+ * outlasts the client's 5s deadline with the request genuinely pending, which is the incident.
  */
-const starveAcross = async (rounds: number, spinMs = 6_000, yieldMs = 20): Promise<void> => {
+const starveInCheckPhase = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setImmediate(() => {
+      starveLoop(ms);
+      resolve();
+    });
+  });
+
+const starveAcross = async (rounds: number, spinMs = 6_000): Promise<void> => {
   for (let i = 0; i < rounds; i += 1) {
-    starveLoop(spinMs);
-    await new Promise((r) => setTimeout(r, yieldMs));
+    // One macrotask first, so the overdue timers this process owes get to run and issue their
+    // reads; the check-phase spin then lands on top of those reads while they are unanswered.
+    await new Promise((r) => setTimeout(r, 1));
+    await starveInCheckPhase(spinMs);
   }
 };
 
@@ -157,7 +169,7 @@ const ctxOf = (requestId: string) => ({
   signal: { cancelled: false, reason: undefined as string | undefined, onCancel: () => { /* never */ } },
 }) as never;
 
-const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now()) =>
+const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now(), onStarved?: (note: string) => void) =>
   new MeshHandler(
     nc, kv, js, jsm,
     { space: SPACE, endpoint: EP, runId: "r-starve", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
@@ -165,6 +177,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     clock,
     undefined,
     lag,
+    onStarved,
   );
 
 // ── 0) the mechanism, stated as a measurement rather than as a claim ──────────────────────────
@@ -197,7 +210,15 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 {
   console.log("• 1 — a starved sleep completes late rather than failing");
   const TOKEN = "c3RhcnZlX3NsZWVwX3Rva2VuXzAwMDE";
-  const handler = handlerWith();
+  // THE WITNESS, and it is the whole difference between this cell and a vacuous one. "The sleep
+  // completed" is ALSO true of a sleep that was never starved, so a cell asserting only that would
+  // go green on a run where the loop was never blocked, and green against a tree with no repair in
+  // it at all. An absorbed starvation is a thing that HAPPENED, so the cell requires the evidence
+  // of it: a notice the wrapper emits only on the path that re-enters a starved operation. The
+  // pre-fix tree cannot produce that notice, because the code that emits it is the code being
+  // removed.
+  const absorbed: string[] = [];
+  const handler = handlerWith(undefined, undefined, (note) => absorbed.push(note));
   const sleeping = handler.sleep({ duration: "3s" }, ctxOf(TOKEN)).then(() => "ok" as const, (e: Error) => e);
   await wait(400);
   const st = await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN });
@@ -218,6 +239,13 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN });
   c("the pause really did settle on the plane: the sleep read a fact, it did not skip the wait",
     settle?.settle === "expired", settle?.settle);
+  // THE WITNESS. Asserted AFTER the completion cells, so a failure here reads as "it completed but
+  // nothing was absorbed" rather than masking the completion result.
+  c("and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck",
+    absorbed.length > 0, `${absorbed.length} notices`);
+  c("the notice names the measurement rather than asserting the conclusion",
+    absorbed.some((n) => /event-loop lag \d+ms of a \d+ms window, \d+ of \d+ scheduled ticks/.test(n)),
+    absorbed[0]?.slice(0, 200) ?? "(none)");
 }
 
 // ── 1a) the starvation the cell above depends on was REAL, measured by the same observer ─────
