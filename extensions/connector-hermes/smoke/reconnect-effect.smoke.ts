@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 56;
+const EXPECTED_CELLS = 59;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -78,7 +78,23 @@ assert.ok(python, "no python3/python on PATH: the reconnect effect cannot be ver
  * than no control, because it reads as proof.
  */
 function runScenario(mode: "subject" | "neutered-reopen" | "deleted-call"): Record<string, string> {
-  const res = spawnSync(python!, [probe, pkgDir + "plugin", mode], { encoding: "utf8", timeout: 180_000 });
+  // The subject probe measured 42s idle on this workstation, up from 30s before the EOF, reader
+  // leak and mid-dial cells were added. CI runs twelve shards on one runner, so the wall clock
+  // there is not this wall clock, and a budget sized to an idle host is a latent red that appears
+  // only under load. 420_000 restores roughly the margin the 180_000 budget had when this probe
+  // was a third of its current size.
+  const PROBE_BUDGET_MS = 420_000;
+  const res = spawnSync(python!, [probe, pkgDir + "plugin", mode], {
+    encoding: "utf8",
+    timeout: PROBE_BUDGET_MS,
+  });
+  // A timeout kill surfaces as a null status, which would otherwise read as "the probe reported
+  // nothing" rather than "the probe was cut off". Name it, so a slow runner is never mistaken for
+  // a product failure.
+  assert.ok(
+    !res.error || (res.error as NodeJS.ErrnoException).code !== "ETIMEDOUT",
+    `the ${mode} probe exceeded its ${PROBE_BUDGET_MS}ms budget and was killed, which is a runner-speed failure rather than a product one`,
+  );
   assert.equal(res.status, 0, `the ${mode} probe did not run:\n${res.stdout}\n${res.stderr}`);
   const out = Object.fromEntries(
     res.stdout
