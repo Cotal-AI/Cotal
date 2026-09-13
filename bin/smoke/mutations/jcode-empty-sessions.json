@@ -87,8 +87,8 @@
       "find": "    return { kind: \"unreadable\", path, code: code ?? \"unknown\" };",
       "replace": "    throw error;",
       "command": "pnpm smoke:jcode-empty-sessions",
-      "expectRed": "an unreadable sessions directory still starts the seat",
-      "cell": "an unreadable sessions directory still starts the seat"
+      "expectRed": "the unreadable sessions directory is named to the operator",
+      "cell": "the unreadable sessions directory is named to the operator"
     },
     {
       "name": "M9 report an unrecognised harness failure as a closed connection",
