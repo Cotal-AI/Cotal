@@ -24,11 +24,11 @@ commitments make that survivable for someone with a fleet:
 - **A change to the shape of a credential, or to who may renew one, is breaking whatever the commit
   marker says.** This rule is stated because the marker is a judgement made while writing the code
   and the consequence is felt by someone running it a day later. A fleet that keeps authenticating
-  looks compatible and is not, if nothing in it can renew. The check below reads markers, so a break
-  recorded as a feature is the one case the check cannot see. **Measured, so the rule is not
-  theoretical: the 0.49.0 change that caused all of this, `36d177951 feat(core)!`, did carry its
-  `!`, and replaying the check over that range refuses.** The rule exists for the next one that
-  does not.
+  looks compatible and is not, if nothing in it can renew. Any automated check of this rule would
+  read commit markers, so a break recorded as a feature is the one case it could not see, which is
+  why the rule is written for people first. **The marker held for this release: the 0.49.0 change
+  that caused all of this, `36d177951 feat(core)!`, did carry its `!`.** The rule exists for the
+  next one that does not.
 
 What this page does not promise is a rolling upgrade. Nothing in the current line dual-serves two
 authority versions, so where broker and manager run separately there is a window in which the mesh
@@ -331,15 +331,15 @@ no cut and no backup inside it, so the window is the stop, the install and the r
 
 **Every changeset marked breaking adds a section to this page.** A release that changes what an
 operator must do, in what order, or what stops working, is not finished until the section exists.
-This is enforced: a repository check reds when a range carries a breaking change and **adds no new
-release section to this page in that same range**, so the rule cannot decay into a convention nobody
-remembers. Be precise about what that proves, because a check trusted past its evidence is worse
-than none. It proves a section for this release **was written here**. It cannot prove the section is
-**correct**, or that it describes the break that actually landed. Reviewing the words remains a
-person's job, and the section's accuracy is the reviewer's to check.
+Today this is a convention that reviewers uphold, not something the repository enforces: a check
+that reds when a range carries a breaking change and adds no new release section is proposed
+separately, and this paragraph will name it once it lands. Be precise about what such a check could
+prove, because one trusted past its evidence is worse than none. It could prove a section for a
+release **was written here**. It cannot prove the section is **correct**, or that it describes the
+break that actually landed. Reviewing the words remains a person's job either way.
 
-**The heading is a `##` and names the release**, like `## From 0.48.2 to 0.49.0`. The check requires
-both, and neither is a style preference. Coverage is claimed by a heading, so a heading that names
+**The heading is a `##` and names the release**, like `## From 0.48.2 to 0.49.0`. Both matter, and
+neither is a style preference. Coverage is claimed by a heading, so a heading that names
 no release claims every release and distinguishes none: `## Notes` with a sentence under it would
 otherwise satisfy the rule. Naming the release also makes the section the one an operator upgrading
 that release will search for. Use `###` freely for detail inside a section. Subsections belong to
