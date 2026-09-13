@@ -1,0 +1,92 @@
+{
+  "grades": "source",
+  "suite": [
+    "scripts/check-operator-literals.celltamper.selftest.mjs"
+  ],
+  "guard": "every cell factory in the operator-literal scanner is located in its source and graded, and each one's discriminator can still say no, so a hollowed-out probe or a factory that drops out of the census is reported instead of passing silently",
+  "command": "node scripts/check-operator-literals.celltamper.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/check-operator-literals-cells.json",
+  "why": [
+    "This is the first fixture in the corpus naming scripts/check-operator-literals.mjs, so before it the selector reported `0 fixture(s) selected from 430` and `{\"shards\":[]}` for any diff touching the scanner, and the aggregate passed on the resulting skip. Measured at fe813fe390d3ef47ac54325f48be816ebaa84148, against controls of 3 selected for packages/core/src/membership-feed.ts and 2 for scripts/mutation-coverage.mjs.",
+    "The scanner's own self-test already grades its BEHAVIOUR: weakening a matching rule takes it to cells=30/34 FAIL exit 2, and .github/workflows/attribution.yml runs it on every invocation. What nothing graded is whether the cells themselves still discriminate. Each mutation below hollows one cell discriminator into a constant. Measured against the scanner's own suite, every one survives with cells=34/34 status=PASS exit 0, which is why a separate instrument is required rather than another cell.",
+    "The suite kills them by the absence of a failure. It tampers each cell's planted subject so the asserted property is genuinely destroyed, then requires that cell's discriminator FIELD to read 0. A live reader flips; a reader returning a constant cannot, so the tamper stops going red and the suite goes red in its place. The field is read rather than the cell's PASS/FAIL status, because on a POSITIVE cell the destroyed subject fails the primary anyway and would mask a dead secondary: measured, that produced one red row and one green row for the same mutant.",
+    "Coverage is by cell FACTORY, not by cell. The scanner builds 34 cells from 3 factories, so one case per factory grades every cell that factory builds, while one case per cell would mostly re-prove the same function. Adversarial review found real survivors in factories an earlier version of this fixture did not name, so the suite now enumerates the factories from the scanner SOURCE and fails when one is unaccounted for. That census is this issue's own defect class one level down: a case list grades what it names and is silent about what it forgot.",
+    "The census is BIDIRECTIONAL because one direction is not enough, and that was established by a reviewer rather than by reasoning. Checking only that everything FOUND is named cannot notice a factory the extractor failed to FIND: the behaviour-neutral edit `function matchCell(` to `function matchCell (` removed a factory from the census entirely while the suite still reported `unaccounted=0` and a full green. The denominator shrank in silence. So the suite also requires every family it claims to grade to be located in the source, and each of the two comparisons and the extractor itself carries its own planted control, because a control on one reader says nothing about another.",
+    "No family is exempt. An earlier version recorded scanCell as a KNOWN LIMIT that reported no secondary reading. That was wrong, and hollowing its metricCount SURVIVED: the field is simply named for the cell's metric rather than `secondary`. A limitation asserted rather than measured is a gap with a label on it.",
+    "The last three mutations guard the harness rather than the scanner: they blind each census direction and make the positional tamper silently do nothing. Any of them would let every case report a pass it did not earn."
+  ],
+  "mutations": [
+    {
+      "name": "the host-planted cell's secondary reader always reports the token as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "  matchCell('host-planted', `connect ${SELFTEST_HOST} now`, 'host-name', 1, (text) => Number(text.includes(SELFTEST_HOST)), 1),",
+      "replace": "  matchCell('host-planted', `connect ${SELFTEST_HOST} now`, 'host-name', 1, () => 1, 1),",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (positive cell) still discriminates",
+      "cell": "host-planted: destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (positive cell) still discriminates"
+    },
+    {
+      "name": "the host-substring cell's secondary reader always reports the token as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "  matchCell('host-substring', `connect x${SELFTEST_HOST}y now`, 'host-name', 0, (text) => Number(text.includes(SELFTEST_HOST)), 1),",
+      "replace": "  matchCell('host-substring', `connect x${SELFTEST_HOST}y now`, 'host-name', 0, () => 1, 1),",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (negative cell) still discriminates",
+      "cell": "host-substring: destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (negative cell) still discriminates"
+    },
+    {
+      "name": "the IPv4 shape reader counts an address in text that carries none",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "function shapeIPv4Count(text) {\n  let count = 0;",
+      "replace": "function shapeIPv4Count(text) {\n  if (true) return 1;\n  let count = 0;",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its shapeIPv4Count still discriminates",
+      "cell": "ip-loopback: destroying the planted subject drives this cell's secondary to 0, so its shapeIPv4Count still discriminates"
+    },
+    {
+      "name": "the home-fragment reader reports a home path in text that has none",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "function homeFragmentCount(text) {\n  return /(?:home|Users)",
+      "replace": "function homeFragmentCount(text) {\n  if (text !== null) return 1;\n  return /(?:home|Users)",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its homeFragmentCount still discriminates",
+      "cell": "home-relative: destroying the planted subject drives this cell's secondary to 0, so its homeFragmentCount still discriminates"
+    },
+    {
+      "name": "the CIDR boundary cells' planted probe always reports the address as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const planted = Number(\n        positive.includes(rule === 'shared-ipv4' ? SELFTEST_SHARED_IP : SELFTEST_PUBLIC_IP),\n      );",
+      "replace": "      const planted = 1;",
+      "expectRed": "destroying the planted subject drives this cell's planted to 0, so its cidrBoundaryCell planted probe still discriminates",
+      "cell": "public-cidr-alpha-tail: destroying the planted subject drives this cell's planted to 0, so its cidrBoundaryCell planted probe still discriminates"
+    },
+    {
+      "name": "the scanCell metric reader reports the expected count regardless of what was scanned",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const count = metricCount(result, metric);",
+      "replace": "      const count = expectedCount;",
+      "expectRed": "destroying the planted subject drives this cell's allowed to 0, so its scanCell metricCount still discriminates",
+      "cell": "allowlisted-fixture: destroying the planted subject drives this cell's allowed to 0, so its scanCell metricCount still discriminates"
+    },
+    {
+      "name": "the census stops checking that each claimed family is found in the source",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const findMissingFromSource = (claimed, defined) => claimed.filter((name) => !defined.includes(name));",
+      "replace": "  const findMissingFromSource = () => [];",
+      "expectRed": "census control: a family absent from the source is reported, so the containment above is a reading",
+      "cell": "census control: a family absent from the source is reported, so the containment above is a reading"
+    },
+    {
+      "name": "the census comparison is blinded, so an unaccounted cell factory is never reported",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const findUnaccounted = (defined) => defined.filter((name) => !accounted.includes(name));",
+      "replace": "  const findUnaccounted = () => [];",
+      "expectRed": "census control: a planted unaccounted factory is reported, so the comparison above is a reading",
+      "cell": "census control: a planted unaccounted factory is reported, so the comparison above is a reading"
+    },
+    {
+      "name": "a cell tamper that changes nothing is accepted as a tamper that was applied",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const tamperedBlock = block.split(find).join(replace);\n  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);\n  return source.slice(0, from) + tamperedBlock + source.slice(to);",
+      "replace": "  return source;",
+      "expectRed": "the tamper lands inside the named cell block",
+      "cell": "host-planted: the tamper lands inside the named cell block"
+    }
+  ]
+}
