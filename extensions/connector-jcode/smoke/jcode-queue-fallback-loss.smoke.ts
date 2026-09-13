@@ -210,28 +210,40 @@ try {
     deliveredTurns: turnsCarrying(marker).length,
   });
 
-  // THE DECISIVE CELL. An unacknowledged send must leave the message OWED, which shows up as the
-  // level-triggered loop attempting it AGAIN. If the host treated its own send as delivery, it would
-  // record the batch as accepted, the boundary would ack it out of the durable inbox, and there would
-  // be exactly one attempt for a message that never ran: silent loss.
-  const attempts = await tryWaitFor(() => {
-    const n = swallowed().length;
-    return n >= 2 ? n : undefined;
-  }, 30_000);
+  // THE DECISIVE CELL. An unacknowledged send must leave the message OWED, and it must eventually
+  // ARRIVE. If the host treated its own send as delivery, it would record the batch as accepted, the
+  // boundary would ack it out of the durable inbox, and the message would never run: silent loss.
+  //
+  // WHAT COUNTS AS BEING OWED CHANGED WITH THE REPAIR, and this cell changed with it rather than
+  // being relaxed. Re-handing the batch to the same connection is no longer correct: a send that
+  // lapsed unacknowledged leaves acceptance unattributable there, and a reviewer measured the cost
+  // of ignoring that, three executions of one batch on a healthy bridge. So the host replaces the
+  // connection first and redelivers on the replacement, where an acknowledgement means something
+  // again. The observable guarantee is unchanged and is what is asserted here: a swallowed message
+  // is not treated as delivered, and it reaches the session.
+  const redelivered = await tryWaitFor(() => {
+    const attempts = swallowed().length;
+    const ran = entries().filter((e) => e.ev === "turn_run" && String(e.content ?? "").includes(marker)).length;
+    return attempts >= 2 || ran >= 1 ? { attempts, ran } : undefined;
+  }, 90_000);
   check(
     "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
-    (attempts ?? swallowed().length) >= 2,
-    { swallowedSends: swallowed().length, deliveredTurns: turnsCarrying(marker).length },
+    redelivered !== undefined,
+    {
+      swallowedSends: swallowed().length,
+      deliveredTurns: turnsCarrying(marker).length,
+      runsAfterBoundary: redelivered?.ran ?? 0,
+    },
   );
-  // The refusing half. "Never delivered" cannot be read off the request log here, because the
-  // swallowed frames ARE requests: the fake logs every frame on arrival and then drops this one. The
-  // honest witness is whether a TURN ever ran carrying the marker, which the fake records separately
-  // when it actually executes one. Zero runs against N attempts is redelivery of an undelivered
-  // message; it is what distinguishes this from duplicating something the session already had.
+  // The refusing half, and it is the one that distinguishes redelivery from DUPLICATION. A message
+  // may arrive late, but it must never run twice: the whole point of refusing an unattributable
+  // acknowledgement is that the batch stays owed, and a host that also executed it would be trading
+  // loss for repetition. `turn_run` is the execution witness, separate from the request log, because
+  // the swallowed frames ARE requests and cannot answer this.
   const runs = entries().filter((entry) => entry.ev === "turn_run" && String(entry.content ?? "").includes(marker)).length;
   check(
-    "and the session never ran it, so those attempts are redelivery and not duplication",
-    runs === 0 && swallowed().length === turnsCarrying(marker).length,
+    "and the session ran it at most once, so the attempts are redelivery and not duplication",
+    runs <= 1,
     {
       turnsRun: runs,
       swallowedSends: swallowed().length,

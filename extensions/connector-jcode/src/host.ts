@@ -454,6 +454,8 @@ export async function runJcodeHost(): Promise<void> {
    * same path that redrives the durable batch, so delivery still happens: it is late, not lost.
    */
   let acceptanceSuspectUntilBridgeReplaced = false;
+  /** One boundary request per suspicion, so a lapsing Harness cannot become a reconnect loop. */
+  let bridgeReplacementRequestedForSuspicion = false;
   const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
     const previous = sessionDispatch;
     let release!: () => void;
@@ -1039,25 +1041,36 @@ export async function runJcodeHost(): Promise<void> {
   const queueTurnFallback = async (): Promise<void> => {
     const items = unservedAutomatic();
     if (!items.length) return;
-    // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, so re-delivering here would be
-    // strictly harmful. A reviewer measured the alternative: keep handing the batch to a healthy
-    // Harness that cannot be trusted to acknowledge attributably, and every attempt is ACCEPTED and
-    // EXECUTED, so the same non-idempotent instruction runs once a minute forever. That is worse
-    // than the loss the refusal prevents, and the durable inbox cannot break the cycle because a
-    // redelivery only refreshes the same pending entry.
+    // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, and the two obvious responses are
+    // both wrong, which is worth stating because I shipped each of them in turn.
     //
-    // So while acceptance is unattributable this tier stands down entirely. The batch stays owed and
-    // unacked, nothing is dropped, and delivery resumes at the next connection boundary, where an
-    // acknowledgement means something again. The seat reports `stalled` meanwhile, which is exactly
-    // what it is: work is queued and not being served, stated rather than hidden.
-    if (acceptanceSuspectUntilBridgeReplaced) {
+    // Keep re-delivering and every attempt is accepted and EXECUTED by a healthy Harness, so the
+    // same non-idempotent instruction runs once a minute forever; a reviewer measured three
+    // executions of one batch. Stand down entirely and an unacknowledged send is never retried at
+    // all, which breaks the guarantee this tier exists for: late delivery beats loss, but silence
+    // is not late delivery.
+    //
+    // So the response is neither. Re-delivery continues, because the batch is genuinely owed, and
+    // what changes is that the connection is REPLACED first: the replacement attaches the same
+    // session, the batch is still unacked, and it is redriven once on a connection where an
+    // acknowledgement is attributable again. Recovery is requested at most once here, and the
+    // existing one-shot guard governs it, so this cannot become a reconnect loop.
+    if (acceptanceSuspectUntilBridgeReplaced && !bridgeReplacementRequestedForSuspicion) {
+      bridgeReplacementRequestedForSuspicion = true;
+      const suspect = client;
       writeJcodeDiagnostic(
-        `[cotal-jcode] holding ${items.length} queued automatic message(s): a lapsed send left ` +
-          `acceptance unattributable on this connection, so re-delivery would risk repeated ` +
-          `execution; waiting for the connection boundary\n`,
+        `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
+          `connection can no longer be attributed; replacing the Harness connection before ` +
+          `re-delivering ${items.length} queued automatic message(s)\n`,
       );
-      return;
+      if (suspect) void recoverBridge(suspect);
     }
+    // Do not write into a connection that is being replaced. The send would fail on the closing
+    // socket and burn an attempt without reaching the seat, which is how the first version of this
+    // produced a `disconnected: harness connection closed` in place of a delivery. The batch stays
+    // owed and the level-triggered loop re-arms, so the next tick delivers it on the replacement
+    // where acceptance is attributable again: this defers one attempt rather than dropping it.
+    if (acceptanceSuspectUntilBridgeReplaced || reconnecting) return;
     const injection = formatInjection(items);
     if (!injection) return;
     const current = client;
@@ -1154,17 +1167,10 @@ export async function runJcodeHost(): Promise<void> {
         // existing one-shot guard still governs how many times this may happen, and if recovery is
         // already spent the seat stops rather than pretending it can serve the queue.
         //
-        // The re-delivery loop stands down in the meantime (see the guard at the top of this
-        // function), so suspicion cannot become a repeated-execution engine while it waits.
-        if (!acknowledged) {
-          acceptanceSuspectUntilBridgeReplaced = true;
-          writeJcodeDiagnostic(
-            `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
-              `connection can no longer be attributed; replacing the Harness connection to restore ` +
-              `a boundary rather than re-delivering unacknowledgeable work\n`,
-          );
-          if (current === client) void recoverBridge(current);
-        }
+        // The request itself is made by the fallback's next tick rather than here, so it happens on
+        // the retry path where the batch is still owed and can be redriven, instead of inside a
+        // handover that is already unwinding.
+        if (!acknowledged) acceptanceSuspectUntilBridgeReplaced = true;
         release();
         writeJcodeDiagnostic(
           acknowledged
@@ -1296,6 +1302,7 @@ export async function runJcodeHost(): Promise<void> {
           // listeners. That is the only boundary in this protocol that genuinely restores
           // attributability, and crossing it is what lets acceptance be trusted again.
           acceptanceSuspectUntilBridgeReplaced = false;
+          bridgeReplacementRequestedForSuspicion = false;
           unsettledLapsedDispatches = 0;
           watchClient(replacement);
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
