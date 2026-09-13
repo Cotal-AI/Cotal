@@ -22,6 +22,14 @@ import { __setPublishLinkForTest, hardenPrivate, mkSecretDir, writeSecretFile, w
 if (process.env.COTAL_SECRETFS_RACE_WORKER === "1") {
   const target = process.env.COTAL_SECRETFS_RACE_PATH!;
   const barrier = process.env.COTAL_SECRETFS_RACE_BARRIER!;
+  // The DESTINATION is normally published by `link`, which is atomic on its own, so a race there
+  // cannot say anything about the raw write. Force the link-unavailable path: the raw write is
+  // then the only thing deciding the destination, which is exactly the Windows-side primitive.
+  __setPublishLinkForTest(() => {
+    const e: NodeJS.ErrnoException = new Error("ENOTSUP: forced fallback");
+    e.code = "ENOTSUP";
+    throw e;
+  });
   const there = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
   while (!there(barrier)) { /* spin to the barrier: the tightest release available */ }
   try {
