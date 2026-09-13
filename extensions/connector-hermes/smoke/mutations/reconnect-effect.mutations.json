@@ -1,0 +1,67 @@
+{
+  "suite": [
+    "extensions/connector-hermes/smoke/reconnect-effect.smoke.ts"
+  ],
+  "guard": "a hermes platform that reconnects actually carries mesh traffic again, rather than reporting connected while receiving nothing",
+  "command": "pnpm smoke:hermes-reconnect-effect",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/reconnect-effect.mutations.json",
+  "why": [
+    "THIS CONFIG EXISTS BECAUSE THE SUITE IT GRADES WAS ADDED TO FIX A FALSE GREEN, AND A GUARD THAT",
+    "REPLACES A FALSE GREEN MUST ITSELF BE PROVEN ABLE TO FAIL, or the same mistake has simply moved.",
+    "",
+    "The history is worth keeping, because it is the whole argument for asserting effects. The first",
+    "version of this fix was guarded by `adapter-contract.smoke.ts`, which inspects the SIGNATURE of",
+    "CotalAdapter.connect and the PRESENCE of BridgeClient.reopen. Two reviewers independently",
+    "deleted the `if is_reconnect: reopen()` call and emptied reopen()'s body, and that suite stayed",
+    "green under BOTH, printing a confident `cells=23 passed=23 failed=0`. It could not have done",
+    "otherwise: a name and a signature do not change when a body is replaced by `return`. Adding more",
+    "cells of the same kind would have grown the tally and not the guard.",
+    "",
+    "M1 EMPTIES reopen()'s BODY. This is the mutation that survived the signature suite verbatim.",
+    "The method still exists, is still called, and still has the right signature, so adapter-contract",
+    "remains green under it. The effect suite must redden, because with a latched stop event and a",
+    "dead reader the client never redials and no mesh message reaches a turn.",
+    "",
+    "M2 DELETES THE CALL SITE. The near neighbour: reopen() is present and perfectly correct, the",
+    "adapter just never calls it on the reconnect path. One line from the subject, and the exact",
+    "defect the issue reports. Naming both is what distinguishes 'the method exists' from 'the",
+    "method runs and does something'.",
+    "",
+    "M3 RESTORES THE ORDERING BUG, and it is the subtlest of the three. Reading liveness BEFORE",
+    "clearing _stop leaves a window: a reader alive at the check that then reaches the top of its",
+    "loop and exits on the still-set flag stays installed as _reader, which rebuilds the dead bridge",
+    "the method exists to undo. It is timing dependent, so in production it surfaces as an occasional",
+    "silent platform rather than a clean failure. The suite forces that interleaving deterministically",
+    "instead of hoping to observe it, so this mutation reddens a named assertion every run.",
+    "",
+    "NO BUILD STEP IS PREPENDED. The suite drives plugin/cotal/*.py through a real python3 against a",
+    "real Unix socket, so the interpreter reads the mutated source directly and the dist/ staleness",
+    "trap that forces `pnpm build` on the TypeScript mutations cannot apply."
+  ],
+  "mutations": [
+    {
+      "name": "M1 reopen() exists and is called but does nothing",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return",
+      "replace": "        if True:\n            return\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return",
+      "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
+      "note": "The mutant that adapter-contract.smoke.ts cannot see. Its cold leg still delivers, so the refuse control's own 'fails only on the reconnect' row stays green and the failure is attributable to the reconnect rather than to a broken harness."
+    },
+    {
+      "name": "M2 the reconnect path never calls reopen()",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "        if is_reconnect:\n            # Clear the latched stop and drop the dead reader, so start() below really starts one.\n            self._client.reopen()\n",
+      "replace": "",
+      "expectRed": "AFTER A RECONNECT THE BRIDGE MUST STILL DELIVER: this is the silent dead-bridge defect from issue #1531",
+      "note": "The defect exactly as reported. Note that connect() keeps its is_reconnect parameter under this mutation, so every signature assertion in adapter-contract stays green: this is the clearest demonstration that a signature test and an effect test are not substitutes."
+    },
+    {
+      "name": "M3 reopen() reads liveness before clearing the stop flag",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "        self._stop.clear()\n        with self._lock:\n            reader = self._reader\n        if reader is None:\n            return",
+      "replace": "        with self._lock:\n            reader = self._reader\n        self._stop.clear()\n        if reader is None:\n            return",
+      "expectRed": "reopen must clear _stop BEFORE reading liveness: a reader that exits during the check must not stay installed",
+      "note": "The race, restored. Under the old ordering a reader observed alive can still exit on the flag that has not been cleared yet, and is left installed. The suite holds a reader at the top of its loop and releases it during the call, so the interleaving is forced rather than sampled."
+    }
+  ]
+}

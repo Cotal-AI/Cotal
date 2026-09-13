@@ -18,6 +18,11 @@ from typing import Any, Callable, Optional
 
 _BACKOFF_S = 2.0
 
+# How long ``reopen`` waits for a closed reader to finish unwinding. Bounded on purpose: a reader
+# wedged in a blocking recv must not hang a reconnect, and leaving it installed is the safe
+# outcome, since ``start`` then declines to run a second reader on the same socket.
+_REOPEN_JOIN_SECONDS = 2.0
+
 
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
@@ -136,16 +141,33 @@ class BridgeClient:
         ``get_client`` is a process-wide singleton, so the same closed client is what a reconnect
         gets handed. Clearing both here is what makes the restart real.
 
-        Safe to call on a live client: a reader still running is left alone, because dropping the
-        reference to a running thread would let ``start`` create a second one on the same socket.
+        Ordering matters and is not incidental. Reading liveness first and clearing ``_stop``
+        second leaves a window: a reader that is still alive at the check, then reaches the top of
+        its loop and exits on the flag that is still set, is left installed as ``_reader``. That
+        rebuilds the exact dead-bridge state this method exists to undo, and it is timing
+        dependent, so it reproduces as an occasional silent platform rather than a clean failure.
+        Clearing the flag first means any reader observed alive afterwards cannot exit because of
+        it, so ``_stop`` is settled before liveness is ever read.
+
+        The join closes the second half. A reader that already exited must not stay installed, and
+        a reader still running must be left alone, because dropping the reference to a running
+        thread would let ``start`` create a second one on the same socket. It runs outside the lock
+        because ``_run`` takes that same lock when a peer drops the socket, and joining a thread
+        while holding a lock it needs is a deadlock rather than a wait.
         """
+        self._stop.clear()
         with self._lock:
             reader = self._reader
-            if reader is not None and reader.is_alive():
-                self._stop.clear()
-                return
-            self._reader = None
-        self._stop.clear()
+        if reader is None:
+            return
+        # A closed reader is already unwinding; give it a bounded moment to land so liveness is a
+        # settled fact and not a race with its own exit.
+        reader.join(timeout=_REOPEN_JOIN_SECONDS)
+        with self._lock:
+            # Re-read under the lock: a concurrent start() may have installed a fresh reader while
+            # we were joining the old one, and that one must survive.
+            if self._reader is reader and not reader.is_alive():
+                self._reader = None
 
     def close(self) -> None:
         self._stop.set()

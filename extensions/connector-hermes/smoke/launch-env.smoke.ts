@@ -37,6 +37,17 @@ const assert = new Proxy(nodeAssert, {
   },
 }) as typeof nodeAssert;
 
+/**
+ * The count is a FLOOR, not a decoration.
+ *
+ * A derived sentinel proves the suite RAN its assertions. It does not prove the suite still
+ * CONTAINS them: delete one executed assertion and the tally quietly reads one lower and the shard
+ * still passes. That is liveness, not coverage, and shipping it while it reads like a coverage
+ * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
+ * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
+ */
+const EXPECTED_CELLS = 156;
+
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
   // A skip still has to name a cell count, or the shard reads the silence as a suite that ran
@@ -327,4 +338,14 @@ console.log(
 // Terminal sentinel, last line of output, with the count taken from the counting proxy above.
 // Any assertion that threw would have aborted before this line, so reaching it means every
 // counted cell passed.
+// The floor runs LAST, so a suite that lost an assertion fails here even though every remaining
+// assertion passed.
+if (cells !== EXPECTED_CELLS) {
+  console.error(
+    `SUITE INCOMPLETE: expected ${EXPECTED_CELLS} assertions, ran ${cells}. ` +
+      `A lower count means an assertion was deleted or skipped, which a derived tally alone would report as a smaller green.`,
+  );
+  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=1`);
+  process.exit(1);
+}
 console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
