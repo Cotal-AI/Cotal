@@ -36,6 +36,11 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const until = async (cond: () => boolean, budgetMs: number, stepMs: number): Promise<boolean> => {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) { if (cond()) return true; await wait(stepMs); }
+  return cond();
+};
 const MANAGER_BOUND_MS = 15_000; // manager's requestDeliveryAdmin("reloadCreds") timeout
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -53,9 +58,14 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 // each call site remembering. Owning only the first child would leave the LIVE broker unowned
 // after a restart while the suite still read as migrated: ownership held on a dead pid.
 let releaseBroker = (): void => {};
+// `-D` and piped output: scenario 7 grades what conn B presents to the BROKER after its own wire
+// expires, and the auth decision is only visible in the server's debug log.
+let brokerLog = "";
 const startBroker = (): ChildProcess => {
   releaseBroker();
-  const p = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  const p = spawn("nats-server", ["-D", "-c", join(dir, "server.conf")], { stdio: ["ignore", "pipe", "pipe"] });
+  p.stdout?.on("data", (d: Buffer) => { brokerLog += d.toString(); });
+  p.stderr?.on("data", (d: Buffer) => { brokerLog += d.toString(); });
   releaseBroker = teardownOnSignal(p, dir);
   return p;
 };
@@ -269,6 +279,48 @@ try {
   const h2after = await provesLive(feed5, boundedInit, h2hb);
   check("post-validation-failure the cache is UNCHANGED — bounded cred still presented after reconnect (H2)", h2after > h2hb, { h2after, h2hb });
   await feed5.stop();
+  feed = undefined;
+
+  // ---- Scenario 7: an expired rw cred is never presented, even by the client's own redial ----
+  // "Proven when adopted" and "unexpired now" are different properties. `currentRwCreds` only advances
+  // through a preflight-proven adoption, so it cannot hold an UNPROVEN generation - but the clock alone
+  // expires a proven one. With renewal failing (manager down, store unreachable), the broker closes conn B
+  // at `exp` and the client redials; before the checkpoint that redial presented the dead credential, which
+  // cost an auth round trip and reported the broker's words rather than the local, actionable cause.
+  const expiringId = newIdentity();
+  let expiringReads = 0;
+  const expiringLog: string[] = [];
+  const expiringFeed = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
+    log: (m) => { expiringLog.push(m); },
+    rwCreds: async () => {
+      expiringReads++;
+      if (expiringReads === 1) return mintCreds(auth, expiringId, "membership-rw", { expiresInSeconds: 3 });
+      throw new Error("fixture renewal source offline"); // renewal keeps failing, as in the report
+    },
+  });
+  feed = expiringFeed;
+  const expiryWindowStart = brokerLog.length; // grade only what this scenario's wire does
+  // Past `exp`, plus the broker's expiry-close and the client's redial attempt.
+  await until(() => /rw creds have expired/.test(expiringLog.join("\n")), 12_000, 100);
+  // Every broker-side connection that carried this feed's nkey into an expiry decision. The original wire
+  // is one; a redial that presented the dead cred would be a second cid on the same nkey.
+  const expiredCids = new Set(
+    brokerLog.slice(expiryWindowStart).split("\n")
+      .filter((l) => l.includes(`nkey:${expiringId.id}`) && /Authentication Expired/.test(l))
+      .map((l) => /cid:(\d+)/.exec(l)?.[1] ?? "?"),
+  );
+  check(
+    "the refusal is loud and names the failing renewal path",
+    expiringLog.some((m) => /rw creds have expired.*renewal is failing/.test(m)),
+    expiringLog,
+  );
+  check(
+    "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
+    expiredCids.size === 1,
+    { cids: [...expiredCids], reads: expiringReads },
+  );
+  await expiringFeed.stop();
   feed = undefined;
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-RW RENEWAL ${pass}/${pass + fail}`);

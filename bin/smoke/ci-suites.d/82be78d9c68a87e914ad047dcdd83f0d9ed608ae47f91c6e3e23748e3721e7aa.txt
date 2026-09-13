@@ -1,0 +1,2 @@
+# Concurrent Manager.start on a fresh root mints one identity; losers refuse.
+smoke:manager-fresh-root-identity
