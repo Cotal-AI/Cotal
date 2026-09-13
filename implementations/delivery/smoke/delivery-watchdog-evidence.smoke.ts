@@ -432,15 +432,18 @@ check("H6 and measurement continues after a reset rather than restarting blind",
 // H8 reddens the first, H9 the second. A fix that passes only one of them is the other bug.
 const solo = new LoopLagMeter(PROBE_INTERVAL_MS);
 check("H7 a probe late on its own, with no concurrent interval gap, is credited in full",
-  (solo.credit(900), solo.starvedMsWithin(60_000) === 900), solo.starvedMs);
+  (solo.credit(900, 900), solo.starvedMs === 900), solo.starvedMs);
 // (i) THE REVIEWER'S CASE. One stall seen twice: the timer fires late by it AND the probe in flight
 // across it answers late by it. Charging both exceeds the span, which is impossible on its face.
 const both = new LoopLagMeter(PROBE_INTERVAL_MS);
 both.tick(0);
-both.tick(10_000 + PROBE_INTERVAL_MS);
-both.credit(10_000);
-check("H8 one stall observed by BOTH the timer and a probe cannot exceed the span it happened in",
-  both.starvedMsWithin(10_000) === 10_000, { raw: both.starvedMs, clamped: both.starvedMsWithin(10_000) });
+both.tick(10_000 + PROBE_INTERVAL_MS);      // charges the interval [10000, 12000+...] as ONE dated stall
+both.credit(10_000, 10_000 + PROBE_INTERVAL_MS);   // the SAME wall-clock interval, seen by the probe
+// The reviewers' exact arithmetic: this read 17000 for a 10000ms stall before the repair. It is now
+// the extent of the union, not the sum, so one interval of time is one charge no matter how many
+// instruments saw it.
+check("H8 one stall seen by both the timer and a probe is charged ONCE, as the union of the two",
+  both.starvedMs === 10_000, both.starvedMs);
 // (ii) THE CASE THAT REJECTS THE LOSSY FIX, and the reason the meter does NOT net internally. Over a
 // 4000ms span the timer fires 2000ms late (a stall happening NOW) while a probe issued at the
 // PREVIOUS tick answers 2500ms late (the stall before it). These are two adjacent stalls, not one
@@ -449,24 +452,36 @@ check("H8 one stall observed by BOTH the timer and a probe cannot exceed the spa
 // `credit` exists for. Keeping both and bounding by the span credits the whole 4000.
 const adjacent = new LoopLagMeter(2_000);
 adjacent.tick(0);
-adjacent.tick(4_000);      // 2000 of interval gap
-adjacent.credit(2_500);    // an INDEPENDENT probe's lateness
-check("H9 a tick-measured stall plus an independently late probe credits MORE than the probe alone",
-  adjacent.starvedMsWithin(4_000) === 4_000 && adjacent.starvedMsWithin(4_000) > 2_500,
-  adjacent.starvedMsWithin(4_000));
-check("H10 and the clamp only ever removes the impossible excess, never real evidence",
-  adjacent.starvedMs === 4_500 && adjacent.starvedMsWithin(10_000) === 4_500, adjacent.starvedMs);
+adjacent.tick(4_000);              // a stall NOW: the interval [2000, 4000]
+adjacent.credit(2_500, 2_000);     // the stall BEFORE it: a probe answering at 2000, late by 2500
+// DISJOINT INTERVALS, so the union is the sum and BOTH are charged. This is the case that rejects
+// the lossy repair: netting or dropping the tick reports 2500 here and silently discards a 2000ms
+// stall the timer genuinely measured, in the very mechanism `credit` exists for.
+check("H9 two ADJACENT stalls are both charged in full, because they do not overlap in time",
+  adjacent.starvedMs === 4_500 && adjacent.starvedMs > 2_500, adjacent.starvedMs);
+// ...and the union is decided by the timestamps, not by the magnitudes. Same two numbers, overlapping
+// instants: one charge. Nothing about 2000 and 2500 says which case it is; only WHEN says.
+const sameNumbers = new LoopLagMeter(2_000);
+sameNumbers.tick(0);
+sameNumbers.tick(4_000);           // [2000, 4000]
+sameNumbers.credit(2_500, 4_000);  // [1500, 4000] - OVERLAPS the above
+check("H10 the same two magnitudes overlapping in time are charged as one interval, not two",
+  sameNumbers.starvedMs === 2_500, sameNumbers.starvedMs);
 const afterOnTime = new LoopLagMeter(PROBE_INTERVAL_MS);
 afterOnTime.tick(0);
 afterOnTime.tick(10_000 + PROBE_INTERVAL_MS);
-afterOnTime.credit(4_000);
-check("H11 within a span large enough to hold it, the full sum is reported",
-  afterOnTime.starvedMsWithin(60_000) === 14_000, afterOnTime.starvedMs);
+afterOnTime.credit(4_000, 20_000); // disjoint from the [0,10000] stall above
+check("H11 disjoint stalls across a window accumulate", afterOnTime.starvedMs === 14_000, afterOnTime.starvedMs);
 check("H12 a backwards probe measurement credits nothing, as with tick",
-  (afterOnTime.credit(-5_000), afterOnTime.starvedMsWithin(60_000) === 14_000), afterOnTime.starvedMs);
-// REFUSING case for the clamp itself: a nonsensical span cannot manufacture credit.
-check("H12b a negative span clamps to zero rather than crediting backwards",
-  afterOnTime.starvedMsWithin(-1) === 0, afterOnTime.starvedMsWithin(-1));
+  (afterOnTime.credit(-5_000, 20_000), afterOnTime.starvedMs === 14_000), afterOnTime.starvedMs);
+// THE INVARIANT THE WHOLE REPAIR EXISTS FOR, and the one a scalar accumulator cannot hold: charges
+// are intervals of real time, so no sequence of them can claim more time than actually passed.
+const soak = new LoopLagMeter(2_000);
+soak.tick(0);
+soak.tick(30_000);
+for (let i = 0; i < 20; i++) soak.credit(30_000, 30_000);   // twenty probes, all spanning that stall
+check("H12b twenty overlapping probes over one 30s stall still charge 30s, never 600s",
+  soak.starvedMs === 30_000, soak.starvedMs);
 
 console.log("\nI. the composition the daemon actually evaluates");
 // The full incident, reconstructed: a 2s interval that fired once at t=0 and next at t=45s on a

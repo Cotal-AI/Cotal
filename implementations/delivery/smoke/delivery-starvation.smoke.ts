@@ -29,6 +29,22 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect as connectSocket, type AddressInfo, type Socket } from "node:net";
+
+/** Is a thrown error the BROKER refusing to provision this suite, rather than a product failure?
+ *
+ *  Extracted as a pure function for one reason: the inline version could not be graded, and it was
+ *  WRONG. It tested `fail === 0` at a point where the enclosing catch had already run `fail++`, so
+ *  the condition was false on every possible path and the diagnostic it guarded was dead code. Two
+ *  reviewers found that by reading; no cell could have, because a branch inside a catch that only
+ *  fires on a broken environment is not reachable from a passing suite.
+ *
+ *  Pure and exported-shaped, so cells below can call it with both phases and both messages and
+ *  assert all four answers. `cellsGraded` is the count BEFORE the catch's own increment, which is
+ *  the ordering the bug got wrong: provisioning happens before any cell is graded, so a nonzero
+ *  count means the refusal came from somewhere a product defect could also reach. */
+function isProvisioningRefusal(cellsGraded: number, message: string): boolean {
+  return cellsGraded === 0 && /insufficient storage resources/i.test(message);
+}
 import { isReachable, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, chatStream, inboxStream, FANOUT_DURABLE, INBOX_READER_DURABLE, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, idFromCreds, leaseKey, mintCreds, mintMembershipObserverCreds, fanoutDurableConfig, openDeliveryRegistry, serverConfig, newIdentity, setupSpaceStreams, standaloneConnectOpts, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
@@ -1262,12 +1278,55 @@ try {
   // the successor row that must NOT be adopted as our own).
   // 80 -> 87: cells W1-W7 (an ordinary stop inside the start-up window must give the shard back).
   // 87 -> 93: cells X1-X6 (a start-up failure the CALLER catches must give the shard back too).
-  const EXPECTED_CELLS = 93;
+  // ── P. THE SUITE'S OWN ENVIRONMENT DISCRIMINATOR ────────────────────────────────────────────────
+  // Graded because it SHIPPED BROKEN: the condition was evaluated after the catch had incremented
+  // the failure counter, so it was false on every path and the diagnostic beneath it could never
+  // print. It failed in the worst possible place too - only when the environment is already broken,
+  // which is exactly when the reader has least context and most needs the explanation.
+  //
+  // The four cells are the full truth table, because the defect was a TRUE case that could not
+  // occur rather than a wrong answer to any single input.
+  console.log("\nP. the suite's own provisioning-refusal discriminator");
+  check("P1 a storage refusal BEFORE any cell is graded is an environment report",
+    isProvisioningRefusal(0, "nats: insufficient storage resources available") === true);
+  // THE CELL THAT WOULD HAVE CAUGHT THE SHIPPED BUG. Under the broken ordering the count was already
+  // 1 by the time this was asked, so P1's case reported false and this one looked identical.
+  check("P2 REFUSING CASE: the same message AFTER a cell has been graded is NOT environmental",
+    isProvisioningRefusal(1, "nats: insufficient storage resources available") === false);
+  check("P3 an unrelated failure during provisioning is not laundered as an environment problem",
+    isProvisioningRefusal(0, "delivery: the lease row is GONE") === false);
+  check("P4 and an unrelated failure mid-run is not either",
+    isProvisioningRefusal(1, "delivery: the lease row is GONE") === false);
+  // P5 grades the WIRING rather than the predicate: the value handed to the discriminator must be
+  // the count as it stood when the throw happened, not after the handler's own increment. This is
+  // the exact arithmetic that was wrong, expressed the way the catch block computes it.
+  {
+    let pass_ = 0, fail_ = 0;                       // nothing graded yet: a provisioning throw
+    const gradedBeforeThrow_ = pass_ + fail_;
+    fail_++;                                        // the catch's increment, as it really runs
+    check("P5 the discriminator is asked with the count from BEFORE the catch's own increment",
+      isProvisioningRefusal(gradedBeforeThrow_, "insufficient storage resources") === true &&
+      isProvisioningRefusal(pass_ + fail_, "insufficient storage resources") === false,
+      { gradedBeforeThrow: gradedBeforeThrow_, afterIncrement: pass_ + fail_ });
+  }
+
+  // 93 -> 98: P1-P5. The discriminator shipped unreachable and no cell noticed, because a branch
+  // that only fires on a broken environment is never walked by a passing suite. It is a pure
+  // function now precisely so it can be walked without one.
+  const EXPECTED_CELLS = 98;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
+  // CAPTURED BEFORE THE INCREMENT, and that ordering is the whole correctness of the guard below.
+  // The first version tested `fail === 0` AFTER `fail++` had already run, so it was false on every
+  // possible path and the diagnostic could never print - a guard that reads as careful and grades
+  // nothing. Found by a reviewer; the control is that this boolean is computed while the counters
+  // still describe the state the THROW happened in, not the state the handler created.
+  // CAPTURED BEFORE THE INCREMENT, and that ordering is the whole correctness of the guard. The
+  // first version tested the counters AFTER `fail++` had already run, so it could never be true.
+  const gradedBeforeThrow = pass + fail;
   fail++;
   // A PROVISIONING REFUSAL IS AN ENVIRONMENT REPORT, NOT A VERDICT ON THE DAEMON. JetStream RESERVES
   // each space's 4 GiB artifact cap against the server's store the moment the space is provisioned,
@@ -1286,7 +1345,7 @@ try {
   // `pass === 0` is the discriminator that costs nothing and cannot be wrong in the dangerous
   // direction: provisioning happens before the first cell runs, so if any cell has already been
   // graded the refusal is NOT the provisioning refusal, whatever it says.
-  if (pass === 0 && fail === 0 && /insufficient storage resources/i.test(why)) {
+  if (isProvisioningRefusal(gradedBeforeThrow, why)) {
     console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
     console.error(`     This is the test environment, not the daemon. This suite provisions SIX spaces (cells`);
     console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 4 GiB artifact`);

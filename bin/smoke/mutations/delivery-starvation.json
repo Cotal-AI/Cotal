@@ -105,7 +105,7 @@
   {
    "name": "M4 CONTROL: the starvation credit becomes unbounded, so a daemon can outlive a dead broker",
    "file": "implementations/delivery/src/watchdog.ts",
-   "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };",
+   "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"backstop\" };",
    "replace": "  void e.backstopMs;",
    "expectRed": "F1 exits past the backstop even with zero completed probes and full starvation credit",
    "cell": "F1 exits past the backstop even with zero completed probes and full starvation credit",
@@ -203,7 +203,7 @@
   {
    "name": "M13 CONTROL: a stale cached socket can defer the hard bound again",
    "file": "implementations/delivery/src/watchdog.ts",
-   "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"broker-gone\" };\n",
+   "find": "  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: \"backstop\" };\n",
    "replace": "",
    "expectRed": "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",
    "cell": "E3 past the backstop the daemon exits EVEN WITH a live transport — a cached socket cannot defer the bound",

@@ -518,6 +518,24 @@ for (const cmd of commands) {
     })}`);
     say(`${C.red}REFUSING: \`${cmd}\` is red BEFORE any mutation (exit ${base.status}).${C.off}`);
     say("Every mutation running it would grade as KILLED for a reason that has nothing to do with the mutation.");
+    // PRINT WHY, because a refusal that names no cell cannot be acted on. This block previously
+    // emitted a command, an exit code and a signature HASH: enough to prove two refusals matched
+    // each other, and not enough for anyone to fix either. A suite red only on CI then costs a full
+    // round trip per guess, and three reviewers plus the host spent one on exactly that.
+    //
+    // The failing lines are extracted rather than the whole log dumped: a baseline can be thousands
+    // of lines, and the reason it refused is always in the marked failures and the throw.
+    const lines = String(base.output ?? "").split("\n");
+    const blamed = lines.filter((l) => /✗|FAIL|scenario threw|Error:/.test(l));
+    if (blamed.length) {
+      say(`${C.red}WHY (${blamed.length} failing line(s) from that baseline):${C.off}`);
+      for (const l of blamed.slice(0, 12)) say(`    ${l.trim()}`);
+      if (blamed.length > 12) say(`    ... ${blamed.length - 12} more`);
+    } else {
+      // No marked failure at all: the suite died before it could report, so the tail is the evidence.
+      say(`${C.red}WHY: the baseline printed no failing cell. Last 12 lines:${C.off}`);
+      for (const l of lines.filter((l) => l.trim()).slice(-12)) say(`    ${l.trim()}`);
+    }
     process.exit(4);
   }
   // A suite that emits no marks has NO reached-the-assertion protection, whatever else it printed.

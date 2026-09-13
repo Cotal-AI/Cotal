@@ -371,6 +371,9 @@ export function mayServeOn(reading: LeaseReading): boolean {
 export class LoopLagMeter {
   private last: number | undefined;
   private accumulated = 0;
+  /** Disjoint, sorted [start, end] intervals of measured non-running time in the current window.
+   *  Bounded: overlapping charges merge, and `reset` clears them on every positive. */
+  private spans: Array<[number, number]> = [];
   constructor(private readonly intervalMs: number = PROBE_INTERVAL_MS) {}
 
   /** Record a firing at `now`; returns the lag this particular gap contributed.
@@ -390,7 +393,10 @@ export class LoopLagMeter {
     this.last = now;
     if (previous === undefined) return 0; // first firing has no gap to measure
     const lag = Math.max(0, now - previous - this.intervalMs);
-    this.accumulated += lag;
+    // Charged as a DATED INTERVAL, not a scalar. The stall ended when this firing ran, so it
+    // occupied [now - lag, now]. Recording WHEN lets an overlapping probe charge be unioned with it
+    // instead of added to it, which is the whole of the double-count repair.
+    this.chargeSpan(now - lag, now);
     return lag;
   }
 
@@ -400,7 +406,7 @@ export class LoopLagMeter {
    *  the third of the issue's three mechanisms and the one that produces a completed `false` from a
    *  perfectly live server. Clamped at zero for the same reason `tick` is: a measurement that ran
    *  backwards must never credit time the process actually had. */
-  credit(lagMs: number): void {
+  credit(lagMs: number, endedAt: number = Date.now()): void {
     // BOTH MEASUREMENTS ARE KEPT. An earlier repair here netted this against the most recent interval
     // gap, on the theory that the two always observe ONE stall. They do not, and a reviewer produced
     // the separating case: over a 4000ms span a timer can fire 2000ms late (a stall happening NOW)
@@ -409,7 +415,32 @@ export class LoopLagMeter {
     // is the very mechanism this method exists for, a process scheduled often enough to fire a timer
     // but not to finish a handshake. I measured my own netting against that case and it produced the
     // lossy answer, so it is gone.
-    this.accumulated += Math.max(0, lagMs);
+    this.chargeSpan(endedAt - Math.max(0, lagMs), endedAt);
+  }
+
+  /** Charge [from, to] as time this process was not running, UNIONED with what is already charged.
+   *
+   *  This is the double-count repair, and it is why both call sites can stay. A stall observed by
+   *  the interval timer and by a probe answering across it is ONE interval of wall-clock time seen
+   *  by two instruments. Summing scalars charges it twice (measured: 17s for a 10s stall). Summing
+   *  INTERVALS cannot, because the union of overlapping intervals is their extent.
+   *
+   *  It also keeps what netting threw away. Two ADJACENT stalls (a timer late by one, a probe from
+   *  the previous tick late by another) do not overlap, so the union is their sum and both are
+   *  charged in full. Overlap is decided by the timestamps rather than guessed from the magnitudes,
+   *  which is the thing neither scalar arithmetic nor a span clamp can do. */
+  private chargeSpan(from: number, to: number): void {
+    if (!(to > from)) return;                       // zero or backwards: never credits time we had
+    const merged: Array<[number, number]> = [];
+    let lo = from, hi = to;
+    for (const [s, e] of this.spans) {
+      if (e < lo || s > hi) { merged.push([s, e]); continue; }   // disjoint: keep as-is
+      lo = Math.min(lo, s); hi = Math.max(hi, e);                // touching: absorb
+    }
+    merged.push([lo, hi]);
+    merged.sort((a, b) => a[0] - b[0]);
+    this.spans = merged;
+    this.accumulated = merged.reduce((n, [s, e]) => n + (e - s), 0);
   }
 
   /** Accumulated lag CLAMPED to the span it is about to be compared against.
@@ -438,5 +469,7 @@ export class LoopLagMeter {
    *  firing baseline is deliberately KEPT, so a stall spanning a reset is still measured. */
   reset(): void {
     this.accumulated = 0;
+    this.spans = [];   // the intervals ARE the accumulator now; clearing one without the other
+                       // would let a pre-reset stall be re-charged by a later overlapping probe.
   }
 }

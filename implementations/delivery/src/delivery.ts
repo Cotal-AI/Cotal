@@ -1020,7 +1020,11 @@ async function runStartedDelivery(
           // deadline was enforced against this process rather than against the server. That is the
           // starved-client case, and it is the one an elapsed-time predicate cannot see at all: the
           // timer is firing, the probes are completing, and every one of them is `false`.
-          lag.credit(probe.lateBy);
+          // Dated with the instant the answer ARRIVED, so the meter can tell whether this stall is
+          // the same wall-clock interval the tick above already charged (union, counted once) or an
+          // adjacent one (disjoint, both counted). The overlap question is settled by timestamps
+          // rather than by comparing magnitudes, which cannot distinguish the two.
+          lag.credit(probe.lateBy, Date.now());
           completedNegatives = 0;
         } else {
           // A refusal that arrived on time. This is the only thing that may accrue against the broker.

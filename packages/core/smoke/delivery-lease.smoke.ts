@@ -297,13 +297,39 @@ try {
     // descheduled inside its broker read, resuming after a successor has taken the shard. It is
     // reproduced by quiescing WHILE the request is in flight rather than before it, so the handler
     // entered through a live subscription and returns through a stood-down daemon.
+    //
+    // THE HANDOFF IS OBSERVED, NOT TIMED. The first version slept 1ms and hoped the request had
+    // reached the handler. Two reviewers caught it: when the sleep loses, `quiescePlane3` unsubscribes
+    // the rail BEFORE dispatch, the broker answers 503 No Responders with an EMPTY body, and V6 sees
+    // "unparseable reply" instead of the named refusal. Reproduced by them, not by me - my own six
+    // consecutive runs were green, which is exactly why a sleep is the wrong instrument: it fails on
+    // someone else's machine and passes on mine.
+    //
+    // So the test WAITS FOR THE HANDLER TO SAY IT IS INSIDE. `ownerMemberships` is the await the real
+    // handler parks on, so wrapping it gives the exact ordering under test: entered through a live
+    // subscription, released after the quiesce has run. No sleep, no race, and it cannot pass by
+    // accident on a fast host.
+    let sawEntry!: () => void;
+    const entered = new Promise<void>((res) => { sawEntry = res; });
+    let releaseHandler!: () => void;
+    const held = new Promise<void>((res) => { releaseHandler = res; });
+    const realOwnerMemberships = dv.ownerMemberships.bind(dv);
+    (dv as unknown as { ownerMemberships: typeof realOwnerMemberships }).ownerMemberships = async (owner, uid) => {
+      sawEntry();                        // "I am inside the handler, past its entry check"
+      await held;                        // park here exactly as a slow broker read would
+      return realOwnerMemberships(owner, uid);
+    };
     const inflight = ask();
-    await wait(1);                 // let the request reach the handler and enter its await
+    await entered;                 // PROVEN in the handler, not presumed
     await dv.quiescePlane3();      // the successor has taken the shard; this daemon stands down
+    releaseHandler();              // the parked handler resumes into a stood-down daemon
     const vInflight = await inflight;
     check("V5 a request admitted BEFORE the quiesce is not answered ok after it", vInflight?.ok !== true, vInflight);
-    check("V6 and it is refused by name rather than silently dropped, so the caller can retry",
-      vInflight === undefined || /stopped serving this shard/.test(vInflight.error ?? ""), vInflight);
+    // NO LONGER TOLERATES `undefined`. With the ordering proven rather than raced, "no answer" is a
+    // real failure: the handler WAS admitted, so the caller is owed a named refusal it can retry on.
+    check("V6 and it is refused BY NAME rather than dropped or answered with an empty body",
+      /stopped serving this shard/.test(vInflight?.error ?? ""), vInflight);
+    (dv as unknown as { ownerMemberships: typeof realOwnerMemberships }).ownerMemberships = realOwnerMemberships;
   } finally {
     try { await vNc.close(); } catch { /* ignore */ }
     try { await dv.stop(); } catch { /* ignore */ }
