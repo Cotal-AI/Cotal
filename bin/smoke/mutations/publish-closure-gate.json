@@ -111,6 +111,24 @@
       "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
       "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
       "note": "The accept direction, held as strict as before: a correct `exit 0` is never read as a failure, in any position. A widening that lost the non-zero lookahead would keep this cell green and would red a valid workflow elsewhere."
+    },
+    {
+      "name": "a reachable keyword-position failure is added to the UNSETTLED branch",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED \u2014 the registry has not converged. Skipping the Release.\"",
+      "replace": "            echo \"UNSETTLED \u2014 the registry has not converged. Skipping the Release.\"\n            if true; then exit 1; fi",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "note": "bash gives this body rc=1, so the quiet skip becomes a job failure. A matcher that treats only punctuation as a command position reads it as safe: `; exit 1` matches and `; then exit 1` does not. Five more shapes hide behind the same gap (else, while, for, until, elif)."
+    },
+    {
+      "name": "the PARTIAL branch's exit is moved inside a string",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH \u2014 failing the job.\"\n            exit 1",
+      "replace": "            echo \"PARTIAL PUBLISH; exit 1\"",
+      "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "note": "bash gives this body rc=0, so a partial publish stops failing the job and a Release is cut. It is the worse direction: the vacuity guard is what licenses the two negative cells, so a guard satisfied by a body that does not fail licenses nothing."
     }
   ]
 }
