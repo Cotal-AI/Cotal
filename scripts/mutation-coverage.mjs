@@ -216,10 +216,39 @@ const launchedScriptArg = (evalPath, argvNode) => {
   return undefined;
 };
 
+/**
+ * The argument arrays a launcher's argv expression can actually be at run time.
+ *
+ * A genuine invocation often binds its argument list first — `const args = mode ? [a, …] : [b, …]`
+ * — and each branch is a real argv for that call. Resolving them is not a widening: every branch
+ * is still an argument of THIS launcher, and the launched-script slot is still located by Node's
+ * own flag rules inside it. Refusing these would reject real launches for their spelling, which is
+ * the mirror of the mention-shaped accepts this witness exists to close.
+ */
+const argvCandidates = (node, arrays, depth = 0) => {
+  if (!node || depth > 4) return [];
+  if (ts.isParenthesizedExpression(node)) return argvCandidates(node.expression, arrays, depth + 1);
+  if (ts.isArrayLiteralExpression(node)) return [node];
+  if (ts.isConditionalExpression(node)) {
+    return [...argvCandidates(node.whenTrue, arrays, depth + 1), ...argvCandidates(node.whenFalse, arrays, depth + 1)];
+  }
+  if (ts.isIdentifier(node)) return (arrays.get(node.text) ?? []);
+  return [];
+};
+
 /** Every repo path this suite hands to a launcher in the slot that actually gets executed. */
 const launchedPaths = (suite, source) => {
   const { sf, evalPath } = pathEval(suite, source);
   const launchers = namedAliases(source, "child_process", LAUNCHERS);
+  const arrays = new Map();
+  const bind = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const candidates = argvCandidates(node.initializer, arrays);
+      if (candidates.length > 0) arrays.set(node.name.text, candidates);
+    }
+    ts.forEachChild(node, bind);
+  };
+  bind(sf);
   const found = [];
   const visit = (node) => {
     if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {
@@ -229,9 +258,11 @@ const launchedPaths = (suite, source) => {
       const direct = command ? evalPath(command) : undefined;
       if (typeof direct === "string") found.push(direct);
       if (command && isNodeExecutable(evalPath, command) && argv) {
-        const script = launchedScriptArg(evalPath, argv);
-        const value = script ? evalPath(script) : undefined;
-        if (typeof value === "string") found.push(value);
+        for (const candidate of argvCandidates(argv, arrays)) {
+          const script = launchedScriptArg(evalPath, candidate);
+          const value = script ? evalPath(script) : undefined;
+          if (typeof value === "string") found.push(value);
+        }
       }
     }
     ts.forEachChild(node, visit);

@@ -145,6 +145,17 @@ try {
     'const mod = await import("../../packages/seat/dist/index.js");\nconsole.log(mod);\n');
   write("bin/smoke/dist-type-only.smoke.ts",
     'import type { X } from "../../packages/seat/dist/index.js";\nexport type Y = X;\n');
+  // #1434's indirection hazard: a genuine launch that binds its argument list first.
+  write("bin/smoke/argv-conditional.smoke.ts",
+    'const args = configMode\n' +
+    '  ? [join(ROOT, "scripts", "direct.mjs"), "--config", "config.json"]\n' +
+    '  : [join(ROOT, "scripts", "direct.mjs")];\n' +
+    'spawnSync(process.execPath, args, { cwd: root });\n');
+  // The same shape where NEITHER branch launches the target: still a refusal.
+  write("bin/smoke/argv-conditional-unrelated.smoke.ts",
+    'const args = configMode ? ["-e", "void 0"] : ["-e", "void 1"];\n' +
+    'spawnSync(process.execPath, args);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\nconsole.log(unused);\n');
   write("package.json", JSON.stringify({
     name: "fixture",
     scripts: {
@@ -272,6 +283,14 @@ try {
   config("launch-foreign", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/unreached.ts")] });
   result = run("launch-foreign");
   check("a source file the launched entrypoint never imports is refused", result.status !== 0 && /REFUSED launch-foreign/.test(result.stderr), report(result));
+
+  config("argv-conditional", { suite: ["bin/smoke/argv-conditional.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("argv-conditional");
+  check("a launch whose argument list is bound first still witnesses the script", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("argv-conditional-unrelated", { suite: ["bin/smoke/argv-conditional-unrelated.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("argv-conditional-unrelated");
+  check("a bound argument list that never names the target is refused", result.status !== 0 && /REFUSED argv-conditional-unrelated/.test(result.stderr), report(result));
 
   config("dist-built", { suite: ["bin/smoke/dist-import.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("dist-built");
