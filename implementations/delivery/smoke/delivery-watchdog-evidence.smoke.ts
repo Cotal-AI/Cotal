@@ -181,6 +181,22 @@ const justInside = brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP, 
 check("F2 does NOT exit at the backstop boundary itself", justInside.exit === false, justInside);
 check("F2b and the diagnosis there is still starvation", justInside.reason === "starved", justInside);
 
+// F3-F4: THE BACKSTOP MUST NAME ITSELF. A reviewer's standing objection is that this branch still
+// contains a wall-clock exit, and that is TRUE - the backstop is one by construction, because an
+// unbounded wait is its own failure mode. What was wrong was the LABEL: this path reported the same
+// "broker-gone" verdict as the evidence path, and the daemon's exit line then claimed completed
+// probes over ">15s of unstarved time" on a path that establishes neither. The two exits are now
+// distinguishable, so an operator can tell a diagnosis from a timeout.
+const pastBackstop = brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, starvedMs: BACKSTOP, completedNegatives: 0 }));
+check("F3 the elapsed-time exit reports itself as the backstop, not as a broker-gone verdict",
+  pastBackstop.exit === true && pastBackstop.reason === "backstop", pastBackstop);
+// REFUSING CASE: the evidence path, which DOES conclude something about the server, keeps the
+// verdict label. If both said "backstop" the distinction would be as useless as when both said
+// "broker-gone".
+const byEvidence = brokerGoneVerdict(evidence({ msSinceLastReachable: 20_000, completedNegatives: 4 }));
+check("F4 REFUSING CASE: an exit reached ON EVIDENCE is still reported as a broker-gone verdict",
+  byEvidence.exit === true && byEvidence.reason === "broker-gone", byEvidence);
+
 console.log("\nJ. the probe classifier — what a single answer established, given when it arrived");
 // This is the signal that makes the third mechanism visible: `isReachable` flattens a starved
 // client and a dead server to the same `false`, but they differ in WHEN the answer arrives relative
@@ -406,6 +422,52 @@ reset.tick(30_000);
 check("H5 lag accrued before positive evidence is discarded on reset", reset.starvedMs === 28_000 && (reset.reset(), reset.starvedMs === 0));
 check("H6 and measurement continues after a reset rather than restarting blind", reset.tick(60_000) === 28_000);
 
+// H7-H12: `credit` AND THE CLAMP, neither of which appeared in any cell in this tree until now.
+// `.credit(` has exactly one call site, and both large suites stayed green while a stall was charged
+// twice - a reviewer measured 17s of credit out of a 10s stall. That is the definition of grading
+// nothing, so these are written to FAIL against the broken forms rather than to describe the fixed
+// one. TWO forms are wrong here and the pair below separates them:
+//   charge-both  (shipped)  - 17000 for a 10000 stall, impossible
+//   drop-tick    (rejected) - discards a stall the timer really measured
+// H8 reddens the first, H9 the second. A fix that passes only one of them is the other bug.
+const solo = new LoopLagMeter(PROBE_INTERVAL_MS);
+check("H7 a probe late on its own, with no concurrent interval gap, is credited in full",
+  (solo.credit(900), solo.starvedMsWithin(60_000) === 900), solo.starvedMs);
+// (i) THE REVIEWER'S CASE. One stall seen twice: the timer fires late by it AND the probe in flight
+// across it answers late by it. Charging both exceeds the span, which is impossible on its face.
+const both = new LoopLagMeter(PROBE_INTERVAL_MS);
+both.tick(0);
+both.tick(10_000 + PROBE_INTERVAL_MS);
+both.credit(10_000);
+check("H8 one stall observed by BOTH the timer and a probe cannot exceed the span it happened in",
+  both.starvedMsWithin(10_000) === 10_000, { raw: both.starvedMs, clamped: both.starvedMsWithin(10_000) });
+// (ii) THE CASE THAT REJECTS THE LOSSY FIX, and the reason the meter does NOT net internally. Over a
+// 4000ms span the timer fires 2000ms late (a stall happening NOW) while a probe issued at the
+// PREVIOUS tick answers 2500ms late (the stall before it). These are two adjacent stalls, not one
+// seen twice, and the meter cannot tell which it is holding. Suppressing the tick charge here
+// credits 2500 and throws away 2000ms the process genuinely measured - in exactly the mechanism
+// `credit` exists for. Keeping both and bounding by the span credits the whole 4000.
+const adjacent = new LoopLagMeter(2_000);
+adjacent.tick(0);
+adjacent.tick(4_000);      // 2000 of interval gap
+adjacent.credit(2_500);    // an INDEPENDENT probe's lateness
+check("H9 a tick-measured stall plus an independently late probe credits MORE than the probe alone",
+  adjacent.starvedMsWithin(4_000) === 4_000 && adjacent.starvedMsWithin(4_000) > 2_500,
+  adjacent.starvedMsWithin(4_000));
+check("H10 and the clamp only ever removes the impossible excess, never real evidence",
+  adjacent.starvedMs === 4_500 && adjacent.starvedMsWithin(10_000) === 4_500, adjacent.starvedMs);
+const afterOnTime = new LoopLagMeter(PROBE_INTERVAL_MS);
+afterOnTime.tick(0);
+afterOnTime.tick(10_000 + PROBE_INTERVAL_MS);
+afterOnTime.credit(4_000);
+check("H11 within a span large enough to hold it, the full sum is reported",
+  afterOnTime.starvedMsWithin(60_000) === 14_000, afterOnTime.starvedMs);
+check("H12 a backwards probe measurement credits nothing, as with tick",
+  (afterOnTime.credit(-5_000), afterOnTime.starvedMsWithin(60_000) === 14_000), afterOnTime.starvedMs);
+// REFUSING case for the clamp itself: a nonsensical span cannot manufacture credit.
+check("H12b a negative span clamps to zero rather than crediting backwards",
+  afterOnTime.starvedMsWithin(-1) === 0, afterOnTime.starvedMsWithin(-1));
+
 console.log("\nI. the composition the daemon actually evaluates");
 // The full incident, reconstructed: a 2s interval that fired once at t=0 and next at t=45s on a
 // host at load 311, with the broker up the whole time. One completed negative from the probe that
@@ -476,8 +538,59 @@ check("N8 the incident's reading keeps the daemon alive AND stops it serving unt
 check("N9 nothing may serve that must exit",
   allReadings.every((r) => !mayServeOn(r) || leaseAction(r) !== "exit"));
 
+// I3-I5: THE INVARIANT THAT MAKES THE EXCUSE COHERENT, composed the way the daemon composes it -
+// `tick` on the interval and `credit` on the probe answer, over ONE stall of known length.
+const ELAPSED = 30_000;
+const composed = new LoopLagMeter(PROBE_INTERVAL_MS);
+composed.tick(0);
+composed.tick(ELAPSED + PROBE_INTERVAL_MS);   // the timer saw the whole stall
+composed.credit(ELAPSED);                      // so did the probe that spanned it
+check("I3 lag measured over one stall never exceeds the time that actually passed",
+  composed.starvedMsWithin(ELAPSED) <= ELAPSED,
+  { raw: composed.starvedMs, clamped: composed.starvedMsWithin(ELAPSED), elapsed: ELAPSED });
+// WHAT THE CLAMP ACTUALLY GUARANTEES, stated as narrowly as it is true. Unstarved time can no longer
+// go NEGATIVE, which is the property the evidence clause needs: a negative can never be cleared by
+// any amount of real outage, so a dead broker stopped being detectable at all. Non-negative is a
+// weaker claim than "the evidence clause always fires", and I5 below is the honest reason why.
+const SPAN = 50_000;
+const clamped = composed.starvedMsWithin(SPAN);
+check("I4 unstarved time is never negative, so real outage can always accumulate against it",
+  SPAN - clamped >= 0, { clamped, span: SPAN, unstarved: SPAN - clamped });
+// I5, THE RESIDUAL, RECORDED RATHER THAN HIDDEN. Clamping bounds the damage; it cannot un-double-count
+// a single stall, because two charges of 30000 inside a 50000 span are indistinguishable from genuine
+// near-total starvation. Measured: this shape still misses the evidence clause and ends on the
+// backstop instead of at ~44s. That is a real cost and it is why the backstop must stay unconditional
+// - it is the bound that keeps an over-generous excuse from becoming an unbounded one. Honest
+// accounting of the same stall exits on evidence, which is the difference this cell fixes in view.
+const residual = brokerGoneVerdict(evidence({ msSinceLastReachable: SPAN, starvedMs: clamped, completedNegatives: 6 }));
+const honest = brokerGoneVerdict(evidence({ msSinceLastReachable: SPAN, starvedMs: ELAPSED, completedNegatives: 6 }));
+check("I5 a fully-overlapped stall still reaches the backstop rather than the evidence clause, and the daemon still dies",
+  residual.exit === false && honest.exit === true &&
+  brokerGoneVerdict(evidence({ msSinceLastReachable: BACKSTOP + 1, starvedMs: composed.starvedMsWithin(BACKSTOP + 1), completedNegatives: 6 })).exit === true,
+  { residual, honest });
+// I6 CONTROL: where the two charges do NOT swallow the whole span, the clamp restores exactly what
+// the defect broke - a dead broker exits on EVIDENCE, on time, rather than waiting for the backstop.
+const partial = new LoopLagMeter(PROBE_INTERVAL_MS);
+partial.tick(0);
+partial.tick(10_000 + PROBE_INTERVAL_MS);
+partial.credit(10_000);
+const partialVerdict = brokerGoneVerdict(evidence({
+  msSinceLastReachable: SPAN,
+  starvedMs: partial.starvedMsWithin(SPAN),
+  completedNegatives: 6,
+}));
+check("I6 CONTROL: a dead broker behind a bounded stall exits on evidence, not on the backstop",
+  partialVerdict.exit === true && partialVerdict.reason === "broker-gone", partialVerdict);
+
 // 89 -> 90: K5b, the cell that makes K5 half of a real pair rather than a restatement of K2.
-const EXPECTED_CELLS = 90;
+// 90 -> 103: H7-H12b and I3-I6, grading `credit`, the span clamp, and the composed lag-vs-elapsed
+// invariant. Until these, `credit` was called once tree-wide and graded nowhere, which is why both
+// large suites were green while it charged every stall twice. H8 and H9 separate the two WRONG
+// answers from each other, so a lossy repair cannot pass by fixing only the arithmetic.
+// 98 -> 100: F3-F4, pinning the backstop's own label. The elapsed-time exit and the evidence exit
+// were indistinguishable to callers, which is what let the exit line make an evidentiary claim on a
+// path that never established one.
+const EXPECTED_CELLS = 103;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

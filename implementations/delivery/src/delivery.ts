@@ -1026,9 +1026,18 @@ async function runStartedDelivery(
           // A refusal that arrived on time. This is the only thing that may accrue against the broker.
           completedNegatives += 1;
         }
+        // ONE SPAN, MEASURED ONCE, USED FOR BOTH. Reading the clock twice would let the elapsed span
+        // and the lag clamp disagree by the cost of the call itself.
+        const sinceReachable = Date.now() - lastReachable;
         const verdict = brokerGoneVerdict({
-          msSinceLastReachable: Date.now() - lastReachable,
-          starvedMs: lag.starvedMs,
+          msSinceLastReachable: sinceReachable,
+          // CLAMPED TO THE SPAN IT IS SUBTRACTED FROM. The interval gap and a late probe answer can
+          // testify to the same stall, and the meter cannot tell that from two adjacent stalls, so it
+          // keeps both charges and the bound is applied here, where the span is known. Without it a
+          // 10s stall read 17s and drove unstarved time negative, which cannot be cleared by any
+          // amount of real outage: a dead broker then survives the evidence clause and exits only on
+          // the backstop, 44s -> 62s measured. Time not had cannot exceed time passed.
+          starvedMs: lag.starvedMsWithin(sinceReachable),
           completedNegatives,
           transportConnected,
           windowMs: BROKER_GONE_MS,
@@ -1036,9 +1045,19 @@ async function runStartedDelivery(
           backstopMs: BROKER_GONE_BACKSTOP_MS,
         });
         if (verdict.exit) {
+          // SAY WHICH EXIT THIS IS. The single message here previously claimed completed probes over
+          // ">15s of unstarved time" on BOTH paths, and on the backstop path that sentence is simply
+          // false: the backstop fires precisely when the evidence clauses did NOT conclude, often
+          // with zero completed refusals. An operator debugging a starved host was handed a
+          // confident evidentiary claim the daemon had not established.
           console.error(
-            `✗ delivery: broker unreachable — ${completedNegatives} completed probes refused within their deadline over ` +
-              `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMs / 1000)}s of local scheduler lag credited) — exiting (coupled to the broker)`,
+            verdict.reason === "backstop"
+              ? `✗ delivery: giving up on elapsed time alone — ${Math.round(BROKER_GONE_BACKSTOP_MS / 1000)}s since the last ` +
+                  `confirmed reachability with no sufficient evidence either way (${completedNegatives} completed probes refused, ` +
+                  `${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited). This is a BOUND, not a diagnosis: the ` +
+                  `broker may be gone or this process may have been starved past the bound — exiting (coupled to the broker)`
+              : `✗ delivery: broker unreachable — ${completedNegatives} completed probes refused within their deadline over ` +
+                  `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited) — exiting (coupled to the broker)`,
           );
           shutdown(1);
           return;
@@ -1050,7 +1069,7 @@ async function runStartedDelivery(
           degraded = true;
           console.error(
             verdict.reason === "starved"
-              ? `! delivery: DEGRADED — cannot reach the broker, but ${Math.round(lag.starvedMs / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
+              ? `! delivery: DEGRADED — cannot reach the broker, but ${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
               : verdict.reason === "transport-live"
                 ? `! delivery: DEGRADED — a fresh probe cannot complete, but this daemon's own connection to ${server} is still open, so the broker is there and this process cannot ask; serving, retrying`
                 : `! delivery: DEGRADED — the broker has not answered for >${BROKER_GONE_MS / 1000}s but only ${completedNegatives} of ${BROKER_GONE_PROBES} probes have refused within their deadline; serving, retrying`,

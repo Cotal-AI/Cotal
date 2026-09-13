@@ -219,7 +219,13 @@ export type BrokerVerdict =
   | { exit: false; reason: "starved" }
   | { exit: false; reason: "transport-live" }
   | { exit: false; reason: "insufficient-evidence" }
-  | { exit: true; reason: "broker-gone" };
+  // Two DIFFERENT exits, deliberately not one. "broker-gone" is a conclusion FROM EVIDENCE: enough
+  // completed refusals over enough unstarved time. "backstop" is the absence of one - elapsed time
+  // alone, taken because an unbounded wait is its own failure. A reviewer read the merged label and
+  // correctly objected that the branch still contains a wall-clock exit; it does, necessarily, and
+  // the honest fix is to SAY which exit happened rather than to describe both as a verdict.
+  | { exit: true; reason: "broker-gone" }
+  | { exit: true; reason: "backstop" };
 
 /**
  * Decide whether the broker is GONE, from evidence alone.
@@ -264,7 +270,7 @@ export function brokerGoneVerdict(e: BrokerWatchEvidence): BrokerVerdict {
   // So the daemon is bounded unconditionally: past the backstop it exits, whatever it believes
   // about its socket. That is the guarantee the coupling exists for, and a guarantee that any
   // single stale flag can defer is not one.
-  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: "broker-gone" };
+  if (e.msSinceLastReachable > e.backstopMs) return { exit: true, reason: "backstop" };
   // AN OPEN TRANSPORT IS ONGOING POSITIVE EVIDENCE, NOT AN EXCUSE FOR ITS ABSENCE, so inside the
   // backstop it still outranks the starvation and evidence clauses below. This daemon's own
   // connection to that same broker is up; it is serving on it; its lease renews across it. A fresh
@@ -367,7 +373,18 @@ export class LoopLagMeter {
   private accumulated = 0;
   constructor(private readonly intervalMs: number = PROBE_INTERVAL_MS) {}
 
-  /** Record a firing at `now`; returns the lag this particular gap contributed. */
+  /** Record a firing at `now`; returns the lag this particular gap contributed.
+   *
+   *  WHAT THE GAP IS CHARGED AS, since this is the half that is easy to misread: the excess of the
+   *  observed gap over the nominal interval is charged as time THIS PROCESS WAS NOT RUNNING. It is a
+   *  measurement of the local scheduler, never of the broker - a timer we own fired late, which says
+   *  the runqueue did not reach us and says nothing at all about the server.
+   *
+   *  It is also NOT the only such charge. {@link credit} adds lateness observed on a probe answer,
+   *  and the two can describe the same stall or two adjacent ones; nothing in either number reveals
+   *  which. Neither method deduplicates, deliberately, because suppressing a charge on the guess
+   *  that it overlaps discards real stalls. The sum is bounded instead, at the point of comparison,
+   *  by {@link starvedMsWithin}. */
   tick(now: number): number {
     const previous = this.last;
     this.last = now;
@@ -384,8 +401,33 @@ export class LoopLagMeter {
    *  perfectly live server. Clamped at zero for the same reason `tick` is: a measurement that ran
    *  backwards must never credit time the process actually had. */
   credit(lagMs: number): void {
+    // BOTH MEASUREMENTS ARE KEPT. An earlier repair here netted this against the most recent interval
+    // gap, on the theory that the two always observe ONE stall. They do not, and a reviewer produced
+    // the separating case: over a 4000ms span a timer can fire 2000ms late (a stall happening NOW)
+    // while a probe issued at the PREVIOUS tick answers 2500ms late (the stall before it). Netting
+    // credited 2500ms there and threw away a 2000ms stall the process had actually measured - which
+    // is the very mechanism this method exists for, a process scheduled often enough to fire a timer
+    // but not to finish a handshake. I measured my own netting against that case and it produced the
+    // lossy answer, so it is gone.
     this.accumulated += Math.max(0, lagMs);
   }
+
+  /** Accumulated lag CLAMPED to the span it is about to be compared against.
+   *
+   *  This is the honest way to stop double counting, and the reason the meter cannot do it by
+   *  arithmetic alone: whether a tick charge and a probe charge describe the same stall or two
+   *  adjacent ones is not knowable from the two numbers. What IS knowable is that time the process
+   *  did not have can never exceed time that passed. Overlap is removed by that bound and nothing
+   *  else is discarded, so the sum stays as informative as its parts allow.
+   *
+   *  Load-bearing, not hygiene: `starvedMs` is SUBTRACTED from elapsed in {@link brokerGoneVerdict}.
+   *  Unclamped, a stall charged twice drives unstarved time negative, and NO amount of real outage
+   *  can then clear the evidence clause - a genuinely dead broker stops being detectable by evidence
+   *  and survives to the backstop instead. Measured: a 30s stall moved an exit from 44s to 62s. */
+  starvedMsWithin(spanMs: number): number {
+    return Math.min(this.accumulated, Math.max(0, spanMs));
+  }
+
 
   /** Lag accumulated since the last {@link reset}. */
   get starvedMs(): number {
