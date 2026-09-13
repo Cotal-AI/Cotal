@@ -89,22 +89,34 @@ check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8")
 // are two syscalls and a creator arriving between them is overwritten.
 //
 // Discriminate the two WITHOUT monkeypatching, using a property only the kernel has. A dangling
-// symlink is a name that EXISTS while `existsSync` reports false, because `existsSync` follows the
-// link to a missing target. `O_EXCL` refuses it (the kernel checks the name, and O_EXCL explicitly
-// does not follow a final symlink); a userspace absence check is told "absent", writes through the
-// link, and creates the target. Same call, opposite outcomes, no test seam in src/.
-const linkTarget = join(dir, "symlink-victim");
-const danglingName = join(dir, "dangling.secret");
-symlinkSync(linkTarget, danglingName);
+// symlink is a name that EXISTS while a follow-the-link presence check reports absent. `O_EXCL`
+// refuses it (the kernel checks the name and does not follow a final symlink); a userspace check
+// is told "absent", writes THROUGH the link, and creates the target.
+//
+// It has to be the TEMP name, not the destination: the destination is also guarded by `linkSync`,
+// which refuses a dangling link on its own, so a destination cell would pass even with the raw
+// write broken. On the temp path the raw write is the only guard, so this cell is the one that
+// actually grades it.
+const tmpVictim = join(dir, "tmp-symlink-victim");
+const danglingDest = join(dir, "dangling.secret");
+const realRandom2 = Math.random;
+const realNow2 = Date.now;
+Math.random = () => 0.5;
+Date.now = () => 1;
+const danglingTmp = `${danglingDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
+symlinkSync(tmpVictim, danglingTmp);
 let danglingCode: string | undefined;
 try {
-  writeSecretFileCreateOnly(danglingName, "attacker\n");
+  writeSecretFileCreateOnly(danglingDest, "attacker\n");
 } catch (e) {
   danglingCode = (e as NodeJS.ErrnoException).code;
+} finally {
+  Math.random = realRandom2;
+  Date.now = realNow2;
 }
-check("REFUSE: a name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
+check("REFUSE: a temp name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
   danglingCode === "EEXIST");
-check("...and nothing was written through the dangling link", !statSafe(linkTarget));
+check("...and nothing was written through the dangling link", !statSafe(tmpVictim));
 
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");
