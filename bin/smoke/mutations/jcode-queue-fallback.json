@@ -20,8 +20,8 @@
     {
       "name": "M1 the level-triggered server is never armed, as in the shipped tree",
       "file": "extensions/connector-jcode/src/queue-fallback.ts",
-      "find": "export function fallbackStillOwed(s: FallbackState): boolean {\n  if (s.stopping) return false;\n  return s.unserved > 0 || s.driveWork;\n}",
-      "replace": "export function fallbackStillOwed(s: FallbackState): boolean {\n  return false && !s.stopping && (s.unserved > 0 || s.driveWork);\n}",
+      "find": "export function fallbackStillOwed(s: FallbackState): boolean {\n  if (s.stopping) return false;\n  if (s.queuedTurnTierStopped) return false;\n  return s.unserved > 0 || s.driveWork;\n}",
+      "replace": "export function fallbackStillOwed(s: FallbackState): boolean {\n  return false && !s.stopping && !s.queuedTurnTierStopped && (s.unserved > 0 || s.driveWork);\n}",
       "expectRed": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
       "cell": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
       "command": "pnpm smoke:jcode-queue-fallback",

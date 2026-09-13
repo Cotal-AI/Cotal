@@ -173,6 +173,10 @@ export type FallbackAction = "drive" | "steer" | "queue-turn" | "wait" | "stop";
 export interface FallbackState {
   /** The host is shutting down. */
   stopping: boolean;
+  /** The queued-turn tier has terminalized: an unsettleable run with no bridge recovery left. The
+   *  batch stays owed and un-acked, but nothing here will attempt it again, so the loop disarms
+   *  rather than re-deriving the same terminal decision once a minute forever. */
+  queuedTurnTierStopped: boolean;
   /** A bridge replacement owns the session; it redrives the durable batch itself. */
   reconnecting: boolean;
   /** Startup has finished its readiness proof and post-join notice. */
@@ -252,10 +256,18 @@ export function nextFallbackDelay(current: number): number {
  *
  * Deliberately NOT the same question as {@link nextFallbackAction}. A tick that can do nothing right
  * now (startup, a bridge replacement, the #790 bound) still owes the queue, and disarming on a
- * temporary refusal is precisely how an edge-triggered server strands a message. Only shutdown, and
- * an empty ledger, end the loop.
+ * temporary refusal is precisely how an edge-triggered server strands a message. Only shutdown, an
+ * empty ledger, and TERMINALIZATION end the loop.
+ *
+ * The third one is a reviewer's catch. Once the queued-turn tier has stopped attempting, every later
+ * tick re-derives the same terminal decision, writes nothing and re-arms, so the timer runs once a
+ * minute forever against a tier that will never act again. Nothing is lost by that, but a terminal
+ * state that keeps a timer alive is not terminal, it is a quiet loop, and this connector's whole
+ * argument is that invisible background activity is what let #1233 hide. Disarming here is safe
+ * because the flag is cleared only by a bridge replacement, which re-arms the loop itself.
  */
 export function fallbackStillOwed(s: FallbackState): boolean {
   if (s.stopping) return false;
+  if (s.queuedTurnTierStopped) return false;
   return s.unserved > 0 || s.driveWork;
 }

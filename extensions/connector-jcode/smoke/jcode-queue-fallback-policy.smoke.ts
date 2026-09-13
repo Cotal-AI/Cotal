@@ -324,9 +324,32 @@ console.log("\n13. the two measured failure modes, and the state that separates 
     [true, false].every((a) => exhaustedDeferralAction(a) === "replace-bridge" || exhaustedDeferralAction(a) === "stop-attempting"),
     { outcomes: [exhaustedDeferralAction(true), exhaustedDeferralAction(false)] },
   );
+  // NO HOT TIMER AFTER TERMINALIZATION, which is a reviewer's item and was true of the first
+  // version: every later tick re-derived the same terminal decision, wrote nothing, and re-armed, so
+  // the timer ran once a minute forever against a tier that would never act again. Nothing was lost,
+  // but a terminal state that keeps a timer alive is a quiet loop, and quiet loops are what let this
+  // issue hide in the first place.
+  check(
+    "a terminalized queued-turn tier disarms the loop instead of re-deriving forever",
+    fallbackStillOwed({ ...stalled, queuedTurnTierStopped: true }) === false,
+    { queuedTurnTierStopped: true, stillOwed: fallbackStillOwed({ ...stalled, queuedTurnTierStopped: true }) },
+  );
+  // The refusing half, and the one that matters most: work that is merely REFUSED right now (startup,
+  // a replacement in flight, the #790 bound) must keep the loop armed. Disarming on a temporary
+  // refusal is exactly how an edge-triggered server strands a message, which is the original defect.
+  check(
+    "but an ordinary owed batch keeps it armed, so a temporary refusal never disarms",
+    fallbackStillOwed({ ...stalled, queuedTurnTierStopped: false }) === true,
+    { queuedTurnTierStopped: false, stillOwed: fallbackStillOwed({ ...stalled, queuedTurnTierStopped: false }) },
+  );
+  check(
+    "and the #790 give-up still keeps it armed, since that bound is not terminal",
+    fallbackStillOwed({ ...stalled, consecutiveFailures: 99, giveUpAfter: 3, queuedTurnTierStopped: false }) === true,
+    { consecutiveFailures: 99, giveUpAfter: 3 },
+  );
 }
 
-const EXPECTED_CELLS = 48;
+const EXPECTED_CELLS = 51;
 console.log(`\nSUITE COMPLETE: ${pass + failures.length} cells`);
 console.log(`jcode queue fallback policy: ${pass} cells OK, ${failures.length} failed`);
 if (pass + failures.length !== EXPECTED_CELLS) {

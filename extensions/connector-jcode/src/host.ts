@@ -1024,6 +1024,7 @@ export async function runJcodeHost(): Promise<void> {
 
   const fallbackState = (): FallbackState => ({
     stopping,
+    queuedTurnTierStopped,
     reconnecting,
     initialized,
     hasSession: Boolean(client) && Boolean(sessionId),
