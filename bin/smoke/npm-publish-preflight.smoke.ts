@@ -349,6 +349,13 @@ check(
   zeroPresent.seen,
 );
 
+const allPresentCensus = await scenario({ present: new Set(fixed) });
+check(
+  "all-present preflight returns the named no-op state",
+  allPresentCensus.result?.state === "nothing-to-publish",
+  allPresentCensus.error ?? allPresentCensus.result,
+);
+
 const clean = await scenario();
 check("clean full-group census passes", clean.result?.state === "ready", clean.error);
 check(

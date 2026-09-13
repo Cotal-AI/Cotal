@@ -39,6 +39,14 @@
       "cell": "all-present repository entrypoint returns the named no-op verdict"
     },
     {
+      "name": "the all-present no-op returns a publish-ready state",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return { state: \"nothing-to-publish\", rows };\n",
+      "replace": "    return { state: \"ready\", rows };\n",
+      "expectRed": "all-present preflight returns the named no-op state",
+      "cell": "all-present preflight returns the named no-op state"
+    },
+    {
       "name": "an all-absent census is treated as the all-present no-op",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    : absent.length === rows.length\n      ? \"all-absent\"\n",
