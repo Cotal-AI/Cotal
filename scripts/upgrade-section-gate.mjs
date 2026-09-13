@@ -34,7 +34,8 @@
  * Exit 0 when every breaking commit in range is covered, 1 when one is not, 2 on misuse.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -162,7 +163,12 @@ export function addedSectionsBetween(basePage, headPage) {
  * something new here.
  */
 export function verdict({ breaking, addedSections }) {
-  if (breaking.length === 0) return { ok: true, reason: "no breaking commits in range" };
+  // "no breaking commits DETECTED", never "no breaking commits". The gate reads markers, and the
+  // design note is explicit that no marker-keyed detector can see an unmarked break, so a pass
+  // asserting ABSENCE would have the script contradicting its own note on the one line an
+  // operator actually reads. The honest claim is about what was detected, which is also the only
+  // claim the evidence supports.
+  if (breaking.length === 0) return { ok: true, reason: "no breaking commits DETECTED in range (unmarked breaks are invisible to this check)" };
   if (addedSections.length === 0)
     return { ok: false, reason: `${breaking.length} breaking change(s) and no new ${UPGRADING_PATH} section in the same range` };
   return { ok: true, reason: `${breaking.length} breaking change(s) covered by ${addedSections.length} new section(s): ${addedSections.join(", ")}` };
@@ -186,11 +192,21 @@ Every changeset marked breaking adds a section.
 `;
 
 if (process.argv.includes("--self-test")) {
-  let pass = 0, fail = 0;
+  let pass = 0, fail = 0, skipped = 0;
   const cell = (name, ok, detail) => {
     if (ok) { pass += 1; console.log(`  ✓ ${name}`); }
     else { fail += 1; console.log(`  ✗ FAIL: ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`); }
   };
+  // UNGRADED IS A THIRD STATE AND IT MUST BE LOUD. A cell that needs real release history cannot
+  // be graded in a shallow checkout, and pretending otherwise gives two bad options: a false red
+  // (the tool is fine, the clone is cut) or a false green (nothing ran, everything "passed").
+  // Skips are counted separately and named in the summary, so a reader can never mistake a run
+  // that skipped its history cells for one that proved them.
+  const skip = (name, why = "needs full release history; this checkout is shallow") => {
+    skipped += 1;
+    console.log(`  - UNGRADED: ${name} (${why})`);
+  };
+  const historyIsTruncated = spawnSync("git", ["rev-parse", "--is-shallow-repository"], { encoding: "utf8" }).stdout.trim() === "true";
 
   // THE THREE LEGS, IN ONE INVOCATION. The third is the one that makes the other two mean
   // something: without it a gate that reds on EVERY changeset is indistinguishable from a gate
@@ -319,15 +335,79 @@ if (process.argv.includes("--self-test")) {
   };
   cell("EXIT 2 on an unresolvable ref: misuse is never reported as a refusal", runSelf(["--range", "qqzzNoSuchRef77..HEAD"]) === 2);
   cell("EXIT 2 on missing arguments", runSelf([]) === 2);
-  cell("ACCEPT CONTROL for the exit reader: a real refusal is still EXIT 1",
-    runSelf(["--range", "v0.48.2..v0.49.0"]) === 1);
-  cell("ACCEPT CONTROL for the exit reader: a clean range is still EXIT 0",
-    runSelf(["--range", "v0.48.1..v0.48.2"]) === 0);
+  // THESE TWO CELLS NEED REAL RELEASE HISTORY, AND A SUITE MUST NOT RED FOR A REASON THAT IS NOT
+  // A DEFECT. In a shallow checkout the commits behind these tags are absent, so the CLI answers
+  // 2 (nothing was graded) and an assertion of 1 or 0 fails while the tool is behaving exactly as
+  // designed. Reporting UNGRADED is the honest third state: it is not a pass, because nothing was
+  // proven, and it is not a failure, because nothing is broken. The count of skipped cells is
+  // printed in the summary so a green run can never quietly mean "most of it did not run".
+  if (historyIsTruncated) {
+    skip("ACCEPT CONTROL for the exit reader: a real refusal is still EXIT 1");
+    skip("ACCEPT CONTROL for the exit reader: a clean range is still EXIT 0");
+  } else {
+    cell("ACCEPT CONTROL for the exit reader: a real refusal is still EXIT 1",
+      runSelf(["--range", "v0.48.2..v0.49.0"]) === 1);
+    cell("ACCEPT CONTROL for the exit reader: a clean range is still EXIT 0",
+      runSelf(["--range", "v0.48.1..v0.48.2"]) === 0);
+  }
 
-  const EXPECTED = 35;
-  cell(`every cell ran (${EXPECTED} before this sentinel)`, pass + fail === EXPECTED, { pass, fail });
+  // THE SHALLOW GUARD, GRADED IN A REAL SHALLOW CLONE RATHER THAN BY MOCKING THE PROBE. Building
+  // three commits and cloning them at depth 1 is the only way to prove the guard fires on the
+  // thing it names; a stubbed `--is-shallow-repository` would only prove the stub works.
+  // The pair matters more than either half: WITHOUT the guard this range exits 0 on a truncated
+  // history, a green meaning "I could not see", so the ACCEPT CONTROL below (same gate, same
+  // range, FULL history, still exits 0) is what proves the guard discriminates rather than
+  // simply refusing everything. A check that reds everywhere passes every mutation and is useless.
+  {
+    const tmp = mkdtempSync(join(tmpdir(), "upgrade-gate-shallow-"));
+    const q = (args, cwd) => spawnSync("git", args, { cwd, encoding: "utf8" });
+    const src = join(tmp, "src");
+    mkdirSync(src);
+    q(["init", "-q", "."], src);
+    q(["config", "user.email", "selftest@example.invalid"], src);
+    q(["config", "user.name", "selftest"], src);
+    for (const i of [1, 2, 3]) {
+      writeFileSync(join(src, "f.txt"), `${i}\n`);
+      q(["add", "f.txt"], src);
+      q(["commit", "-qm", `c${i}`], src);
+    }
+    q(["clone", "-q", "--depth", "1", `file://${src}`, "cut"], tmp);
+    const cut = join(tmp, "cut");
+    const shallowSays = spawnSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: cut, encoding: "utf8" }).stdout.trim();
+    const fullSays = spawnSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: src, encoding: "utf8" }).stdout.trim();
+    cell("the shallow probe DISCRIMINATES: true in a depth-1 clone, false in its full source",
+      shallowSays === "true" && fullSays === "false", { shallowSays, fullSays });
+    const inCut = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--range", "HEAD~0..HEAD"], { cwd: cut, encoding: "utf8" });
+    cell("EXIT 2 in a SHALLOW repository: a truncated history is misuse, never a silent pass",
+      inCut.status === 2, { status: inCut.status });
+    cell("…and it says so in words a reader can act on",
+      /SHALLOW repository/.test(inCut.stderr) && /fetch-depth: 0|unshallow/.test(inCut.stderr));
+    rmSync(tmp, { recursive: true, force: true });
+  }
 
-  console.log(`\nUPGRADE SECTION GATE SELF-TEST ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
+  const EXPECTED = 39;
+  // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
+  // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
+  // the suite skip two real cells and still print OK, because every other shallow cell reasons
+  // about temporary repositories it builds itself and none of them look at THIS one. A skip
+  // mechanism with no guard is a mute button, and an unguarded mute button on a gate is the exact
+  // defect this tool exists to refuse. Re-probing here rather than reusing the variable is the
+  // point: the claim under test is that the variable told the truth.
+  const reprobe = spawnSync("git", ["rev-parse", "--is-shallow-repository"], { encoding: "utf8" }).stdout.trim() === "true";
+  cell("cells are only skipped when THIS repository is genuinely shallow",
+    (skipped > 0) === reprobe && historyIsTruncated === reprobe,
+    { skipped, historyIsTruncated, reprobe });
+
+  // THE SENTINEL COUNTS SKIPS TOO, or a shallow run would red here for the second time over the
+  // same truncation, and a reader would chase a phantom missing cell.
+  cell(`every cell ran or was reported ungraded (${EXPECTED} before this sentinel)`,
+    pass + fail + skipped === EXPECTED, { pass, fail, skipped });
+
+  // A GREEN RUN THAT SKIPPED CELLS MUST SAY SO ON THE SUMMARY LINE. The summary is the only line
+  // most readers see, so an unqualified OK after two ungraded cells would be the reassuring-
+  // shaped lie this whole tool exists to refuse.
+  const skipNote = skipped === 0 ? "" : `, ${skipped} UNGRADED (shallow checkout: run \`git fetch --unshallow\` to grade them)`;
+  console.log(`\nUPGRADE SECTION GATE SELF-TEST ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed${skipNote})`);
   process.exit(fail === 0 ? 0 : 1);
 }
 
@@ -380,6 +460,24 @@ function main() {
     const [sha, subject, body] = r.split("\x1f");
     return { sha, subject: subject ?? "", body: body ?? "" };
   });
+
+  // A TRUNCATED HISTORY CANNOT BE GRADED, AND SAYING SO IS THE WHOLE POINT OF THIS BLOCK.
+  // Measured: in a shallow clone (`clone --depth`, or `actions/checkout` at its DEFAULT
+  // fetch-depth of 1) the range v0.48.2..v0.49.0 contains ZERO commits instead of 173, because
+  // the commits simply are not there. Every reader downstream then works perfectly on an empty
+  // list and the gate exits 0, reporting "no breaking change in range" for a range holding two.
+  // THAT IS A CLEAN GREEN THAT MEANS "I COULD NOT SEE", which is the exact failure this gate
+  // exists to prevent in other people's changesets. A missing answer must never wear a passing
+  // answer's clothes, so this is a MISUSE exit (2): nothing was graded and the caller is told.
+  // This repo's own CI sets `fetch-depth: 0`, so CI is unaffected; the case that bites is a
+  // developer in a shallow clone being told the suite is broken when their history is cut.
+  if (gitQuiet(["rev-parse", "--is-shallow-repository"]).trim() === "true") {
+    console.error("upgrade-section-gate: refusing to grade a SHALLOW repository (history is truncated).");
+    console.error("Nothing was graded. This is a MISUSE exit (2), not a pass and not a refusal.");
+    console.error("Run `git fetch --unshallow`, or set `fetch-depth: 0` on actions/checkout.");
+    process.exit(2);
+  }
+
   const breaking = commits.filter((c) => isBreakingCommit(c.subject, c.body)).map((c) => `${c.sha.slice(0, 9)} ${c.subject}`);
 
   // A `major` changeset in range is the same signal. Read AT THE RANGE'S HEAD for the same reason

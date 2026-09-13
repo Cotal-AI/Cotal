@@ -336,12 +336,26 @@ no cut and no backup inside it, so the window is the stop, the install and the r
 
 **Every changeset marked breaking adds a section to this page.** A release that changes what an
 operator must do, in what order, or what stops working, is not finished until the section exists.
-Today this is a convention that reviewers uphold, not something the repository enforces: a check
-that reds when a range carries a breaking change and adds no new release section is proposed
-separately, and this paragraph will name it once it lands. Be precise about what such a check could
-prove, because one trusted past its evidence is worse than none. It could prove a section for a
-release **was written here**. It cannot prove the section is **correct**, or that it describes the
-break that actually landed. Reviewing the words remains a person's job either way.
+`scripts/upgrade-section-gate.mjs` grades a commit range for exactly this: run it as
+`pnpm upgrade-section-gate --base <ref>` and it reds when the range carries a breaking change and
+adds no new release section. CI runs its self-test today, and the step that grades each pull
+request's own range is landing separately, because adding a workflow step needs a permission this
+change did not carry. Until that step is required, this page stays true by review rather than by
+enforcement. Be precise about what the check proves either way, because one trusted past its
+evidence is worse than none. It proves a section for a release **was written here**. It cannot
+prove the section is **correct**, or that it describes the break that actually landed, and it
+cannot see a breaking change that carries no marker at all. Reviewing the words remains a
+person's job.
+
+**Mark the break, or the gate cannot see it.** Any one of these is enough, and they are the only
+things it reads:
+
+- a `!` before the colon in the commit subject, as in `feat(core)!: bind hosted runs to the caller`
+- a `BREAKING CHANGE:` footer in the commit body
+- a changeset in `.changeset/` declaring a `major` bump for any package
+
+The marker must survive the squash. A `!` that lives only in a commit you squash away is not in the
+range the gate grades, so put it in the subject that lands on `main`.
 
 **The heading is a `##` and names the release**, like `## From 0.48.2 to 0.49.0`. Both matter, and
 neither is a style preference. Coverage is claimed by a heading, so a heading that names

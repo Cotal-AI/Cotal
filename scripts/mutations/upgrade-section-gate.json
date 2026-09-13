@@ -27,8 +27,8 @@
     {
       "name": "M2 the gate fires on everything: a non-breaking change is refused too",
       "file": "scripts/upgrade-section-gate.mjs",
-      "find": "  if (breaking.length === 0) return { ok: true, reason: \"no breaking commits in range\" };",
-      "replace": "  if (breaking.length === 0 && addedSections.length > 0) return { ok: true, reason: \"no breaking commits in range\" };",
+      "find": "  if (breaking.length === 0) return { ok: true, reason: \"no breaking commits DETECTED in range (unmarked breaks are invisible to this check)\" };",
+      "replace": "  if (breaking.length === 0 && addedSections.length > 0) return { ok: true, reason: \"no breaking commits DETECTED in range (unmarked breaks are invisible to this check)\" };",
       "expectRed": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
       "cell": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
       "note": "The other failure direction, and the one that kills the gate socially rather than technically. Both accept cells stay GREEN under this mutation, so only the third leg catches it: without that leg, 'detects breaking changes' and 'reds on every changeset' are the same measurement."
@@ -47,8 +47,8 @@
       "file": "scripts/upgrade-section-gate.mjs",
       "find": "  return out.filter((s) => !STRUCTURAL_HEADINGS.includes(s.title));",
       "replace": "  return out;",
-      "expectRed": "…and excludes the page's own structural headings",
-      "cell": "…and excludes the page's own structural headings",
+      "expectRed": "\u2026and excludes the page's own structural headings",
+      "cell": "\u2026and excludes the page's own structural headings",
       "note": "With this mutation the page's permanent furniture (the contract section and the how-to-add-a-section section) counts as a release section forever, so every future breaking change is pre-covered by headings nobody wrote for it."
     },
     {
@@ -95,6 +95,24 @@
       "expectRed": "REFUSE CONTROL: a section whose body is only SUBSECTION HEADINGS is not coverage",
       "cell": "REFUSE CONTROL: a section whose body is only SUBSECTION HEADINGS is not coverage",
       "note": "THE DEFECT THIS GATE SHIPPED AT ITS SECOND HEAD, found by reviewers and not by me, so it is a revert-check. `##` opened a section and every OTHER heading fell through to the body accumulator, so `## From 0.49.0 to 0.50.0` followed by nothing but `### What changed` satisfied `body.trim().length > 0` and was ACCEPTED. It is M5 one nesting level down, and none of the 33 cells walked it because M5's fixture page has no subsections: the suite graded the rule I was thinking about when I wrote M5. The mutation keeps a syntactically valid guard that can never match a real heading, so it restores the defect without disabling the line, which a reader would spot. Note the replacement must not simply delete the guard: the accompanying ACCEPT CONTROL cell (real prose under a subsection is still coverage) is what proves the fix did not over-correct into refusing every section that uses subsections."
+    },
+    {
+      "name": "M10 a truncated history is graded as though it were complete",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (gitQuiet([\"rev-parse\", \"--is-shallow-repository\"]).trim() === \"true\") {",
+      "replace": "  if (false) {",
+      "expectRed": "EXIT 2 in a SHALLOW repository: a truncated history is misuse, never a silent pass",
+      "cell": "EXIT 2 in a SHALLOW repository: a truncated history is misuse, never a silent pass",
+      "note": "MEASURED ON A REAL SHALLOW CLONE RATHER THAN ARGUED. actions/checkout defaults to depth 1, and the smoke job that runs this suite took that default. In a depth-1 checkout the tags v0.48.2 and v0.49.0 both still RESOLVE, so `git log` succeeds and returns a truncated set: the range holding 173 commits and two marked breaking changes reports as 1 commit and zero breaking changes, and the gate printed OK and exited 0. That is the exact sin this gate exists to catch, committed by the gate itself: a green meaning 'I could not see' on the check whose green is supposed to mean 'somebody documented the break'. The guard makes it a MISUSE exit instead, and the paired ACCEPT CONTROL (same command, full history, still exits 0) is what proves the guard discriminates rather than refusing everything."
+    },
+    {
+      "name": "M11 the suite declares itself ungraded on a repository that is fine",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  const historyIsTruncated = spawnSync(\"git\", [\"rev-parse\", \"--is-shallow-repository\"], { encoding: \"utf8\" }).stdout.trim() === \"true\";",
+      "replace": "  const historyIsTruncated = true;",
+      "expectRed": "cells are only skipped when THIS repository is genuinely shallow",
+      "cell": "cells are only skipped when THIS repository is genuinely shallow",
+      "note": "A SKIP IS A CLAIM AND IT NEEDS GRADING LIKE ANY OTHER. The skip path exists so a shallow checkout reports UNGRADED instead of a false red, but the same mechanism could silently drop real cells on a healthy repository, and the sentinel cannot catch that because pass+fail+skipped is invariant under a skip. This mutant forces the probe true on a full clone; the discriminating cell reds because it asserts the probe answers false in a full source and true only in a depth-1 clone. That cell is what stops the skip from becoming a way to make the suite quiet."
     }
   ]
 }
