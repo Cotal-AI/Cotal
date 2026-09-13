@@ -378,14 +378,27 @@ const evaluated = (node, sf) => {
       ? (cur.name && ts.isIdentifier(cur.name) ? cur.name.text : undefined)
       : (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) ? parent.name.text : undefined);
     if (name === undefined) return false;
-    let used = false;
+    // MENTIONING a function is not RUNNING it. `void used;` and `export { used }` reference the
+    // binding without ever transferring control into it, so the body never executes and a load
+    // inside it never happens. Only a site that actually invokes the name counts: a call, a `new`,
+    // or handing the function to another call that will invoke it (a callback).
+    let invoked = false;
     const scan = (n) => {
-      if (used) return;
-      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !(n.parent && ts.isVariableDeclaration(n.parent) && n.parent.name === n)) used = true;
+      if (invoked) return;
+      if (ts.isIdentifier(n) && n.text === name && n !== cur.name) {
+        const parentNode = n.parent;
+        const isCallee = parentNode
+          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))
+          && parentNode.expression === n;
+        const isCallbackArg = parentNode
+          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))
+          && parentNode.arguments?.includes(n);
+        if (isCallee || isCallbackArg) invoked = true;
+      }
       ts.forEachChild(n, scan);
     };
     scan(sf);
-    if (!used) return false;
+    if (!invoked) return false;
     // The enclosing function is reached; keep walking outward for further nesting.
     node = cur;
   }
@@ -486,19 +499,6 @@ const launchedPaths = (suite, source) => {
   return found;
 };
 
-const invokesFile = (suite, source, file) =>
-  launchedPaths(suite, source).some((path) => coversPath(path, file));
-
-const stringsCover = (suite, source, want) => {
-  const { sf, evalPath } = pathEval(suite, source);
-  let hit = false;
-  const visit = (node) => {
-    if (ts.isStringLiteralLike(node) && coversPath(evalPath(node) ?? node.text, want)) hit = true;
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return hit;
-};
 
 
 /**
@@ -1000,7 +1000,7 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
   // actually runs; both halves are required, because the import alone loads a stale artifact.
   for (const suite of suites) {
     const source = readFileSync(suite, "utf8");
-    if (resolve(mutation.file) === resolve(suite) || invokesFile(suite, source, mutation.file)) return;
+    if (resolve(mutation.file) === resolve(suite)) return;
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
     if (readsFile(suite, source, mutation.file, commandEnv(command))) return;
     if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;
