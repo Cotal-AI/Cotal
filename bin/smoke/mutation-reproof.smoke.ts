@@ -302,6 +302,30 @@ try {
 
   check("aggregate probes do not inherit Cotal session credentials", aggregateEnvClean);
 
+  // #1582: BOTH selector sites must resolve the base through the SAME script. The plan names the
+  // shards to fan and the shard re-selects for itself, so a site that resolved its base differently
+  // would re-prove a set the plan never fanned it for. Two copies of this logic is the bug shape:
+  // the workflow carried the base expression twice, and a fix applied to one would have left the
+  // other selecting the old, wrong set with a green board either way.
+  const resolverCall = 'base="$(bash scripts/mutation-reproof-base.sh "$EVENT" "$BASE" HEAD)"';
+  for (const [site, step] of [["plan", planStep], ["shard", reprove]] as const) {
+    check(
+      `the ${site} site resolves its base through the shared resolver rather than its own copy`,
+      typeof step?.run === "string"
+        && step.run.includes(resolverCall)
+        && !step.run.includes("git rev-parse HEAD~1")
+        && step.env?.EVENT === "${{ github.event_name }}"
+        && step.env?.BASE === "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}",
+      JSON.stringify({ run: step?.run, env: step?.env }),
+    );
+  }
+  check(
+    "the resolver both sites call is present and refuses without an event name",
+    existsSync(join(ROOT, "scripts", "mutation-reproof-base.sh"))
+      && spawnSync("bash", [join(ROOT, "scripts", "mutation-reproof-base.sh"), "", "", "HEAD"],
+        { env: childEnv(), cwd: ROOT, encoding: "utf8" }).status === 2,
+  );
+
   // Exercise the shipped selector on every shard, including execution of the selected fixtures.
   // The unsharded run is the control set; a fixture must occur once across the shard results.
   {
@@ -401,6 +425,243 @@ try {
         && empty.out.includes("No selected mutation fixtures are assigned to shard ")
         && !empty.out.includes("no fixture config, suite, or guarded source intersects the diff"),
       empty?.out ?? "neither probe found an empty shard");
+  }
+
+  // #1582: the base the selector diffs from, under the ref CI actually checks out.
+  //
+  // On `pull_request`, actions/checkout checks out `refs/pull/N/merge`, so HEAD is a MERGE COMMIT
+  // whose FIRST parent is the base branch tip. HEAD therefore already contains that tip, and a
+  // `<base>...HEAD` walk from any older commit reports main's own commits as the PR's. PR #1520 read
+  // 30 changed paths for a four-file change and burned 146 minutes re-proving two fixtures belonging
+  // to commits it merely lacked.
+  //
+  // These cells drive `scripts/mutation-reproof-base.sh`, the resolver BOTH workflow sites call, over
+  // real merge commits built here, because the defect only exists when HEAD is a merge.
+  {
+    const RESOLVER = join(ROOT, "scripts", "mutation-reproof-base.sh");
+    const resolveBase = (root: string, baseArg: string, head = "HEAD", event = "pull_request"): { status: number | null; out: string; sha: string } => {
+      // The option object is spelled with `env` first so it does not collide with the anchor the
+      // shards fixture holds on the `git` helper above, which is keyed on the exact option text.
+      const run = spawnSync("bash", [RESOLVER, event, baseArg, head], { env: childEnv(), cwd: root, encoding: "utf8" });
+      return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}`, sha: (run.stdout ?? "").trim() };
+    };
+    /**
+     * A repo shaped like a PR under `refs/pull/N/merge`: a fork point, `advanced` commits that land
+     * on the base branch afterwards, and a topic commit. HEAD is the merge of the base tip and the
+     * topic, first parent the base tip, exactly as the runner builds it.
+     */
+    const prMergeRepo = (advanced: number): { root: string; fork: string; baseTip: string; topic: string; merge: string } => {
+      const root = mkdtempSync(join(tmpdir(), "mutation-reproof-base-"));
+      repos.push(root);
+      git(root, ["init", "--quiet"]);
+      git(root, ["config", "user.email", "smoke@example.test"]);
+      git(root, ["config", "user.name", "Smoke"]);
+      writeFileSync(join(root, "shared.txt"), "fork\n");
+      git(root, ["add", "."]);
+      git(root, ["commit", "--quiet", "-m", "fork point"]);
+      const fork = git(root, ["rev-parse", "HEAD"]);
+      git(root, ["checkout", "--quiet", "-b", "topic"]);
+      writeFileSync(join(root, "topic-only.txt"), "the PR's own change\n");
+      git(root, ["add", "."]);
+      git(root, ["commit", "--quiet", "-m", "the PR's own change"]);
+      const topic = git(root, ["rev-parse", "HEAD"]);
+      git(root, ["checkout", "--quiet", git(root, ["rev-parse", fork])]);
+      git(root, ["checkout", "--quiet", "-B", "base-branch"]);
+      for (let i = 0; i < advanced; i++) {
+        writeFileSync(join(root, `foreign-${i}.txt`), `main moved on without the PR ${i}\n`);
+        git(root, ["add", "."]);
+        git(root, ["commit", "--quiet", "-m", `foreign commit ${i}`]);
+      }
+      const baseTip = git(root, ["rev-parse", "HEAD"]);
+      // The runner's merge ref: first parent the base tip, second the PR head.
+      git(root, ["merge", "--quiet", "--no-ff", "-m", `Merge ${topic} into ${baseTip}`, topic]);
+      const merge = git(root, ["rev-parse", "HEAD"]);
+      return { root, fork, baseTip, topic, merge };
+    };
+    const pathsFrom = (root: string, base: string): string[] =>
+      git(root, ["diff", "--name-only", `${base}...HEAD`]).split("\n").filter(Boolean);
+
+    // ACCEPT: the base branch advanced by five commits after the fork, the shape that broke #1520.
+    // The selector must see ONLY the PR's own file, never the five foreign ones.
+    {
+      const { root, fork, baseTip, merge } = prMergeRepo(5);
+      const resolved = resolveBase(root, fork);
+      const selectedUniverse = pathsFrom(root, resolved.sha);
+      // The control: what the pre-fix workflow did, passing the event's base through unchanged.
+      const oldUniverse = pathsFrom(root, fork);
+      check(
+        "a branch behind its base selects only the paths its own diff touches",
+        resolved.status === 0 && resolved.sha === baseTip
+          && eq(selectedUniverse, ["topic-only.txt"])
+          && oldUniverse.length === 6,
+        JSON.stringify({ resolved: resolved.sha, baseTip, selectedUniverse, oldUniverse, merge }),
+      );
+      // The issue's own prescribed fix, measured on the same tree: a no-op that leaves all six.
+      check(
+        "normalising the event base against HEAD is not sufficient when HEAD is a merge",
+        eq(pathsFrom(root, git(root, ["merge-base", fork, "HEAD"])), oldUniverse),
+        JSON.stringify({ mergeBase: git(root, ["merge-base", fork, "HEAD"]), fork }),
+      );
+    }
+
+    // REFUSE CONTROL: the base has NOT advanced, so the fork point IS the base tip and the resolver
+    // must select exactly what it selected before. If this leg ever differs, the reader is wrong
+    // rather than the workflow.
+    {
+      const { root, fork, baseTip } = prMergeRepo(0);
+      const resolved = resolveBase(root, fork);
+      check(
+        "a branch level with its base selects the same set as before the fix",
+        resolved.status === 0 && resolved.sha === baseTip && baseTip === fork
+          && eq(pathsFrom(root, resolved.sha), pathsFrom(root, fork))
+          && eq(pathsFrom(root, resolved.sha), ["topic-only.txt"]),
+        JSON.stringify({ resolved: resolved.sha, fork, baseTip, paths: pathsFrom(root, resolved.sha) }),
+      );
+    }
+
+    // The resolved base must be visible in the transcript beside the counts. #1520's log printed the
+    // counts and not the base, which is precisely why the wrong selection was unreadable.
+    {
+      const { root, base, head } = build((r) => {
+        const file = join(r, "a.mjs");
+        writeFileSync(file, readFileSync(file, "utf8") + "// changed guarded source\n");
+        git(r, ["add", "."]);
+        git(r, ["commit", "--quiet", "-m", "touch a"]);
+      });
+      const out = scan(root, base, head).out;
+      const full = git(root, ["rev-parse", base]);
+      check(
+        "the resolved base sha appears in the transcript beside the record count",
+        out.includes(`(base ${full}, diff `) && full.length === 40,
+        out.split("\n")[0],
+      );
+      check(
+        "a full sweep names no base, because it diffs against nothing by design",
+        !scanAll(root).out.includes("(base "),
+        scanAll(root).out.split("\n")[0],
+      );
+    }
+
+    // A shallow checkout answers "no merge base" exactly as a repo with no common ancestor does.
+    // Selecting zero fixtures there is a green gate that proved nothing, so it must fail loud.
+    {
+      // A history sharing no ancestor with the subject: the merge base is genuinely empty, which is
+      // byte-for-byte the answer a shallow clone gives for a base whose ancestry was not fetched.
+      const unrelated = mkdtempSync(join(tmpdir(), "mutation-reproof-unrelated-"));
+      repos.push(unrelated);
+      const { root } = prMergeRepo(2);
+      git(unrelated, ["init", "--quiet"]);
+      git(unrelated, ["config", "user.email", "smoke@example.test"]);
+      git(unrelated, ["config", "user.name", "Smoke"]);
+      writeFileSync(join(unrelated, "elsewhere.txt"), "a history sharing no ancestor\n");
+      git(unrelated, ["add", "."]);
+      git(unrelated, ["commit", "--quiet", "-m", "unrelated root"]);
+      git(unrelated, ["fetch", "--quiet", root, "HEAD"]);
+      // HEAD here is NOT a merge, so the resolver takes the merge-base route and finds nothing.
+      const refused = resolveBase(unrelated, git(unrelated, ["rev-parse", "FETCH_HEAD"]));
+      check(
+        "an unresolvable merge base fails loud instead of selecting zero fixtures",
+        refused.status === 2 && refused.out.includes("UNMEASURED")
+          && refused.out.includes("shallow") && refused.sha === "",
+        JSON.stringify({ status: refused.status, out: refused.out }),
+      );
+    }
+    // A PUSH that lands several commits and ends on a merge commit. The first-parent rule is correct
+    // for a pull request and WRONG here: on a push the whole pushed range is the change, so taking
+    // HEAD^1 would discard `github.event.before` and diff only the merge itself. Measured on main,
+    // where `allow_merge_commit` is on: replaying real push heads, an ungated rule loses `glama.json`
+    // at 934f2ca8a, and `plugin.json` and `skills/cotal-mesh/SKILL.md` at d956e5782.
+    {
+      const { root, baseTip, topic } = prMergeRepo(1);
+      // `event.before` is where main was before the push: one commit behind the merged-in tip, so the
+      // pushed range is that foreign commit plus the merge.
+      const before = git(root, ["rev-parse", `${baseTip}~1`]);
+      const pushed = resolveBase(root, before, "HEAD", "push");
+      const pushedPaths = pathsFrom(root, pushed.sha);
+      // What the ungated rule would have produced on this same head.
+      const firstParentPaths = pathsFrom(root, git(root, ["rev-parse", "HEAD^1"]));
+      check(
+        "a push landing several commits onto a merge head keeps its whole pushed range",
+        pushed.status === 0 && pushed.sha === before
+          && eq(pushedPaths, ["foreign-0.txt", "topic-only.txt"])
+          && eq(firstParentPaths, ["topic-only.txt"]),
+        JSON.stringify({ resolved: pushed.sha, before, pushedPaths, firstParentPaths, topic }),
+      );
+      // The same head under a pull_request event still takes the first parent, so the gate is what
+      // distinguishes them rather than anything about the commit's shape.
+      const asPr = resolveBase(root, before, "HEAD", "pull_request");
+      check(
+        "the same merge head resolves differently by event, which is what makes the gate load-bearing",
+        asPr.status === 0 && asPr.sha === git(root, ["rev-parse", "HEAD^1"]) && asPr.sha !== pushed.sha,
+        JSON.stringify({ asPush: pushed.sha, asPr: asPr.sha }),
+      );
+    }
+
+    // An unrecognised event must refuse rather than guess: guessing picks a base silently, which is
+    // the defect this script exists to remove.
+    {
+      const { root, fork } = prMergeRepo(1);
+      const unknown = resolveBase(root, fork, "HEAD", "repository_dispatch");
+      check(
+        "an unknown event is refused rather than guessed at",
+        unknown.status === 2 && unknown.out.includes("UNMEASURED") && unknown.sha === "",
+        unknown.out,
+      );
+      const missing = resolveBase(root, fork, "HEAD", "");
+      check(
+        "a missing event name is refused",
+        missing.status === 2 && missing.out.includes("UNMEASURED") && missing.sha === "",
+        missing.out,
+      );
+    }
+
+    // The fallback shapes the workflow still depends on keep working. These run on a NON-MERGE HEAD,
+    // because that is the only shape in which they apply: when HEAD is a merge the first parent is
+    // the base and neither the event's before-sha nor the all-zero fallback is consulted. An earlier
+    // draft of this cell ran them on the merge HEAD and asserted an echo that correctly never fired.
+    {
+      const { root, fork, topic } = prMergeRepo(1);
+      git(root, ["checkout", "--quiet", "topic"]);
+      const head = git(root, ["rev-parse", "HEAD"]);
+      check(
+        "the fallback legs are exercised on a non-merge head",
+        head === topic && git(root, ["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(/\s+/).length === 2,
+        git(root, ["rev-list", "--parents", "-n", "1", "HEAD"]),
+      );
+      const fromBefore = resolveBase(root, fork);
+      check(
+        "a push event resolves its own before-sha to the divergence point",
+        fromBefore.status === 0 && fromBefore.sha === fork,
+        JSON.stringify({ resolved: fromBefore.sha, fork, head }),
+      );
+      const zero = resolveBase(root, "0000000000000000000000000000000000000000");
+      check(
+        "an absent base still falls back to the first parent and says so",
+        zero.status === 0 && zero.sha === fork
+          && zero.out.includes("no base commit on this event; using first parent"),
+        JSON.stringify({ resolved: zero.sha, fork, out: zero.out }),
+      );
+      const empty = resolveBase(root, "");
+      check(
+        "an empty base takes the same fallback as the all-zero sha",
+        empty.status === 0 && empty.sha === fork,
+        JSON.stringify({ resolved: empty.sha, fork, out: empty.out }),
+      );
+    }
+
+    // A merge HEAD on a push to main: the first parent is the previous main tip, so a merged PR
+    // re-proves what the merge brought in rather than re-proving the whole branch history.
+    {
+      const { root, baseTip, merge } = prMergeRepo(3);
+      const resolved = resolveBase(root, baseTip);
+      check(
+        "a merge head takes its first parent as the base on any event",
+        resolved.status === 0 && resolved.sha === baseTip
+          && git(root, ["rev-parse", "HEAD"]) === merge,
+        JSON.stringify({ resolved: resolved.sha, baseTip, merge }),
+      );
+    }
+
   }
 
   // 1. Known survivor: a.mjs gains an upstream cap so its anchored mutant no longer kills. The gate

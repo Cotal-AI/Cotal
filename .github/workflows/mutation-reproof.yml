@@ -43,14 +43,13 @@ jobs:
       - name: Plan the fan-out
         id: plan
         env:
+          EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          base="$BASE"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
-            echo "no base commit on this event; using first parent $base"
-          fi
+          # Both selector sites resolve the base through the same script. Two copies of this logic is
+          # how the plan and the shard could disagree about which fixtures exist.
+          base="$(bash scripts/mutation-reproof-base.sh "$EVENT" "$BASE" HEAD)"
           out="$(node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --list-shards 12)"
           printf '%s\n' "$out"
           # The plan's last line is the JSON. A selector refusal exits non-zero above and fails this
@@ -105,14 +104,13 @@ jobs:
         # Leave time after a step timeout to report elapsed time for that shard.
         timeout-minutes: 145
         env:
+          EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          base="$BASE"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
-            echo "no base commit on this event; using first parent $base"
-          fi
+          # The same resolver the plan uses. A shard that resolved its own base differently would
+          # re-prove a different set than the one the plan fanned it for.
+          base="$(bash scripts/mutation-reproof-base.sh "$EVENT" "$BASE" HEAD)"
           # A file survives a timed-out step even when its environment-file updates do not.
           date +%s > "$RUNNER_TEMP/mutation-started"
           node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --shard "${{ matrix.shard }}/12"

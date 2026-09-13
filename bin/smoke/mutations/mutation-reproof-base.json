@@ -1,0 +1,95 @@
+{
+  "suite": [
+    "bin/smoke/mutation-reproof.smoke.ts"
+  ],
+  "guard": "The reproof selector diffs from the commit the head actually diverged at. Under the pull-request merge ref the head's first parent is the base branch tip, both workflow sites resolve through one shared script, an unresolvable base fails loud instead of selecting nothing, and the resolved base sha is printed beside the record count.",
+  "command": "pnpm smoke:mutation-reproof",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof-base.json",
+  "why": [
+    "PR #1520 diffed from a commit its head already contained, because actions/checkout builds a merge commit for a pull request and the first parent of that commit is the base branch tip. It read 30 changed paths for a four-file change, selected two fixtures guarding commits it merely lacked, and spent 146 minutes producing no fact about its own files.",
+    "Each mutation restores one step of that failure: taking the event's base unchanged, normalising it the way the report prescribed (a measured no-op under a merge head), taking the second parent instead of the first, applying the first-parent rule on every event rather than only on a pull request, guessing at an unrecognised event, accepting an empty merge base, and dropping the resolved sha from the transcript that made the wrong selection legible."
+  ],
+  "mutations": [
+    {
+      "name": "the event base is used unchanged, as it was before the fix",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "if [ \"$event\" = pull_request ] || [ \"$event\" = pull_request_target ]; then\n  second=\"$(git rev-parse --verify --quiet \"${head}^2\" 2>/dev/null || true)\"\nfi",
+      "replace": "if false; then\n  second=\"$(git rev-parse --verify --quiet \"${head}^2\" 2>/dev/null || true)\"\nfi",
+      "expectRed": "a branch behind its base selects only the paths its own diff touches",
+      "cell": "a branch behind its base selects only the paths its own diff touches"
+    },
+    {
+      "name": "the base is normalised against the head rather than taken from the first parent",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "  [ -n \"$first\" ] || die \"HEAD is a merge commit whose first parent does not resolve\"\n  base=\"$first\"",
+      "replace": "  [ -n \"$first\" ] || die \"HEAD is a merge commit whose first parent does not resolve\"\n  base=\"$(git merge-base \"$base\" \"$head\")\"",
+      "expectRed": "a branch behind its base selects only the paths its own diff touches",
+      "cell": "a branch behind its base selects only the paths its own diff touches"
+    },
+    {
+      "name": "the merge head takes its second parent as the base",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "  first=\"$(git rev-parse --verify --quiet \"${head}^1\" 2>/dev/null || true)\"",
+      "replace": "  first=\"$(git rev-parse --verify --quiet \"${head}^2\" 2>/dev/null || true)\"",
+      "expectRed": "a branch behind its base selects only the paths its own diff touches",
+      "cell": "a branch behind its base selects only the paths its own diff touches"
+    },
+    {
+      "name": "an unresolvable merge base is accepted instead of refused",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "  [ -n \"$resolved\" ] \\\n    || die \"cannot resolve a merge base between $base and $head; a shallow checkout answers this exactly as a repository with no common ancestor does, and diffing against nothing would select zero fixtures and report a green gate that proved nothing (the workflow checks out with fetch-depth: 0)\"\n  base=\"$resolved\"",
+      "replace": "  base=\"${resolved:-$base}\"",
+      "expectRed": "an unresolvable merge base fails loud instead of selecting zero fixtures",
+      "cell": "an unresolvable merge base fails loud instead of selecting zero fixtures"
+    },
+    {
+      "name": "the first-parent rule is applied on every event, not only on a pull request",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "if [ \"$event\" = pull_request ] || [ \"$event\" = pull_request_target ]; then",
+      "replace": "if true; then",
+      "expectRed": "a push landing several commits onto a merge head keeps its whole pushed range",
+      "cell": "a push landing several commits onto a merge head keeps its whole pushed range"
+    },
+    {
+      "name": "an unrecognised event is guessed at instead of refused",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "  *) die \"unknown event '$event'; this selector must not guess which base an unrecognised event implies\" ;;",
+      "replace": "  *) ;;",
+      "expectRed": "an unknown event is refused rather than guessed at",
+      "cell": "an unknown event is refused rather than guessed at"
+    },
+    {
+      "name": "the transcript drops the resolved base sha",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    : ` (base ${resolvedBase}, diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));",
+      "replace": "    : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));",
+      "expectRed": "the resolved base sha appears in the transcript beside the record count",
+      "cell": "the resolved base sha appears in the transcript beside the record count"
+    },
+    {
+      "name": "the plan site resolves its own base instead of calling the shared resolver",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          base=\"$(bash scripts/mutation-reproof-base.sh \"$EVENT\" \"$BASE\" HEAD)\"\n          out=\"$(node scripts/mutation-reproof.mjs",
+      "replace": "          base=\"$BASE\"\n          out=\"$(node scripts/mutation-reproof.mjs",
+      "expectRed": "the plan site resolves its base through the shared resolver rather than its own copy",
+      "cell": "the plan site resolves its base through the shared resolver rather than its own copy"
+    },
+    {
+      "name": "the shard site resolves its own base instead of calling the shared resolver",
+      "file": ".github/workflows/mutation-reproof.yml",
+      "find": "          base=\"$(bash scripts/mutation-reproof-base.sh \"$EVENT\" \"$BASE\" HEAD)\"\n          # A file survives a timed-out step even when its environment-file updates do not.",
+      "replace": "          base=\"$BASE\"\n          # A file survives a timed-out step even when its environment-file updates do not.",
+      "expectRed": "the shard site resolves its base through the shared resolver rather than its own copy",
+      "cell": "the shard site resolves its base through the shared resolver rather than its own copy"
+    },
+    {
+      "name": "the all-zero base no longer falls back to the first parent",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "  if [ -z \"$base\" ] || [ \"$base\" = \"0000000000000000000000000000000000000000\" ]; then",
+      "replace": "  if [ -z \"$base\" ]; then",
+      "expectRed": "an absent base still falls back to the first parent and says so",
+      "cell": "an absent base still falls back to the first parent and says so"
+    }
+  ]
+}
