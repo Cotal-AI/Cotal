@@ -1,11 +1,11 @@
 /**
- * Did this process get scheduled? — the evidence a starved host can obtain about itself, and what
+ * Did this process get scheduled? The evidence a starved host can obtain about itself, and what
  * follows from it.
  *
  * THE DEFECT THIS EXISTS FOR (#1508). A `sleep` reads the pause plane while it waits. Every one of
  * those reads rides a NATS API request with a 5s client-side deadline, and that deadline is a
  * `setTimeout`. When the host is loaded hard enough that this process does not return to its event
- * loop for longer than the deadline, the deadline's own timer cannot fire either — so it fires the
+ * loop for longer than the deadline, the deadline's own timer cannot fire either, so it fires the
  * instant the loop frees, rejects with the client's bare `timeout`, and does so even though the
  * broker answered long ago and the reply is sitting in the socket buffer. The interpreter flattens
  * that into `{ code: "L4000", kind: "handler-fault" }`, and the run dies with a record naming the
@@ -15,7 +15,7 @@
  *
  * A WALL-CLOCK DEADLINE CANNOT TELL THE TWO APART, which is the whole reason this file is not a
  * larger timeout. "The timer did not fire" and "this process was never scheduled" produce the
- * identical observation — an elapsed deadline with no answer — so widening the deadline only moves
+ * identical observation, an elapsed deadline with no answer, so widening the deadline only moves
  * the load at which the misattribution happens. The distinction has to come from a DIFFERENT
  * measurement, and there is one the process can take about itself: whether its own event loop ran.
  *
@@ -50,7 +50,7 @@ import { EffectError } from "@cotal-ai/lang";
  * Deliberately a single source rather than two independent `now`/`wall` parameters. With two, a
  * suite could step the wall while handing the window a clock that by construction never moved, so
  * the clock-step cells passed just as happily against the very wall-clock window they were written
- * to refuse — measured on this tree: with `now` and `wall` separate, forcing the window back onto
+ * to refuse. Measured on this tree: with `now` and `wall` separate, forcing the window back onto
  * `Date.now()` left all 41 cells GREEN. One clock means a test steps THE HOST, and which member the
  * window reads becomes the implementation's own choice, which a cell can therefore grade.
  */
@@ -124,7 +124,7 @@ export interface LoopLagObserver {
  * UNREFED, because an observer is not a reason for a process to stay alive: a run that has finished
  * must exit, and a refed 250ms timer would hold it open forever. RESCHEDULED FROM INSIDE THE TICK
  * rather than as an interval, because `setInterval` under a blocked loop coalesces its missed fires
- * into one and the count of what DID run stops being readable — and the count is half the evidence.
+ * into one and the count of what DID run stops being readable, and the count is half the evidence.
  */
 class TickLoopLag implements LoopLagObserver {
   private lagMs = 0;
@@ -153,7 +153,7 @@ class TickLoopLag implements LoopLagObserver {
    *
    * Extracted so the wall-clock regression has a single code-only line to be restored on. It was
    * previously reachable only by rewriting `due` and `late` together, which spans the comment
-   * between them, and this repo refuses a mutation anchor that includes prose — correctly, since a
+   * between them, and this repo refuses a mutation anchor that includes prose, correctly, since a
    * later tidy of that comment would silently disarm the mutation and nothing would go red.
    */
   private tickNow(): number {
@@ -245,7 +245,7 @@ const nameOf = (e: unknown): string | undefined => {
  * Is this failure the SHAPE a client-side deadline produces?
  *
  * Read off the error's CLASS, never its message. The NATS client's timeout carries the bare text
- * `timeout`, and so do several unrelated failures in this tree and in other people's — matching the
+ * `timeout`, and so do several unrelated failures in this tree and in other people's, so matching the
  * word would classify a broker's refusal as starvation the moment somebody phrased one that way.
  *
  * Two accepting branches, because the client raises the deadline in two shapes: on its own for a
@@ -326,7 +326,7 @@ export const STARVED_YIELD_MS = 250;
  * A SLEEP PROMISES AT-LEAST, NOT AT-MOST, so a starved one COMPLETES LATE rather than failing: the
  * broker armed a real timer, it fired while this process was off the CPU, and the fact is waiting
  * to be read. Retrying reads it and the step settles `ok`. That is the whole repair for the
- * incident in #1508 — the run in it would have completed.
+ * incident in #1508, the run in it would have completed.
  *
  * WHAT IS NOT SWALLOWED: a failure that is not deadline-shaped is raised on the FIRST attempt with
  * no retry and no inspection of the loop, and a deadline-shaped failure on a loop that was running

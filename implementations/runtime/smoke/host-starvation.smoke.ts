@@ -9,7 +9,7 @@
  * THE MECHANISM, measured on this tree before the repair and re-measured by cell 0 below: a pause's
  * plane reads ride a NATS API request whose client-side deadline is a `setTimeout`. A process that
  * does not return to its event loop cannot run that timer either, so it fires late and rejects with
- * the client's bare `timeout` — with the broker healthy, having answered, the reply unread in the
+ * the client's bare `timeout`, with the broker healthy, having answered, the reply unread in the
  * socket. `perform.ts` flattens a thrown non-`EffectError` into `{ code: "L4000",
  * kind: "handler-fault" }`, and the run dies blaming the effect.
  *
@@ -88,7 +88,7 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
 };
 
 /** Block the event loop for real: a synchronous spin, which is what a host under load does to this
- *  process from the outside. Nothing here is simulated — the timers genuinely cannot run. */
+ *  process from the outside. Nothing here is simulated: the timers genuinely cannot run. */
 const starveLoop = (ms: number): void => {
   const until = Date.now() + ms;
   while (Date.now() < until) { /* the starvation */ }
@@ -99,7 +99,7 @@ const starveLoop = (ms: number): void => {
  * proves something and a cell that is merely lucky.
  *
  * A spin only produces a client-side timeout if a request was ALREADY IN FLIGHT when the spin
- * began — the deadline it blocks is that request's own. MEASURED, twice: a single 11s spin, and
+ * began, and the deadline it blocks is that request's own. MEASURED, twice: a single 11s spin, and
  * then rounds separated by a 20ms yield, both completed the sleep with ZERO starvations absorbed,
  * because in each gap the overdue poll timers fired, issued their requests, AND the local broker's
  * replies landed before the next spin. The cell was green with nothing starved. That is why the
@@ -108,7 +108,7 @@ const starveLoop = (ms: number): void => {
  * The repair is WHERE the spin runs. Node's loop is phases in order: timers, then poll (where a
  * socket reply is read), then check (`setImmediate`). Spinning from a `setImmediate` scheduled
  * before the yield puts the block in the CHECK phase of the same turn whose TIMERS phase issued the
- * poll requests — after they are on the wire, before their replies can be processed. The spin then
+ * poll requests, after they are on the wire, before their replies can be processed. The spin then
  * outlasts the client's 5s deadline with the request genuinely pending, which is the incident.
  */
 const starveInCheckPhase = (ms: number): Promise<void> =>
@@ -199,7 +199,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     starved instanceof Error ? `${starved.name}: ${starved.message}` : starved);
   const after = await readCheckpointSettle(jsm, SPACE, ref).then(() => "healthy", (e: Error) => `broken: ${e.message}`);
   c("and the broker was healthy on the other side of it: nothing about the plane failed", after === "healthy", after);
-  console.log("• 0 — the mechanism reproduces: a blocked loop, not a broken plane");
+  console.log("• 0: the mechanism reproduces: a blocked loop, not a broken plane");
 }
 
 // ── 1) THE DEFECT CELL: a sleep whose deadline passes while the loop is blocked COMPLETES ────
@@ -208,7 +208,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // PRE-FIX measurement recorded in the PR): against the tree before the repair this cell is RED,
 // because the starved read's `timeout` escapes `settle` and the effect rejects.
 {
-  console.log("• 1 — a starved sleep completes late rather than failing");
+  console.log("• 1: a starved sleep completes late rather than failing");
   const TOKEN = "c3RhcnZlX3NsZWVwX3Rva2VuXzAwMDE";
   // THE WITNESS, and it is the whole difference between this cell and a vacuous one. "The sleep
   // completed" is ALSO true of a sleep that was never starved, so a cell asserting only that would
@@ -250,7 +250,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 
 // ── 1a) the starvation the cell above depends on was REAL, measured by the same observer ─────
 //
-// Without this, cell 1 would go green on a host that was never blocked at all — the exact vacuity
+// Without this, cell 1 would go green on a host that was never blocked at all, the exact vacuity
 // class @mgr-i1411 reported on #1517. It reads the observer the implementation reads.
 {
   const lag = loopLagObserver(50);
@@ -269,13 +269,13 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // A pause has two plane operations, and cell 1 only reaches one of them. The mint happens before
 // any waiting, so a host already loaded when the step BEGINS starves the arm rather than the
 // settle, and that is the ordinary case for the incident in #1508: the wave program's host was
-// already at load1 118 when the sleep started. MP12 found this gap by surviving — the arm's
+// already at load1 118 when the sleep started. MP12 found this gap by surviving: the arm's
 // wrapper could be removed with every other cell still green.
 //
 // The starvation is driven the same way as cell 1 and the witness is the same: the arm's notice
 // names the arming, which no other operation emits.
 {
-  console.log("• 1b — a sleep whose MINT is starved is absorbed too");
+  console.log("• 1b: a sleep whose MINT is starved is absorbed too");
   const TOKEN = "c3RhcnZlX2FybV90b2tlbl8wMDFi";
   const absorbed: string[] = [];
   const handler = handlerWith(undefined, undefined, (note) => absorbed.push(note));
@@ -302,7 +302,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // A repair that simply swallowed every timeout would pass cell 1 and fail here. The fault is real
 // and not deadline-shaped: the plane refuses the read outright.
 {
-  console.log("• 2 — a genuine fault still fails as L4000, by name");
+  console.log("• 2: a genuine fault still fails as L4000, by name");
   const TOKEN = "c3RhcnZlX2ZhdWx0X3Rva2VuXzAwMDI";
   // A REAL refusal from the plane, reached through the handler's own path: the settle watcher
   // raises the way a broken plane raises, which is what the handler's dispatch sees.
@@ -328,7 +328,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // (A1) and a `RequestError` caused by one (A2); `wasStarved` accepts a window that is both laggy
 // and tick-short (A3). Each has a refusal that differs from its acceptance in exactly one thing.
 {
-  console.log("• 3 — one refusing case per accepting branch");
+  console.log("• 3: one refusing case per accepting branch");
   const timeoutError = Object.assign(new Error("timeout"), { name: "TimeoutError" });
   const requestWithTimeout = Object.assign(new Error("request"), { name: "RequestError", cause: timeoutError });
 
@@ -369,9 +369,9 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 //
 // Cell 3's A3 windows are literals, and a literal proves the predicate and nothing about whether
 // the observer can produce it. A reviewer measured that the hand-built clock-jump window
-// {10000, 9000, 40, 40} is in fact UNREACHABLE from the real observer — lag only accrues on ticks
+// {10000, 9000, 40, 40} is in fact UNREACHABLE from the real observer, since lag only accrues on ticks
 // that RAN, so forty of forty ticks running while accumulating nine seconds of lateness is
-// self-contradictory — and that the case it was named for behaved the opposite way in reality:
+// self-contradictory, and that the case it was named for behaved the opposite way in reality:
 // with the window measured on the wall clock, a forward step inflated `elapsedMs` and therefore
 // `ticksExpected` from the SAME reading that inflates `lagMs`, so a healthy loop read as STARVED.
 // Measured before the repair: +10s over a 1.2s window gave {elapsed 11201, lag 10003, expected 44,
@@ -380,11 +380,11 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // So these cells drive the real `TickLoopLag` under a steppable clock. They are the cells that
 // would have caught it, and they are the reason the window is now monotonic.
 {
-  console.log("• 3b — a stepped clock, through the real observer");
+  console.log("• 3b: a stepped clock, through the real observer");
   let offset = 0;
   // ONE host clock, stepped as a real host steps: BOTH readings come from it, and it is the
   // implementation that decides which one a window is measured on. That is what makes these cells
-  // falsifiable — point the window at `wall` and they go red.
+  // falsifiable: point the window at `wall` and they go red.
   const host = {
     monotonic: () => performance.now(),
     wall: () => Date.now() + offset,
@@ -450,7 +450,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // The other half of the guarantee: a run must not hang forever on a host that never recovers. The
 // operation starves on every attempt, and the bound turns that into a named failure.
 {
-  console.log("• 4 — an unservable caller fails, bounded, under its own code");
+  console.log("• 4: an unservable caller fails, bounded, under its own code");
   const alwaysStarved: LoopLagObserver = {
     mark: () => ({ at: 0, wallAt: 0, lagMs: 0, ticks: 0 }),
     since: () => ({ elapsedMs: 10_000, lagMs: 9_500, ticksExpected: 40, ticksObserved: 1, wallSkewMs: 0 }),
