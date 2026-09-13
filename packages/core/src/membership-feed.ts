@@ -253,7 +253,13 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     // timer to 1s (delay <= 0), and reconnect EVERY second for the JWT's remaining 25% of life. Fail it
     // like a renewal error so `renewRwOnTimer` retries at 60s with NO resident reconnect. The explicit
     // reload's `expected` already rejects a stale read; this covers the timer path (no expectation sent).
-    if (candidate === currentRwCreds && delay <= 0)
+    //
+    // Compared by GENERATION, not by envelope. The envelope carries the nkey seed and is sensitive to
+    // formatting (`credsFingerprint`'s own contract says so), and `jwtFromCreds` discards the difference:
+    // a store, editor, transport or filesystem round trip that normalises a newline re-serves the SAME
+    // generation in bytes `===` calls different, and the refusal below would not fire. Two envelopes
+    // differing only in their seed block are the same generation too.
+    if (credsFingerprint(candidate) === credsFingerprint(currentRwCreds) && delay <= 0)
       throw new Error("reloadRwCreds: the rw source still holds the previous generation past its renewal point (the renewal owner has not re-signed it - run `cotal doctor auth --fix` or restart the manager); nothing adopted");
     if (!(await brokerAcceptsCreds(opts.servers, candidate, Math.max(500, Math.min(MEMBERSHIP_PREFLIGHT_MS, a.deadline - Date.now())))))
       throw new Error("reloadRwCreds: the broker did not accept the re-signed rw credential; nothing adopted");

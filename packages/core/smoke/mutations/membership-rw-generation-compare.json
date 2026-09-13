@@ -1,0 +1,30 @@
+{
+  "suite": [
+    "packages/core/smoke/membership-rw-renewal.smoke.ts"
+  ],
+  "guard": "the membership feed refuses an un-re-signed rw generation by GENERATION, not by envelope bytes",
+  "command": "pnpm smoke:membership-rw-renewal",
+  "completionMarker": "MEMBERSHIP-RW RENEWAL",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-rw-generation-compare.json",
+  "why": [
+    "The refusal is a two-conjunct predicate, and a mutation against the DELAY conjunct can report a clean",
+    "kill while the equality conjunct stays entirely ungraded. This fixture flips the equality conjunct",
+    "back to the byte comparison it used to be, so the cell that reddens is the one about generations.",
+    "Scenario 5 serves one exact string and stays GREEN under the mutation: byte equality and generation",
+    "equality agree there, which is why it could never have caught this.",
+    "The sibling cell asserting the refusal MESSAGE cannot grade this either, and is kept for what it",
+    "documents rather than for what it discriminates: under the mutation the message still appears, one",
+    "1s tick later, once the adopted envelope has become the cached one."
+  ],
+  "mutations": [
+    {
+      "name": "the missed-remint refusal compares envelope bytes again",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "    if (credsFingerprint(candidate) === credsFingerprint(currentRwCreds) && delay <= 0)",
+      "replace": "    if (candidate === currentRwCreds && delay <= 0)",
+      "expectRed": "the refusal keeps the 60s backoff \u2014 no 1s re-read of the source (#1563)",
+      "cell": "the refusal keeps the 60s backoff \u2014 no 1s re-read of the source (#1563)",
+      "note": "Exactly the pre-fix line: the tree compiles and scenario 5 still passes, because byte equality and generation equality agree on the one exact string it serves. Graded on the READ COUNT, not on the refusal message: under the mutation the first tick adopts the reformatted read, and the tick 1s later compares bytes-equal and emits the refusal after all - so the message appears either way, one tick late. The 1s re-read is what only happens when the adoption went through."
+    }
+  ]
+}
