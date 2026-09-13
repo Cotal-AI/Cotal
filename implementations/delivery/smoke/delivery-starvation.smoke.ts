@@ -134,7 +134,14 @@ const accountH = accountC;
 // requires (`cotal up` provisions this on a live mesh; minted here the way `up` does).
 const wsRoot = join(dir, "ws");
 
-type Daemon = { proc: ReturnType<typeof spawn>; exited: boolean; code: number | null; stderr: string };
+type Daemon = {
+  proc: ReturnType<typeof spawn>;
+  exited: boolean;
+  code: number | null;
+  stderr: string;
+  /** Called synchronously from the stderr data event — see the sink in `spawnDaemon`. */
+  onLine?: (chunk: string, d: Daemon) => void;
+};
 const daemons: Daemon[] = [];
 
 /** Spawn the real daemon with stderr CAPTURED, so an exit can be attributed to its stated reason
@@ -163,7 +170,15 @@ function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extr
     { cwd: wsRoot, stdio: ["ignore", "pipe", "pipe"], detached: true, env },
   );
   const d: Daemon = { proc, exited: false, code: null, stderr: "" };
-  const sink = (b: Buffer) => { d.stderr += b.toString(); };
+  // FREEZE-ON-SIGHT. `onLine` runs INSIDE the stderr data event, before this process returns to its
+  // own event loop — which is the only way to catch a state that lasts a couple of broker round
+  // trips. Polling `d.stderr` on a timer cannot: under load the daemon had already printed its next
+  // line before the poll came round, and cell G7e reddened on a state that had genuinely existed.
+  const sink = (b: Buffer) => {
+    const text = b.toString();
+    d.stderr += text;
+    if (d.onLine) d.onLine(text, d);
+  };
   proc.stdout?.on("data", sink);
   proc.stderr?.on("data", sink);
   proc.on("exit", (code) => { d.exited = true; d.code = code; });
@@ -818,16 +833,18 @@ try {
   // The mutation is still killed, and killed harder: a daemon that never quiesces never prints the
   // line, so the trigger never fires, the loop below falls through on its deadline, and G7e reds
   // with zero bracketed readings rather than with a lost race.
-  const quiesceSeen = Date.now() + 30_000;
   let froze = false;
-  while (Date.now() < quiesceSeen && !incumbent.exited) {
-    if (incumbent.stderr.includes("stopped serving shard")) {
-      signalGroup(incumbent, "SIGSTOP");
-      froze = true;
-      break;
-    }
-    await wait(20);
-  }
+  incumbent.onLine = (chunk, d) => {
+    // Synchronous, inside the data event: SIGSTOP lands before this process yields, so the daemon
+    // cannot get another slice in which to answer the ownership question. A 20ms poll could not
+    // keep up under load — measured, and it is why this hook exists at all.
+    if (froze || !chunk.includes("stopped serving shard")) return;
+    signalGroup(d, "SIGSTOP");
+    froze = true;
+  };
+  const quiesceSeen = Date.now() + 30_000;
+  while (Date.now() < quiesceSeen && !incumbent.exited && !froze) await wait(20);
+  incumbent.onLine = undefined;
   check("G5b the loser announced going quiet, so there is a quiesced state to inspect at all",
     froze, tail(incumbent));
 
