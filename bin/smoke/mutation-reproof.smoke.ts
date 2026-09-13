@@ -105,6 +105,16 @@ const zeroDiscUnable = (out: string): string[] => {
   return m ? m[1].split(", ") : [];
 };
 /**
+ * Parse the ORDINARY arm's trailing attribution clause. It needs its own parser: `zeroDiscUnable`
+ * requires the literal `, COULD NOT`, so asking it about an ordinary banner returns empty whether
+ * the clause is present or absent, and an assertion built on that is vacuously true. Deleting the
+ * clause from the emit left the whole suite green until this parser existed.
+ */
+const zeroDiscNotAttributable = (out: string): string[] => {
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED \(.*; not attributable to \(could not discriminate\): (.+)$/m);
+  return m ? m[1].split(", ") : [];
+};
+/**
  * Vacuous all-clear refused where NO proven fixture could have killed: pre-red, inconclusive or
  * zero-graded. Still a red, but attributed to the unit's composition rather than to a fixture that
  * was never in a position to produce a kill, and never collapsed into SURVIVED/FAILED.
@@ -1807,9 +1817,19 @@ try {
         && /MUTATION REPROOF ZERO DISCRIMINATED \(/.test(out)
         && !out.includes("ZERO DISCRIMINATED, COULD NOT")
         && zeroDiscExpected(out).includes("smoke/mutations/e.mutations.json")
-        && zeroDiscUnable(out).length === 0
         && !out.includes("MUTATION REPROOF OK"),
-      `status=${status} expected=${JSON.stringify(zeroDiscExpected(out))} unable=${JSON.stringify(zeroDiscUnable(out))}\n${out}`,
+      `status=${status} expected=${JSON.stringify(zeroDiscExpected(out))}\n${out}`,
+    );
+    // The ordinary arm also has to SAY which fixtures it is not blaming, and that clause needs a
+    // parser of its own: asking the COULD NOT parser returns empty for an ordinary banner whether
+    // the clause is there or not, so an emptiness assertion would pass with the clause deleted.
+    // Assert the positive content instead, and assert the two lists are disjoint, since a fixture
+    // cannot both have been expected to kill and have been unable to.
+    check(
+      "the ordinary arm names the fixtures it is not attributing the miss to, disjoint from the ones it expected",
+      eq(zeroDiscNotAttributable(out), ["smoke/mutations/q.mutations.json"])
+        && !zeroDiscNotAttributable(out).some((path) => zeroDiscExpected(out).includes(path)),
+      `expected=${JSON.stringify(zeroDiscExpected(out))} notAttributable=${JSON.stringify(zeroDiscNotAttributable(out))}\n${out}`,
     );
   }
   {
@@ -2312,6 +2332,25 @@ check(
 check(
   "an ordinary ZERO DISCRIMINATED banner mints no COULD NOT configs",
   zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
+);
+// The attribution clause on the ORDINARY arm, and its REFUSING twin differing only in whether the
+// clause is present. The emptiness half alone would be satisfied by a parser that never matches,
+// which is exactly how the clause went untested: the COULD NOT parser answered "absent" for every
+// ordinary banner, so an assertion that it was empty could not fail.
+check(
+  "the ordinary arm's attribution clause is parsed and stops at the clause it introduces",
+  eq(
+    zeroDiscNotAttributable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 2 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/d.mutations.json; not attributable to (could not discriminate): smoke/mutations/p.mutations.json, smoke/mutations/r.mutations.json\n"),
+    ["smoke/mutations/p.mutations.json", "smoke/mutations/r.mutations.json"],
+  ),
+);
+check(
+  "an ordinary banner carrying no attribution clause mints no not-attributable configs",
+  zeroDiscNotAttributable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
+);
+check(
+  "the COULD NOT arm's own list is not read as an ordinary attribution clause",
+  zeroDiscNotAttributable("MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: smoke/mutations/p.mutations.json\n").length === 0,
 );
 check(
   "a COULD NOT banner names the fixtures that were never in a position to kill",
