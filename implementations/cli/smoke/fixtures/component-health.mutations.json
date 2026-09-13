@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:component-health",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "minTicks": 13,
   "mutations": [
     {
@@ -33,8 +33,8 @@
     {
       "name": "a delivery lease that has not reached ready is reported as healthy",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return { name: \"delivery\", verdict: lease.ready ? \"serving\" : \"not-serving\", facts };",
-      "replace": "return { name: \"delivery\", verdict: \"serving\", facts };",
+      "find": "    return { name: \"delivery\", verdict: state === \"bound\" ? \"serving\" : \"not-serving\", facts };",
+      "replace": "    return { name: \"delivery\", verdict: \"serving\", facts };",
       "expectRed": "delivery ready lease and renewal adoption report independently from its own surfaces",
       "cell": "delivery ready lease and renewal adoption report independently from its own surfaces",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
