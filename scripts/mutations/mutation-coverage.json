@@ -70,10 +70,18 @@
     {
       "name": "a bound entry anywhere after a launcher is treated as its argument",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, file)) hit = true;",
+      "find": "        const script = launchedScriptArg(evalPath, argv);\n        if (script && coversPath(evalPath(script), file)) hit = true;",
       "replace": "        if (exprCovers(evalPath, sf, file)) hit = true;",
       "expectRed": "a name bound to the target but never passed to a launcher is still refused",
       "cell": "a name bound to the target but never passed to a launcher is still refused"
+    },
+    {
+      "name": "any spawn-arg subtree is treated as the launched script",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (command && coversPath(evalPath(command), file)) hit = true;\n      else if (command && isNodeExecutable(evalPath, command) && argv) {\n        const script = launchedScriptArg(evalPath, argv);\n        if (script && coversPath(evalPath(script), file)) hit = true;\n      }",
+      "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, file)) hit = true;\n      }",
+      "expectRed": "a path after -e is not a launched script",
+      "cell": "a path after -e is not a launched script"
     },
     {
       "name": "a string mentioning ../src is treated as a source import",
