@@ -53,7 +53,7 @@ const assert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 55;
+const EXPECTED_CELLS = 56;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -379,6 +379,13 @@ assert.equal(
 // catches it and the under-lock check never runs. Measured: removing either check alone left this
 // suite green, so the pair was load-bearing but neither half was attributable. This pair of rows
 // retires the dialer IN FLIGHT, which only the under-lock check covers.
+// The park replaces socket.socket process-wide, and earlier cells leave accept loops running, so a
+// patch left installed would corrupt every later cell rather than fail here.
+assert.equal(
+  subject.MIDDIAL_CTOR_RESTORED,
+  "True",
+  "the mid-dial park must restore the global socket constructor before any later cell dials",
+);
 assert.equal(
   subject.MIDDIAL_PARK_REACHED,
   "True",
