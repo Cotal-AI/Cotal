@@ -783,8 +783,19 @@ export class CotalEndpoint extends EventEmitter {
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
+      // A token already inside its own refresh margin cannot carry the next cycle: the delay it arms
+      // is non-positive, `armBearerRefresh` floors that to 5s, and the next read returns the same
+      // near-dead token - a 5s loop against the auth service for its remaining life, with
+      // BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned material
+      // that is not usable. Same rule the creds path applies to an un-re-signed generation; it needs
+      // no identity test, because "inside its own margin" is a property of the fetched token alone.
+      // Not on the initial fetch: there is no previous token to keep, and `start()` must be able to
+      // come up on whatever the source has.
+      const nextRefreshMs = bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
+      if (!initial && nextRefreshMs <= 0)
+        throw new Error("the bearer source returned a token already inside its refresh margin (the auth service has not issued a fresh one) - nothing adopted");
       this.currentBearer = bearer;
-      this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
+      this.armBearerRefresh(nextRefreshMs);
     } catch (e) {
       if (initial) throw e;
       this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));

@@ -1,0 +1,30 @@
+{
+  "suite": [
+    "packages/core/smoke/bearer-inside-margin.smoke.ts"
+  ],
+  "guard": "a bearer source returning a token already inside its refresh margin is refused, so BEARER_RETRY_MS applies instead of the 5s floor",
+  "command": "pnpm smoke:bearer-inside-margin",
+  "completionMarker": "BEARER INSIDE MARGIN",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/bearer-inside-margin.json",
+  "why": [
+    "Adopting a token already inside its own refresh margin arms the next refresh from a non-positive",
+    "delay, which armBearerRefresh floors to 5s. The next read returns the same near-dead token, so the",
+    "loop runs at 5s for its remaining life while the 15s BEARER_RETRY_MS backoff is bypassed: the fetch",
+    "did not fail, it succeeded and returned material that is not usable.",
+    "The named cell counts source reads in a window longer than the 5s floor and shorter than the 15s",
+    "backoff, so it grades the loop itself rather than the message. The sibling cells - the warning text",
+    "and the cache staying on the last good token - cannot grade it alone: a future change could emit",
+    "that message, or leave the cache alone, and still re-read at the floor."
+  ],
+  "mutations": [
+    {
+      "name": "the inside-the-margin token is adopted instead of refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!initial && nextRefreshMs <= 0)",
+      "replace": "      if (!initial && nextRefreshMs <= Number.NEGATIVE_INFINITY)",
+      "expectRed": "the refusal backs off past the 5s floor (no re-read in 12s)",
+      "cell": "the refusal backs off past the 5s floor (no re-read in 12s)",
+      "note": "A finite delay is never <= -Infinity, so the refusal can never fire: the issue's pre-fix behavior, with the tree compiling and the initial-fetch arm untouched. Under the mutation the cell reads twice inside the 12s window, at the 5s floor."
+    }
+  ]
+}
