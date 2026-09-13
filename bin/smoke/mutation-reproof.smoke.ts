@@ -101,7 +101,7 @@ const zeroDiscExpected = (out: string): string[] => {
 };
 /** Parse configs named by the COULD NOT arm: present, but never in a position to kill. */
 const zeroDiscUnable = (out: string): string[] => {
-  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED — COULD NOT .*re-shard or repair the already-red commands: (.+)$/m);
+  const m = out.match(/^MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT .*re-shard or repair the already-red commands: (.+)$/m);
   return m ? m[1].split(", ") : [];
 };
 /**
@@ -1651,8 +1651,8 @@ try {
   }
   // 23e. The floor's question is corpus-shaped but its scope is the unit it runs in. Under the
   //     sharded fan-out a shard can draw ONLY work that cannot discriminate, while the corpus as a
-  //     whole kills. That still reds — a unit with no verdict has not earned an all-clear, and
-  //     exempting an all-PRE-RED set is the exact vacuity #1347 is about — but it must not blame a
+  //     whole kills. That still reds, because a unit with no verdict has not earned an all-clear
+  //     and exempting an all-PRE-RED set is the exact vacuity #1347 is about, but it must not blame a
   //     fixture that was never in a position to kill. Same corpus, two shards, opposite outcomes.
   {
     const { root } = makeSingle(
@@ -1680,7 +1680,7 @@ try {
     check(
       "a shard holding only an inherited pre-red fixture reds as COULD NOT without blaming that fixture",
       preRedShard.status === 1
-        && preRedShard.out.includes("MUTATION REPROOF ZERO DISCRIMINATED — COULD NOT")
+        && preRedShard.out.includes("MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT")
         && preRedShard.out.includes("re-shard or repair the already-red commands: smoke/mutations/p.mutations.json")
         && !/expected a kill from/.test(preRedShard.out),
       `status=${preRedShard.status}\n${preRedShard.out}`,
@@ -2177,7 +2177,7 @@ check(
 
 check(
   "a ZERO DISCRIMINATED banner names the configs it expected to kill",
-  eq(zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs) — expected a kill from: smoke/mutations/c.mutations.json\n"), ["smoke/mutations/c.mutations.json"]),
+  eq(zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n"), ["smoke/mutations/c.mutations.json"]),
 );
 check(
   "a prose mention of ZERO DISCRIMINATED does not mint expected configs",
@@ -2188,7 +2188,7 @@ check(
 check(
   "the expected-kill list stops before the not-attributable tail",
   eq(
-    zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 2 proven fixture(s) discriminated; required 1 from the selected configs) — expected a kill from: smoke/mutations/d.mutations.json; not attributable to (could not discriminate): smoke/mutations/p.mutations.json\n"),
+    zeroDiscExpected("MUTATION REPROOF ZERO DISCRIMINATED (0 of 2 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/d.mutations.json; not attributable to (could not discriminate): smoke/mutations/p.mutations.json\n"),
     ["smoke/mutations/d.mutations.json"],
   ),
 );
@@ -2196,12 +2196,12 @@ check(
 // run that DID have a fixture able to kill can never be read as one that could not.
 check(
   "an ordinary ZERO DISCRIMINATED banner mints no COULD NOT configs",
-  zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs) — expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
+  zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs), expected a kill from: smoke/mutations/c.mutations.json\n").length === 0,
 );
 check(
   "a COULD NOT banner names the fixtures that were never in a position to kill",
   eq(
-    zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED — COULD NOT (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: smoke/mutations/p.mutations.json\n"),
+    zeroDiscUnable("MUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of 1 proven fixture(s) discriminated; required 1 from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: smoke/mutations/p.mutations.json\n"),
     ["smoke/mutations/p.mutations.json"],
   ),
 );

@@ -115,7 +115,7 @@ function loadCorpus(root, paths) {
       continue;
     }
     if (config.mutations.length === 0) {
-      errors.push(`${path}: "mutations" array is empty — a fixture that grades nothing cannot stand as coverage`);
+      errors.push(`${path}: "mutations" array is empty, and a fixture that grades nothing cannot stand as coverage`);
       continue;
     }
     let suites;
@@ -586,7 +586,7 @@ const attributablePreRed = []; // exit 4 + the SAME command base GREEN -> head R
 const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base comparison — loud failure
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
 const discriminated = []; // fixtures that produced at least one KILLED (including mixed)
-const zeroGraded = []; // exit 0 with no KILLED parsed — graded nothing, never counts as discrimination
+const zeroGraded = []; // exit 0 with no KILLED parsed: graded nothing, never counts as discrimination
 for (const { path, command, mutations } of prove) {
   console.log(`\n===== ${path} =====`);
   const run = spawnSync(process.execPath, [PROOF, "--config", path], {
@@ -599,8 +599,8 @@ for (const { path, command, mutations } of prove) {
   // Exit 0 means "no mutation failed to produce a clean named red", which is NOT the same as
   // "a kill was observed": mutation-proof prints `All 0 mutation(s) killed` and exits 0 for a
   // fixture whose `mutations` array is empty. Crediting discrimination on the status alone would
-  // let a fixture that graded nothing hold the floor up for a corpus that killed nothing — the
-  // very vacuity this floor exists to refuse, one layer down. Credit the observed verdict.
+  // let a fixture that graded nothing hold the floor up for a corpus that killed nothing, which is
+  // the very vacuity this floor exists to refuse, one layer down. Credit the observed verdict.
   if (run.status === 0) {
     if (verdictsIn(output).includes("KILLED")) discriminated.push(path);
     else zeroGraded.push(path);
@@ -664,8 +664,8 @@ for (const { path, command, mutations } of prove) {
   // because another mutation in the same file was INCONCLUSIVE. INCONCLUSIVE is its own reported
   // state ONLY when every parsed verdict is INCONCLUSIVE and at least one was parsed. An empty
   // parse (`[].every` is true) is unexplained, not INCONCLUSIVE. Mixed KILLED+INCONCLUSIVE
-  // counts as discriminated: a kill was observed. Anything else — an empty parse, an exit-1
-  // with only KILLED lines, a token this gate does not know — is a finding, never a pass.
+  // counts as discriminated: a kill was observed. Anything else is a finding and never a pass,
+  // including an empty parse, an exit-1 with only KILLED lines, or a token this gate cannot name.
   if (verdicts.some((v) => FATAL_VERDICTS.has(v))) {
     if (verdicts.includes("KILLED")) discriminated.push(path);
     if (a.all) { fatal.push(path); continue; }
@@ -765,13 +765,13 @@ function discriminationFloor(provenCount, discriminatedCount) {
 // against the guard and not a pass for it, so it is named rather than folded into either: a
 // reader who sees the corpus shrink this way should see WHICH member stopped grading.
 if (zeroGraded.length) {
-  console.log(`\nZERO GRADED (${zeroGraded.length} fixture(s)) — exited 0 with no KILLED verdict parsed; graded nothing and cannot count toward the floor:\n${zeroGraded.map((path) => `  ${path}`).join("\n")}`);
+  console.log(`\nZERO GRADED (${zeroGraded.length} fixture(s)): exited 0 with no KILLED verdict parsed, so they graded nothing and cannot count toward the floor:\n${zeroGraded.map((path) => `  ${path}`).join("\n")}`);
 }
 const floor = discriminationFloor(prove.length, discriminated.length);
 if (!floor.pass) {
   // The floor's question is corpus-shaped but its scope is the unit it runs in, and under a
   // sharded fan-out that unit is one shard. A shard can therefore draw only work that CANNOT
-  // discriminate — every fixture pre-red before any mutation, or graded nothing — while the
+  // discriminate, every fixture pre-red before any mutation or graded nothing, while the
   // corpus as a whole kills. That still reds, deliberately: a unit that obtained no verdict has
   // not earned an all-clear, and exempting an all-PRE-RED set is precisely the vacuity this
   // floor exists to refuse. But the two cases need different human responses, so they are named
@@ -787,9 +787,9 @@ if (!floor.pass) {
   const expected = prove.map(({ path }) => path).filter((path) => !unableSet.has(path));
   const unable = prove.map(({ path }) => path).filter((path) => unableSet.has(path));
   if (expected.length === 0) {
-    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED — COULD NOT (0 of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: ${unable.join(", ")}`);
+    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: ${unable.join(", ")}`);
   } else {
-    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED (${discriminated.length} of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs) — expected a kill from: ${expected.join(", ")}${unable.length ? `; not attributable to (could not discriminate): ${unable.join(", ")}` : ""}`);
+    console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED (${discriminated.length} of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs), expected a kill from: ${expected.join(", ")}${unable.length ? `; not attributable to (could not discriminate): ${unable.join(", ")}` : ""}`);
   }
   process.exit(1);
 }
