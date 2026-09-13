@@ -4,7 +4,7 @@
   ],
   "guard": "a directed DM reaching a busy Jcode session is accepted through soft_interrupt even when the host is not inside drive() or session_status pulses idle, and a growing automatic queue is published on presence activity",
   "command": "pnpm smoke:jcode-inbound-wedge",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "minTicks": 5,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/inbound-wedge.json",
   "why": [
@@ -37,18 +37,20 @@
     {
       "name": "M3 do not publish queue growth during a busy session",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (sessionBusy()) {\n      if (directed) void steerPending();\n      publishInboundHealth();\n      return;\n    }",
-      "replace": "    if (sessionBusy()) {\n      if (directed) void steerPending();\n      return;\n    }",
+      "find": "      publishInboundHealth();\n      return;\n    }\n    if (directed || agent.attention === \"open\") void drive();",
+      "replace": "      return;\n    }\n    if (directed || agent.attention === \"open\") void drive();",
       "expectRed": "presence activity names the growing automatic inbound queue (#1075)",
-      "cell": "presence activity names the growing automatic inbound queue (#1075)"
+      "cell": "presence activity names the growing automatic inbound queue (#1075)",
+      "note": "Re-anchored when #1233 added an else-branch to the busy guard: the anchor is now the publish plus the tail that follows the branch, which is unique and still removes exactly the publish."
     },
     {
       "name": "M4 do not publish the initial drive batch",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    turnActive = true;\n    surfacedIds = [...ids];\n    publishInboundHealth();",
-      "replace": "    turnActive = true;\n    surfacedIds = [...ids];\n    void agent.setStatus(\"working\").catch(() => {});",
+      "find": "    releaseUnheldReservations();\n    publishInboundHealth();",
+      "replace": "    releaseUnheldReservations();\n    void agent.setStatus(\"working\").catch(() => {});",
       "expectRed": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
-      "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)"
+      "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
+      "note": "Re-anchored for #1233: the reservation fix inserted `releaseUnheldReservations()` between `surfacedIds = [...ids]` and this call, so the old three-line anchor no longer matched and the mutation ERRORed instead of running. The line severed is unchanged: `publishInboundHealth()` is still replaced by the bare status write, so the mutant still publishes presence without naming the batch."
     }
   ]
 }

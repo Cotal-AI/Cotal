@@ -28,6 +28,13 @@ import {
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
+  FALLBACK_INITIAL_MS,
+  fallbackStillOwed,
+  nextFallbackAction,
+  nextFallbackDelay,
+  type FallbackState,
+} from "./queue-fallback.js";
+import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
@@ -47,6 +54,14 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+/** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
+ *
+ *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
+ *  stops waiting anyway (jcode-sdk client.js:317), so a longer value here could only hold the gate
+ *  after the thing it is waiting for has already given up. It is a CEILING, not a delay: the gate is
+ *  released the moment the acknowledgement arrives, which is single-digit milliseconds on a healthy
+ *  seat. A Harness that never acknowledges therefore costs one bounded wait, not a wedged gate. */
+const RUN_ACCEPT_WINDOW_MS = 10_000;
 
 function readinessTurnTimeoutMs(): number {
   const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
@@ -54,6 +69,24 @@ function readinessTurnTimeoutMs(): number {
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0)
     throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
+  return parsed;
+}
+
+/**
+ * Override for the SDK's per-request reply timeout, which defaults to 30000ms.
+ *
+ * Exists so a fixture can make a soft-interrupt timeout happen in seconds instead of half a minute.
+ * It is NOT a remedy for #1233 and must never be used as one: lengthening this bound only makes the
+ * stall take longer to appear, and shortening it makes it appear sooner. What the fix changes is
+ * what happens AFTER the timeout, which is why this knob is validated the same way as the readiness
+ * bound and otherwise left alone.
+ */
+function requestTimeoutOverrideMs(): number | undefined {
+  const raw = process.env.COTAL_JCODE_REQUEST_TIMEOUT_MS?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0)
+    throw new Error(`jcode connector: COTAL_JCODE_REQUEST_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
   return parsed;
 }
 
@@ -279,6 +312,10 @@ export async function runJcodeHost(): Promise<void> {
   // consumed and never guessed back into the queue.
   let pendingKickoff = bootPrompt;
   const readinessBudgetMs = readinessTurnTimeoutMs();
+  // Read BEFORE the COTAL_ scrub below, for the same reason the readiness bound is: the endpoint is
+  // the sole reader of Cotal material and every COTAL_ key is deleted from the environment before
+  // the private instance is launched, so a value read at launch time would always be absent.
+  const requestTimeoutMs = requestTimeoutOverrideMs();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
@@ -340,7 +377,140 @@ export async function runJcodeHost(): Promise<void> {
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
   let surfacedIds: string[] = [];
+  /**
+   * Serialises everything that can make this session emit `message_accepted`.
+   *
+   * Found in review at 0a0bf255a, and the root cause is in the PROTOCOL, not in our bookkeeping:
+   * `message_accepted` carries a `session_id` and nothing else. There is no request id, no sequence
+   * number, no echo of the content. So an acceptance event is attributable to a specific send ONLY
+   * if exactly one send for that session is outstanding when it arrives. A reviewer measured the
+   * consequence end to end: the fallback's A is swallowed and left waiting; an unrelated B is later
+   * dispatched on the same client and session; B's perfectly ordinary acknowledgement flipped A's
+   * listener, so A was promoted, acked out of the durable inbox, never run and never retried. That
+   * is silent loss caused by a NORMAL event rather than by a missing one, which makes it worse than
+   * the no-ack case it was meant to fix.
+   *
+   * The SDK has the same session-only predicate, so one event resolves both its promises too. It
+   * cannot be fixed by reading the event more carefully: the information is not in it.
+   *
+   * So the invariant is established rather than inferred. Every dispatch that can produce an
+   * acceptance for this session runs inside this gate, one at a time, and the acceptance window
+   * closes before the next dispatch may open. Then "an acceptance arrived while my send was the
+   * only one outstanding" is a fact about the system, not a guess about interleaving.
+   *
+   * This serialises HANDOVERS, not the seat. Nothing here holds the provider or delays the model.
+   */
+  let sessionDispatch: Promise<unknown> = Promise.resolve();
+  const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = sessionDispatch;
+    let release!: () => void;
+    sessionDispatch = new Promise<void>((resolve) => { release = resolve; });
+    // Never inherit a prior failure: this is a mutual-exclusion gate, not an error channel.
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  /** Resolve when this session acknowledges a send, or when the window lapses. Never rejects: the
+   *  caller uses it only to bound how long the dispatch gate is held, and a lapse is a legitimate
+   *  outcome (a Harness that never acknowledges must not be able to hold the gate open). */
+  const onceAccepted = (on: JcodeClient, session: string, withinMs: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        on.off("message_accepted", listener);
+        resolve();
+      };
+      const listener = (event: ApiEvent): void => {
+        if ("session_id" in event && event.session_id === session) done();
+      };
+      const timer = setTimeout(done, withinMs);
+      timer.unref?.();
+      on.on("message_accepted", listener);
+    });
+  /**
+   * Deliveries a handover is CURRENTLY writing to the session, which are not accepted yet (#1233).
+   *
+   * Deliberately NOT `surfacedIds`. That list is the accepted ledger and it is what
+   * `drainInboxDeliveries` acks at the turn boundary, so putting an in-flight item there would risk
+   * acking a message the session never took. This is the weaker claim, and the only one an in-flight
+   * item can honestly make: "another path is already handing this over, so do not select it."
+   *
+   * Why it must exist at all, found in review. Both handover paths `await` acceptance, and both used
+   * to append to the ledger only after that await. The window between the write and the resolution is
+   * observable: a newly arriving directed message calls `steerPending()` from the `incoming` handler,
+   * which recomputed "unserved" from a ledger the in-flight batch was not in yet and offered the SAME
+   * items again. Reproduced in the fixture log: an accepted `send_message` carrying the marker,
+   * followed by a `soft_interrupt` carrying that same marker.
+   *
+   * Released on every outcome that is not verified acceptance, so a failed handover leaves the item
+   * owed and un-acked rather than silently dropped.
+   *
+   * A reservation is owned by the IN-FLIGHT HANDOVER, not by the turn that happened to be running
+   * when it started, and this is the correction for the second duplicate a reviewer reproduced
+   * (#1233). The first version cleared this set wholesale at the new-turn boundary, on the stated
+   * assumption that "any in-flight handover belonged to the turn that just ended". That assumption
+   * is false: the queued-turn fallback reserves a batch and then awaits `message_accepted`, and the
+   * OLD turn can go idle inside that await. The idle edge ran `drive`, which selected the whole
+   * automatic inbox including the reserved batch, wiped the reservation, and dispatched the same
+   * items as a fresh turn while the fallback's own acceptance was still pending. Both then landed:
+   * two `send_message` frames carrying one message, measured as `deliveries: 2`.
+   *
+   * So the lifetime is the handover's, and a reset may only drop keys no handover still holds.
+   * `heldReservations` is the live set of outstanding handovers; clearing "wholesale" now means
+   * re-deriving this set from them, which keeps a stale key from leaking (the leak would look
+   * exactly like the stall this PR repairs) without stranding a live one.
+   */
+  let reservedIds = new Set<string>();
+  /** Outstanding handovers, each owning the keys it reserved. The identity of the set is what makes
+   *  "still in flight" answerable at a reset point, rather than assumed from the current turn. */
+  const heldReservations = new Set<Set<string>>();
+  /** Re-derive the reservation set from the handovers still in flight. Called wherever ownership is
+   *  re-derived from scratch: it drops keys nothing holds and preserves keys a live handover does. */
+  const releaseUnheldReservations = (): void => {
+    const held = new Set<string>();
+    for (const batch of heldReservations) for (const key of batch) held.add(key);
+    reservedIds = held;
+  };
+  /** Promote accepted keys into the acked ledger WITHOUT ever recording one twice.
+   *
+   *  Review found the shape that needs this: with a handover in flight across a new-turn boundary,
+   *  `drive` could put a key into `surfacedIds` and the fallback's own acceptance could then push
+   *  the same key again. `drainInboxDeliveries` is what consumes this list at the boundary, so a
+   *  duplicate key is a duplicate ack of one delivery. The reservation fix stops the two paths from
+   *  both owning an item, and this makes the ledger unable to represent the error regardless. */
+  const promoteToSurfaced = (keys: string[]): void => {
+    const known = new Set(surfacedIds);
+    for (const key of keys) if (!known.has(key)) surfacedIds.push(key);
+  };
+  /** Reserve a batch for the duration of one handover, returning its release. Idempotent per key:
+   *  a key already reserved by another path is not selected, so double reservation cannot arise. */
+  const reserveForHandover = (keys: string[]): (() => void) => {
+    const batch = new Set(keys);
+    heldReservations.add(batch);
+    for (const key of keys) reservedIds.add(key);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      heldReservations.delete(batch);
+      // Delete only what no OTHER live handover also holds, so releasing one batch cannot unreserve
+      // a key another in-flight handover is still relying on.
+      const stillHeld = new Set<string>();
+      for (const other of heldReservations) for (const key of other) stillHeld.add(key);
+      for (const key of keys) if (!stillHeld.has(key)) reservedIds.delete(key);
+    };
+  };
   let steering = false;
+  /** A `soft_interrupt` has failed since the last accepted handoff (#1233).
+   *
+   *  The measured failure is the SDK's 30s request timeout, but this is deliberately set for ANY
+   *  rejection: the connector cannot tell a timeout from a refusal it has not seen before, and the
+   *  consequence is identical either way — the live session did not take the message. Cleared on the
+   *  next accepted handoff, so a seat that recovers goes back to the cheap mid-turn path. */
+  let softInterruptFailed = false;
   /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
    *  boundary owns, so a soft_interrupt reply racing turn_done can never be recorded after the ack. */
   let steerSettled: Promise<unknown> = Promise.resolve();
@@ -402,7 +572,10 @@ export async function runJcodeHost(): Promise<void> {
       bridgeStderr += String(chunk);
       if (bridgeStderr.length > 16_384) bridgeStderr = bridgeStderr.slice(-8000);
     });
-    return JcodeClient.connect({ socketPath: instance.socketPath, ...(remaining() !== undefined ? { requestTimeoutMs: remaining() } : {}) });
+    // The recovery deadline still wins when one is set: it bounds the whole replacement window, and
+    // a fixture knob must not be able to extend it past that.
+    const perRequestMs = remaining() ?? requestTimeoutMs;
+    return JcodeClient.connect({ socketPath: instance.socketPath, ...(perRequestMs !== undefined ? { requestTimeoutMs: perRequestMs } : {}) });
   };
 
   const launchTui = (): void => {
@@ -418,6 +591,10 @@ export async function runJcodeHost(): Promise<void> {
   const shutdown = async (code = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    if (fallbackTimer !== undefined) {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = undefined;
+    }
     try {
       tui?.kill("SIGTERM");
     } catch {
@@ -545,7 +722,11 @@ export async function runJcodeHost(): Promise<void> {
     const turnPeek = agent.peekPendingTurns();
     if (pendingKickoff !== undefined) parts.push(pendingKickoff);
     else {
-      const inbox = agent.peekInbox("automatic");
+      // Excludes reserved keys for the same reason the steer and fallback readers do: an item whose
+      // handover is in flight is already being delivered, and selecting it here delivers it twice.
+      // This reader was the one that still selected them, which is how the reproduced duplicate got
+      // its second copy even though every other reader was correct.
+      const inbox = agent.peekInbox("automatic").filter((item) => !reservedIds.has(item.recvKey));
       const injection = formatInjection(inbox);
       if (!injection && !turnPeek) {
         driving = false;
@@ -567,6 +748,12 @@ export async function runJcodeHost(): Promise<void> {
     }
     turnActive = true;
     surfacedIds = [...ids];
+    // A new turn re-derives ownership from its own prompt, so no STALE reservation may survive into
+    // it. But a reservation whose handover is still in flight is not stale, and clearing those here
+    // is the duplicate a reviewer reproduced: the fallback reserves a batch, the old turn goes idle
+    // inside the acceptance await, this boundary wipes the reservation, the selection above re-reads
+    // the same item, and both deliveries land. Drop only what no live handover holds.
+    releaseUnheldReservations();
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
@@ -574,7 +761,33 @@ export async function runJcodeHost(): Promise<void> {
       // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
       // run() is invoked, a close or timeout cannot prove the model rejected it, so never retry it.
       pendingKickoff = undefined;
-      await turnClient.run(sessionId, parts.join("\n\n"), { autoApprove: true });
+      // The RUN's own acceptance window is gated, but not the run itself, and the distinction is
+      // load-bearing in both directions.
+      //
+      // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
+      // very same session-scoped `message_accepted` (jcode-sdk client.js:317). I checked rather than
+      // assumed: a run dispatched while a handover is awaiting its acknowledgement is exactly the
+      // second listener that makes one event ambiguous, and it is the path a reviewer measured.
+      //
+      // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
+      // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
+      // #910 delivery this connector exists to provide. So the gate is released as soon as the send
+      // has been acknowledged, while the turn keeps streaming outside it.
+      const runTurn = await withExclusiveDispatch(async () => {
+        const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
+        // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
+        // raced below; the handle returned from this gate is what actually reports it.
+        dispatched.catch(() => {});
+        // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
+        // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
+        // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
+        await Promise.race([
+          dispatched.then(() => undefined, () => undefined),
+          onceAccepted(turnClient!, sessionId!, RUN_ACCEPT_WINDOW_MS),
+        ]);
+        return dispatched;
+      });
+      await runTurn;
       // The SDK's event iterator returns normally when its socket closes. That is not a successful
       // turn: the model may never have received the injection, so preserving the inbox batch is the
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
@@ -623,6 +836,11 @@ export async function runJcodeHost(): Promise<void> {
           void agent.setStatus("idle").catch(() => {});
           if (hasDriveWork()) void drive();
         }
+        // Both branches, and after both, because a turn that ended with work still owed is the
+        // other way this queue is left unserved: `scheduleErrorRetry` gives up after eight failures
+        // (#790) and `hasDriveWork()` reads false for automatic items the previous turn already
+        // accepted but never committed. The server re-checks the ledger itself.
+        armQueueFallback();
       }
     }
   };
@@ -640,23 +858,238 @@ export async function runJcodeHost(): Promise<void> {
         const surfaced = new Set(surfacedIds);
         const items = agent
           .peekInbox("automatic")
-          .filter((item) => !surfaced.has(item.recvKey) && (item.kind !== "channel" || item.mentionsMe));
+          .filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey)
+            && (item.kind !== "channel" || item.mentionsMe));
         if (!items.length || !sessionBusy()) return;
         const injection = formatInjection(items);
         if (!injection) return;
         const current: JcodeClient = client;
+        // Reserve BEFORE the write, and reserve in the RESERVATION set rather than the accepted
+        // ledger. Review's correction to my first attempt, and it matters: `surfacedIds` is what the
+        // turn boundary acks, and `sendMessage`/`softInterrupt` resolving does not by itself prove the
+        // session took the text (the SDK's acceptance wait RESOLVES on timeout). Reserving here makes
+        // the batch unselectable by any concurrent path without claiming it was accepted.
+        const keys = items.map((item) => item.recvKey);
+        const release = reserveForHandover(keys);
+        // NOT gated, and this is a correctness point rather than an optimisation. The soft interrupt
+        // goes out via the SDK's `requestOk`, whose reply is matched by `reply_to` against the
+        // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
+        // another send's event. Only the uncorrelated `message_accepted` path needs exclusivity.
+        //
+        // Gating it anyway is not free and I measured the cost: a run can hold the dispatch gate for
+        // its acceptance window, so a gated steer waits behind it, and #910's mid-turn delivery suite
+        // timed out waiting for short/4KiB/64KiB DMs to reach the session before the turn ended. That
+        // is the exact delivery this connector exists to provide, so the gate must not stand in front
+        // of the one path that was never ambiguous.
         const request = current.softInterrupt(sessionId, injection, false);
         steerSettled = request.catch(() => {});
-        await request;
+        try {
+          await request;
+        } catch (error) {
+          // The handoff did not land. Release before rethrowing so the items are owed again before
+          // anything else reads the ledger, and stay un-acked.
+          release();
+          throw error;
+        }
+        // The live session took it. Whatever made a previous handoff fail is over, so the fallback
+        // tier stands down and the next batch uses the cheap mid-turn path again.
+        softInterruptFailed = false;
         // If the turn closed or the client was replaced while acceptance was in flight, retain the
         // inbox copy. Jcode may also have queued it, so this deliberately chooses at-least-once.
-        if (!sessionBusy() || client !== current) return;
-        surfacedIds.push(...items.map((item) => item.recvKey));
+        if (!sessionBusy() || client !== current) {
+          release();
+          return;
+        }
+        // Accepted by the live session: promote the reservation into the accepted ledger, which the
+        // containing turn's clean boundary will ack. Promotion and release are exclusive.
+        promoteToSurfaced(keys);
+        release();
       }
     } catch (error) {
+      // #1233. This catch used to be the whole story: it logged, `steering` was cleared below, and
+      // nothing ever looked at this queue again unless a NEW message arrived while the session was
+      // still busy, or the session went idle. Neither is guaranteed, and on the measured seat
+      // neither happened for 13.8 hours. Recording the failure and arming the level-triggered
+      // server is what makes the queue served by something other than luck.
+      softInterruptFailed = true;
       writeJcodeDiagnostic(`[cotal-jcode] soft interrupt failed: ${(error as Error).message}\n`);
     } finally {
       steering = false;
+      // In the `finally`, so it also arms after a `return` from the loop's own guards: any exit that
+      // leaves items unserved must leave the server armed, or the guard becomes the new stall.
+      armQueueFallback();
+    }
+  };
+
+  /** Automatic deliveries the live session has not accepted yet. `surfacedIds` is the accepted
+   *  ledger, so subtracting it is what makes "unserved" mean unserved rather than merely queued. */
+  const unservedAutomatic = (): InboxItem[] => {
+    const surfaced = new Set(surfacedIds);
+    return agent.peekInbox("automatic")
+      .filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey));
+  };
+
+  const fallbackState = (): FallbackState => ({
+    stopping,
+    reconnecting,
+    initialized,
+    hasSession: Boolean(client) && Boolean(sessionId),
+    sessionBusy: sessionBusy(),
+    steering,
+    softInterruptFailed,
+    unserved: unservedAutomatic().length,
+    driveWork: hasDriveWork(),
+    consecutiveFailures,
+    giveUpAfter: ERROR_RETRY_GIVE_UP,
+  });
+
+  /**
+   * The fallback delivery itself: hand the unserved batch to the Harness as an ordinary message.
+   *
+   * This is the path that does not depend on a `soft_interrupt` reply. The Harness accepts a plain
+   * `send_message` while the agent is busy, acknowledges it with `message_accepted`, and runs it as
+   * its own turn when the current one ends — measured against jcode 0.81.5, which is also why the
+   * no-reply (context_message) form is NOT used here: that one is refused outright while busy.
+   *
+   * Acceptance is recorded in the same ledger the soft-interrupt path uses, so the containing turn's
+   * clean boundary remains the sole ack site and a message delivered this way is committed exactly
+   * once. If this send itself fails, nothing is recorded and nothing is dropped: the loop re-arms
+   * and the delivery is attempted again.
+   */
+  const queueTurnFallback = async (): Promise<void> => {
+    const items = unservedAutomatic();
+    if (!items.length) return;
+    const injection = formatInjection(items);
+    if (!injection) return;
+    const current = client;
+    const session = sessionId;
+    if (!current || !session) return;
+    const keys = items.map((item) => item.recvKey);
+    // Reserve BEFORE the write, in the RESERVATION set rather than the accepted ledger.
+    //
+    // Found in review. `sendMessage` resolves on the Harness's `message_accepted`, so everything
+    // after this await happens in a window the rest of the host can observe — and a newly arriving
+    // directed message calls `steerPending()` straight from the `incoming` handler. When ownership was
+    // recorded only after the await, that path recomputed "unserved" from a ledger this batch was not
+    // in yet and offered the SAME items again as a soft interrupt. Reproduced in the fixture log: the
+    // marker's accepted `send_message`, then the same marker in a following `soft_interrupt`.
+    //
+    // It is the reservation and not the accepted ledger because the SDK's acceptance wait RESOLVES on
+    // timeout rather than rejecting, so a resolved send is not proof the session took the text.
+    // Reserving makes the batch unselectable; only verified acceptance promotes it to the ledger the
+    // turn boundary acks. Any other outcome releases, leaving the delivery owed and un-acked.
+    const release = reserveForHandover(keys);
+    // Observe `message_accepted` OURSELVES rather than inferring acceptance from the await.
+    //
+    // Found in review, and it is the difference between a late delivery and a lost one. The SDK's
+    // acceptance wait RESOLVES on its own timeout rather than rejecting ("the stream is the source of
+    // truth", jcode-sdk client.js), so `await sendMessage(...)` returning proves only that the frame
+    // was written and that we waited. A busy Harness that takes the frame and never acknowledges it
+    // therefore looked, to the old code, exactly like a successful delivery: the batch was recorded
+    // as accepted and the next clean turn boundary ACKED it, so a peer message the session never
+    // accepted and never ran was dropped from the durable inbox. Measured by a reviewer as
+    // swallowedSends=1, acceptedSends=0, turnsRunCarryingA=0, LOST=true.
+    //
+    // So acceptance is proved by the acknowledgement, not by the resolve. Without it the reservation
+    // is released and the batch stays un-acked, which keeps it owed: the level-triggered loop will
+    // re-attempt, and late delivery beats loss.
+    // ...AND the acknowledgement is only attributable while this send is the ONLY one outstanding
+    // for the session, which is what the dispatch gate below establishes. `message_accepted` carries
+    // a session id and nothing more, so without exclusivity an unrelated send's ordinary
+    // acknowledgement flips this flag and a swallowed delivery is recorded as accepted. A reviewer
+    // measured exactly that: swallowedSends 1, aRuns 0, unrelatedRuns 1, A acked and never retried.
+    //
+    // The listener is attached and removed INSIDE the gate, so the window in which an acceptance can
+    // be attributed to this send is exactly the window in which no other send can produce one.
+    let acknowledged = false;
+    try {
+      await withExclusiveDispatch(async () => {
+        const onAccepted = (event: ApiEvent): void => {
+          if ("session_id" in event && event.session_id === session) acknowledged = true;
+        };
+        current.on("message_accepted", onAccepted);
+        try {
+          writeJcodeDiagnostic(
+            `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
+              `message(s) as a queued Harness turn instead\n`,
+          );
+          await current.sendMessage(session, injection);
+        } finally {
+          current.off("message_accepted", onAccepted);
+        }
+      });
+      // The client can be replaced while the send is in flight. A replacement redrives the durable
+      // batch itself, so holding ownership would suppress a delivery the new session never saw —
+      // release and let the redrive own it, the same at-least-once stance the steer path takes.
+      if (client !== current) {
+        release();
+        return;
+      }
+      if (!acknowledged) {
+        // Written but never acknowledged. Recording this as accepted is what turned a stall into
+        // LOSS, so it is refused: released, un-acked, still owed, retried by the loop.
+        release();
+        writeJcodeDiagnostic(
+          `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
+            `automatic message(s) remain queued for redelivery\n`,
+        );
+        return;
+      }
+      promoteToSurfaced(keys);
+      release();
+      publishInboundHealth();
+    } catch (error) {
+      release();
+      writeJcodeDiagnostic(`[cotal-jcode] queued-turn fallback failed: ${(error as Error).message}\n`);
+    }
+  };
+
+  /** Pacing for the level-triggered server. Reset whenever a delivery is accepted, so a seat that
+   *  recovers does not inherit a minute-long delay from the stall it just left. */
+  let fallbackDelayMs = FALLBACK_INITIAL_MS;
+  let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let fallbackRunning = false;
+
+  /**
+   * Arm the level-triggered server for the automatic queue (#1233).
+   *
+   * Every OTHER path that serves this queue is edge-triggered — an arriving message, an idle
+   * transition — and the defect is that both edges can be absent forever while work is owed. This
+   * one is armed by the state of the queue rather than by an event, so the question it answers is
+   * "is anything still owed", which cannot be missed the way an edge can.
+   *
+   * At most one timer, never while stopping, and unref'd so it can never hold the process open.
+   */
+  const armQueueFallback = (): void => {
+    if (stopping || fallbackTimer !== undefined) return;
+    if (!fallbackStillOwed(fallbackState())) return;
+    const delay = fallbackDelayMs;
+    fallbackDelayMs = nextFallbackDelay(fallbackDelayMs);
+    fallbackTimer = setTimeout(() => {
+      fallbackTimer = undefined;
+      void serveQueueFallback();
+    }, delay);
+    fallbackTimer.unref?.();
+  };
+
+  const serveQueueFallback = async (): Promise<void> => {
+    if (fallbackRunning) return;
+    fallbackRunning = true;
+    try {
+      const before = fallbackState();
+      const decision = nextFallbackAction(before);
+      if (decision.action === "stop") return;
+      if (decision.action === "drive") await drive();
+      else if (decision.action === "steer") await steerPending();
+      else if (decision.action === "queue-turn") await queueTurnFallback();
+      // A tick that delivered something resets the pacing; one that could not keeps backing off.
+      // Measured on the ledger, not on the action taken: an attempt that returned without accepting
+      // anything has not served the queue, and treating the call itself as progress is how a
+      // retry loop keeps a fast cadence forever against a session that is taking nothing.
+      if (unservedAutomatic().length < before.unserved) fallbackDelayMs = FALLBACK_INITIAL_MS;
+    } finally {
+      fallbackRunning = false;
+      armQueueFallback();
     }
   };
 
@@ -679,6 +1112,16 @@ export async function runJcodeHost(): Promise<void> {
     turnActive = false;
     driving = false;
     surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
+    // Same reasoning: the replacement redrives the durable batch, so reservations held against the
+    // lost bridge must not keep those items unselectable on the new one.
+    //
+    // This one IS a true wholesale wipe, unlike the new-turn boundary, and the difference is the
+    // point. Here the bridge itself is gone, so every outstanding handover is dead by definition:
+    // each one's own release checks `client !== current` and returns without promoting, so nothing
+    // is in flight that could still land. At the new-turn boundary the bridge is alive and the
+    // handover may still be awaiting acceptance, which is why that site re-derives instead.
+    heldReservations.clear();
+    reservedIds = new Set();
     void agent.setStatus("waiting").catch(() => {});
     let lastError: unknown;
     const deadline = Date.now() + BRIDGE_RECOVERY_WINDOW_MS;
@@ -768,6 +1211,10 @@ export async function runJcodeHost(): Promise<void> {
     const directed = item.kind !== "channel" || item.mentionsMe;
     if (sessionBusy()) {
       if (directed) void steerPending();
+      // Ambient that is NOT directed gets no steer, so before #1233 nothing was watching it either:
+      // it waited for an idle transition that a permanently busy seat never makes. Arming here is
+      // what gives every automatic arrival a server, not only the directed ones.
+      else armQueueFallback();
       publishInboundHealth();
       return;
     }

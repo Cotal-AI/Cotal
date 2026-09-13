@@ -36,11 +36,11 @@
     {
       "name": "degraded collapses into ready, so a dead socket under a live bind reads as healthy",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this._connected) return this._transportConnected ? \"ready\" : \"degraded\";",
-      "replace": "    if (this._connected) return \"ready\";",
+      "find": "      if (!this._transportConnected) return \"degraded\";",
+      "replace": "      if (false) return \"degraded\";",
       "expectRed": "bound with the transport down reports degraded, not connected and not disconnected",
       "cell": "bound with the transport down reports degraded, not connected and not disconnected",
-      "note": "This is the row the previous single boolean got wrong: it reported not-degraded on the one state that needs attention."
+      "note": "This is the row the previous single boolean got wrong: it reported not-degraded on the one state that needs attention. The derivation became a block when #1233 added `stalled` below it, so this mutation now collapses the degraded GUARD rather than a one-line ternary. Same property, same cell: a dead socket under a live bind must not read as healthy."
     },
     {
       "name": "connecting collapses into disconnected, erasing the pre-bind window",

@@ -135,6 +135,8 @@
     "smoke:jcode-recovery-classifier": "tsx extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts",
     "smoke:jcode-mid-turn-delivery": "tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
     "smoke:jcode-inbound-wedge": "tsx extensions/connector-jcode/smoke/jcode-inbound-wedge.smoke.ts",
+    "smoke:jcode-queue-fallback-policy": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-policy.smoke.ts",
+    "smoke:jcode-queue-fallback": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
@@ -686,7 +688,8 @@
     "smoke:delivery-explicit-space": "tsx implementations/cli/smoke/delivery-explicit-space.smoke.ts",
     "smoke:registration-executor-resume": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/registration-executor-resume.smoke.ts",
     "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts",
-    "smoke:publish-closure-gate": "tsx bin/smoke/publish-closure-gate.smoke.ts"
+    "smoke:publish-closure-gate": "tsx bin/smoke/publish-closure-gate.smoke.ts",
+    "smoke:jcode-queue-fallback-loss": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-loss.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

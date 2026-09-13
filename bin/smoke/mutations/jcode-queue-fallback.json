@@ -1,0 +1,92 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/jcode-queue-fallback.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-queue-fallback-policy.smoke.ts"
+  ],
+  "guard": "a soft-interrupt timeout never leaves the automatic delivery queue unserved, and a seat holding a queue that has made no progress does not report itself ready",
+  "command": "pnpm smoke:jcode-queue-fallback-policy && pnpm smoke:jcode-queue-fallback",
+  "progressPattern": "  \u2713 ",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-queue-fallback.json",
+  "why": [
+    "The defect presents as health everywhere upstream. The publish succeeds, presence says working, the transport is up, and cotal_connection_status said `ready` over a 13.8-hour stall. So the fixture grades RECIPIENT OBSERVATION and nothing else: the decisive cell searches the fake Harness request log for a send_message frame carrying the message text, which is the message arriving at the seat rather than a drain function reporting that it ran.",
+    "The drain cell's DEADLINE is load-bearing and is therefore mutated in its own right (M2). Measured against the pre-fix tree, the message does eventually arrive, because the pre-existing idle-boundary path delivers it once the seat goes idle. A cell that merely waited for arrival was GREEN on the defect. Requiring arrival while the seat is still busy is what makes it a statement about draining.",
+    "M1 severs the delivery itself: the level-triggered server is never armed, which is exactly the shipped behaviour. M2 severs the fallback tier in the policy table, so a timed-out handoff resolves to a path that cannot deliver while busy. M3 restores the shipped `connectionState` derivation, under which a bound seat with a live transport is `ready` whatever its queue is doing. M4 counts any inbox drain as automatic progress, which is the specific lie the measured seat would have told: it drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. M5 makes the fallback record acceptance for a batch it did not send, which is the at-most-once failure that would turn a late delivery into a lost one.",
+    "M1 and M2 are separate on purpose. M2 alone leaves the server armed and it would still drive at the next idle transition, and M1 alone leaves the policy table correct while nothing consults it. One mutation standing in for both would leave whichever ran second ungraded.",
+    "ORDER IN `command` IS DELIBERATE, and two mutations override it. The default chain runs the policy arm FIRST, because the two are chained with `&&` and whichever reds first short-circuits the other: M2's named cell lives in the policy arm, and with the end-to-end arm first it reddened the drain cell while its own never printed. M1 has the mirror problem \u2014 it mutates a predicate the policy arm also reads \u2014 so it overrides the command to run the end-to-end arm ALONE, which is the arm whose cell it claims. Each mutation runs the arm that carries the cell it names; mutation-proof graded both arrangements WRONG-RED until they did, which is the check working.",
+    "The suites import connector-jcode and connector-core source relatively or through the workspace, and the end-to-end arm spawns the host through tsx against src/host-main.ts, so mutation-proof executes the changed source directly. `@cotal-ai/connector-core` is consumed as a workspace package by the end-to-end arm, so its two mutations carry a build command and an afterRestore rebuild; without them the arm would audit the last dist/ rather than the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the level-triggered server is never armed, as in the shipped tree",
+      "file": "extensions/connector-jcode/src/queue-fallback.ts",
+      "find": "export function fallbackStillOwed(s: FallbackState): boolean {\n  if (s.stopping) return false;\n  return s.unserved > 0 || s.driveWork;\n}",
+      "replace": "export function fallbackStillOwed(s: FallbackState): boolean {\n  return false && !s.stopping && (s.unserved > 0 || s.driveWork);\n}",
+      "expectRed": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
+      "cell": "a message queued behind a timed-out soft interrupt reaches the recipient session while the seat is still busy (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback",
+      "note": "This is the pre-fix behaviour exactly: the soft-interrupt catch logs and returns, no timer is ever armed, and the queue waits for an edge that a permanently busy seat never produces. The red is attributable to the shipped host because the assertion reads the fake Harness request log, not connector memory. It runs the END-TO-END arm alone, deliberately: `fallbackStillOwed` is also read by the policy arm, which reds first under the default chain and short-circuits the drain cell this mutation exists to grade. M2 keeps the default chain for the mirror-image reason."
+    },
+    {
+      "name": "M2 a timed-out handoff loses its fallback tier",
+      "file": "extensions/connector-jcode/src/queue-fallback.ts",
+      "find": "  if (s.softInterruptFailed) return { action: \"queue-turn\", reason: \"soft-interrupt-timed-out\" };",
+      "replace": "",
+      "expectRed": "a timed-out handoff with work unserved delivers by queued turn instead",
+      "cell": "a timed-out handoff with work unserved delivers by queued turn instead",
+      "note": "Without the tier the decision falls through to `steer`, which is the path that just timed out. The policy arm names the branch; the end-to-end arm reds too, because the server then re-attempts a handoff nothing will answer."
+    },
+    {
+      "name": "M3 a bound seat with a live transport is ready whatever its queue is doing",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!this._transportConnected) return \"degraded\";\n      const held = this.automaticQueueStalledForMs();\n      return held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS ? \"stalled\" : \"ready\";",
+      "replace": "      return this._transportConnected ? \"ready\" : \"degraded\";",
+      "expectRed": "a non-empty automatic queue with no progress over the window does NOT report ready",
+      "cell": "a non-empty automatic queue with no progress over the window does NOT report ready",
+      "command": "pnpm --filter \"@cotal-ai/connector-jcode...\" build && pnpm smoke:jcode-queue-fallback",
+      "afterRestore": "pnpm --filter \"@cotal-ai/connector-jcode...\" build",
+      "note": "The shipped derivation. This is the second defect in #1233: the status read healthy while the thing it described was not happening, which is what sent an operator toward restarting a working seat. The refusing sibling (a deep but moving queue is still ready) survives this mutant by construction, which is why both are cells."
+    },
+    {
+      "name": "M4 any inbox drain counts as automatic progress",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const automatic = selected.some((p) => !p.pullOnly);\n    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
+      "replace": "    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
+      "expectRed": "draining pull-only traffic is not automatic progress, so the stall stands",
+      "cell": "draining pull-only traffic is not automatic progress, so the stall stands",
+      "command": "pnpm --filter \"@cotal-ai/connector-jcode...\" build && pnpm smoke:jcode-queue-fallback",
+      "afterRestore": "pnpm --filter \"@cotal-ai/connector-jcode...\" build",
+      "note": "The measured seat drained cotal_inbox every few minutes while its automatic queue sat for 13.8 hours. Under this mutant that pull-only activity resets the progress mark and the seat reports ready throughout \u2014 the exact lie, reachable through a one-line conflation of two different queues."
+    },
+    {
+      "name": "M5 the fallback delivers without recording what it delivered",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      promoteToSurfaced(keys);\n      release();\n      publishInboundHealth();",
+      "replace": "      release();\n      publishInboundHealth();",
+      "expectRed": "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
+      "cell": "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
+      "note": "The acceptance ledger is what makes the level-triggered server terminate for a given batch. Without the record the items stay `unserved` forever, every tick re-delivers the same messages, and the recipient session receives the same peer message over and over. This is the failure mode a retry loop has when its progress is measured by the attempt rather than by the ledger, and it is why the loop resets its pacing on the ledger. Its red is on a DIFFERENT cell from M1's, so the two are not interchangeable: M1 proves delivery happens at all, M5 proves it happens once. Re-anchored when the handover reservation was added (the ledger write moved below the release); the claim and the cell are unchanged. NOTE it deletes only the LEDGER write and keeps the release, so it is not a disguised copy of M6: M5 removes the record of acceptance, M6 removes the exclusion that makes an in-flight batch unselectable. Runs the drain suite ALONE rather than inheriting the paired policy+drain command: its cell lives in the drain suite, and pairing let the policy suite's own red satisfy the exit code while the named cell stayed green, which mutation-proof correctly graded WRONG-RED. Re-anchored when the duplicate-ack guard replaced the bare surfacedIds.push with promoteToSurfaced. Same severing: the delivery still happens and is still not recorded.",
+      "command": "pnpm smoke:jcode-queue-fallback"
+    },
+    {
+      "name": "M7 acceptance is inferred from the resolve, so a swallowed send is treated as delivered",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (!acknowledged) {",
+      "replace": "      if (false) {",
+      "command": "pnpm smoke:jcode-queue-fallback-loss",
+      "expectRed": "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
+      "cell": "an unacknowledged queued turn is re-attempted rather than treated as delivered (#1233)",
+      "note": "The second reviewer finding, restored. The SDK's acceptance wait RESOLVES on its own timeout rather than rejecting, so `await sendMessage(...)` returning proves only that the frame was written. Infer acceptance from it and a Harness that takes the frame and never acknowledges it is recorded as having taken the batch; the next clean boundary then ACKS a message the session never ran, so the peer's message is lost rather than late. Runs the loss fixture, whose fake takes the queued send and stays silent, and whose witness is a turn_run record: arrival is logged for every frame, so only an execution record can distinguish delivered from dropped. Its cell is distinct from M5's and M6's: M5 removes the record of acceptance, M6 removes the exclusion during the window, M7 accepts something that was never acknowledged."
+    },
+    {
+      "name": "M8 a new turn takes over items another handover is still delivering",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !reservedIds.has(item.recvKey));",
+      "replace": "      const inbox = agent.peekInbox(\"automatic\");",
+      "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
+      "command": "pnpm smoke:jcode-queue-fallback",
+      "note": "drive() was the one selection reader that did not exclude reserved keys, which is how the duplicate got its second copy while every other reader was correct. NOTE ON WHAT IS AND IS NOT GRADED HERE. The duplicate needs BOTH guards to fail: drive must select the reserved item AND the wholesale wipe must drop the reservation. Severing only the wipe leaves this cell GREEN, because this filter alone still refuses the item; I measured that by hand rather than inferring it. So a separate mutation for the wipe SURVIVES by construction, and I removed it instead of keeping a survivor or inventing a cell to justify it. The redundancy is deliberate defence in depth, and this mutation grades the guard that is load-bearing on its own."
+    }
+  ]
+}

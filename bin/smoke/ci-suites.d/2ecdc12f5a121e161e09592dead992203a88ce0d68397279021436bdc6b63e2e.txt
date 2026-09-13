@@ -1,0 +1,5 @@
+# A soft-interrupt timeout must not leave the connector-managed automatic queue unserved (#1233).
+# The seat is healthy and its transport is up; the queue is served by a level-triggered loop, so a
+# message queued behind a black-holed soft interrupt still reaches the recipient session while the
+# seat is BUSY. Graded on the fake Harness request log, not on a drain counter. Mutation-proofed.
+smoke:jcode-queue-fallback

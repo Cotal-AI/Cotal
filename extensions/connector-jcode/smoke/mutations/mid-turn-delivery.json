@@ -4,7 +4,7 @@
   ],
   "guard": "a directed DM arriving during a live Jcode turn is accepted by the recipient session through its soft-interrupt queue, and the exact Cotal delivery is committed only at the clean containing-turn boundary",
   "command": "pnpm smoke:jcode-mid-turn-delivery",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "minTicks": 4,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/mid-turn-delivery.json",
   "why": [
@@ -23,9 +23,10 @@
     {
       "name": "M1 leave directed mid-turn DMs parked in the connector inbox",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        const current: JcodeClient = client;\n        const request = current.softInterrupt(sessionId, injection, false);",
-      "replace": "        const current: JcodeClient = client;\n        return;",
-      "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)"
+      "find": "        const request = current.softInterrupt(sessionId, injection, false);\n        steerSettled = request.catch(() => {});",
+      "replace": "        release();\n        return;",
+      "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)",
+      "note": "Re-anchored for #1233: the reservation fix inserted the reserve call between `const current` and the softInterrupt, so the old anchor no longer matched and the mutation ERRORed instead of running. Same severing: the soft interrupt never happens and the DMs stay parked. The mutant releases first so it leaks nothing, which keeps the cell measuring undelivered mid-turn DMs rather than a reservation leak. Re-anchored again for #1233 when the steer was placed behind the acceptance dispatch gate. Same severing as before: no soft interrupt, DMs stay parked, and the mutant releases first so it leaks no reservation. Anchored on the softInterrupt call plus its steerSettled write, which is a pair that does not move when surrounding comments or gating change."
     },
     {
       "name": "M2 accept the soft interrupt but commit only the turn's initial ids",
