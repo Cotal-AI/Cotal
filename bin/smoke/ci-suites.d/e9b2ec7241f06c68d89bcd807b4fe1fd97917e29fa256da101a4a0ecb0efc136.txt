@@ -1,0 +1,2 @@
+# A breaking change must carry an operator upgrade section in docs/UPGRADING.md (#1578).
+smoke:upgrade-section
