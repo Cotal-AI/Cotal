@@ -54,7 +54,13 @@
   "bounds the starvation credit; M5 makes a lease genuinely held by another daemon keep serving; M6",
   "makes an UNANSWERABLE lease question exit, which is the wrong last sequence: 0 line from the",
   "measured incident. Each reddens exactly the cell standing for a preserved guarantee and leaves",
-  "every starvation cell green, which is what proves the suite grades both directions."
+  "every starvation cell green, which is what proves the suite grades both directions.",
+  "",
+  "M19 PINS A PLACEMENT RATHER THAN A PREDICATE, which is why it needs a mutation of its own: no",
+  "assertion about a return value can defend WHERE a handler is registered. Its stimulus is also the",
+  "only ordinary one in this fixture - every other cell stops a daemon with SIGKILL, which is honest",
+  "for a crash and silent about the case an operator actually performs, and that case reaches this",
+  "issue's outage with no starvation and no broker fault at all."
  ],
  "mutations": [
   {
@@ -236,6 +242,18 @@
   "completionMarker": "DELIVERY-STARVATION SMOKE",
   "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
   "note": "THE PLAUSIBLE WRONG FIX, pinned so nobody re-lands it. The defect this replaced compared the row against the bare connection nkey while the endpoint stamps the principal dot-form, which made `held` unreachable; the obvious repair is to compare principals, and it is still wrong. The daemon's cred is a FILE every restart re-reads, so a replacement daemon presents the SAME principal as the process it replaced. A displaced daemon would then read its successor's row as its own, keep serving a shard it had lost, and CAS-release the live holder's row on the way out. Measured rather than argued: this mutation reddens R9 AND F5/F6/G9/G10/G12, with G12 reporting two live ctl.delivery servers - the split the lease exists to prevent."
+ },
+ {
+  "name": "M19 the signal handlers go back to being armed only at the END of start-up",
+  "file": "implementations/delivery/src/delivery.ts",
+  "find": "  process.on(\"SIGINT\", earlySigint);\n  process.on(\"SIGTERM\", earlySigterm);",
+  "replace": "",
+  "expectRed": "W4 the lease row is GONE \u2014 not stranded for the bucket TTL",
+  "cell": "W4 the lease row is GONE \u2014 not stranded for the bucket TTL",
+  "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
+  "completionMarker": "DELIVERY-STARVATION SMOKE",
+  "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
+  "note": "WHERE THE HANDLERS ARE ARMED IS THE FIX, and a placement cannot be defended by any assertion about a return value, so it needs its own mutation. Deleting the arming restores the inherited shape exactly: the later `process.off` of the same two functions becomes a no-op that removes listeners never added, which is what the shipped daemon effectively had. Between the CAS-create of the lease row and a handler registered at the END of start-up, SIGTERM takes Node's DEFAULT action - immediate death, no release - and the row claims the shard for the rest of the 30s bucket TTL with no process behind it, so the next daemon is refused outright. Graded end to end against a real daemon, hence the build: the suite spawns through bin/cotal.ts, which resolves the package to its BUILD, and a source-only edit would grade nothing. Measured: this reddens W4-W7 and leaves all 81 other cells green."
  }
  ]
 }
