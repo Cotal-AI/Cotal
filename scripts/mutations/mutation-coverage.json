@@ -260,10 +260,10 @@
       "cell": "a launched entrypoint's own relative import is reached"
     },
     {
-      "name": "the entrypoint reach follows bare specifiers into dist-backed packages",
+      "name": "the entrypoint reach resolves bare specifiers through the package map",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (!specifier.startsWith(\".\")) continue;\n",
-      "replace": "",
+      "find": "      if (!specifier.startsWith(\".\")) continue;\n      const next = candidateFiles(resolve(dirname(path), specifier));\n",
+      "replace": "      const found = specifier.startsWith(\".\") ? undefined : manifestByName.get(specifier);\n      const next = found !== undefined\n        ? candidateFiles(resolve(dirname(found.path), \"src\", \"index.ts\"))\n        : candidateFiles(resolve(dirname(path), specifier));\n",
       "expectRed": "a by-name package the launched entrypoint imports is not reached in source",
       "cell": "a by-name package the launched entrypoint imports is not reached in source"
     },
