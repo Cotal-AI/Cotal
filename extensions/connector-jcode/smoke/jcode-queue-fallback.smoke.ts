@@ -99,6 +99,9 @@ const busyHoldMs = 120_000;
 // The SDK default is 30s. Shortened so the timeout the fixture depends on happens in seconds. The
 // VALUE is not under test — lengthening it is explicitly not the repair — only what follows it.
 const softInterruptTimeoutMs = 3_000;
+// How long the fake holds `message_accepted` open. Wide enough that a concurrent directed arrival
+// lands reliably inside the host's post-await window (Cell B2), short enough not to pace the suite.
+const acceptDelayMs = 4_000;
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
 let child: ChildProcess | undefined;
@@ -155,6 +158,38 @@ const arrivedWhileBusy = (marker: string): boolean => {
   if (deliveryIndex < 0) return false;
   return idleIndex < 0 || deliveryIndex < idleIndex;
 };
+/**
+ * EVERY attempt to hand a marker to the session, by either path.
+ *
+ * The duplicate this guards against does not arrive as a second `send_message`: the fallback sends
+ * one, and the concurrent path re-offers the SAME item as a `soft_interrupt`. Counting only turn
+ * requests therefore cannot see it — and in this fixture the soft interrupt is black-holed, so the
+ * copy is invisible in delivered turns while being a real double handover on a live bridge, where
+ * that frame would be accepted. The honest witness is the union of both request kinds.
+ */
+const handoversCarrying = (marker: string): Entry[] =>
+  entries().filter((entry) =>
+    entry.ev === "request"
+    && (entry.frame?.req === "send_message" || entry.frame?.req === "soft_interrupt")
+    && String(entry.frame?.content ?? "").includes(marker));
+/**
+ * Was the marker offered AGAIN after the host had already had it accepted?
+ *
+ * An earlier failed `soft_interrupt` carrying the marker is legitimate: that is how the flow starts,
+ * and it is why the fallback exists. What must never happen is a handover of the same marker AFTER
+ * its accepted `send_message`, because at that point the host has been told the session took it.
+ */
+const reofferedAfterAcceptance = (marker: string): boolean => {
+  const all = entries();
+  const acceptedAt = all.findIndex((entry) =>
+    entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame.no_reply
+    && String(entry.frame?.content ?? "").includes(marker));
+  if (acceptedAt < 0) return false;
+  return all.slice(acceptedAt + 1).some((entry) =>
+    entry.ev === "request"
+    && (entry.frame?.req === "send_message" || entry.frame?.req === "soft_interrupt")
+    && String(entry.frame?.content ?? "").includes(marker));
+};
 
 try {
   mkdirSync(shimDir, { recursive: true });
@@ -206,6 +241,9 @@ try {
       FAKE_JCODE_BUSY_AFTER_READINESS: "1",
       FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
       FAKE_JCODE_BUSY_HOLD_MS: String(busyHoldMs),
+      // Holds `message_accepted` open so the host's post-await window is observable (Cell B2). It
+      // changes WHEN the acknowledgement lands, never whether the message is delivered.
+      FAKE_JCODE_ACCEPT_DELAY_MS: String(acceptDelayMs),
       // The measured failure: the bridge accepts the soft_interrupt frame and never answers it.
       FAKE_JCODE_STEER_BLACKHOLE: "1",
       JCODE_HOME: inheritedJcodeHome,
@@ -300,6 +338,68 @@ try {
     turnsCarrying(marker).length === 1 && !wentIdle(),
     { deliveries: turnsCarrying(marker).length, seatWentIdle: wentIdle() },
   );
+
+  // --- Cell B2: the acceptance window is not a duplicate-delivery window ----------------------
+  // Found by review, not by me. `queueTurnFallback` awaits `sendMessage`, and the real SDK resolves
+  // that await on `message_accepted`. Anything the host does with its ledger AFTER the await is
+  // therefore reachable by a concurrent path during the acceptance interval — and a newly arriving
+  // directed message calls `steerPending()` straight from the `incoming` handler. If acceptance is
+  // recorded only after the await, that second path reads the in-flight item as still unserved and
+  // hands the SAME message over again.
+  //
+  // Graded on the count of distinct frames carrying the first marker. The knob widens the window so
+  // the interleaving is reliable rather than luck; it does not create the window, and it cannot
+  // manufacture a duplicate, because a correct host records acceptance before it can be observed.
+  {
+    const raceMarker = "RACE_DURING_ACCEPT_WINDOW_1233";
+    const secondMarker = "ARRIVES_DURING_ACCEPT_WINDOW_1233";
+    const before = turnRequests().length;
+    await operator.unicast(peerId!, raceMarker);
+    // Land the second directed message while the first is still being accepted. Directed, because
+    // that is the arm that calls steerPending from the incoming handler.
+    await sleep(300);
+    await operator.unicast(peerId!, secondMarker);
+    // Long enough for the delayed acceptance to settle and for any duplicate to have been sent.
+    await tryWaitFor(() => (turnsCarrying(raceMarker).length > 0 ? true : undefined), 30_000);
+    await sleep(3_000);
+    const firstCopies = turnsCarrying(raceMarker).length;
+    const secondCopies = turnsCarrying(secondMarker).length;
+    check(
+      "a message accepted but not yet ledgered is not handed over a second time by a concurrent arrival (#1233)",
+      firstCopies === 1 && !reofferedAfterAcceptance(raceMarker),
+      {
+        firstMarkerDeliveries: firstCopies,
+        firstMarkerHandovers: handoversCarrying(raceMarker).length,
+        reofferedAfterAcceptance: reofferedAfterAcceptance(raceMarker),
+        secondMarkerDeliveries: secondCopies,
+        framesAdded: turnRequests().length - before,
+      },
+    );
+    // The no-loss half. Refusing the duplicate must not be achieved by dropping the arrival that
+    // raced it: both messages are owed, and at-least-once means each is delivered at least once.
+    check(
+      "and the message that raced it is still delivered, so the duplicate is refused without dropping",
+      secondCopies >= 1,
+      { firstMarkerDeliveries: firstCopies, secondMarkerDeliveries: secondCopies },
+    );
+    // THE DECISIVE ASSERTION for the reviewed defect, and it is about the FIRST marker, the one the
+    // drain already had accepted before this block began. A fresh directed arrival makes the
+    // concurrent path recompute what is unserved; if it does not honour the in-flight reservation it
+    // re-offers that older, already-accepted batch alongside the new one. Measured exactly that way
+    // pre-fix: an accepted `send_message` carrying the drain marker, then a `soft_interrupt` carrying
+    // BOTH the drain marker and this one. Graded on the union of request kinds, because the re-offer
+    // is a soft interrupt and this fixture black-holes those — invisible in delivered turns, a real
+    // double handover on a live bridge that accepts them.
+    check(
+      "once accepted, an earlier batch is never re-offered when a later message arrives (#1233)",
+      !reofferedAfterAcceptance(marker),
+      {
+        drainMarkerHandovers: handoversCarrying(marker).length,
+        drainMarkerDeliveries: turnsCarrying(marker).length,
+        reofferedAfterAcceptance: reofferedAfterAcceptance(marker),
+      },
+    );
+  }
 
   // --- Cell C: the reported state --------------------------------------------------------------
   // Graded against the shipped MeshAgent rather than the live seat, because the live window is ten
@@ -408,5 +508,8 @@ try {
   await operator?.stop().catch(() => {});
   await killAndAwaitExit(nats);
   releaseBroker();
-  rmSync(root, { recursive: true, force: true });
+  // Diagnostic escape hatch: keep the fake's request log so the exact frame ordering during the
+  // acceptance window can be read. Never set in CI; the default remains a clean teardown.
+  if (process.env.COTAL_JCODE_KEEP_FIXTURE_ROOT === "1") console.log(`FIXTURE ROOT KEPT: ${root}`);
+  else rmSync(root, { recursive: true, force: true });
 }

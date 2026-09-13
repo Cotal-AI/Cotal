@@ -496,8 +496,22 @@ const server = createServer((socket) => {
             }
             // Accepted and queued. The acknowledgement is immediate even though the turn is not:
             // that is what keeps the SDK's plain path from stalling on its 10s accept wait.
-            event({ ev: "message_accepted", session_id: frame.session_id });
-            queuedTurns.push(() => runTurn(frame, socket));
+            //
+            // FAKE_JCODE_ACCEPT_DELAY_MS holds the acknowledgement open for a measurable window
+            // WITHOUT changing what is eventually delivered. The real SDK's `sendMessage` resolves
+            // on this same `message_accepted`, so any host work that happens after its await is,
+            // in real deployments, reachable by a concurrent path during exactly this interval.
+            // The frame is logged when it ARRIVES either way, so a delayed acknowledgement never
+            // hides a delivery — it only makes the host's post-await window observable.
+            const acceptDelayMs = Number(process.env.FAKE_JCODE_ACCEPT_DELAY_MS ?? "0");
+            const accept = () => {
+              event({ ev: "message_accepted", session_id: frame.session_id });
+              queuedTurns.push(() => runTurn(frame, socket));
+            };
+            if (acceptDelayMs > 0) {
+              log({ ev: "accept_delayed", ms: acceptDelayMs, session_id: frame.session_id });
+              setTimeout(accept, acceptDelayMs).unref();
+            } else accept();
             break;
           }
           if (frame.no_reply) {
