@@ -7,7 +7,7 @@
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
@@ -82,6 +82,29 @@ check("REFUSE: publishing into a taken destination is EEXIST", secondPublish ===
 check("...and a failed create leaves no .tmp litter behind",
   readdirSync(dir).filter((n) => n.endsWith(".tmp") && n.startsWith("taken.secret")).length === 0);
 check("...and the incumbent's bytes are intact", readFileSync(takenDest, "utf8") === "incumbent\n");
+
+// REFUSING an existing file is NOT the same property as being ATOMIC about it. A userspace
+// check-then-write (`if (existsSync) throw; writeFileSync(...)`) passes every cell above: it
+// refuses a file that is already there. It is still the defect, because the check and the write
+// are two syscalls and a creator arriving between them is overwritten.
+//
+// Discriminate the two WITHOUT monkeypatching, using a property only the kernel has. A dangling
+// symlink is a name that EXISTS while `existsSync` reports false, because `existsSync` follows the
+// link to a missing target. `O_EXCL` refuses it (the kernel checks the name, and O_EXCL explicitly
+// does not follow a final symlink); a userspace absence check is told "absent", writes through the
+// link, and creates the target. Same call, opposite outcomes, no test seam in src/.
+const linkTarget = join(dir, "symlink-victim");
+const danglingName = join(dir, "dangling.secret");
+symlinkSync(linkTarget, danglingName);
+let danglingCode: string | undefined;
+try {
+  writeSecretFileCreateOnly(danglingName, "attacker\n");
+} catch (e) {
+  danglingCode = (e as NodeJS.ErrnoException).code;
+}
+check("REFUSE: a name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
+  danglingCode === "EEXIST");
+check("...and nothing was written through the dangling link", !statSafe(linkTarget));
 
 // mkSecretDir creates a private dir.
 const sub = join(dir, "auth");

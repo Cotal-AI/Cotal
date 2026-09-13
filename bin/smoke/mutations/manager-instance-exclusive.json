@@ -68,6 +68,17 @@
       "note": "A probabilistically-unique temp name is not a concurrency argument; the collision must refuse, not overwrite.",
       "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "M5 O_EXCL becomes a userspace check-then-write (refuses, but is not atomic)",
+      "file": "packages/core/src/secret-fs.ts",
+      "find": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });",
+      "replace": "function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {\n  let present = true;\n  try { chmodSync(path, 0o600); } catch { present = false; }\n  if (present) { const err: NodeJS.ErrnoException = new Error(`EEXIST: file already exists, open '${path}'`); err.code = \"EEXIST\"; throw err; }\n  writeFileSync(path, data, { mode: 0o600 });",
+      "expectRed": "REFUSE: a name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
+      "cell": "REFUSE: a name that exists but resolves to nothing is EEXIST (kernel-atomic, not check-then-write)",
+      "note": "Raised by review: refusing an existing file is not the same property as being atomic about it. A check-then-write passes every other refusing cell and is still the defect, because the check and the write are two syscalls.",
+      "command": "pnpm smoke:secret-fs",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }
