@@ -264,6 +264,39 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   c("so the same evidence the handler acts on says this process was not scheduled", wasStarved(w), JSON.stringify(w));
 }
 
+// ── 1b) the OTHER half of the pause: a starved ARM is absorbed too ───────────────────────────
+//
+// A pause has two plane operations, and cell 1 only reaches one of them. The mint happens before
+// any waiting, so a host already loaded when the step BEGINS starves the arm rather than the
+// settle, and that is the ordinary case for the incident in #1508: the wave program's host was
+// already at load1 118 when the sleep started. MP12 found this gap by surviving — the arm's
+// wrapper could be removed with every other cell still green.
+//
+// The starvation is driven the same way as cell 1 and the witness is the same: the arm's notice
+// names the arming, which no other operation emits.
+{
+  console.log("• 1b — a sleep whose MINT is starved is absorbed too");
+  const TOKEN = "c3RhcnZlX2FybV90b2tlbl8wMDFi";
+  const absorbed: string[] = [];
+  const handler = handlerWith(undefined, undefined, (note) => absorbed.push(note));
+  // THE DURATION OUTLIVES THE BLOCK, and that is a real constraint rather than a convenience. The
+  // deadline is computed before the mint, so a sleep whose whole duration elapses while the mint is
+  // still starved is a DIFFERENT condition: the plane refuses a deadline already in the past
+  // (`failed-precondition`), which is not deadline-shaped and correctly stays a fault. Measured on
+  // the way to this line: a 3s sleep under an 18s block failed exactly that way. This cell grades
+  // the arm's starvation, so it keeps the deadline live across it.
+  const sleeping = handler.sleep({ duration: "25s" }, ctxOf(TOKEN)).then(() => "ok" as const, (e: Error) => e);
+  // NO settle time first: the block begins while the mint's own writes are in flight, which is what
+  // makes this the arm's starvation rather than a second copy of cell 1.
+  await starveAcross(2);
+  await armPending(4);
+  const out = await withDeadline(sleeping, 60_000, "the arm-starved sleep");
+  c("the sleep completes despite its MINT being starved",
+    out === "ok", out instanceof Error ? `${(out as EffectError).code ?? out.name}: ${out.message}` : out);
+  c("and an arming starvation was absorbed by name, not just a waiting one",
+    absorbed.some((n) => n.includes("arming the pause")), absorbed.map((n) => n.slice(0, 40)).join(" | ") || "(none)");
+}
+
 // ── 2) THE PAIRED CELL: a genuine host fault under the same wait still fails as L4000 ────────
 //
 // A repair that simply swallowed every timeout would pass cell 1 and fail here. The fault is real

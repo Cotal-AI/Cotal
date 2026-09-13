@@ -89,8 +89,8 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);",
       "replace": "    return await this.armOnce(ref, deadline);",
-      "expectRed": "and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck",
-      "cell": "and a starvation was actually ABSORBED on the way: the completion is the repair's, not luck"
+      "expectRed": "and an arming starvation was absorbed by name, not just a waiting one",
+      "cell": "and an arming starvation was absorbed by name, not just a waiting one"
     },
     {
       "name": "MP7 THE BAND-AID: every failure is retried, so a broken plane is swallowed as starvation",
