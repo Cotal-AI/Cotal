@@ -172,7 +172,7 @@ try {
   // A launched entrypoint whose OWN source imports the mutated file.
   write("packages/seat/src/reached.ts", "export const y = 2;\n");
   // The entry also imports a package BY NAME. That resolves to the other package's dist, so a
-  // mutation of the other package's src is not reached — unless the walk follows bare specifiers.
+  // mutation of the other package's src is not reached, unless the walk follows bare specifiers.
   write("packages/seat/src/entry-main.ts",
     'import { y } from "./reached.js";\nimport { x } from "@cotal-ai/other";\nconsole.log(y, x);\n');
   write("packages/seat/src/unreached.ts", "export const z = 3;\n");

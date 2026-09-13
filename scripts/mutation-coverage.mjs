@@ -12,7 +12,7 @@
  *
  *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still refused)
  *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still refused
- *   node scripts/mutation-coverage.mjs --gradable-only [config…]    # validate reachability, do not execute
+ *   node scripts/mutation-coverage.mjs --gradable-only [config...]   # validate reachability, do not execute
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
@@ -122,7 +122,7 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     // `new URL(spec, import.meta.url)` is how a suite names a sibling file without `path`. It is
     // the same resolution `join` performs, spelled through the URL constructor, so it is evaluated
-    // here rather than left undefined — otherwise every suite using it loses its launch witness.
+    // here rather than left undefined. Otherwise every suite using it loses its launch witness.
     if (ts.isNewExpression(node) && calleeText(node.expression) === "URL") {
       const spec = evalPath(node.arguments?.[0]);
       const base = node.arguments?.[1] ? evalPath(node.arguments[1]) : undefined;
@@ -211,7 +211,7 @@ const launchedScriptArg = (evalPath, argvNode) => {
     }
     // `node <tsx-cli> <script>` runs the script THROUGH a loader whose own CLI occupies the first
     // positional. The launched file is then the next positional, and it is still an argument of
-    // this call in the slot that gets executed — not a path found somewhere nearby.
+    // this call in the slot that gets executed, not a path found somewhere nearby.
     if (RUNNER_CLI.test(text.replaceAll("\\", "/"))) return launchedScriptArg(evalPath, tokens.slice(i + 1));
     return tokens[i];
   }
@@ -221,8 +221,9 @@ const launchedScriptArg = (evalPath, argvNode) => {
 /**
  * The argument arrays a launcher's argv expression can actually be at run time.
  *
- * A genuine invocation often binds its argument list first — `const args = mode ? [a, …] : [b, …]`
- * — and each branch is a real argv for that call. Resolving them is not a widening: every branch
+ * A genuine invocation often binds its argument list first, as in
+ * `const args = mode ? [a, ...] : [b, ...]`, and each branch is a real argv for that call.
+ * Resolving them is not a widening: every branch
  * is still an argument of THIS launcher, and the launched-script slot is still located by Node's
  * own flag rules inside it. Refusing these would reject real launches for their spelling, which is
  * the mirror of the mention-shaped accepts this witness exists to close.
@@ -468,7 +469,7 @@ const stringsCover = (suite, source, want) => {
  * Does this suite COPY the declared root? Only the source argument counts.
  *
  * `cpSync(src, dest, options)` copies `src`. Scanning every argument let an options object carry
- * the root — `{ note: join(ROOT, "packages", "seat") }` or a `filter` mentioning it — and that is a
+ * the root, such as `{ note: join(ROOT, "packages", "seat") }` or a `filter` mentioning it, and that is a
  * mention again, one argument to the right of the one that does the work.
  */
 const copiesRoot = (suite, source, root) => {
@@ -833,7 +834,7 @@ const packageName = (file) => {
  *
  * Configs name the workflow (`pnpm smoke:hermes-boot-requirement`), and the build lives inside the
  * script body. Reading the manifest is a fact about this checkout, not a guess about the string:
- * without it a real `pnpm --filter … build &&` is invisible purely because it was named indirectly.
+ * without it a real `pnpm --filter ... build &&` is invisible purely because it was named indirectly.
  */
 const SCRIPT_EXPANSION_DEPTH = 4;
 let rootScripts;
