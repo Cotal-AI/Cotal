@@ -39,6 +39,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Operator literal self-test and scan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          COTAL_PRIVACY_HOST_TOKENS: ${{ vars.COTAL_PRIVACY_HOST_TOKENS }}
+        run: |
+          git fetch --no-tags origin "$BASE" "$HEAD"
+          node scripts/check-operator-literals.mjs --range "$BASE..$HEAD" --event "$GITHUB_EVENT_PATH"
       - name: Grader self-test
         run: node scripts/check-attribution.mjs --selftest
       - name: Commits, PR title and PR body

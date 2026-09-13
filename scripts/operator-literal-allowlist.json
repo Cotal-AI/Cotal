@@ -1,0 +1,152 @@
+{
+  "bin/smoke/verify-shard-inputs.sh": {
+    "home-path": {
+      "count": 2,
+      "reason": "CI runner home path fixtures"
+    }
+  },
+  "deploy/docker/Dockerfile": {
+    "home-path": {
+      "count": 2,
+      "reason": "container user home configuration"
+    }
+  },
+  "docs/cli.md": {
+    "home-path": {
+      "count": 2,
+      "reason": "macOS home path examples"
+    }
+  },
+  "docs/run-a-mesh.md": {
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "shared address examples"
+    }
+  },
+  "examples/02-self-improving-console/ITERATIONS.md": {
+    "home-path": {
+      "count": 1,
+      "reason": "macOS home path example"
+    }
+  },
+  "examples/06-feed-agent/test/pump.test.ts": {
+    "public-ipv4": {
+      "count": 3,
+      "reason": "feed address filtering fixtures"
+    }
+  },
+  "extensions/connector-claude-code/smoke/agui-map.smoke.ts": {
+    "home-path": {
+      "count": 1,
+      "reason": "macOS home path fixture"
+    }
+  },
+  "extensions/connector-claude-code/smoke/mutations/agui-map-fixture.json": {
+    "home-path": {
+      "count": 1,
+      "reason": "macOS home path mutation fixture"
+    }
+  },
+  "extensions/connector-core/src/docs-bundle.generated.ts": {
+    "home-path": {
+      "count": 2,
+      "reason": "generated documentation mirror; count moves with the generator"
+    },
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "generated user-facing address examples"
+    }
+  },
+  "implementations/cli/smoke/install.smoke.ts": {
+    "home-path": {
+      "count": 2,
+      "reason": "macOS home path fixtures"
+    }
+  },
+  "implementations/cli/smoke/join-dial-entry.smoke.ts": {
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "shared address fixtures"
+    }
+  },
+  "implementations/cli/smoke/join-target.smoke.ts": {
+    "public-ipv4": {
+      "count": 10,
+      "reason": "public address classification fixtures"
+    },
+    "shared-ipv4": {
+      "count": 12,
+      "reason": "shared address classification fixtures"
+    }
+  },
+  "implementations/cli/smoke/meshes-registry.smoke.ts": {
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "shared address fixtures"
+    }
+  },
+  "implementations/cli/smoke/seed.smoke.ts": {
+    "home-path": {
+      "count": 1,
+      "reason": "absolute path classification fixture"
+    }
+  },
+  "implementations/cli/src/commands/meshes-wizard.ts": {
+    "shared-ipv4": {
+      "count": 1,
+      "reason": "illustrative address in user-facing guidance"
+    }
+  },
+  "implementations/cli/src/commands/meshes.ts": {
+    "shared-ipv4": {
+      "count": 1,
+      "reason": "illustrative address in user-facing guidance"
+    }
+  },
+  "implementations/cli/src/lib/join-target.ts": {
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "shared address range and user-facing examples"
+    }
+  },
+  "implementations/manager/smoke/attach-auth.smoke.ts": {
+    "shared-ipv4": {
+      "count": 4,
+      "reason": "shared address fixtures"
+    }
+  },
+  "install.sh": {
+    "home-path": {
+      "count": 1,
+      "reason": "shareable path example"
+    }
+  },
+  "install/test-matrix.sh": {
+    "home-path": {
+      "count": 61,
+      "reason": "installer container fixtures"
+    }
+  },
+  "packages/workspace/smoke/import-remedy.smoke.ts": {
+    "home-path": {
+      "count": 2,
+      "reason": "installed and checkout path fixtures"
+    }
+  },
+  "scripts/check-attribution.mjs": {
+    "home-path": {
+      "count": 1,
+      "reason": "attribution scrubber fixture"
+    }
+  },
+  "scripts/feedback-remote.mjs": {
+    "public-ipv4": {
+      "count": 2,
+      "reason": "feedback service endpoint default"
+    },
+    "home-path": {
+      "count": 2,
+      "reason": "feedback service remote root default"
+    }
+  }
+}
