@@ -6,65 +6,14 @@
  * (the local regression guard — mode bits after write/harden). The win32 `icacls` readback (the real
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { __setPublishLinkForTest, hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
 
-// CONTENTION WORKER. A userspace `if (exists) throw; write()` REFUSES an existing name exactly like
-// `O_EXCL` does, so no single-process cell can tell them apart: the difference only exists while
-// two creators are inside the call at once. This worker races the real function over many names.
-//
-// It reports how many names it WON. The parent grades two things, and both fail toward RED:
-// double-wins (two creators both believing they created one name) and a racer that won nothing
-// (which means the field never actually overlapped, so the measurement did not happen).
-if (process.env.COTAL_SECRETFS_RACE_WORKER === "1") {
-  const raceDir = process.env.COTAL_SECRETFS_RACE_DIR!;
-  const names = Number(process.env.COTAL_SECRETFS_RACE_NAMES);
-  const barrier = process.env.COTAL_SECRETFS_RACE_BARRIER!;
-  // `link` publishes the destination atomically on its own, so a race there says nothing about the
-  // raw write. Force the link-unavailable path and the raw write becomes the sole decider, which
-  // is also the real Windows-side primitive.
-  __setPublishLinkForTest(() => {
-    const e: NodeJS.ErrnoException = new Error("ENOTSUP: forced fallback");
-    e.code = "ENOTSUP";
-    throw e;
-  });
-  const there = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
-  writeFileSync(process.env.COTAL_SECRETFS_RACE_READY!, "");
-  while (!there(barrier)) { /* spin: the tightest release available */ }
-  // Walk the names in a per-racer random order. In lockstep order the racer that starts first
-  // simply sweeps the list and the others only ever arrive second, which looks like a queue even
-  // though the processes overlap. Shuffling spreads the collisions across the whole space.
-  const order = Array.from({ length: names }, (_, i) => i);
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [order[i], order[j]] = [order[j]!, order[i]!];
-  }
-  let won = 0;
-  for (const i of order) {
-    try {
-      writeSecretFileCreateOnly(join(raceDir, `n${i}.secret`), `${process.pid}\n`);
-      won++;
-    } catch { /* EEXIST: another creator got this name, which is the expected outcome */ }
-  }
-  process.stdout.write(`WON:${won}\n`);
-  process.exit(0);
-}
-
 const isWin = process.platform === "win32";
-// Racers re-enter THIS file, so they need the same loader. Do NOT spawn `node_modules/.bin/tsx`:
-// on Windows that is an extensionless shell shim and spawns ENOENT, and the `.CMD` beside it needs
-// a shell. tsx's own CLI entry is a plain .mjs that `node` runs directly on every platform.
-const TSX_CLI = join(
-  fileURLToPath(new URL("../../../", import.meta.url)),
-  "node_modules",
-  "tsx",
-  "dist",
-  "cli.mjs",
-);
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
 // Read for an ASSERTION, never for control flow. A broken implementation can delete or never
 // create the file a cell is about to inspect, and a raw readFileSync would then throw and abort
@@ -322,77 +271,52 @@ check("...and that failure left no .tmp litter",
   check("...and nothing was published at the destination on that refusal", !statSafe(dest));
 }
 
-// CONTENTION, and the one cell that can separate `O_EXCL` from a userspace check-then-write that
-// also refuses. Both produce EEXIST for a caller that arrives second, so only overlapping creators
-// can tell them apart: under a check-then-write, two creators that both pass the check both write,
-// and the TOTAL number of wins exceeds the number of names.
+// THE REFUSING CHECK-THEN-WRITE, graded deterministically. This is the mutant no in-process cell
+// can catch: `if (exists) throw; write()` raises EEXIST for a caller that arrives second, exactly
+// as `O_EXCL` does. They differ only for a creator that is ALREADY PAST the check when the name is
+// taken. `O_EXCL` re-decides at the write and refuses; the check-then-write has nothing left to
+// check and overwrites the incumbent.
 //
-// Counting wins is what makes this fail toward RED. The earlier version of this cell asked "was
-// there exactly one winner per round", which a degraded field satisfies by accident: if the racers
-// arrive one at a time, each later one finds the name taken and the round looks perfect while the
-// implementation is broken. It false-greened 3 runs out of 3 under a post-release stall. Here a
-// field that fails to overlap shows up as a racer that won NOTHING, which is a red, and the excess
-// wins that a check-then-write produces are a red as well. Neither can be reached by racers that
-// merely queued.
+// An earlier version of this cell raced N processes and hoped to land in that window. Measured, it
+// let this mutant escape roughly one run in six while staying green 12/12 when the implementation
+// was correct: a one-sided failure toward green, which is the direction that ships a live defect.
+// Here the competitor is placed IN the window by an `fs` preload instead of being hoped for, so
+// the verdict is the same on every machine, every run, with no N and no scheduler.
 {
-  // Sized by measurement, not taste. At 4 racers x 150 names a check-then-write mutant survived 2
-  // runs in 3; at 6 x 1200 it died 5 times out of 5. The cell above is the deterministic grader.
-  // this one exists for the mutant that also refuses, which only contention can catch.
-  const RACERS = 6;
-  const NAMES = 1200;
-  const raceDir = join(dir, "contention");
-  mkSecretDir(raceDir);
-  const barrier = join(raceDir, "go");
-  // Whatever runs a suite may be a managed agent session, so a raw env spread would hand each child
-  // a live credential and broker URL. Strip every COTAL_ key; the racers need only their own.
-  const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
-  const wins: number[] = [];
-  let spawnFailure: Error | undefined;
-  await new Promise<void>((resolve, reject) => {
-    let left = RACERS;
-    const timer = setTimeout(() => reject(new Error("contention workers did not report")), 120_000);
-    for (let i = 0; i < RACERS; i++) {
-      const child = spawn(process.execPath, [TSX_CLI, process.argv[1]!], {
-        env: {
-          ...cleanEnv,
-          COTAL_SECRETFS_RACE_WORKER: "1",
-          COTAL_SECRETFS_RACE_DIR: raceDir,
-          COTAL_SECRETFS_RACE_NAMES: String(NAMES),
-          COTAL_SECRETFS_RACE_BARRIER: barrier,
-          COTAL_SECRETFS_RACE_READY: join(raceDir, `ready-${i}`),
-        },
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      let buf = "";
-      child.stdout.on("data", (c: Buffer) => { buf += c.toString(); });
-      child.on("error", (e) => { spawnFailure = e as Error; clearTimeout(timer); reject(e); });
-      child.on("exit", () => {
-        const m = /WON:(\d+)/.exec(buf);
-        // A racer that never ran prints nothing. Recording -1 rather than 0 keeps "did not run"
-        // distinguishable from "ran and won nothing"; both are red, for different reasons.
-        wins.push(m ? Number(m[1]) : -1);
-        if (--left === 0) { clearTimeout(timer); resolve(); }
-      });
-    }
-    const ready = (): number => readdirSync(raceDir).filter((n) => n.startsWith("ready-")).length;
-    const releaseAt = Date.now() + 60_000;
-    const poll = setInterval(() => {
-      if (ready() === RACERS) { clearInterval(poll); writeFileSync(barrier, "go"); }
-      else if (Date.now() > releaseAt) {
-        clearInterval(poll);
-        reject(new Error(`only ${ready()} of ${RACERS} racers parked at the barrier`));
-      }
-    }, 5);
-  }).catch((e: Error) => { spawnFailure ??= e; });
-  const total = wins.reduce((a, b) => a + b, 0);
-  const created = readdirSync(raceDir).filter((n) => n.endsWith(".secret")).length;
-  check("REFUSE: concurrent creators never both win a name: total wins equals names created",
-    spawnFailure === undefined && total === created && created === NAMES);
-  // The positive control. Every racer must have run AND won at least one name, which is only true
-  // if the field genuinely overlapped. Without this, a queue passes the check above perfectly.
-  check("...and every racer ran and won at least one name (the field really was contended)",
-    wins.length === RACERS && wins.every((w) => w > 0));
+  const interleaveDir = join(dir, "interleave");
+  mkSecretDir(interleaveDir);
+  const target = join(interleaveDir, "contested.secret");
+  const preload = fileURLToPath(new URL("./_secret-fs-interleave-preload.cjs", import.meta.url));
+  const child = fileURLToPath(new URL("./_secret-fs-interleave-child.mjs", import.meta.url));
+  // The BUILT module, because the preload patches the `fs` binding the shipped package closes over.
+  const dist = pathToFileURL(fileURLToPath(new URL("../dist/secret-fs.js", import.meta.url))).href;
+  // Whatever runs a suite may be a managed agent session, so a raw env spread would hand the child
+  // a live credential and broker URL. Strip every COTAL_ key, then add only what it needs.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of Object.keys(childEnv)) if (k.startsWith("COTAL_")) delete childEnv[k];
+  const run = spawnSync(process.execPath, ["--require", preload, child], {
+    env: {
+      ...childEnv,
+      COTAL_SECRETFS_INTERLEAVE_TARGET: target,
+      COTAL_SECRETFS_INTERLEAVE_DIST: dist,
+    },
+    encoding: "utf8",
+  });
+  // A child that never ran would print nothing, and "no clobber observed" would then be true for
+  // the wrong reason. Parse explicitly and treat an unparseable result as a failure.
+  let observed: { code?: string; bytes?: string } | undefined;
+  try {
+    observed = JSON.parse(run.stdout.trim()) as { code?: string; bytes?: string };
+  } catch {
+    observed = undefined;
+  }
+  check("REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
+    observed?.bytes === "incumbent\n");
+  check("...and that creator sees EEXIST rather than believing it created the name",
+    observed?.code === "EEXIST");
+  // The positive control: the interleave has to have actually happened, or the cell above is vacuous.
+  check("...and the interleaved child ran and reported (the window was really entered)",
+    run.status === 0 && observed !== undefined);
 }
 
 // mkSecretDir creates a private dir.

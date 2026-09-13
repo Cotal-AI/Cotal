@@ -96,9 +96,9 @@
       "file": "packages/core/src/secret-fs.ts",
       "find": "  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });\n  if (!isWin) return;",
       "replace": "  try { lstatSync(path); const t: NodeJS.ErrnoException = new Error(\"EEXIST\"); t.code = \"EEXIST\"; throw t; } catch (e) { if ((e as NodeJS.ErrnoException).code === \"EEXIST\") throw e; }\n  writeFileSync(path, data, { mode: 0o600 });\n  if (!isWin) return;",
-      "expectRed": "REFUSE: concurrent creators never both win a name: total wins equals names created",
-      "cell": "REFUSE: concurrent creators never both win a name: total wins equals names created",
-      "note": "The hardest mutant and the reason the contention cell is kept: this one REFUSES an existing name exactly as O_EXCL does, so every single-process cell passes against it. Only overlapping creators separate them, as excess wins.",
+      "expectRed": "REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
+      "cell": "REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
+      "note": "The mutant no in-process cell can catch: it REFUSES an existing name exactly as O_EXCL does. They differ only for a creator already past its check when the name is taken. An N-process race reached that window only by luck and let this escape ~1 run in 6 while staying green when the implementation was correct, so the competitor is now placed in the window by an fs preload.",
       "command": "pnpm smoke:secret-fs",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
