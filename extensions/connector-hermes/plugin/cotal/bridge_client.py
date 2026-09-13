@@ -126,6 +126,27 @@ class BridgeClient:
         finally:
             self._pending.pop(rid, None)
 
+    def reopen(self) -> None:
+        """Undo a ``close`` so ``start`` can run a new reader thread.
+
+        ``close`` latches ``_stop`` and the reader loop exits on it, but ``_reader`` keeps
+        pointing at the finished thread, so a later ``start`` sees a non-None reader and returns
+        having started nothing. That yields a platform the gateway believes is connected and which
+        receives no mesh traffic at all. The gateway's reconnect watcher builds a fresh adapter but
+        ``get_client`` is a process-wide singleton, so the same closed client is what a reconnect
+        gets handed. Clearing both here is what makes the restart real.
+
+        Safe to call on a live client: a reader still running is left alone, because dropping the
+        reference to a running thread would let ``start`` create a second one on the same socket.
+        """
+        with self._lock:
+            reader = self._reader
+            if reader is not None and reader.is_alive():
+                self._stop.clear()
+                return
+            self._reader = None
+        self._stop.clear()
+
     def close(self) -> None:
         self._stop.set()
         with self._lock:
