@@ -40,7 +40,7 @@ import {
   isReachable,
   setupSpaceStreams,
 } from "../src/index.js";
-import { pickFreePort } from "./_free-port.js";
+import { pickFreePort, startOnFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
@@ -91,14 +91,33 @@ const HEARTBEAT_MS = 200;
 const TTL_MS = 600;
 const PEERS = 3;
 
-const PORT = await pickFreePort();
-const PROXY = await pickFreePort();
-const SERVERS = `nats://127.0.0.1:${PORT}`;
-const SLOW = `nats://127.0.0.1:${PROXY}`;
 const space = `presstall-${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const broker = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+
+// A port picked here is unheld until `nats-server` binds it, and this suite is
+// where that window was lost on a parallel shard (#1583): the broker was
+// promised 45019, something else took it, and the readiness loop below waited
+// its full 10s for a server that was never coming. Another port is the answer,
+// so readiness moved INTO the start and the loop below is now the second
+// reading of an already-reachable broker.
+const brokerRun = await startOnFreePort(
+  (port) => spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" }),
+  async (port) => {
+    for (let i = 0; i < 100; i++) {
+      if (await isReachable(`nats://127.0.0.1:${port}`)) return true;
+      await wait(100);
+    }
+    return false;
+  },
+  (child) => { child.kill("SIGKILL"); },
+);
+const PORT = brokerRun.port;
+const broker = brokerRun.started;
+const SERVERS = `nats://127.0.0.1:${PORT}`;
 const releaseBroker = teardownOnSignal(broker, dir);
+
+const PROXY = await pickFreePort();
+const SLOW = `nats://127.0.0.1:${PROXY}`;
 const gate = await link(PROXY, PORT);
 
 const live = (ep: CotalEndpoint) => ep.getRoster().filter((p) => p.status !== "offline");
@@ -106,9 +125,11 @@ const statusOf = (ep: CotalEndpoint) =>
   Object.fromEntries(ep.getRoster().map((p) => [p.card.name, p.status]));
 
 try {
-  let up = false;
-  for (let i = 0; i < 100; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(100); }
-  if (!up) throw new Error(`fixture broker never came up on ${SERVERS} - refusing to report on a server that never started`);
+  // `startOnFreePort` already refused to return an unreachable broker; this
+  // re-reads it so the suite still states its own precondition rather than
+  // inheriting it silently from a helper.
+  if (!(await isReachable(SERVERS)))
+    throw new Error(`fixture broker never came up on ${SERVERS} - refusing to report on a server that never started`);
   await setupSpaceStreams({ servers: SERVERS, space });
 
   const peers: CotalEndpoint[] = [];
