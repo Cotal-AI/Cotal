@@ -41,7 +41,7 @@ import {
   setupSpaceStreams,
 } from "../src/index.js";
 import { pickFreePort, startOnFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -93,6 +93,16 @@ const PEERS = 3;
 
 const space = `presstall-${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+// Signal ownership starts HERE, not once a broker is up. A signal TERMINATES
+// the process, it does not unwind: the try/finally below closes the THROW
+// window and leaves the signal window exactly where it was -- open across the
+// whole readiness loop, which is up to 100 x 100ms per attempt times the
+// attempts. Review measured it (3/3): SIGTERM inside that window left the
+// child alive and `dir` on disk, while an accept control that registered per
+// attempt left neither. `teardownPathOnSignal` needs no child handle, so it
+// can precede the first byte written into `dir`; each attempt's child takes
+// its own ownership as it is spawned, below.
+const releaseDir = teardownPathOnSignal(dir);
 
 // A port picked here is unheld until `nats-server` binds it, and this suite is
 // where that window was lost on a parallel shard (#1583): the broker was
@@ -116,6 +126,9 @@ const cleanup = () => {
   releaseBroker?.();
   broker?.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  // Released LAST: the backstop must still own `dir` while the lines above
+  // run, or a signal landing mid-cleanup leaves the directory behind.
+  releaseDir();
 };
 
 try {
@@ -125,10 +138,16 @@ try {
   // the helper can see distinguishes them — only this process knows whether
   // its own child is still running and what it said.
   const stderrOf = new WeakMap<ReturnType<typeof spawn>, string[]>();
+  // One release per attempt child, so a child the retry reaped stops being
+  // owned while one still running stays owned.
+  const releaseOf = new WeakMap<ReturnType<typeof spawn>, () => void>();
   const brokerRun = await startOnFreePort(
     (port) => {
       const child = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(port), "-a", "127.0.0.1"],
         { stdio: ["ignore", "ignore", "pipe"] });
+      // Owned before anything else touches the child: the lines below can
+      // throw, and a signal needs no line at all.
+      releaseOf.set(child, teardownOnSignal(child));
       const lines: string[] = [];
       stderrOf.set(child, lines);
       child.stderr?.on("data", (chunk) => { lines.push(String(chunk)); });
@@ -150,8 +169,12 @@ try {
     // Resolves when the child is GONE, not when the kill was sent: three
     // retries otherwise leave three live brokers racing for the next port.
     (child) => new Promise<void>((done) => {
-      if (child.exitCode !== null || child.signalCode !== null) return done();
-      child.once("exit", () => done());
+      const finish = (): void => {
+        releaseOf.get(child)?.();
+        done();
+      };
+      if (child.exitCode !== null || child.signalCode !== null) return finish();
+      child.once("exit", finish);
       child.kill("SIGKILL");
     }),
     {
@@ -167,7 +190,9 @@ try {
   PORT = brokerRun.port;
   broker = brokerRun.started;
   SERVERS = `nats://127.0.0.1:${PORT}`;
-  releaseBroker = teardownOnSignal(broker, dir);
+  // The winning child is already owned from its spawn and `dir` is owned by
+  // `releaseDir`; this only hands the suite's own `cleanup` the release.
+  releaseBroker = releaseOf.get(broker);
 
   const PROXY = await pickFreePort();
   SLOW = `nats://127.0.0.1:${PROXY}`;
