@@ -471,6 +471,7 @@
     "smoke:safe-pattern-fuzz": "tsx packages/core/smoke/safe-pattern-fuzz.smoke.ts",
     "smoke:ep-envelope": "tsx packages/core/smoke/endpoint-envelope.smoke.ts",
     "smoke:broker-floor": "tsx packages/core/smoke/broker-floor.smoke.ts",
+    "smoke:free-port-retry": "tsx packages/core/smoke/free-port-retry.smoke.ts",
     "smoke:tls-serve": "tsx packages/core/smoke/tls-serve.smoke.ts",
     "smoke:up-tls-routes": "tsx bin/smoke/up-tls-routes-live.smoke.ts",
     "smoke:broker-policy": "tsx packages/workspace/smoke/broker-policy.smoke.ts",
