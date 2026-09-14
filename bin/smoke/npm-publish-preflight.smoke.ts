@@ -629,9 +629,460 @@ check(
 );
 
 const committedDts = readFileSync(join(ROOT, "scripts/preflight-npm-publish.d.mts"), "utf8");
+const freshDts = emitDeclaration();
 check(
   "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
-  committedDts === emitDeclaration(),
+  committedDts === freshDts,
+);
+
+/**
+ * The census state contract, graded on the DECLARATION rather than on the module.
+ *
+ * The skew cell above pins the declaration to the module byte for byte, and is still blind to this:
+ * `tsc` widens an object-literal property to `string` on emit, so renaming a census state literal
+ * leaves the declaration byte-identical and the skew cell green. Measured on the tree before this
+ * check existed: both `"nothing-to-publish"` and `"ready"` could be renamed with no declaration
+ * movement at all, while the same rename inside `classifyDirectPublishPermission`, which has a
+ * declared return type, did move it. The contract therefore has to be read out of the declaration
+ * and graded, not inferred from the two files agreeing.
+ *
+ * Both entry points are graded separately because they are two independently emitted widenings,
+ * not one echoed twice, and every refusal names the entry point it came from so a fault on one
+ * cannot be reported as the other.
+ */
+const TYPE_KEYWORDS = ["string", "number", "boolean", "bigint", "symbol", "object", "any", "unknown", "never", "void", "undefined", "null"];
+const CENSUS_STATE_MEMBERS = ["nothing-to-publish", "ready"] as const;
+const CENSUS_STATE_ENTRY_POINTS = ["preflightNpmPublish", "preflightFromRepository"] as const;
+
+/**
+ * How many times this declaration declares `fn`. More than once is refused rather than resolved.
+ *
+ * A self-attack found the reason: every read below took the FIRST occurrence, so appending a
+ * SECOND `export function preflightFromRepository(...): Promise<{ state: string; ... }>;` after
+ * the real one left this cell reading the first block and reporting no refusals, while the type a
+ * consumer resolves is the later declaration. Taking the first of several is a choice this cell is
+ * not entitled to make, so an ambiguous declaration fails closed instead of being silently halved.
+ */
+function declarationCount(dts: string, fn: string): number {
+  const needle = `export function ${fn}(`;
+  let count = 0;
+  for (let at = dts.indexOf(needle); at >= 0; at = dts.indexOf(needle, at + needle.length)) count++;
+  return count;
+}
+
+/**
+ * The result object of `fn`, or `null` when this declaration does not resolve one FOR `fn`.
+ *
+ * The search is BOUNDED to `fn`'s own declaration: it stops at the next top-level `export`. Without
+ * the bound, an entry point whose result is not an object literal (`Promise<void>`, say) reads the
+ * NEXT function's result block and is graded on a contract that is not its own, which is a pass
+ * reported for the wrong subject. Bounded, that case has no block and is refused by name.
+ */
+function resolvedResultBlock(dts: string, fn: string): string | null {
+  const needle = `export function ${fn}(`;
+  const start = dts.indexOf(needle);
+  if (start < 0) return null;
+  const next = dts.indexOf("\nexport ", start + needle.length);
+  const stop = next < 0 ? dts.length : next;
+  const open = dts.indexOf("): Promise<{", start);
+  if (open < 0 || open > stop) return null;
+  const end = dts.indexOf("\n}>;", open);
+  if (end < 0 || end > stop) return null;
+  return dts.slice(open, end);
+}
+
+/**
+ * Every value written for a TOP-LEVEL `key` in a result block, one entry per occurrence.
+ *
+ * Depth is tracked over braces instead of the property being matched by a regex over the whole
+ * block, because the published property is the one at the top level and a regex takes whichever
+ * comes first in the text. A self-attack caught exactly that: adding `census: { state: <alias> }`
+ * ABOVE a top-level `state: string;` left the old reader with ZERO refusals, so the published type
+ * of a real entry point could be widened back to bare `string` with this whole suite green. A
+ * nested property is not the contract, and reading one as the contract defeats the cell.
+ *
+ * The OPTIONAL MARKER is captured rather than tolerated, and the caller refuses it. A reviewer
+ * measured the false green: `state?: NpmPublishPreflightState` passed 78 of 78 cells, because this
+ * pattern swallowed the `?` and graded the VALUE, which is a correct two-member union. Under the
+ * repository's own tsc that shape is the #1585 harm itself (`Type 'S | undefined' is not
+ * assignable` at any caller branching on the verdict), and the module cannot even produce it:
+ * both returns set the property unconditionally. `S | undefined` was already refused while
+ * `state?:` was accepted, so one consumer-visible contract had two spellings and opposite verdicts.
+ */
+function topLevelPropertyValues(block: string, key: string): string[] {
+  const property = new RegExp(`^\\s*${key}(\\??):\\s*(.+?);\\s*$`);
+  const values: string[] = [];
+  let depth = 0;
+  for (const line of block.split("\n")) {
+    if (depth === 1) {
+      const written = property.exec(line);
+      if (written) values.push(`${written[1]}${written[2].trim()}`);
+    }
+    for (const character of line) {
+      if (character === "{") depth++;
+      else if (character === "}") depth--;
+    }
+  }
+  return values;
+}
+
+/**
+ * An identifier is followed to its exported alias; `null` means the declaration never defines it.
+ *
+ * A built-in type keyword denotes ITSELF and is never looked up. `string` is identifier-shaped, so
+ * without this the widened form `state: string;` resolved to `null` and was refused as "a type this
+ * declaration never defines" -- a refusal for the wrong reason, and it left the one branch whose
+ * message names the actual defect of this cell, "not a union of the census literals", unreached by
+ * any fixture. A branch no refusing case reaches is an untested branch, and the untested one here
+ * was the one guarding the exact regression the cell exists to catch.
+ *
+ * The alias may itself be an indexed access over an exported const array, which is the form the
+ * module uses so that the member names live in CODE rather than in a JSDoc comment. `tsc` emits
+ * that as `export const X: readonly ["a", "b"];`, so the tuple is followed one further hop and
+ * rewritten into the union it denotes. Without this the cell reads the alias as a non-literal
+ * type and refuses a declaration that in fact pins the contract exactly.
+ */
+function followAlias(dts: string, written: string): string | null {
+  if (!/^[A-Za-z_$][\w$]*$/.test(written)) return written;
+  if (TYPE_KEYWORDS.includes(written)) return written;
+  const alias = new RegExp(`^export type ${written} = ([^;]+);`, "m").exec(dts);
+  if (!alias) return null;
+  return followTupleIndex(dts, alias[1].trim());
+}
+
+/**
+ * `(typeof X)[number]` is resolved to the union of X's emitted tuple members. Any other type is
+ * returned unchanged, so a plain literal union still reads exactly as it did before.
+ */
+function followTupleIndex(dts: string, type: string): string | null {
+  const indexed = /^\(typeof ([A-Za-z_$][\w$]*)\)\[number\]$/.exec(type);
+  if (!indexed) return type;
+  const tuple = new RegExp(`^export const ${indexed[1]}: readonly \\[([^\\]]*)\\];`, "m").exec(dts);
+  if (!tuple) return null;
+  return tuple[1].split(",").map((part) => part.trim()).join(" | ");
+}
+
+/** `null` means the type is not a union of string literals at all, which is what `string` is. */
+function literalMembers(type: string): string[] | null {
+  const parts = type.split("|").map((part) => part.trim());
+  const members: string[] = [];
+  for (const part of parts) {
+    const literal = /^"([^"]*)"$/.exec(part);
+    if (!literal) return null;
+    members.push(literal[1]);
+  }
+  return members;
+}
+
+/** Every reason this declaration fails to pin the census state contract. Empty means it pins it. */
+function censusStateRefusals(dts: string): string[] {
+  const refusals: string[] = [];
+  for (const fn of CENSUS_STATE_ENTRY_POINTS) {
+    const declared = declarationCount(dts, fn);
+    if (declared === 0) { refusals.push(`${fn}: the declaration never declares this entry point`); continue; }
+    if (declared > 1) { refusals.push(`${fn}: declared ${declared} times, so which result a caller resolves is ambiguous`); continue; }
+    const block = resolvedResultBlock(dts, fn);
+    if (block === null) { refusals.push(`${fn}: no resolved result object in the declaration`); continue; }
+    const written = topLevelPropertyValues(block, "state");
+    if (written.length === 0) { refusals.push(`${fn}: the result carries no top-level state property`); continue; }
+    if (written.length > 1) { refusals.push(`${fn}: carries ${written.length} top-level state properties: ${written.join(", ")}`); continue; }
+    if (written[0].startsWith("?")) { refusals.push(`${fn}: state is optional, so the census verdict may be absent from the published result`); continue; }
+    const type = written[0];
+    const resolved = followAlias(dts, type);
+    if (resolved === null) { refusals.push(`${fn}: state is ${type}, which this declaration never defines`); continue; }
+    const members = literalMembers(resolved);
+    if (members === null) { refusals.push(`${fn}: state is ${resolved}, not a union of the census literals`); continue; }
+    const missing = CENSUS_STATE_MEMBERS.filter((member) => !members.includes(member));
+    if (missing.length) { refusals.push(`${fn}: state union is missing ${missing.join(", ")}`); continue; }
+    const extra = members.filter((member) => !CENSUS_STATE_MEMBERS.includes(member as typeof CENSUS_STATE_MEMBERS[number]));
+    if (extra.length) refusals.push(`${fn}: state union carries ${extra.join(", ")}, which the census never returns`);
+  }
+  return refusals;
+}
+
+/**
+ * Rewrite the TOP-LEVEL `state` property of ONE NAMED entry point's result block.
+ *
+ * This exists because positional indexing into the base is the same defect the grader was just
+ * fixed for, one level up. `replaceNth(base, "state: <alias>;", "state: string;", 2)` means "the
+ * second occurrence in the file", which is only "the second entry point" while no other `state`
+ * exists anywhere. A reviewer's nested-decoy attack added a third occurrence and occurrence 2
+ * became the NESTED property, so the fixture widened something other than the thing it was named
+ * for and reported an EMPTY refusal list: a red for a reason unrelated to its name, which is noise
+ * rather than evidence. Naming the entry point and the nesting depth cannot drift that way.
+ */
+function widenTopLevelState(dts: string, fn: string, replacement: string): string {
+  const needle = `export function ${fn}(`;
+  const start = dts.indexOf(needle);
+  if (start < 0) throw new Error(`fixture is stale: ${fn} is not in the declaration`);
+  const open = dts.indexOf("): Promise<{", start);
+  if (open < 0) throw new Error(`fixture is stale: ${fn} has no resolved result object to widen`);
+  const lines = dts.slice(open).split("\n");
+  let depth = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const before = depth;
+    for (const character of lines[index]) {
+      if (character === "{") depth++;
+      else if (character === "}") depth--;
+    }
+    if (before === 1 && /^\s*state\??:\s*[^;]+;\s*$/.test(lines[index])) {
+      lines[index] = lines[index].replace(/state\??:\s*[^;]+;/, replacement);
+      return dts.slice(0, open) + lines.join("\n");
+    }
+    if (before >= 1 && depth === 0) break;
+  }
+  throw new Error(`fixture is stale: ${fn} has no top-level state property to widen`);
+}
+
+/** Remove the TOP-LEVEL `state` property of one NAMED entry point, by name rather than by position. */
+function dropTopLevelState(dts: string, fn: string): string {
+  const marker = "__FIXTURE_DROPPED_STATE__: never;";
+  const withMarker = widenTopLevelState(dts, fn, marker);
+  return withMarker.replace(new RegExp(`^\\s*${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`, "m"), "");
+}
+
+function replaceNth(text: string, needle: string, replacement: string, nth: number): string {
+  let index = -1;
+  for (let seen = 0; seen < nth; seen++) {
+    index = text.indexOf(needle, index + 1);
+    if (index < 0) throw new Error(`fixture is stale: occurrence ${nth} of ${needle} is not in the declaration`);
+  }
+  return text.slice(0, index) + replacement + text.slice(index + needle.length);
+}
+
+check(
+  "the committed .d.mts pins the census state union on both entry points",
+  censusStateRefusals(committedDts).length === 0,
+  censusStateRefusals(committedDts),
+);
+check(
+  "a fresh emit from the module pins the census state union on both entry points",
+  censusStateRefusals(freshDts).length === 0,
+  censusStateRefusals(freshDts),
+);
+
+/**
+ * One refusing fixture per accepting branch of the grader above, each derived from the real
+ * declaration by a single substitution so it differs from an accepting input only in the one
+ * context under test. A grader with no refusing case is green on everything, including `string`.
+ *
+ * The fixtures are derived from an accepting base rather than straight from the committed file, so
+ * that carrying this cell back onto a declaration that does NOT pin the contract still grades the
+ * grader instead of throwing on a missing substring. That matters: the pre-fix control for this
+ * check runs exactly that way, and a crash there would red the suite without saying why.
+ */
+const stateProperty = "state: NpmPublishPreflightState;";
+/**
+ * The fallback base STRIPS any existing alias and tuple before appending its own.
+ *
+ * Appending blindly was wrong, and a self-attack caught it: widening only ONE entry point leaves
+ * a declaration that still defines the alias, so the fallback produced a base with TWO competing
+ * `export type NpmPublishPreflightState = ...` lines. The fixtures that rewrite "the" alias then
+ * edited one copy while the grader matched the other, and three refusing cells reported a fault
+ * that was an artefact of the malformed base rather than of the thing under test. A fixture that
+ * can red for a reason other than the one it names is not evidence, so the base is normalised to
+ * exactly one definition of each and asserted below.
+ */
+const aliasDefinition = /^export (type NpmPublishPreflightState|const NPM_PUBLISH_PREFLIGHT_STATES) = .*$|^export (type NpmPublishPreflightState|const NPM_PUBLISH_PREFLIGHT_STATES): .*$/gm;
+const acceptingBase = censusStateRefusals(committedDts).length === 0
+  ? committedDts
+  : `${committedDts.replaceAll("state: string;", stateProperty).replace(aliasDefinition, "")}\n`
+    + `export type NpmPublishPreflightState = "nothing-to-publish" | "ready";\n`;
+check(
+  "the census state grader accepts a declaration that pins the contract",
+  censusStateRefusals(acceptingBase).length === 0,
+  censusStateRefusals(acceptingBase),
+);
+check(
+  "the fixture base defines the state alias exactly once, so a fixture edits what the grader reads",
+  (acceptingBase.match(/^export type NpmPublishPreflightState\b/gm) ?? []).length === 1,
+  (acceptingBase.match(/^export type NpmPublishPreflightState .*$/gm) ?? []),
+);
+/**
+ * Each fixture's declaration is built LAZILY, and a builder that cannot find its subject reds one
+ * NAMED cell instead of throwing.
+ *
+ * A reviewer found why this matters: widening the second entry point's result to `Promise<void>`
+ * makes the contract cells red correctly, and then the fixture builder threw "occurrence 2 is not
+ * in the declaration" at module scope. The process died with NO `SUITE COMPLETE` line and 17 of 78
+ * cells never ran, so a real fault reported itself as a stack trace about test scaffolding and took
+ * the rest of the suite's signal with it. A suite that dies on a fault it correctly detected has
+ * converted a precise red into an outage, and the operator has to read a trace to find out which.
+ */
+const stateFixtures: Array<{ name: string; dts: () => string; names: string; branch: string }> = [
+  {
+    name: "state widened back to string on preflightNpmPublish",
+    branch: "not a union of the census literals",
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", "state: string;"),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "state widened back to string on preflightFromRepository",
+    branch: "not a union of the census literals",
+    dts: () => widenTopLevelState(acceptingBase, "preflightFromRepository", "state: string;"),
+    names: "preflightFromRepository",
+  },
+  {
+    name: "a state property dropped from the result object",
+    branch: "no top-level state property",
+    dts: () => dropTopLevelState(acceptingBase, "preflightNpmPublish"),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "an entry point the declaration never declares",
+    branch: "the declaration never declares this entry point",
+    dts: () => replaceNth(acceptingBase, "export function preflightFromRepository(", "export function preflightElsewhere(", 1),
+    names: "preflightFromRepository",
+  },
+  {
+    name: "a state alias this declaration never defines",
+    branch: "which this declaration never defines",
+    dts: () => acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, ""),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a census member dropped from the union",
+    branch: "state union is missing",
+    dts: () => acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish";'),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a state the census can never return added to the union",
+    branch: "which the census never returns",
+    dts: () => acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish" | "ready" | "inconclusive";'),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a tuple the declaration never defines behind the state alias",
+    branch: "which this declaration never defines",
+    dts: () => `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
+      .replace(/^export type NpmPublishPreflightState = .*$/m, "")}\nexport type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];\n`,
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a census member dropped from the tuple behind the state alias",
+    branch: "state union is missing",
+    dts: () => `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
+      .replace(/^export type NpmPublishPreflightState = .*$/m, "")}\nexport const NPM_PUBLISH_PREFLIGHT_STATES: readonly ["nothing-to-publish"];\nexport type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];\n`,
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "a nested state read instead of the widened top-level one",
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish",
+      `census: {\n        ${stateProperty}\n    };\n    state: string;`),
+    names: "preflightNpmPublish",
+    branch: "not a union of the census literals",
+  },
+  {
+    name: "the state property marked optional on preflightNpmPublish",
+    branch: "state is optional, so the census verdict may be absent",
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", "state?: NpmPublishPreflightState;"),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "the state property marked optional on preflightFromRepository",
+    branch: "state is optional, so the census verdict may be absent",
+    dts: () => widenTopLevelState(acceptingBase, "preflightFromRepository", "state?: NpmPublishPreflightState;"),
+    names: "preflightFromRepository",
+  },
+  {
+    name: "two top-level state properties, so which one publishes is ambiguous",
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", `${stateProperty}\n    state: string;`),
+    names: "preflightNpmPublish",
+    branch: "top-level state properties",
+  },
+  {
+    name: "a second declaration of the same entry point appended after the first",
+    dts: () => `${acceptingBase}\nexport function preflightFromRepository(options?: any): Promise<{\n    state: string;\n    rows: any[];\n}>;\n`,
+    names: "preflightFromRepository",
+    branch: "so which result a caller resolves is ambiguous",
+  },
+  {
+    name: "an entry point whose result object is not resolved in its own declaration",
+    dts: () => replaceNth(acceptingBase, "): Promise<{", "): Promise<any>;", 1),
+    names: "preflightNpmPublish",
+    branch: "no resolved result object in the declaration",
+  },
+];
+for (const fixture of stateFixtures) {
+  let built: string;
+  try {
+    built = fixture.dts();
+  } catch (error) {
+    check(
+      `the census state fixture for ${fixture.name} still finds its subject in the declaration`,
+      false,
+      error instanceof Error ? error.message : error,
+    );
+    continue;
+  }
+  const refusals = censusStateRefusals(built);
+  check(
+    `the census state grader refuses ${fixture.name}`,
+    built !== acceptingBase
+      && refusals.length > 0
+      && refusals.some((refusal) => refusal.startsWith(`${fixture.names}:`) && refusal.includes(fixture.branch)),
+    { refusals, expectedBranch: fixture.branch },
+  );
+}
+
+/**
+ * Every refusing branch of the grader is reached by at least one fixture above.
+ *
+ * This assertion is here because the fixture table LOOKED complete and was not. Tracing which
+ * branch each of the nine original fixtures actually landed on found five branches hit and one
+ * never reached: "not a union of the census literals", the single branch whose message names the
+ * defect this cell exists to catch. Both "widened back to string" fixtures exited earlier, at the
+ * undefined-alias branch, so they passed for a reason unrelated to the widening they were named
+ * for. One refusing case per BRANCH is the property that matters, and counting fixtures cannot
+ * establish it, so the branch set is enumerated here and the fixtures are graded against it.
+ */
+const CENSUS_STATE_BRANCHES = [
+  "the declaration never declares this entry point",
+  "so which result a caller resolves is ambiguous",
+  "no resolved result object in the declaration",
+  "no top-level state property",
+  "top-level state properties",
+  "which this declaration never defines",
+  "state is optional, so the census verdict may be absent",
+  "not a union of the census literals",
+  "state union is missing",
+  "which the census never returns",
+];
+const branchesHit = new Set(stateFixtures.map((fixture) => fixture.branch));
+const branchesUnreached = CENSUS_STATE_BRANCHES.filter((branch) => !branchesHit.has(branch));
+/**
+ * The enumerated set is itself checked against the GRADER'S SOURCE, because a hand-maintained
+ * list of branches is exactly the kind of second copy that rots: adding a tenth `refusals.push`
+ * without extending the list would leave the coverage cell above reporting full coverage of a set
+ * that no longer describes the grader. Counting the pushes in the source closes that, so the
+ * coverage claim degrades into a red rather than into a silent overstatement.
+ */
+const graderSource = readFileSync(new URL(import.meta.url), "utf8");
+const graderBody = graderSource.slice(
+  graderSource.indexOf("function censusStateRefusals"),
+  graderSource.indexOf("function replaceNth"),
+);
+const graderPushes = graderBody.match(/refusals\.push\(/g) ?? [];
+check(
+  "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+  graderPushes.length === CENSUS_STATE_BRANCHES.length,
+  { refusalsInGrader: graderPushes.length, enumerated: CENSUS_STATE_BRANCHES.length },
+);
+check(
+  "every enumerated branch string appears in the grader source, so a reworded branch is caught",
+  CENSUS_STATE_BRANCHES.every((branch) => graderBody.includes(branch)),
+  CENSUS_STATE_BRANCHES.filter((branch) => !graderBody.includes(branch)),
+);
+check(
+  `every one of the ${CENSUS_STATE_BRANCHES.length} census state refusal branches has a refusing fixture`,
+  branchesUnreached.length === 0,
+  { branchesUnreached, fixtures: stateFixtures.length },
+);
+check(
+  "every fixture branch tag names a real refusal branch, so a typo cannot fake coverage",
+  [...branchesHit].every((branch) => CENSUS_STATE_BRANCHES.includes(branch)),
+  [...branchesHit].filter((branch) => !CENSUS_STATE_BRANCHES.includes(branch)),
 );
 
 console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);

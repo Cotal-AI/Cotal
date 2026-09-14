@@ -296,6 +296,27 @@ function blankCensusRow(pkg) {
   return { ...pkg, registry: "not-run", oidc: "not-run", direct: "not-run" };
 }
 
+/**
+ * The census verdict this preflight can return. Every other outcome throws, so these two
+ * names are the complete contract a caller may branch on. Naming the union here is what puts
+ * it in the generated declaration: an object-literal property widens to `string` on emit,
+ * while a named type survives, so the published type stays as strict as the module.
+ *
+ * The members live in this exported CODE array rather than in a JSDoc union, so the contract
+ * cannot be widened, narrowed or renamed by a commit that only edits prose. A comment-only
+ * diff reads as documentation to a reviewer, which is exactly the diff that must not be able
+ * to move a published type. `mutation-fixtures` refuses anchors that span comments for the
+ * same reason, and its refusal is what showed the JSDoc-only form was disarmable.
+ */
+export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ (["nothing-to-publish", "ready"]);
+
+/**
+ * @typedef {(typeof NPM_PUBLISH_PREFLIGHT_STATES)[number]} NpmPublishPreflightState
+ */
+
+/**
+ * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
+ */
 export async function preflightNpmPublish({
   fixedPackages,
   workspacePackages,
@@ -410,6 +431,9 @@ export async function preflightNpmPublish({
   return { state: "ready", rows };
 }
 
+/**
+ * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
+ */
 export async function preflightFromRepository({
   root = ROOT,
   registryBase = process.env.npm_config_registry ?? DEFAULT_REGISTRY,
