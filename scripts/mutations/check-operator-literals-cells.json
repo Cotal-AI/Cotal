@@ -198,8 +198,8 @@
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
       "find": "    return executed.length > 0 && ranButUndeclared.length === 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
       "replace": "    return executed.length > 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
-      "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
-      "expectRed": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran"
+      "cell": "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it",
+      "expectRed": "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it"
     }
   ]
 }
