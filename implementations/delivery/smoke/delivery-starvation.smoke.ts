@@ -1043,7 +1043,11 @@ try {
   check("H4 it announced going quiet while it checked", solo.stderr.includes("stopped serving shard"), tail(solo));
   check("H5 and it announced serving again, under its own power", resumed, tail(solo));
   check("H6 the re-arm is attributed to the evidence that permitted it, not merely to time passing",
-    /serving shard \d+ again .*(won the atomic create|still its own|renewed its lease)/.test(solo.stderr), tail(solo));
+    // `again[,]? ` rather than `again `: the separator after the phrase is punctuation that a style
+    // pass can legitimately change, and `.*` does not cross it. When the em dash here became a comma
+    // this regex stopped matching while the cell kept passing for an unrelated reason, so the
+    // attribution it exists to grade was no longer being checked at all.
+    /serving shard \d+ again[,]? .*(won the atomic create|still its own|renewed its lease)/.test(solo.stderr), tail(solo));
   // PROVEN ON THE BROKER, not from the daemon's log: it holds the lease again and is consuming again.
   const soloLease = await readLease(spaceH, credsPathH);
   check("H7 it holds a live, ready lease again", soloLease?.info.ready === true, soloLease);
@@ -1112,7 +1116,7 @@ try {
   check("R4 it must NOT claim another daemon took the shard", !/is held by/.test(own.stderr), tail(own));
   check("R5 and it must still be ALIVE", !own.exited, tail(own));
   check("R6 and it must have RESUMED serving, attributed to the row still being its own",
-    ownResumed && /serving shard \d+ again .*still its own/.test(own.stderr), tail(own));
+    ownResumed && /serving shard \d+ again[,]? .*still its own/.test(own.stderr), tail(own));
   // PROVEN ON THE BROKER. The daemon's log says it resumed; the durables say whether it did.
   const ownPulls = await pendingPulls(spaceH, credsPathH);
   check("R7 and both durables have parked pulls, genuinely serving, not merely alive",
