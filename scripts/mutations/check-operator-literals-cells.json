@@ -196,8 +196,8 @@
     {
       "name": "the executed-cell census stops reporting an undeclared cell, so a cell that ran ungraded passes",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0\n      && executedIds.length === declaredCells.length\n      && new Set(executedIds).size === executedIds.length,",
-      "replace": "    executedIds.length > 0 && executedMissing.length === 0\n      && executedIds.length === declaredCells.length\n      && new Set(executedIds).size === executedIds.length,",
+      "find": "    return executed.length > 0 && ranButUndeclared.length === 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
+      "replace": "    return executed.length > 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
       "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
       "expectRed": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran"
     }

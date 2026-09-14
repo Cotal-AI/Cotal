@@ -884,14 +884,62 @@ try {
     ranButUndeclared: executed.filter((id) => !declared.includes(id)),
     declaredButNeverRan: declared.filter((id) => !executed.includes(id)),
   });
+  // THE VERDICT IS A NAMED FUNCTION TOO, for the reason the comparison already is, one level up.
+  // Making `censusAgreement` shared fixed the COMPARISON but left the PREDICATE inline, and the
+  // shard then reported a real SURVIVOR for deleting its `ranButUndeclared` clause: 118/118 checks
+  // passed with the census blinded, carrying a positive control proving another mutation in this
+  // same file was killed in the same run, so the suite provably reached it and the gap was real.
+  //
+  // The reason the deletion was invisible is exact and worth keeping. On the honest tree the four
+  // clauses are not independent. With `declared` holding 34 distinct ids, an executed id that
+  // nobody declared forces `declaredButNeverRan` to be non-empty too, because equal lengths plus a
+  // stranger in one list means a missing one in the other. The surviving clauses therefore cover
+  // for the deleted one on every honest input, and on every input the old control supplied. The
+  // clause is load-bearing on exactly one shape: an undeclared id WHILE `declared` itself repeats
+  // an id, where lengths still match, nothing is missing and only the undeclared check can object.
+  // That shape is planted below, so the clause now has an input that fails without it.
+  const censusVerdict = (executed, declared) => {
+    const { ranButUndeclared, declaredButNeverRan } = censusAgreement(executed, declared);
+    return executed.length > 0 && ranButUndeclared.length === 0 && declaredButNeverRan.length === 0
+      && executed.length === declared.length
+      && new Set(executed).size === executed.length;
+  };
   const { ranButUndeclared: executedExtra, declaredButNeverRan: executedMissing } =
     censusAgreement(executedIds, declaredCells);
   check(
     "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
-    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0
-      && executedIds.length === declaredCells.length
-      && new Set(executedIds).size === executedIds.length,
+    censusVerdict(executedIds, declaredCells),
     `executed=${executedIds.length} declared=${declaredCells.length} unique=${new Set(executedIds).size}${executedExtra.length ? ` UNDECLARED [${executedExtra.join(", ")}]` : ""}${executedMissing.length ? ` NEVER RAN [${executedMissing.join(", ")}]` : ""}`,
+  );
+
+  // The verdict's planted positives, driving THE SAME FUNCTION the check above calls. Each input is
+  // chosen so that the FULL predicate refuses it while the predicate with ONE clause removed would
+  // accept it, which is what makes the input grade that clause rather than merely exercise it. The
+  // honest shape is included so a predicate hardwired to `false` cannot pass this either.
+  //
+  // The isolating shapes are not obvious and were found by search, not by reading. `undeclared`
+  // needs a repeat in `declared`, and `length` needs `executed` shorter than a `declared` that
+  // repeats, because on tidier inputs the other clauses cover for the missing one and the deletion
+  // stays invisible. That is the whole lesson of the survivor this control was added for.
+  //
+  // `declaredButNeverRan` is DELIBERATELY NOT LISTED. It is not missing: it is redundant, and that
+  // was measured rather than assumed. Exhaustive search over every pair of sequences up to length
+  // four from a four-symbol alphabet, 116281 pairs, found NO input that the full predicate refuses
+  // and the predicate without that clause accepts. The other four imply it, because equal lengths
+  // plus no stranger in `executed` plus no repeat in `executed` leaves nothing for `declared` to
+  // hold that `executed` does not. It is kept in the predicate because it names the failure
+  // directly in the row a human reads, and it is claimed here as covered by nothing, because
+  // claiming otherwise would be the exact error this file keeps catching.
+  const verdictHonest = censusVerdict(["alpha", "beta"], ["alpha", "beta"]);
+  const verdictUndeclared = censusVerdict(["alpha", "ghost"], ["alpha", "alpha"]);
+  const verdictLength = censusVerdict(["alpha"], ["alpha", "alpha"]);
+  const verdictDuplicate = censusVerdict(["alpha", "alpha"], ["alpha", "alpha"]);
+  const verdictEmpty = censusVerdict([], []);
+  check(
+    "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it",
+    verdictHonest === true && verdictUndeclared === false
+      && verdictLength === false && verdictDuplicate === false && verdictEmpty === false,
+    `honest=${verdictHonest}/true undeclared=${verdictUndeclared}/false length=${verdictLength}/false duplicate=${verdictDuplicate}/false empty=${verdictEmpty}/false`,
   );
 
   // And its planted control, because an id reader that returns nothing would report the same tidy
