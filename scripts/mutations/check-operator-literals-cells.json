@@ -178,10 +178,10 @@
       "cell": "reader control: the field reader returns each named field for each named cell, and undefined for a miss"
     },
     {
-      "name": "the signature guard stops reporting readers that reach into a run, so a reverted signature passes",
+      "name": "the signature guard's walker reports nothing, so a reader reaching into a run is never seen",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
       "find": "    visit(sf);\n    return { found, seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
-      "replace": "    visit(sf);\n    return { found: found.length ? [found[0]] : found, seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
+      "replace": "    visit(sf);\n    return { found: [], seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     },
