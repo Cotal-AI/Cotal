@@ -1304,6 +1304,14 @@ try {
   // `qualifying_cells=0` is therefore an assertion, not a description: if a cell ever appears with
   // no gradable field, this row goes red and someone decides deliberately whether an exemption is
   // warranted, instead of the category quietly becoming reachable.
+  //
+  // The honest arm HAS been exercised, by constructing the missing cell rather than reasoning about
+  // it. A temporary inline cell emitting `actual: 'shape=clean'`, with no numeric field, was added
+  // to the scanner; the scanner stayed green at 62/62 and this suite reported `qualifying_cells=1`
+  // plus `unaccounted=1 [status-only-cell]`. Exempting it with a cell id, a reason and the claim
+  // made `real_malformed=0` and removed the unaccounted row, leaving only this tripwire red. So the
+  // accepting path works end to end and is not dead code: it was measured, then the cell was removed
+  // and the product restored to its exact blob.
   const qualifyingCells = declaredCells.filter((cellId) => baselineFieldFor(cellId) === undefined);
 
   // The field reader is graded on SYNTHETIC rows, because on the real ones every cell has a field
