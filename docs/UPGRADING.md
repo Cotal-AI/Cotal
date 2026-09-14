@@ -336,7 +336,7 @@ no cut and no backup inside it, so the window is the stop, the install and the r
 
 **Every changeset marked breaking adds a section to this page.** A release that changes what an
 operator must do, in what order, or what stops working, is not finished until the section exists.
-`scripts/upgrade-section-gate.mjs` grades a commit range for exactly this: run it as
+`scripts/upgrade-section-gate.mjs` grades a commit range for this: run it as
 `pnpm upgrade-section-gate --base <ref>` and it reds when the range carries a breaking change and
 adds no new release section. CI runs its self-test today, and the step that grades each pull
 request's own range is landing separately, because adding a workflow step needs a permission this
