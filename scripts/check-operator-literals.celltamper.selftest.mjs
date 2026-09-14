@@ -455,7 +455,7 @@ const CASES = [
     replace: "lstatSync(dir)",
   },
 
-  // THE SEVEN INLINE CELLS. Each is an object literal with a `measure` of its own and no factory,
+  // THE TEN INLINE CELLS. Each is an object literal with a `measure` of its own and no factory,
   // so nothing about its reader can be inferred from a sibling and each needs its own case. Two
   // reviewers independently hollowed one of these discriminators and watched it SURVIVE at a full
   // green, each with a same-run positive control proving the cell was genuinely reached. These are
@@ -911,7 +911,7 @@ try {
   //
   // This was pointed at factories for two rounds and it was the wrong denominator. A case list
   // grades what it names and stays silent about what it forgot, so the census exists to make that
-  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 7 of the
+  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 10 of the
   // scanner's 61 cells are inline object literals built by no factory at all, so no factory
   // enumeration, however perfect, can see them. A reviewer proved the cost rather than arguing it:
   // hollowing `workflow-host-exclusion`'s inline discriminator to a constant left the scanner at
