@@ -41,7 +41,7 @@ import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
 export const UPGRADING_PATH = join("docs", "UPGRADING.md");
