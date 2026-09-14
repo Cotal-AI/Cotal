@@ -386,7 +386,13 @@ const stepCtx = (requestId: string, resume?: Record<string, unknown>) => {
     key: { scope: [], kind: "spawn", name: "", occurrence: 0 },
     requestId, attempt: 0, signal,
     ...(resume !== undefined ? { resume } : {}),
-    bind: async (facts: Record<string, unknown>) => { Object.assign(bound, facts); },
+    // REPLACES, because the real journal does: `bind` writes `{ ...entry, external }`, so a second
+    // bind drops every fact the first one held rather than merging over it. Merging here made the
+    // harness kinder than the journal and let a dropped re-statement read as green.
+    bind: async (facts: Record<string, unknown>) => {
+      for (const k of Object.keys(bound)) delete bound[k];
+      Object.assign(bound, facts);
+    },
   };
   return {
     ctx: ctx as never,
