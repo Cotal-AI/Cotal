@@ -561,13 +561,63 @@ check(
 // status guards it. The extractor is written to fail RED rather than quietly green if it ever
 // stops finding the function or its returns, because an extractor that reports nothing is
 // indistinguishable from a source with nothing wrong.
+//
+// The body is found by walking brace depth while skipping string, template and comment context,
+// NOT by slicing to the first line that starts with a closing brace. That distinction is load
+// bearing and was found by attacking this cell rather than by reasoning about it: a template
+// literal containing a newline and a closing brace ends the naive slice early, and every return
+// below it, including an out-of-domain one, falls outside the extracted body and escapes clean.
 const preflightSource = readFileSync(join(ROOT, "scripts/preflight-npm-publish.mjs"), "utf8");
-function readExactVersionReturns(source: string): string[] | null {
-  const start = source.indexOf("async function readExactVersion(");
+function functionBody(source: string, declaration: string): string | null {
+  const start = source.indexOf(declaration);
   if (start === -1) return null;
-  const end = source.indexOf("\n}\n", start);
-  if (end === -1) return null;
-  return [...source.slice(start, end).matchAll(/\breturn\s+([^;]+);/g)].map((match) => match[1].trim());
+  const open = source.indexOf("{", start);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let index = open; index < source.length; index++) {
+    const char = source[index];
+    if (char === "/" && source[index + 1] === "/") {
+      index = source.indexOf("\n", index);
+      if (index === -1) return null;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      index = source.indexOf("*/", index);
+      if (index === -1) return null;
+      index++;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      index++;
+      for (; index < source.length; index++) {
+        if (source[index] === "\\") { index++; continue; }
+        if (source[index] === quote) break;
+        if (quote === "`" && source[index] === "$" && source[index + 1] === "{") {
+          let inner = 1;
+          index += 2;
+          for (; index < source.length && inner > 0; index++) {
+            if (source[index] === "{") inner++;
+            else if (source[index] === "}") inner--;
+          }
+          index--;
+        }
+      }
+      if (index >= source.length) return null;
+      continue;
+    }
+    if (char === "{") depth++;
+    else if (char === "}") {
+      depth--;
+      if (depth === 0) return source.slice(open, index + 1);
+    }
+  }
+  return null;
+}
+function readExactVersionReturns(source: string): string[] | null {
+  const body = functionBody(source, "async function readExactVersion(");
+  if (body === null) return null;
+  return [...body.matchAll(/\breturn\s+([^;]+);/g)].map((match) => match[1].trim());
 }
 function isCensusDomainValue(expression: string): boolean {
   return expression === '"present"'
