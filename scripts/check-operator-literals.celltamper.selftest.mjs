@@ -1072,6 +1072,82 @@ try {
     `examined=${examined.length}_derived required=${REQUIRED_READERS.filter((name) => examined.includes(name)).length}/${REQUIRED_READERS.length} [${examined.join(", ")}] leaks=${leaked.length}/0${leaked.length ? ` [${leaked.join(", ")}]` : ""} planted_control=${plantedLeak.length}/>0 [${plantedLeak.join(", ")}]`,
   );
 
+  // AND THE SAME RULE FILE-WIDE, ON ARGUMENTS RATHER THAN ON READERS.
+  //
+  // The guard above asks whether a DERIVED READER hands its parameter onward, and review moved the
+  // identical launderer one frame out to defeat it: `cellSecondary(pickRows(run), cell, field)` in
+  // the kill loop restored the exit-2 oracle with the reader untouched, `examined` unmoved at 3, and
+  // the guard's row BYTE-IDENTICAL to a healthy run. The launderer ran 13 times and decided 13
+  // assertions. Nothing was reintroduced and no rule was broken; the SUBJECT was wrong.
+  //
+  // Every round so far moved the frame rather than breaking the rule, so this asks the question with
+  // no next frame: A RUN-SHAPED VALUE MAY NOT BE PASSED TO ANY CALL, ANYWHERE IN THIS FILE. Not "no
+  // reader may pass it on", which is a claim about one frame. Runs are found by their CONSTRUCTORS
+  // rather than by name, aliases inherit to a FIXED POINT so a chain of any length is covered, and
+  // every argument position in the file is the subject.
+  //
+  // Reading `.rows` or `.exitCode` off a run stays legal, because that is how the harness asserts on
+  // exit codes at all, measured at 2 construction points and 7 assertion reads. What is forbidden is
+  // handing the OBJECT to something, which is the only way a value these walkers cannot see gets to
+  // decide an assertion.
+  const RUN_MAKERS = new Set(["runSelftest", "runTrackedSelftest"]);
+  const runsPassedToCalls = (source) => {
+    const sf = ts.createSourceFile("suite.mjs", source, ts.ScriptTarget.Latest, true);
+    const runs = new Set();
+    const passed = [];
+    // Alias propagation runs to a FIXED POINT, not for a fixed number of passes. A two-pass version
+    // covers `const a = run;` and quietly misses `const b = a;` later in the file, which is the
+    // same one-hop blindness the taint walker was already corrected for once.
+    const collect = (node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const init = node.initializer;
+        if (ts.isCallExpression(init) && ts.isIdentifier(init.expression)
+          && RUN_MAKERS.has(init.expression.text)) runs.add(node.name.text);
+        if (ts.isIdentifier(init) && runs.has(init.text)) runs.add(node.name.text);
+      }
+      ts.forEachChild(node, collect);
+    };
+    let previous = -1;
+    while (runs.size !== previous) {
+      previous = runs.size;
+      collect(sf);
+    }
+    const audit = (node) => {
+      if (ts.isCallExpression(node)) {
+        node.arguments.forEach((argument, index) => {
+          if (ts.isIdentifier(argument) && runs.has(argument.text)) {
+            const callee = ts.isIdentifier(node.expression)
+              ? node.expression.text
+              : (ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : "call");
+            passed.push(`${callee}(arg${index}=${argument.text})`);
+          }
+        });
+      }
+      ts.forEachChild(node, audit);
+    };
+    audit(sf);
+    return { runs: [...runs], passed };
+  };
+  const { runs: runBindings, passed: runsPassed } = runsPassedToCalls(suiteSource);
+  // The control plants the exact shape review used AND a two-hop alias chain, so a walker that had
+  // stopped resolving the constructor, or that propagated only one hop, reports a zero that reads
+  // exactly like compliance. `planted_runs` must be 3: the run and both aliases.
+  const { runs: plantedRuns, passed: plantedPassed } = runsPassedToCalls(
+    // Declared in REVERSE order deliberately: r2 aliases r1 and r1 aliases r0, but each appears
+    // BEFORE the binding it copies. One traversal resolves only the hop whose source it has already
+    // seen, so a single pass reports planted_runs=1 and this control goes red. Source order is what
+    // makes the fixed point observable; a forward-ordered chain resolves in one pass and would grade
+    // nothing.
+    'const r2 = r1; const r1 = r0; const r0 = runSelftest(p);'
+      + ' const rows = pickRows(r2); const ok = summary(r0.rows);',
+  );
+  check(
+    "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias",
+    runsPassed.length === 0 && runBindings.length >= 3
+      && plantedPassed.length > 0 && plantedRuns.length === 3,
+    `runs=${runBindings.length}/>=3 [${runBindings.join(", ")}] passed=${runsPassed.length}/0${runsPassed.length ? ` [${runsPassed.join(", ")}]` : ""} planted_control=${plantedPassed.length}/>0 [${plantedPassed.join(", ")}] planted_runs=${plantedRuns.length}/3 [${plantedRuns.join(", ")}]`,
+  );
+
   for (const testCase of CASES) {
     const { cell, reader, find, replace, family, helper } = testCase;
     const secondaryField = FACTORIES.find((entry) => entry.name === family)?.secondaryField
