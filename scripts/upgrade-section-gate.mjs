@@ -40,6 +40,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
@@ -66,10 +67,16 @@ export function isBreakingCommit(subject, body = "") {
 
 /** Package names whose changeset front-matter declares a `major` bump. */
 export function majorChangesetPackages(text) {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
-  if (!m) return [];
-  const parsed = parseYaml(m[1]);
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+  // This is Changesets' boundary grammar, not generic Markdown front matter. In particular it
+  // accepts whitespace before and around the delimiters, accepts CRLF after line-ending
+  // normalization, and requires a closing delimiter. Keep this expression in lockstep with
+  // @changesets/parse and grade that agreement below against the installed parser using the same
+  // bytes. A missing boundary is malformed input, not an ordinary changeset with no major bump.
+  const m = /\s*---([^]*?)\n\s*---(\s*(?:\n|$)[^]*)/.exec(text);
+  if (!m) throw new Error("changeset is missing or has invalid front matter delimiters");
+  const parsed = parseYaml(m[1].replace(/\r\n?/g, "\n"));
+  if (parsed === null) return [];
+  if (typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("changeset front matter must be a YAML mapping of package names to bump levels");
   return Object.entries(parsed).filter(([, bump]) => bump === "major").map(([pkg]) => pkg);
 }
@@ -344,7 +351,7 @@ if (process.argv.includes("--self-test")) {
   {
     const tmp = mkdtempSync(join(tmpdir(), "upgrade-gate-changesets-"));
     const git = (args, cwd) => spawnSync("git", args, { cwd, encoding: "utf8" });
-    const build = (name, baseBump, headBump) => {
+    const build = (name, baseBump, headBump, rawHead = false) => {
       const dir = join(tmp, name);
       mkdirSync(dir);
       git(["init", "-q", "."], dir);
@@ -357,7 +364,7 @@ if (process.argv.includes("--self-test")) {
       writeFileSync(join(dir, "README.md"), "base\n");
       git(["add", "."], dir);
       git(["commit", "-qm", "chore: base"], dir);
-      if (headBump) writeFileSync(join(dir, ".changeset", "existing.md"), headBump.startsWith("---") ? headBump : `---\n"@cotal-ai/core": ${headBump}\n---\n\nhead\n`);
+      if (headBump) writeFileSync(join(dir, ".changeset", "existing.md"), rawHead || headBump.startsWith("---") ? headBump : `---\n"@cotal-ai/core": ${headBump}\n---\n\nhead\n`);
       writeFileSync(join(dir, "README.md"), "head\n");
       git(["add", "."], dir);
       git(["commit", "-qm", "docs: unrelated readme edit"], dir);
@@ -389,6 +396,38 @@ if (process.argv.includes("--self-test")) {
     const quotedMajor = run(build("quoted-major", null, '---\n"@cotal-ai/core": "major"\n---\n\nhead\n'));
     const inlineMajor = run(build("inline-major", null, '---\n{"@cotal-ai/core": major}\n---\n\nhead\n'));
     const malformedMajor = run(build("malformed-major", null, '---\n"@cotal-ai/core": [\n---\n\nhead\n'));
+    // Boundary grammar is owned by Changesets. Resolve its real parser through the declared CLI
+    // dependency, feed it the exact bytes given to the shipped gate entry point, then require the
+    // gate's exit to express the same disposition: accepted major => refusal (1), accepted empty
+    // releases => clean (0), parser rejection => misuse (2). These are E2E cells, not a second
+    // transcription of the gate reader.
+    const requireHere = createRequire(import.meta.url);
+    const requireFromChangesets = createRequire(requireHere.resolve("@changesets/cli"));
+    const parseChangesetFile = requireFromChangesets("@changesets/parse").default;
+    const boundaryShapes = [
+      ["leading whitespace before the opening delimiter", ' \n\t---\n"@cotal-ai/core": major\n---\n\nhead\n'],
+      ["indented delimiters", '  ---\n"@cotal-ai/core": major\n  ---\n\nhead\n'],
+      ["missing closing delimiter", '---\n"@cotal-ai/core": major\n\nhead\n'],
+      ["CRLF line endings", '---\r\n"@cotal-ai/core": major\r\n---\r\n\r\nhead\r\n'],
+      ["empty frontmatter block", '---\n---\n\nhead\n'],
+    ];
+    for (const [name, bytes] of boundaryShapes) {
+      let parserResult;
+      try {
+        const parsed = parseChangesetFile(bytes);
+        parserResult = { accepted: true, major: parsed.releases.some((r) => r.type === "major") };
+      } catch (error) {
+        parserResult = { accepted: false, error: error instanceof Error ? error.message.split("\n")[0] : String(error) };
+      }
+      const gateResult = run(build(`boundary-${name.replaceAll(/[^a-z]+/g, "-")}`, null, bytes, true));
+      const expectedStatus = parserResult.accepted ? (parserResult.major ? 1 : 0) : 2;
+      const expectedWords = expectedStatus === 1 ? /new major packages/.test(gateResult.stdout)
+        : expectedStatus === 2 ? /could not run/.test(gateResult.stderr)
+          : /no breaking commits DETECTED/.test(gateResult.stdout);
+      cell(`CHANGESETS AGREEMENT E2E: ${name}`,
+        gateResult.status === expectedStatus && expectedWords,
+        { parserResult, expectedStatus, gateStatus: gateResult.status, stdout: gateResult.stdout, stderr: gateResult.stderr });
+    }
     const raisedMajor = run(build("patch-to-major", "patch", "major"));
     const baseOnlyCoreMajor = '---\n"@cotal-ai/core": major\n---\n\nbase\n';
     const baseCoreMajorAuthPatch = '---\n"@cotal-ai/core": major\n"@cotal-ai/auth": patch\n---\n\nbase\n';
@@ -821,7 +860,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 89;
+  const EXPECTED = 94;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
