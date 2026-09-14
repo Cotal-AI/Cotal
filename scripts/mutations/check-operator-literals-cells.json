@@ -174,8 +174,8 @@
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
       "find": "  return new RegExp(`\\\\b${field}=(\\\\d+)\\\\/`).exec(row ?? \"\")?.[1];",
       "replace": "  return rows.exitCode === 0 ? \"1\" : \"0\";",
-      "expectRed": "reader control: the field reader returns each named field for each named cell, and undefined for a miss",
-      "cell": "reader control: the field reader returns each named field for each named cell, and undefined for a miss"
+      "expectRed": "unit test: the field reader returns each named field for each named cell, and undefined for a miss",
+      "cell": "unit test: the field reader returns each named field for each named cell, and undefined for a miss"
     },
     {
       "name": "the parsed reader silently skips an element it cannot classify, so a spread cell is never counted",
@@ -183,23 +183,23 @@
       "find": "          unclassified.push(ts.SyntaxKind[element.kind]);",
       "replace": "          void element;",
       "cell": "census: the cell array holds nothing the parsed reader cannot classify, and the reader is proven able to say so",
-      "expectRed": true
+      "expectRed": "census: the cell array holds nothing the parsed reader cannot classify, and the reader is proven able to say so"
     },
     {
       "name": "the executed-cell reader returns nothing, so a cell that ran without being declared is invisible",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \"))\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);\n  const executedExtra",
-      "replace": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \") && false)\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);\n  const executedExtra",
+      "find": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \"))\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);",
+      "replace": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \") && false)\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);",
       "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
-      "expectRed": true
+      "expectRed": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran"
     },
     {
       "name": "the executed-cell census stops reporting an undeclared cell, so a cell that ran ungraded passes",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0,",
-      "replace": "    executedIds.length > 0 && executedMissing.length === 0,",
+      "find": "    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0\n      && executedIds.length === declaredCells.length\n      && new Set(executedIds).size === executedIds.length,",
+      "replace": "    executedIds.length > 0 && executedMissing.length === 0\n      && executedIds.length === declaredCells.length\n      && new Set(executedIds).size === executedIds.length,",
       "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
-      "expectRed": true
+      "expectRed": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran"
     }
   ]
 }
