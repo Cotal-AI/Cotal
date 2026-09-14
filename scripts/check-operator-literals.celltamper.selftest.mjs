@@ -913,15 +913,24 @@ try {
   // read `exitCode`, and must report it. An absence-detector that is broken reports the same clean
   // absence as one that is working, which is the failure this whole file exists to catch.
   //
-  // It also reports WHICH readers it found, and requires all three. A walker that located none of
-  // them, because a reader was renamed or because it parsed the wrong source, reports a clean
-  // `leaks=0` that looks exactly like success. Naming the denominator is what makes the difference
-  // between "no reader reaches the run" and "no reader was examined" visible in the row.
-  const READERS = ["cellStatus", "cellSecondary", "summary"];
-  const runFieldsNamedBy = (source, names) => {
+  // ITS DENOMINATOR IS DERIVED, NOT ENUMERATED, AND REVIEW HAD TO SAY SO TWICE IN THIS FILE. An
+  // earlier revision named the three readers in a list. A list is checked against itself: a FOURTH
+  // reader added later, taking a run and reading its exit code, is simply not in it, and the guard
+  // reports the same tidy `examined=3/3 leaks=0` while the new reader goes ungraded. That is this
+  // suite's own subject one level up, and it is the same shape as the census that had to stop
+  // counting factories and start counting cells. So the denominator is every top-level function in
+  // this file whose FIRST PARAMETER is named `rows` or `run`, which is what "a row reader" means
+  // here, and the guard requires that at least the known three are among them, so a rename cannot
+  // shrink the denominator to nothing and still read clean.
+  const runFieldsNamedBy = (source) => {
     const sf = ts.createSourceFile("suite.mjs", source, ts.ScriptTarget.Latest, true);
     const found = [];
     const seen = [];
+    const isRowReader = (fn) => {
+      const first = fn.parameters?.[0];
+      return Boolean(first && ts.isIdentifier(first.name)
+        && (first.name.text === "rows" || first.name.text === "run"));
+    };
     const walkBody = (node, owner) => {
       if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
         && (node.expression.text === "run" || node.expression.text === "rows")
@@ -935,13 +944,14 @@ try {
       ts.forEachChild(node, (child) => walkBody(child, owner));
     };
     const visit = (node) => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.includes(node.name.text)
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
         && node.initializer
-        && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+        && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+        && isRowReader(node.initializer)) {
         seen.push(node.name.text);
         walkBody(node.initializer.body, node.name.text);
       }
-      if (ts.isFunctionDeclaration(node) && node.name && names.includes(node.name.text) && node.body) {
+      if (ts.isFunctionDeclaration(node) && node.name && node.body && isRowReader(node)) {
         seen.push(node.name.text);
         walkBody(node.body, node.name.text);
       }
@@ -950,17 +960,20 @@ try {
     visit(sf);
     return { found, seen };
   };
+  // The known three are a FLOOR on the derived set, never the set itself: if a rename or a parser
+  // change drops them, `examined` stops containing them and the guard goes red rather than quietly
+  // grading fewer readers than it did yesterday.
+  const REQUIRED_READERS = ["cellStatus", "cellSecondary", "summary"];
   const suiteSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
-  const { found: leaked, seen: examined } = runFieldsNamedBy(suiteSource, READERS);
+  const { found: leaked, seen: examined } = runFieldsNamedBy(suiteSource);
   const { found: plantedLeak } = runFieldsNamedBy(
     'const cellSecondary = (run, id) => { if (run.exitCode === 2) return "0"; return run.rows.find(id); };',
-    READERS,
   );
   check(
     "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
     leaked.length === 0 && plantedLeak.length > 0
-      && READERS.every((name) => examined.includes(name)),
-    `examined=${examined.length}/${READERS.length} [${examined.join(", ")}] leaks=${leaked.length}/0${leaked.length ? ` [${leaked.join(", ")}]` : ""} planted_control=${plantedLeak.length}/>0 [${plantedLeak.join(", ")}]`,
+      && REQUIRED_READERS.every((name) => examined.includes(name)),
+    `examined=${examined.length}_derived required=${REQUIRED_READERS.filter((name) => examined.includes(name)).length}/${REQUIRED_READERS.length} [${examined.join(", ")}] leaks=${leaked.length}/0${leaked.length ? ` [${leaked.join(", ")}]` : ""} planted_control=${plantedLeak.length}/>0 [${plantedLeak.join(", ")}]`,
   );
 
   for (const testCase of CASES) {

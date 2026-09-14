@@ -180,8 +180,8 @@
     {
       "name": "the signature guard's walker reports nothing, so a reader reaching into a run is never seen",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    visit(sf);\n    return { found, seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
-      "replace": "    visit(sf);\n    return { found: [], seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
+      "find": "    visit(sf);\n    return { found, seen };\n  };",
+      "replace": "    visit(sf);\n    return { found: [], seen };\n  };",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     },
@@ -190,6 +190,14 @@
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
       "find": "  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
       "replace": "  const suiteSource = \"const cellSecondary = (rows, id) => rows.find(id);\";",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+    },
+    {
+      "name": "the row-reader test always says no, so the derived denominator is empty and nothing is examined",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "      return Boolean(first && ts.isIdentifier(first.name)\n        && (first.name.text === \"rows\" || first.name.text === \"run\"));",
+      "replace": "      void first;\n      return false;",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     }
