@@ -88,12 +88,116 @@ const namedAliases = (source, fromSpec, originals) => {
 const pathEval = (suite, source, env = new Map()) => {
   const sf = ast(suite, source);
   const joiners = namedAliases(source, "path", JOINERS);
-  const variables = new Map();
+  // A scalar binding is resolved at the USE SITE, by walking outward to the nearest enclosing
+  // scope that declares the name. A flat name->value map is not a binding: a same-named `ENTRY`
+  // in an unrelated function would stand in for the one the launcher actually passes, which
+  // asserts a data-flow fact the program does not have. That is the #1586 class, and fixing it
+  // for an argv ARRAY while leaving it for the SCALAR the array holds only moves the hole.
+  const functionLike = (node) => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node)
+    || ts.isClassDeclaration(node);
+  // A block is a scope. Treating only functions as scopes reads a `const` from a sibling `if`
+  // branch that never ran, which is the same false-accept one level down.
+  const blockLike = (node) => ts.isBlock(node) || ts.isForStatement(node) || ts.isForOfStatement(node)
+    || ts.isForInStatement(node) || ts.isCatchClause(node) || ts.isCaseBlock(node) || ts.isModuleBlock(node);
+  const scopeOf = (node) => {
+    for (let s = node; s !== undefined; s = s.parent) {
+      if (ts.isSourceFile(s) || functionLike(s) || blockLike(s)) return s;
+    }
+    return sf;
+  };
+  // Textual position is not execution order. A use inside a function body runs when that function
+  // is INVOKED: `function run(){ spawn([ENTRY]) } const ENTRY = target; run()` initializes ENTRY
+  // before the call and is a real launch, while `run(); const ENTRY = target; function run(){...}`
+  // reads ENTRY in its dead zone and is not. The identifier's own offset cannot tell those apart,
+  // so the position compared against a declaration is the earliest CALL of the enclosing function.
+  const namedFunction = (node) => {
+    if (ts.isFunctionDeclaration(node)) return node.name?.text;
+    const parent = node.parent;
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+      && (ts.isFunctionExpression(node) || ts.isArrowFunction(node))) return parent.name.text;
+    return undefined;
+  };
+  const earliestCall = (name, within) => {
+    let earliest;
+    const scan = (node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+        const pos = node.getStart(sf);
+        if (earliest === undefined || pos < earliest) earliest = pos;
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(within);
+    return earliest;
+  };
+  // Where `use` actually evaluates, relative to declarations in `scope`: its own offset when no
+  // function boundary separates the two, and otherwise the earliest call of each function crossed
+  // on the way out. `undefined` means the order could not be established -- an anonymous or
+  // never-called function -- and every caller must treat that as a refusal rather than a value.
+  // A refusal is a claim this tool can back; a guess at invocation order is not.
+  const executionPos = (use, scope) => {
+    let pos = use.getStart(sf);
+    for (let s = use.parent; s !== undefined && s !== scope; s = s.parent) {
+      if (!functionLike(s)) continue;
+      const name = namedFunction(s);
+      if (name === undefined) return undefined;
+      const call = earliestCall(name, scope);
+      if (call === undefined) return undefined;
+      pos = call;
+    }
+    return pos;
+  };
+  // A destructuring pattern is a binding. `function run({ENTRY})` declares ENTRY, and reading it as
+  // no binding at all lets an outer target-valued ENTRY stand in for the parameter the call really
+  // passes, which witnesses a launch THAT IS NOT THERE -- the dangerous direction. The value a
+  // pattern binds is not one this tool can follow, so a pattern that can bind the name stops
+  // resolution instead of letting the walk continue outward.
+  const bindsName = (nameNode, name) => {
+    if (ts.isIdentifier(nameNode)) return nameNode.text === name;
+    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
+      return nameNode.elements.some((element) => ts.isBindingElement(element) && bindsName(element.name, name));
+    }
+    return false;
+  };
+  // Declared here, but with no value this tool may claim: a parameter, a declaration with no
+  // initializer, or one that appears after the use. Each SHADOWS an outer binding of the same
+  // name, so resolution stops rather than walking outward and reporting the outer one's value.
+  const OPAQUE = Symbol("declared, value unknown");
+  const declarationKind = (declaration) => {
+    const list = declaration.parent;
+    if (list === undefined || !ts.isVariableDeclarationList(list)) return "other";
+    if (list.flags & ts.NodeFlags.Let) return "let";
+    if (list.flags & ts.NodeFlags.Const) return "const";
+    return "var";
+  };
+  // What `scope` itself declares for `name`, by the language's rules rather than an approximation
+  // of them, because every place the approximation differs is a data-flow fact the program does
+  // not have. `var` hoists out of inner blocks to its function and so is collected from them; a
+  // `let` or `const` in an inner block is not visible here and is deliberately not collected.
+  const declaredIn = (scope, name, useNode) => {
+    const usePos = executionPos(useNode, scope);
+    let found;
+    const record = (value) => { if (found === undefined) found = value; };
+    const scan = (node, hoistedOnly) => {
+      if (found !== undefined) return;
+      if (node !== scope && (functionLike(node) || ts.isSourceFile(node))) return;
+      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, true)); return; }
+      if (!hoistedOnly && ts.isParameter(node) && bindsName(node.name, name)) record(OPAQUE);
+      if (ts.isVariableDeclaration(node) && (!hoistedOnly || declarationKind(node) === "var")) {
+        if (ts.isIdentifier(node.name) && node.name.text === name) {
+          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);
+        } else if (!ts.isIdentifier(node.name) && bindsName(node.name, name)) record(OPAQUE);
+      }
+      ts.forEachChild(node, (child) => scan(child, hoistedOnly));
+    };
+    scan(scope, false);
+    return found;
+  };
   // The repository root, and ONLY where the program actually computes it. An identifier's spelling
   // is not evidence of its value: `const root = mkdtempSync(...)` is a temp directory, and reading
   // it as the repo root invents a data-flow fact that does not exist. A name-shaped root was the
   // exact class #1434 is about, so nothing here looks at identifier text. A binding reaches this
-  // value only by evaluating to it, through the `variables` map.
+  // value only by evaluating to it, through its declaration.
   const rootish = (node) => {
     if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === "process.cwd") return true;
     if (ts.isPropertyAccessExpression(node)) {
@@ -107,7 +211,19 @@ const pathEval = (suite, source, env = new Map()) => {
     if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
     const literal = stringValue(node);
     if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) return variables.get(node.text);
+    if (ts.isIdentifier(node)) {
+      // `const A = B` beside `const B = A` is a program, and it terminates here because a cycle
+      // needs one edge pointing at a later declaration, which the use-position rule below stops.
+      // A visited set as well would be a second guard for the same case, and mutating either one
+      // then proves nothing, because the other still holds.
+      for (let scope = scopeOf(node); scope !== undefined;
+        scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {
+        const declared = declaredIn(scope, node.text, node);
+        if (declared === OPAQUE) return undefined;
+        if (declared !== undefined) return evalPath(declared);
+      }
+      return undefined;
+    }
     if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
       if (node.name.text === "dirname") return dirname(resolve(suite));
       if (node.name.text === "url") return resolve(suite);
@@ -144,14 +260,6 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     return undefined;
   };
-  const walk = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const value = evalPath(node.initializer);
-      if (value !== undefined) variables.set(node.name.text, value);
-    }
-    ts.forEachChild(node, walk);
-  };
-  walk(sf);
   return { sf, evalPath };
 };
 
@@ -890,56 +998,26 @@ const entryPackages = (entry) => {
 };
 
 const normalizedPath = (value) => resolve(value).replaceAll("\\", "/");
+/**
+ * Does this suite LAUNCH the declared entrypoint, in the slot the child actually executes?
+ *
+ * This asked a weaker question: whether the declared path appeared ANYWHERE in a launcher's argv,
+ * with the argv identifier resolved through a flat name->value map. Three facts were asserted that
+ * the program does not have. A name is not a binding, so a same-named `args` in an unrelated
+ * function stood in for the launcher's own and witnessed a launch that never happens. An element is
+ * not the script slot, so a path sitting after `-e` counted as executed when node runs the eval
+ * program and never opens the file. A spelling is not an import, so any callee named `spawnProc`
+ * counted, including one imported from a local helper. A conditional argv resolved to `undefined`
+ * and crashed the walk, which surfaced as a config refused for a TypeError rather than a reason.
+ *
+ * `launchedPaths` already answers the real question, and answers it with evidence: bindings are
+ * resolved by walking outward to the nearest enclosing scope that declares the name, the executed
+ * slot is located by node's own flag rules, launcher aliases come from the child_process import,
+ * and dead code is excluded. An entrypoint is witnessed here when it is one of those paths.
+ */
 const spawnsEntrypoint = (suite, entry, source) => {
-  const variables = new Map();
   const target = normalizedPath(entry);
-  const evalPath = (node) => {
-    if (!node) return undefined;
-    const literal = stringValue(node);
-    if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) return variables.get(node.text);
-    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
-      if (node.name.text === "dirname") return dirname(resolve(suite));
-      if (node.name.text === "url") return resolve(suite);
-    }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const parts = node.arguments.map(evalPath);
-      if (parts.some((part) => part === undefined)) return undefined;
-      if (node.expression.text === "dirname" && parts.length === 1) return dirname(parts[0]);
-      if (node.expression.text === "join" || node.expression.text === "resolve") return resolve(...parts);
-      if (node.expression.text === "fileURLToPath" && parts.length === 1) return parts[0];
-    }
-    return undefined;
-  };
-  const entryArray = (node) => {
-    if (ts.isIdentifier(node)) node = variables.get(node.text);
-    if (!ts.isArrayLiteralExpression(node)) return false;
-    return node.elements.some((element) => {
-      const value = evalPath(element);
-      return value !== undefined && normalizedPath(value) === target;
-    });
-  };
-  const executableIsNode = (node) => {
-    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
-      && node.expression.text === "process" && node.name.text === "execPath") return true;
-    const value = evalPath(node);
-    return value !== undefined && /(?:^|\/)tsx(?:\.cmd)?$/.test(value.replaceAll("\\", "/"));
-  };
-  let witnessed = false;
-  const visit = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      variables.set(node.name.text, ts.isArrayLiteralExpression(node.initializer) ? node.initializer : evalPath(node.initializer));
-    }
-    if (ts.isCallExpression(node)) {
-      const callee = ts.isIdentifier(node.expression) ? node.expression.text
-        : ts.isPropertyAccessExpression(node.expression) ? `${node.expression.expression.getText()}.${node.expression.name.text}` : "";
-      if (["spawn", "spawnSync", "spawnProc", "pty.spawn"].includes(callee)
-        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(ast(suite, source));
-  return witnessed;
+  return launchedPaths(suite, source).some((path) => normalizedPath(path) === target);
 };
 
 const packageName = (file) => {

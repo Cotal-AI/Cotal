@@ -110,7 +110,7 @@ try {
     'console.log(used);\n');
   write("bin/smoke/dead-copy.smoke.ts",
     'import { cpSync } from "node:fs";\n' +
-    'function never() { cpSync(join(ROOT, "packages", "seat"), clone, { recursive: true }); }\n' +
+    'function never() { cpSync(join(process.cwd(), "packages", "seat"), clone, { recursive: true }); }\n' +
     'console.log("never is never called");\n');
   write("packages/seat/smoke/referenced-import.smoke.ts",
     'async function used() { return await import("../src/impl.js"); }\n' +
@@ -154,6 +154,74 @@ try {
   write("bin/smoke/args-variable.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
     'const ARGS = [ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  // The `executes` witness, one fixture per branch that admits a launch and one per branch that
+  // must not. Each refusing fixture differs from its accepting twin only in the fact under test,
+  // so a verdict that flips between the pair is about that fact and nothing else.
+  //
+  // B3 accept: a conditional argv, each branch a real argument list for THIS call.
+  write("bin/smoke/conditional-argv.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = process.env.X ? [ENTRY] : [ENTRY, "--flag"];\nspawnSync(process.execPath, ARGS);\n');
+  // B3 refuse: the same conditional, with the entry sitting after `-e` in both branches.
+  write("bin/smoke/conditional-eval-argv.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = process.env.X ? ["-e", "void 0", ENTRY] : ["-e", "void 1", ENTRY];\n' +
+    'spawnSync(process.execPath, ARGS);\n');
+  // B4 accept: the launcher is imported from child_process under another name.
+  write("bin/smoke/aliased-entry.smoke.ts",
+    'import { spawnSync as run } from "node:child_process";\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nrun(process.execPath, ARGS);\n');
+  // B4 refuse: a callee merely SPELLED like a launcher, imported from a local helper that is not
+  // child_process. The argument list is identical to the accepting twin above.
+  write("helpers/proc.mjs", "export const spawnProc = () => {};\n");
+  write("bin/smoke/foreign-launcher.smoke.ts",
+    'import { spawnProc } from "../../helpers/proc.mjs";\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nspawnProc(process.execPath, ARGS);\n');
+  // B2 refuse: the launcher's own argv is its PARAMETER, and the array that really runs is passed
+  // by the caller. An unrelated function binds a same-named `args` to the declared entrypoint.
+  write("bin/smoke/scoped-entry-decoy.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function decoy() { const args = [ENTRY]; return args; }\n' +
+    'function real(args) { spawnSync(process.execPath, args); }\n' +
+    'real([join(ROOT, "scripts", "direct.mjs")]); decoy();\n');
+  // B2 scope, the SCALAR twin. Fixing the name collision for the argv ARRAY while leaving it for
+  // the scalar the array holds only moves the hole, so the scalar gets its own pair. The launch
+  // really runs direct.mjs; an unrelated function binds a same-named ENTRY to the declared
+  // entrypoint. Truth: refuse.
+  write("bin/smoke/scalar-decoy.smoke.ts",
+    'function real() {\n' +
+    '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'real();\n' +
+    'function decoy() { const ENTRY = join(import.meta.dirname, "..", "entry.ts"); return ENTRY; }\n');
+  // The accepting twin, differing in ONE fact: the launch's own scalar names the entrypoint. If a
+  // scope-aware lookup ever stops resolving a use to its OWN declaration, this cell is what reds.
+  write("bin/smoke/scalar-own-scope.smoke.ts",
+    'function real() {\n' +
+    '  const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'real();\n');
+  // B1/B2 refuse: the entry is in the argv, after `-e`. Node runs the eval program and never opens
+  // the file. Once through a bound name, once spelled inline: the slot rule is not about spelling.
+  write("bin/smoke/eval-then-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = ["-e", "void 0", ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  write("bin/smoke/eval-then-entry-inline.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync(process.execPath, ["-e", "void 0", ENTRY]);\n');
+  // B5 accept: the launch is inside a function, and something calls that function.
+  write("bin/smoke/called-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function launch() { spawnSync(process.execPath, [ENTRY]); }\nlaunch();\n');
+  // B5 refuse: the same launch, in a function nobody ever calls.
+  write("bin/smoke/uncalled-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function never() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'console.log("never is never called");\n');
   write("bin/comment-entry.ts", '// import "@cotal-ai/seat";\n');
   write("bin/smoke/comment-import.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "comment-entry.ts");\n' +
@@ -184,10 +252,10 @@ try {
     'const unused = join(ROOT, "packages", "seat");\n');
   write("bin/smoke/dead-read.smoke.ts",
     'import { readFileSync } from "node:fs";\n' +
-    'function never() { readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8"); }\n' +
+    'function never() { readFileSync(join(process.cwd(), "packages", "seat", "package.json"), "utf8"); }\n' +
     'console.log("never is never called");\n');
   write("bin/smoke/dead-launch.smoke.ts",
-    'function never() { spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]); }\n' +
+    'function never() { spawnSync(process.execPath, [join(process.cwd(), "scripts", "direct.mjs")]); }\n' +
     'console.log("never is never called");\n');
   write("bin/smoke/copy-into-root.smoke.ts",
     'import { x } from "@cotal-ai/seat";\n' +
@@ -579,6 +647,193 @@ try {
   config("args-variable", { suite: ["bin/smoke/args-variable.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("args-variable");
   check("a genuine subprocess argument array is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The `executes` witness, branch by branch. Every accepting branch below is paired with a
+  // refusing cell whose fixture differs only in the fact under test, because a suite of accepts
+  // cannot tell a witness apart from a rule that says yes to everything.
+  //
+  // Each refusal is anchored on the REASON the validator prints, not merely on a non-zero exit. A
+  // config that crashes the resolver also exits non-zero, and grading that as a refusal is how a
+  // cell reports success over a tool that fell over.
+  const refusedForReach = (name, result) => result.status !== 0
+    && new RegExp(`REFUSED ${name}`).test(result.stderr)
+    && /nor reaches through a declared subprocess entrypoint/.test(result.stderr);
+
+  // B2 scope. The launcher's argv is its own parameter; a same-named `args` elsewhere in the file
+  // is bound to the declared entrypoint. Resolving by NAME reports a launch the program never makes.
+  config("scoped-entry-decoy", { suite: ["bin/smoke/scoped-entry-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scoped-entry-decoy");
+  check("a same-named argv array in another scope cannot witness an entrypoint launch", refusedForReach("scoped-entry-decoy", result), report(result));
+
+  // The SCALAR twin of the cell above. These two differ only in the name of the decoy's binding,
+  // so a verdict that flips between them is about scope and nothing else. A lookup by identifier
+  // text grades the first, because an unrelated function's `ENTRY` stands in for the launch's own.
+  config("scalar-decoy", { suite: ["bin/smoke/scalar-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scalar-decoy");
+  check("a same-named scalar in another scope cannot witness an entrypoint launch", refusedForReach("scalar-decoy", result), report(result));
+
+  config("scalar-own-scope", { suite: ["bin/smoke/scalar-own-scope.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scalar-own-scope");
+  check("a scalar declared in the launch's own scope still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A block is a scope, and the resolver finds the FIRST matching declaration, so the decoy is
+  // tested in BOTH source orders. One order alone passes against a resolver that treats a block
+  // as transparent, which is how a first-match walk hides half its behaviour.
+  for (const [name, before] of [["block-decoy-before", true], ["block-decoy-after", false]]) {
+    const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+    const real = '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n  spawnSync(process.execPath, [ENTRY]);\n';
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${before ? decoy + real : real + decoy}}\nrun(false);\n`);
+    config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`a binding in a block the launch is not inside cannot witness it (${before ? "decoy first" : "decoy last"})`, refusedForReach(name, result), report(result));
+  }
+  // The accept twin. Refusing every block binding closes the false accept by breaking real suites,
+  // so a launch INSIDE the block, using that block's own binding, must still be witnessed.
+  write("bin/smoke/block-own-scope.smoke.ts",
+    'function run(flag) {\n' +
+    '  if (flag) {\n' +
+    '    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '    spawnSync(process.execPath, [ENTRY]);\n' +
+    '  }\n' +
+    '}\n' +
+    'run(true);\n');
+  config("block-own-scope", { suite: ["bin/smoke/block-own-scope.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("block-own-scope");
+  check("a binding in the block the launch sits in still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A use before its own declaration is a temporal dead zone error, not a launch. Resolving it
+  // reports a data-flow fact the program cannot reach.
+  write("bin/smoke/use-before-decl.smoke.ts",
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run();\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n');
+  config("use-before-decl", { suite: ["bin/smoke/use-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("use-before-decl");
+  check("a use before its declaration cannot witness an entrypoint launch", refusedForReach("use-before-decl", result), report(result));
+
+  // Its accept twin, differing in ONE fact: the declaration precedes the use.
+  write("bin/smoke/decl-before-use.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run();\n');
+  config("decl-before-use", { suite: ["bin/smoke/decl-before-use.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("decl-before-use");
+  check("a declaration before the use still witnesses the launch", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // Textual order is not execution order, and a first-match walk tested in ONE order hides half its
+  // behaviour, so the same declaration/use pair is driven in BOTH execution orders. The launcher is
+  // a function, so what decides the verdict is where that function is CALLED relative to the
+  // binding, not where the identifier sits in the file.
+  //
+  // Call after the declaration: ENTRY is initialized before `run` runs, so the launch is real and
+  // refusing it is a false refusal of a correct suite.
+  write("bin/smoke/call-after-decl.smoke.ts",
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'run();\n');
+  config("call-after-decl", { suite: ["bin/smoke/call-after-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("call-after-decl");
+  check("a launcher called after the declaration witnesses the launch it makes", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // Its opposite twin, differing in ONE fact: the call precedes the declaration. The identifier now
+  // sits textually AFTER the binding, which is exactly what a source-position rule accepts, and the
+  // program reads ENTRY in its dead zone. Accepting this is a launch that is not there.
+  write("bin/smoke/call-before-decl.smoke.ts",
+    'run();\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n');
+  config("call-before-decl", { suite: ["bin/smoke/call-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("call-before-decl");
+  check("a launcher called before the declaration cannot witness an entrypoint launch", refusedForReach("call-before-decl", result), report(result));
+
+  // `const A = B` beside `const B = A` is a program. A resolver without a visited set answers it
+  // with a stack overflow, which is a crash rather than a verdict.
+  write("bin/smoke/cyclic-binding.smoke.ts",
+    'const A = B;\nconst B = A;\nconst ENTRY = A;\nspawnSync(process.execPath, [ENTRY]);\n');
+  // A launcher whose path is its OWN parameter, shadowing an outer binding that names the
+  // entrypoint. The outer binding is not what the call passes, so reading it reports a launch the
+  // program never makes. The parameter shadows, and resolution stops rather than walking outward.
+  write("bin/smoke/param-shadow.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run(ENTRY) { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run(join(import.meta.dirname, "..", "direct.mjs"));\n');
+  config("param-shadow", { suite: ["bin/smoke/param-shadow.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("param-shadow");
+  check("a parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("param-shadow", result), report(result));
+
+  // The DESTRUCTURED twin of the cell above. These differ only in how the parameter is written, so a
+  // verdict that flips between them is about the spelling of a binding and nothing else. A rule that
+  // only recognises an Identifier parameter lets the outer target-valued ENTRY resolve through, and
+  // reports a launch the program never makes -- a false witness, the dangerous direction.
+  write("bin/smoke/destructured-param.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run({ ENTRY }) { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run({ ENTRY: join(import.meta.dirname, "..", "direct.mjs") });\n');
+  config("destructured-param", { suite: ["bin/smoke/destructured-param.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("destructured-param");
+  check("a destructured parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("destructured-param", result), report(result));
+
+  // A destructured LEXICAL declaration binds the name just as a parameter does, and its value comes
+  // from a call this tool cannot follow. Walking past it to an outer ENTRY reports that outer value
+  // as the launched path, which is the same false witness one declaration form over.
+  write("bin/smoke/destructured-decl.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run(opts) {\n' +
+    '  const { ENTRY } = opts;\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'run({ ENTRY: join(import.meta.dirname, "..", "direct.mjs") });\n');
+  config("destructured-decl", { suite: ["bin/smoke/destructured-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("destructured-decl");
+  check("a destructured declaration shadows an outer binding rather than letting it witness a launch", refusedForReach("destructured-decl", result), report(result));
+
+  config("cyclic-binding", { suite: ["bin/smoke/cyclic-binding.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("cyclic-binding");
+  check("a cyclic binding is refused rather than crashing the resolver",
+    refusedForReach("cyclic-binding", result) && !/Maximum call stack/.test(report(result)), report(result));
+
+  // B1 slot. A path sitting in argv AFTER `-e` is an argument to the evaluated program, and node
+  // never opens it. Both spellings, because the slot rule is not about how the argv was written.
+  for (const [name, suite] of [
+    ["eval-then-entry", "bin/smoke/eval-then-entry.smoke.ts"],
+    ["eval-then-entry-inline", "bin/smoke/eval-then-entry-inline.smoke.ts"],
+  ]) {
+    config(name, { suite: [suite], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`${name}: an entrypoint after -e is not a launched entrypoint`, refusedForReach(name, result), report(result));
+  }
+
+  // B3 conditional argv: each branch is a real argument list for this call, so the accepting form
+  // must grade, and the same conditional with every branch behind `-e` must be refused BY REASON.
+  // The refusing half is the cell that catches the crash: an argv this resolver could not reduce to
+  // an array reached an array-literal test as `undefined` and threw, which reads as a refusal from
+  // the outside while naming a TypeError instead of a reachability fact.
+  config("conditional-argv", { suite: ["bin/smoke/conditional-argv.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("conditional-argv");
+  check("a conditional argv still witnesses the entrypoint it launches", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("conditional-eval-argv", { suite: ["bin/smoke/conditional-eval-argv.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("conditional-eval-argv");
+  check("a conditional argv whose every branch runs -e is refused with a reason, not a crash", refusedForReach("conditional-eval-argv", result), report(result));
+
+  // B4 launcher identity: an alias imported from child_process is a launcher, and a callee merely
+  // SPELLED like one, imported from a local module, is not.
+  config("aliased-entry", { suite: ["bin/smoke/aliased-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("aliased-entry");
+  check("an aliased child_process launcher still witnesses the entrypoint", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("foreign-launcher", { suite: ["bin/smoke/foreign-launcher.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("foreign-launcher");
+  check("a callee merely spelled like a launcher is not one", refusedForReach("foreign-launcher", result), report(result));
+
+  // B5 reachability: a launch runs only if control reaches it.
+  config("called-entry", { suite: ["bin/smoke/called-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("called-entry");
+  check("an entrypoint launched from a function that is called is witnessed", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("uncalled-entry", { suite: ["bin/smoke/uncalled-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("uncalled-entry");
+  check("an entrypoint launch inside a function nobody calls is refused", refusedForReach("uncalled-entry", result), report(result));
 
   config("equals-filter", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: equalsSeatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("equals-filter");
