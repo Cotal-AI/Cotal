@@ -533,6 +533,27 @@ check(
   [...observedRegistryValues],
 );
 
+// The three census buckets are disjoint, which is why the inconclusive rung may sit either
+// above or below all-absent without changing any verdict: absent === rows already implies
+// unknown === 0. That makes a reordering mutation unkillable by construction rather than
+// untested, so no mutation carries it. What IS testable is the disjointness itself, and if a
+// future change lets one row land in two buckets the reordering stops being safe. This cell
+// pins that premise so the reasoning above cannot rot silently.
+const disjointProbe = await scenario({ exactStatus: (name) => (name === "@cotal-ai/seat" ? 503 : 404) });
+const disjointRows = disjointProbe.logs
+  .map((line) => line.split("\t"))
+  .filter(([name, version]) => fixed.includes(name) && version === "9.9.9")
+  .map(([, , registry]) => registry);
+check(
+  "each census row lands in exactly one of the present, absent and unknown buckets",
+  disjointRows.length === fixed.length
+    && disjointRows.every((registry) => {
+      const buckets = [registry === "present", registry === "absent", registry.startsWith("unknown:")];
+      return buckets.filter(Boolean).length === 1;
+    }),
+  disjointRows,
+);
+
 const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });
 check(
   "one fixed-group package missing from the recursive publish set refuses",

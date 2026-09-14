@@ -218,14 +218,6 @@
       "cell": "a thrown fetch on the exact-version read refuses the release as inconclusive"
     },
     {
-      "name": "the inconclusive rung is reordered below all-absent so unknown rows fall through",
-      "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absent.length === rows.length\n      ? \"all-absent\"\n",
-      "replace": "  const registryVerdict = absent.length === rows.length\n    ? \"all-absent\"\n    : unknown.length > 0\n      ? \"inconclusive\"\n",
-      "expectRed": "a 503 on one exact-version read refuses the release as inconclusive",
-      "cell": "a 503 on one exact-version read refuses the release as inconclusive"
-    },
-    {
       "name": "the inconclusive refusal skips the census print, hiding which package was unreadable",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n",
