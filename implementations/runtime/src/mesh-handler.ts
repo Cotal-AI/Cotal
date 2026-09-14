@@ -18,6 +18,7 @@
  */
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
+import { realpathSync } from "node:fs";
 import {
   mintCheckpoint,
   heartbeatCheckpoint,
@@ -2404,6 +2405,20 @@ const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
 /** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
  *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
  *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
+/**
+ * #1616 proof item 5 — ALIAS NORMALIZATION POLICY. One clone reached through a symlink and through
+ * its realpath is ONE writable directory, and the single-writer rule keys on identity, so the two
+ * forms must collapse before any claim is taken. THE CANONICAL FORM IS THE REALPATH: it is the form
+ * the kernel and the child's own `process.cwd()` report, so a claim keyed on it matches what any
+ * concurrent run or imperative spawn path observes, whichever alias that caller typed. The symlink
+ * path is NOT canonical — normalizing toward it would require resolving every other alias to it,
+ * which has no unique answer. Resolution is done ONCE, on the serving host, before the claim and
+ * before launch; an unresolvable path is a refusal, never a pass-through of the raw string.
+ */
+export function canonicalCwd(cwd: string): string {
+  return realpathSync(cwd);
+}
+
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,

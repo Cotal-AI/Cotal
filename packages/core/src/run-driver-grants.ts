@@ -41,6 +41,11 @@ export interface RunDriverGrantArgs {
   /** The driving instance's id and epoch: the coordinates its timer schedules are addressed by. */
   instanceId: string;
   epoch: number;
+  /** EXPLICIT PLACEMENT TARGET (#1616): the manager endpoint-instance the program named for a
+   *  `cwd` spawn. The descriptor is the one the existing instance-dispatch API already accepts —
+   *  `{ endpoint, instanceId }`, routed as `EpRoute { mode: "inst", instanceId }`
+   *  (endpoint-invoke.ts) — not a new field. Absent ⇒ legacy cwd-omitted behavior, unchanged. */
+  placement?: { instanceId: string };
 }
 
 export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
@@ -61,6 +66,10 @@ export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId:
     subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
   };
 }
+
+/** The ONLY operations explicit placement adds reach for (#1616). `describe` is listed because the
+ *  baseline describe row is class-rail only, so a PINNED resolve is broker-refused without it. */
+export const PLACEMENT_COMMANDS: readonly string[] = Object.freeze(["describe", "resolve-cwd", "spawn"]);
 
 /** Trusted, per-run host connection. The endpoint-wide checkpoint writes and body-selected
  *  records/fact/timer/chat reads are its residual authority. The runtime confines those verbs
@@ -119,6 +128,17 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "spawn" }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "turn", target: { mode: "owner", tOwner: caller.owner } }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: caller.owner } }, caller),
+    // #1616 TARGET-BOUND PLACEMENT REACH. Minted ONLY when the program named an explicit target,
+    // and then only for that ONE validated instance and only these three operations. `routes: []`
+    // suppresses the class `one` row entirely, so this adds NO anycast fallback and no wildcard:
+    // `epRequestGrantRows` emits the single `ep.inst.<endpoint>.<iid>.<command>` row per command.
+    // Issuance stays inside the delegating caller's authority — the rows are stamped with the run's
+    // own caller block, so naming a target in a program grants nothing the caller could not do.
+    ...(args.placement === undefined
+      ? []
+      : PLACEMENT_COMMANDS.flatMap((command) => epRequestGrantRows(space, {
+          endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,
+        }, caller))),
     // The contract store fetch a resolve performs (the subject-scoped form every agent holds).
     `$JS.API.DIRECT.GET.${epcStreamName(space)}.${p}.epc.>`,
     // The run's admission and revocation rows (SPEC 14.8): a leader-served read before every

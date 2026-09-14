@@ -58,6 +58,8 @@ import {
   readGoalResult,
   replayRunJournal,
   readRunRecord,
+  runMediatorGrants,
+  PLACEMENT_COMMANDS,
   newTakeoverId,
   EpEnvelopeError,
   type EpCommandDef,
@@ -66,7 +68,7 @@ import {
   type GoalRef,
 } from "@cotal-ai/core";
 import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
-import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration } from "../src/index.js";
+import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration, canonicalCwd } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshspawn";
@@ -793,10 +795,46 @@ log("winner", out.index);
   await pump;
 }
 
+// ---------------------------------------------------------------------------------------------
+// #1616 item B — TARGET-BOUND MEDIATOR AUTHORIZATION, and item C — alias normalization.
+// Pure over the grant builder and the normalizer: no broker reach is needed to prove the SHAPE of
+// what would be minted, and shape is exactly what the design bounds.
+{
+  const GSPACE = "netcup";
+  const legacy = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: newTakeoverId(), instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1 }, "01234567890123456789012");
+  const pinned = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: newTakeoverId(), instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1, placement: { instanceId: "zyxwvutsrqponmlkjihgfedcba" } }, "01234567890123456789012");
+  const added = pinned.publish.filter((r) => !legacy.publish.includes(r));
+  const instRows = added.filter((r) => r.includes(".inst."));
+  // Item B, grant present: naming a target mints the inst rail for EXACTLY describe, resolve-cwd
+  // and spawn on the one validated instance. Killed by M8 (removes `resolve-cwd` from the set).
+  c("an explicit placement target mints the instance rail for exactly describe, resolve-cwd and spawn",
+    added.length === 3 && instRows.length === 3
+      && PLACEMENT_COMMANDS.every((cmd) => instRows.some((r) => r.includes(`.inst.${EP}.zyxwvutsrqponmlkjihgfedcba.${cmd}.`))),
+    { added });
+  // Item B, reach bounded: no class-anycast row, no wildcard instance, no second instance, and the
+  // legacy cwd-omitted profile is byte-identical. Killed by M9 (restores the class `one` route).
+  c("placement reach adds no anycast fallback, no wildcard and no second instance, and legacy grants are unchanged",
+    added.every((r) => r.includes(".inst.") && !r.includes(".one.") && !r.includes(".all.")
+      && !r.includes(".inst.*") && !r.includes("abcdefghijklmnopqrstuvwxyz"))
+      && legacy.publish.filter((r) => r.includes(".inst.")).length === 0,
+    { added, legacyInst: legacy.publish.filter((r) => r.includes(".inst.")) });
+  // Item C, proof item 5: two physical aliases of ONE clone collapse to a single identity, and the
+  // canonical form is the REALPATH — what the child's own process.cwd() reports. Killed by M10.
+  const aliasReal = mkdtempSync(join(realpathSync(tmpdir()), "sp-alias-"));
+  const aliasLink = join(mkdtempSync(join(realpathSync(tmpdir()), "sp-link-")), "clone");
+  execFileSync("ln", ["-s", aliasReal, aliasLink]);
+  c("a symlinked clone and its realpath normalize to one identity, canonical form is the realpath",
+    canonicalCwd(aliasLink) === canonicalCwd(aliasReal) && canonicalCwd(aliasLink) === aliasReal
+      && aliasLink !== aliasReal,
+    { link: aliasLink, real: aliasReal, canonical: canonicalCwd(aliasLink) });
+  rmSync(aliasReal, { recursive: true, force: true });
+  rmSync(aliasLink, { force: true });
+}
+
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 50;
+const EXPECTED_CELLS = 53;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
