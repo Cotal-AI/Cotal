@@ -227,9 +227,16 @@ const tamperCell = (source, id, find, replace) => {
  * extent comes from the AST, not from brace counting or a regex, for the same reason the inventory
  * does: a string or comment containing the helper's name cannot widen the span.
  *
- * A shared helper is shared, so a tamper here can legitimately affect several cells at once. The
- * grading below accounts for that by requiring the NAMED cell's own discriminator to go dead, which
- * is a per-cell reading regardless of how many neighbours also went red.
+ * A shared helper is shared, so a tamper here COULD in principle affect several cells at once. The
+ * decisive reading is still per-cell: the NAMED cell's own discriminator must go dead. But read the
+ * summary assertion in the kill loop before believing that is the whole contract. It requires
+ * `passed === total - 1`, so EXACTLY ONE cell may redden, helper tamper or not. This docblock used
+ * to say the grading held "regardless of how many neighbours also went red", which promised a
+ * tolerance the suite does not grant, and the direction of that error matters: the assertion is
+ * STRICTER than the sentence, not looser, so nothing was going ungraded. At this head every helper
+ * tamper here does redden exactly one cell, and a future helper tamper that catches a neighbour
+ * will fail this suite loudly rather than be tolerated. That is the intended behaviour: a tamper
+ * whose blast radius is wider than its name is a control that no longer reads what it claims.
  */
 const tamperHelper = (source, id, helper, find, replace) => {
   const sf = ts.createSourceFile("scanner.mjs", source, ts.ScriptTarget.Latest, true);
@@ -832,6 +839,45 @@ const makeWorkdir = () => {
 };
 
 const workdir = makeWorkdir();
+
+/**
+ * GRADE THE TWO FUNCTIONS THAT CHOOSE WHERE EVERY TAMPER RUNS.
+ *
+ * `guardSafe` and `makeWorkdir` were UNGRADED, and they are the load-bearing pair: if `guardSafe`
+ * stops rejecting, `makeWorkdir` hands back a path whose URL form differs from the concatenation
+ * the scanner's self-execute guard compares against, every spawned copy exits 0 having run NOTHING,
+ * and every kill below reads a silence as a pass. Nothing in the kill loop can see that, because a
+ * scanner that ran nothing and a scanner whose cell passed both print no failure.
+ *
+ * Hollowing either one is a NO-OP ON A HEALTHY HOST, which is exactly why neither was graded by
+ * accident: on this box `tmpdir()` needs no escaping, so `guardSafe = () => true` changes no
+ * observable behaviour anywhere in the run. So these checks do not wait for a hostile host. They
+ * feed `guardSafe` both answers directly, and they assert `makeWorkdir`'s own postcondition.
+ *
+ * Killed by, each run at this head and each observed red:
+ *   `const guardSafe = (path) => true;`  -> exit 1, 148/149, red on the rejecting check BY NAME.
+ *     This is the one the fixture scores, because `expectRed` needs a named check row to match.
+ *   `const guardSafe = (path) => false;` -> exit 1, but it THROWS out of makeWorkdir at module load
+ *     ("no usable working directory: a copied scanner would exit 0 having run nothing") before any
+ *     check runs, so there is no check row at all. Red, and red for the right reason, but it is a
+ *     crash rather than a graded reading, so it is recorded here and NOT scored in the fixture.
+ */
+check(
+  "guardSafe accepts a path whose URL form equals the naive concatenation",
+  guardSafe(join(workdir, "plain-name")) === true,
+  `guardSafe(plain)=${guardSafe(join(workdir, "plain-name"))}/true`,
+);
+check(
+  "guardSafe rejects a path that needs URL escaping, so a silently-inert copy cannot be chosen",
+  guardSafe(join(workdir, "needs escaping #1")) === false,
+  `guardSafe(escaping)=${guardSafe(join(workdir, "needs escaping #1"))}/false`,
+);
+check(
+  "makeWorkdir returns a realpath'd directory its own guard accepts",
+  typeof workdir === "string" && workdir.length > 0 && realpathSync(workdir) === workdir
+    && guardSafe(workdir),
+  `workdir=${workdir} realpath_stable=${realpathSync(workdir) === workdir} guardSafe=${guardSafe(workdir)}`,
+);
 
 try {
   const tracked = readFileSync(SCANNER, "utf8");
