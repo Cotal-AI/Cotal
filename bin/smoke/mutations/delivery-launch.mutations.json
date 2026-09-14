@@ -54,7 +54,7 @@
     {
       "name": "M2 the readiness wait stops naming the daemon it launched, so another daemon's ready lease answers for it (#837)",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "holder: launched !== undefined ? id.id : undefined });",
+      "find": "holder: launched !== undefined ? deliveryLeaseHolderFor(creds) : undefined });",
       "replace": "holder: undefined });",
       "expectRed": "a refresh whose delivery launch loses the single-flight lease exits non-zero",
       "note": "The false-green as it reached operators: `up` exits 0 and prints a healthy control plane while the daemon it started has already exited on a lost CAS, leaving a pidfile that fronts a dead pid.",
