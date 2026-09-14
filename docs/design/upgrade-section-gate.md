@@ -54,6 +54,20 @@ rather than relying on the check.
 **It does not know about releases, only ranges.** It answers a question about the commits between
 two refs. Squashing, reverting, or splitting a break across ranges can each move the answer.
 
+**It cannot block a merge, and that is deliberate for now.** The gate reports through `ci-ok`, and
+the only required context on `main` today is `attribution`, so a red gate is advisory. Making
+`ci-ok` required would block every merge behind a flaky shard, because the org sits on a
+20-concurrent-job cap and the board carries a known wrong-red rate. The enforcement that actually
+exists is the operator gate: a maintainer reads a terminal-green rollup before merging. Whether to
+require `ci-ok` is a repository governance question rather than a code change, and it is filed
+separately.
+
+**A shallow checkout grades less than a full one, and says so.** The smoke suite runs
+`--self-test`, which in a depth-1 clone reports the two cells that need real release history as
+UNGRADED and exits 0. That is a degrade rather than a false pass: the same run prints the count and
+the reason. The grading path is the `unit` job, which checks out with `fetch-depth: 0`. Pointing the
+gate at a range inside a shallow clone is a misuse exit, never a pass.
+
 ## Would it have caught the change that caused #1578?
 
 Measured rather than argued, because this is the question that decides whether the gate is worth
@@ -124,12 +138,10 @@ short section was refused. Both directions are held.
    section added by a swallowed main commit reads as coverage for a breaking commit on the branch
    that documented nothing. `HEAD^1..HEAD` cannot drift, since both ends are read off the commit in
    the working tree.
-2. OPEN, and it is the one that decides whether any of this binds. The gate reports through
-   `ci-ok`, and `ci-ok` is not in the branch protection rule set: the only required context on main
-   today is `attribution`. A red gate therefore tells a reviewer something and stops nothing. Making
-   it required is a repository administration change rather than a code change, so it is not in this
-   diff, and until it happens the honest description of this gate is advisory. Both this note and
-   the operator page say so in those words rather than implying enforcement.
+2. FILED SEPARATELY rather than open here. Whether `ci-ok` should be a required context is a
+   repository governance decision, not a code change, and the reason it is not one today is written
+   under "What the gate cannot prove" so a reader meets it beside the limitation rather than in a
+   list of questions.
 3. Should an unmarked but credential-touching change be detectable at all, or is prose plus review
    the honest answer? This note takes the second position, and it is the position most worth
    arguing with.
