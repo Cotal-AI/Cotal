@@ -556,6 +556,9 @@ const SELFTEST_PUBLIC_IPV6_EXPANDED = ['2a01', '04f8', '1c17', 'd00d', '0000', '
 const SELFTEST_PUBLIC_IPV6_PREFIX = ['2a01', '4f8', '1c17', 'd00d', '', ''].join(':');
 const SELFTEST_DOC_IPV6 = ['2001', 'db8', '', '1'].join(':');
 const SELFTEST_DOC_IPV6_PREFIX = ['2001', 'db8', '', ''].join(':');
+const SELFTEST_TEREDO_IPV6 = ['2001', '0', '', '1'].join(':');
+const SELFTEST_6TO4_IPV6 = ['2002', 'c000', '204', '', '1'].join(':');
+const SELFTEST_DOC2_IPV6 = ['3fff', '0', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
 
@@ -583,6 +586,9 @@ const CELL_EXPECTATIONS = new Map([
   ['ipv6-expanded', 'primary=1/1 secondary=1/1'],
   ['ipv6-spelling-pair', 'compressed=1/1 expanded=1/1 same_address=1/1 planted=2/2'],
   ['ipv6-documentation', 'primary=0/1 secondary=1/1'],
+  ['ipv6-teredo', 'primary=0/1 secondary=1/1'],
+  ['ipv6-6to4', 'primary=0/1 secondary=1/1'],
+  ['ipv6-documentation-3fff', 'primary=0/1 secondary=1/1'],
   ['ipv6-documentation-network', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local-network', 'primary=0/1 secondary=1/1'],
@@ -884,6 +890,15 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL ipv6-documentation-network START
   matchCell('ipv6-documentation-network', `${SELFTEST_DOC_IPV6_PREFIX}/32`, 'public-ipv6', 0, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-documentation-network END
+  // SELFTEST_CELL ipv6-teredo START
+  matchCell('ipv6-teredo', SELFTEST_TEREDO_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-teredo END
+  // SELFTEST_CELL ipv6-6to4 START
+  matchCell('ipv6-6to4', SELFTEST_6TO4_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-6to4 END
+  // SELFTEST_CELL ipv6-documentation-3fff START
+  matchCell('ipv6-documentation-3fff', SELFTEST_DOC2_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-documentation-3fff END
   // SELFTEST_CELL ipv6-unique-local START
   matchCell('ipv6-unique-local', SELFTEST_UNIQUE_LOCAL_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-unique-local END
