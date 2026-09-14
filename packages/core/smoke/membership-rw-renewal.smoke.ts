@@ -114,9 +114,12 @@ const countConnsNamed = async (name: string): Promise<number> => {
 };
 const countObserverConns = (): Promise<number> => countConnsNamed("cotal-membership-observer");
 const countRwConns = (): Promise<number> => countConnsNamed("cotal-membership-rw");
-// Re-sign a creds file with its `exp` claim removed and EVERY other claim carried over verbatim.
+// Reissue a creds file without its `exp` claim, carrying over the name and the `nats` block.
+// `encodeUser` mints a fresh claim rather than copying the old one, so the other top-level claims are
+// not guaranteed to survive byte for byte: `jti` is regenerated. The cells below assert the parts this
+// scenario depends on, the subject and the permission block.
 // Scenario 10 needs a cred the broker still accepts and still permissions identically, differing from
-// a working one in exactly the claim the renewal-window computation reads. Building one by hand
+// a working one in the claim the renewal-window computation reads. Building one by hand
 // instead drops the permission block, which moves the failure to an earlier step under a cell name
 // that says otherwise.
 const stripExpClaim = async (creds: string, id: ReturnType<typeof newIdentity>): Promise<string> => {
@@ -384,7 +387,8 @@ try {
 
   // ---- Scenario 8: a startup that rejects after conn A leaves no observer connection behind (#1557) ----
   // Conn A opens first and the rw source is read next, so a source that throws rejects the function with
-  // conn A already open. The only `drain()` lives in the handle's `stop()`, which a caller never receives
+  // conn A already open. Before the rollback this change adds, the only `drain()` lived in the
+  // handle's `stop()`, which a caller never receives
   // on a reject - so the observer connection stayed open for the life of the process. Graded on the
   // BROKER's own connection table, not on anything the feed reports about itself.
   // ACCEPT CONTROL first: a probe that cannot see a LIVE observer would make the leak assertion below
@@ -524,7 +528,7 @@ try {
   // renewal arm, and the drain assertion under it would have passed for a reason the cell misnames.
   //
   // So the cred is minted by the SAME `mintCreds(..., "membership-rw")` path as the live one above,
-  // and only its `exp` is stripped, re-signed on the same nkey. That makes the renewal-window
+  // and its `exp` is stripped, re-signed on the same nkey. That makes the renewal-window
   // computation the first thing that can fail, which is what the cell claims.
   const noExpId = newIdentity();
   const boundedRw = await mintCreds(auth, noExpId, "membership-rw", { expiresInSeconds: 600 });
@@ -532,7 +536,7 @@ try {
   // ASSERT THE INPUT, both directions, before anything is graded on it: the bounded cred must carry a
   // numeric `exp` and the stripped one must not, or this scenario proves nothing about the arm.
   check("the bounded rw cred carries a numeric exp (accept control on the stripper's input)", typeof credsClaims(boundedRw).exp === "number", credsClaims(boundedRw).exp);
-  check("stripping removed the exp and kept the same subject (the only difference is the claim)", credsClaims(noExpCred).exp === undefined && credsClaims(noExpCred).sub === credsClaims(boundedRw).sub, { exp: credsClaims(noExpCred).exp, sameSub: credsClaims(noExpCred).sub === credsClaims(boundedRw).sub });
+  check("stripping removed the exp and kept the same subject", credsClaims(noExpCred).exp === undefined && credsClaims(noExpCred).sub === credsClaims(boundedRw).sub, { exp: credsClaims(noExpCred).exp, sameSub: credsClaims(noExpCred).sub === credsClaims(boundedRw).sub });
   // And the PERMISSIONS survived the re-sign, so a failure below is about the missing exp rather than
   // about a grant this rewrite dropped.
   check("the stripped cred keeps the membership-rw permission block", JSON.stringify(credsClaims(noExpCred).nats?.pub) === JSON.stringify(credsClaims(boundedRw).nats?.pub) && JSON.stringify(credsClaims(noExpCred).nats?.sub) === JSON.stringify(credsClaims(boundedRw).nats?.sub), true);

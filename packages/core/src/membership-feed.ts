@@ -128,15 +128,19 @@ const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server
  *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open.
  *  The first reconcile is NOT one of them: `poll()` wraps the whole loop in a catch that logs and has
  *  zero rethrows, so a failing first reconcile resolves startup instead of rejecting it, and the
- *  `await poll()` below cannot be the step that strands a connection. The only `drain()` in this file
- *  is inside the handle's `stop()`, and a caller
+ *  `await poll()` below cannot be the step that strands a connection. Before this change the only
+ *  `drain()` in this file was inside the handle's `stop()`, and a caller
  *  that never receives the handle can never call it — so a reject left the observer connection open for
- *  the life of the process. Everything acquired is drained here before the rejection propagates.
+ *  the life of the process. The rollback above now drains every connection it recorded before the
+ *  rejection propagates.
  *
  *  Scope of the word TRANSACTIONAL, stated rather than assumed: the rollback drains CONNECTIONS, and
  *  nothing else. It does not clear the rw renewal timer, the safety interval, or the two trigger
  *  subscriptions, all of which are acquired below. What holds today is narrower than "unreachable":
- *  six calls run after the timer arm, and the only one that awaits is `await poll()`, which swallows
+ *  four operations run after the timer arm, counting the ones that can reject or acquire rather than
+ *  every call expression. They are `connA.subscribe` twice, the `setInterval`, and `await poll()`. The
+ *  two subject helpers passed as subscribe arguments also execute; they format a string and return.
+ *  The only one of the four that awaits is `await poll()`, which swallows
  *  its own failures, so the ordinary startup path never rejects down here. `connA.subscribe` on an
  *  already-closed conn A is the one shape that still could, and it would leak the timer rather than a
  *  connection. Left as a known gap rather than papered over: a step added below the arm that can
