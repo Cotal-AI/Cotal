@@ -128,17 +128,24 @@ const runTrackedSelftest = () => {
   return { exitCode: result.status, output, rows: output.split(/\r?\n/).filter(Boolean) };
 };
 
-/** The status this run reported for one cell, or undefined when the cell emitted no result row. */
-const cellStatus = (run, id) => {
-  const row = run.rows.find(
+/**
+ * The status a run's ROWS reported for one cell, or undefined when the cell emitted no result row.
+ *
+ * Takes rows rather than the run, for the reason spelled out over `cellSecondary` below: a reader
+ * that can see `exitCode` can answer from it instead of from the row, and every real tampered run
+ * in this suite exits 2. Measured on this reader too, before the change: an added
+ * `if (run.exitCode === 2) return "FAIL";` left the suite at 91/91 exit 0.
+ */
+const cellStatus = (rows, id) => {
+  const row = rows.find(
     (candidate) => candidate.startsWith("SELFTEST_RESULT_ROW ") && candidate.includes(` cell=${id} `),
   );
   return /\bstatus=([A-Z]+)/.exec(row ?? "")?.[1];
 };
 
 /**
- * The value this run reported for one cell's SECONDARY reader, or undefined when the cell emitted
- * no readable row.
+ * The value a run's ROWS reported for one cell's SECONDARY reader, or undefined when the cell
+ * emitted no readable row.
  *
  * Status alone is too blunt to grade a hollowed reader, and the difference decides the whole suite.
  * On a POSITIVE cell (`host-planted`, expecting `primary=1`) destroying the planted subject drops
@@ -147,17 +154,30 @@ const cellStatus = (run, id) => {
  * which is the exact wrong-green this file exists to catch. Reading the secondary FIELD instead
  * grades the reader that was actually mutated: a live reader reports 0 for a destroyed subject, and
  * one hollowed to a constant reports its expected value no matter what it is handed.
+ *
+ * IT TAKES `rows`, NOT THE RUN, AND THAT SIGNATURE IS LOAD-BEARING. Given the run, this reader can
+ * see `exitCode`, and the exit code alone answers every assertion in the suite: each real tampered
+ * run exits 2 and each kill expects 0. Three reviewers independently landed on the same survivor,
+ * `if (run.exitCode === 2) return "0";` above the parse, which is a plausible early return reading
+ * naturally as "a failed run has no live discriminator". It parses honestly for the synthetic
+ * control and for every green baseline row, so it satisfied the control completely, and it never
+ * read a field on a single tampered run: 91/91, exit 0. Adding more synthetic runs would have
+ * caught that one spelling and left the class open, because the reader could still see the exit
+ * code. Removing the parameter makes the shortcut UNWRITABLE rather than detectable: the value it
+ * would key on is no longer in scope, and `rows.exitCode` on an array is inert. This is the round-4
+ * lesson one level down, where widening a reader moved the boundary and changing the denominator
+ * closed the class. It applies to function signatures too.
  */
-const cellSecondary = (run, id, field = "secondary") => {
-  const row = run.rows.find(
+const cellSecondary = (rows, id, field = "secondary") => {
+  const row = rows.find(
     (candidate) => candidate.startsWith("SELFTEST_RESULT_ROW ") && candidate.includes(` cell=${id} `),
   );
   return new RegExp(`\\b${field}=(\\d+)\\/`).exec(row ?? "")?.[1];
 };
 
-/** The `cells=passed/total status=...` summary this run reported. */
-const summary = (run) => {
-  const row = run.rows.find((candidate) => candidate.startsWith("SELFTEST_SUMMARY_ROW "));
+/** The `cells=passed/total status=...` summary a run's ROWS reported. Rows-only, as above. */
+const summary = (rows) => {
+  const row = rows.find((candidate) => candidate.startsWith("SELFTEST_SUMMARY_ROW "));
   const match = /cells=(\d+)\/(\d+) status=([A-Z]+)/.exec(row ?? "");
   if (!match) return undefined;
   return { passed: Number(match[1]), total: Number(match[2]), status: match[3] };
@@ -535,7 +555,7 @@ try {
   // Baseline, run through the TRACKED scanner itself. This is also what witnesses that this suite
   // executes the file it grades: the mutated path is the one spawned here.
   const baseline = runTrackedSelftest();
-  const baseSummary = summary(baseline);
+  const baseSummary = summary(baseline.rows);
   check(
     "baseline: the tracked scanner reports every required cell passing and exits 0",
     baseline.exitCode === 0 && baseSummary !== undefined
@@ -549,7 +569,7 @@ try {
   const copyPath = join(workdir, "copy-untampered.mjs");
   writeFileSync(copyPath, tracked);
   const copyRun = runSelftest(copyPath);
-  const copySummary = summary(copyRun);
+  const copySummary = summary(copyRun.rows);
   const copyOk = check(
     "control: an UNTAMPERED copy reproduces the baseline, so a red below is caused by the tamper",
     copyRun.exitCode === 0 && copySummary !== undefined
@@ -832,38 +852,115 @@ try {
   // reading a row. A control asking "nonzero here, zero there" grades responsiveness to the RUN,
   // not to the FIELD, which is the same defect one level in from the one it replaced.
   //
-  // So the reader is handed a run it cannot recognise: ONE synthetic run, with an exit code that is
-  // neither 0 nor 2, carrying two cells whose fields hold four MUTUALLY INCONSISTENT values. No
-  // constant can satisfy 2, 3, 5 and 7 at once, so a reader tuned to any single expected value
-  // fails on the other three; an exit-code oracle fails on all four; and the two miss cases require
-  // `undefined`, which no value-returning shortcut can produce.
+  // So the reader is handed rows it cannot recognise: two cells whose fields hold four MUTUALLY
+  // INCONSISTENT values. No constant can satisfy 2, 3, 5 and 7 at once, so a reader tuned to any
+  // single expected value fails on the other three, and the two miss cases require `undefined`,
+  // which no value-returning shortcut can produce.
+  //
+  // THIS CONTROL AND THE ROWS-ONLY SIGNATURE ARE TWO INSTRUMENTS AND NEITHER SUBSUMES THE OTHER.
+  // The signature removes the run-status oracle by construction, because a reader that never
+  // receives the exit code cannot answer from it. This control grades what remains: that the reader
+  // picks the named CELL and the named FIELD rather than any row or any number. An earlier revision
+  // shipped this control against a synthetic RUN, and it was defeated by a reader that special-cased
+  // exit codes, which is why the fixture below is a bare array.
+  //
+  // ITS BOUND, STATED RATHER THAN LEFT TO BE DISCOVERED: a control proves the reader works on the
+  // inputs THE CONTROL chooses; it cannot prove the reader takes the same path on the inputs the
+  // SUITE uses. A reader that parsed honestly for exactly the six probes below and cheated
+  // elsewhere would pass here, which review classed as deliberate gaming rather than plausible
+  // drift. The 13 real-row assertions that follow are what cover the suite's own inputs, and the
+  // rows-only signature is what stops those assertions being answered without a parse.
   //
   // All four reads and both misses are asserted in ONE check with every value printed, deliberately.
   // The mechanism here is the mutual inconsistency, and it is only visible when the values appear
   // together: `7/7 7/2 7/5 7/3` on one line is self-evidently a constant, where four separate
   // red/green lines would not be. A reviewer's own testing error was caught exactly this way, by
   // reading the printed values rather than the exit code.
-  const syntheticRun = {
-    exitCode: 7,
-    rows: [
-      "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=alpha primary=2/9 secondary=7/9 status=PASS",
-      "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=beta primary=3/9 secondary=5/9 status=PASS",
-    ],
-  };
+  const syntheticRows = [
+    "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=alpha primary=2/9 secondary=7/9 status=PASS",
+    "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=beta primary=3/9 secondary=5/9 status=PASS",
+  ];
   const reads = {
-    "alpha.secondary": cellSecondary(syntheticRun, "alpha", "secondary"),
-    "alpha.primary": cellSecondary(syntheticRun, "alpha", "primary"),
-    "beta.secondary": cellSecondary(syntheticRun, "beta", "secondary"),
-    "beta.primary": cellSecondary(syntheticRun, "beta", "primary"),
+    "alpha.secondary": cellSecondary(syntheticRows, "alpha", "secondary"),
+    "alpha.primary": cellSecondary(syntheticRows, "alpha", "primary"),
+    "beta.secondary": cellSecondary(syntheticRows, "beta", "secondary"),
+    "beta.primary": cellSecondary(syntheticRows, "beta", "primary"),
   };
   const expected = { "alpha.secondary": "7", "alpha.primary": "2", "beta.secondary": "5", "beta.primary": "3" };
-  const missCell = cellSecondary(syntheticRun, "no-such-cell", "secondary");
-  const missField = cellSecondary(syntheticRun, "alpha", "no_such_field");
+  const missCell = cellSecondary(syntheticRows, "no-such-cell", "secondary");
+  const missField = cellSecondary(syntheticRows, "alpha", "no_such_field");
   check(
     "reader control: the field reader returns each named field for each named cell, and undefined for a miss",
     Object.keys(expected).every((key) => reads[key] === expected[key])
       && missCell === undefined && missField === undefined,
     `${Object.keys(expected).map((key) => `${key}=${reads[key] ?? "undefined"}/${expected[key]}`).join(" ")} miss_cell=${missCell ?? "undefined"} miss_field=${missField ?? "undefined"}`,
+  );
+
+  // THE SIGNATURE IS THE FIX, SO THE SIGNATURE IS GUARDED.
+  //
+  // Everything above rests on the three row readers being UNABLE to see a run's exit code, and that
+  // property lives in a parameter list, where nothing else would notice it changing. Restoring the
+  // old `(run, id)` signature and one `.exitCode` test reopens a hole that passed 91/91 in full, so
+  // the guard has to be structural rather than a comment asking future readers not to.
+  //
+  // It parses THIS file and requires that none of the three readers mention any property of a run
+  // object. The reader is the AST, not a regex, for the reason established earlier in this suite:
+  // a text scan for `exitCode` is defeated by `run["exit"+"Code"]`, and by the same token it fires
+  // on the word appearing in a comment, so it is wrong in both directions. Walking the function
+  // bodies asks the question that is actually meant, which is whether the reader can reach the run.
+  //
+  // The control is planted, not assumed: the same walker is run over a synthetic function that DOES
+  // read `exitCode`, and must report it. An absence-detector that is broken reports the same clean
+  // absence as one that is working, which is the failure this whole file exists to catch.
+  //
+  // It also reports WHICH readers it found, and requires all three. A walker that located none of
+  // them, because a reader was renamed or because it parsed the wrong source, reports a clean
+  // `leaks=0` that looks exactly like success. Naming the denominator is what makes the difference
+  // between "no reader reaches the run" and "no reader was examined" visible in the row.
+  const READERS = ["cellStatus", "cellSecondary", "summary"];
+  const runFieldsNamedBy = (source, names) => {
+    const sf = ts.createSourceFile("suite.mjs", source, ts.ScriptTarget.Latest, true);
+    const found = [];
+    const seen = [];
+    const walkBody = (node, owner) => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+        && (node.expression.text === "run" || node.expression.text === "rows")
+        && node.name.text !== "find") {
+        found.push(`${owner}:${node.expression.text}.${node.name.text}`);
+      }
+      if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression)
+        && (node.expression.text === "run" || node.expression.text === "rows")) {
+        found.push(`${owner}:${node.expression.text}[computed]`);
+      }
+      ts.forEachChild(node, (child) => walkBody(child, owner));
+    };
+    const visit = (node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.includes(node.name.text)
+        && node.initializer
+        && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+        seen.push(node.name.text);
+        walkBody(node.initializer.body, node.name.text);
+      }
+      if (ts.isFunctionDeclaration(node) && node.name && names.includes(node.name.text) && node.body) {
+        seen.push(node.name.text);
+        walkBody(node.body, node.name.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return { found, seen };
+  };
+  const suiteSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const { found: leaked, seen: examined } = runFieldsNamedBy(suiteSource, READERS);
+  const { found: plantedLeak } = runFieldsNamedBy(
+    'const cellSecondary = (run, id) => { if (run.exitCode === 2) return "0"; return run.rows.find(id); };',
+    READERS,
+  );
+  check(
+    "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+    leaked.length === 0 && plantedLeak.length > 0
+      && READERS.every((name) => examined.includes(name)),
+    `examined=${examined.length}/${READERS.length} [${examined.join(", ")}] leaks=${leaked.length}/0${leaked.length ? ` [${leaked.join(", ")}]` : ""} planted_control=${plantedLeak.length}/>0 [${plantedLeak.join(", ")}]`,
   );
 
   for (const testCase of CASES) {
@@ -874,8 +971,8 @@ try {
 
     check(
       `${cell}: the untampered copy reports this cell passing`,
-      copyOk && cellStatus(copyRun, cell) === "PASS",
-      `status=${cellStatus(copyRun, cell)}/PASS`,
+      copyOk && cellStatus(copyRun.rows, cell) === "PASS",
+      `status=${cellStatus(copyRun.rows, cell)}/PASS`,
     );
 
     // BEFORE TRUSTING A ZERO, PROVE THIS READER CAN REPORT A NONZERO. Every kill below is decided
@@ -890,7 +987,7 @@ try {
     // count. A constant "0" fails here, and a reader that cannot find its row reports undefined and
     // fails here too. This is the fixture's own subject applied to the fixture: an instrument that
     // only ever reports the value meaning "dead" cannot tell you anything is alive.
-    const baselineSecondary = cellSecondary(copyRun, cell, secondaryField);
+    const baselineSecondary = cellSecondary(copyRun.rows, cell, secondaryField);
     check(
       `${cell}: the ${secondaryField} reader reports a nonzero count before any tamper, so a later 0 is a reading`,
       baselineSecondary !== undefined && Number(baselineSecondary) > 0,
@@ -915,9 +1012,9 @@ try {
     const tamperedPath = join(workdir, `tampered-${cell}.mjs`);
     writeFileSync(tamperedPath, tamperedSource);
     const run = runSelftest(tamperedPath);
-    const status = cellStatus(run, cell);
-    const secondary = cellSecondary(run, cell, secondaryField);
-    const runSummary = summary(run);
+    const status = cellStatus(run.rows, cell);
+    const secondary = cellSecondary(run.rows, cell, secondaryField);
+    const runSummary = summary(run.rows);
 
     // THE KILL. A live secondary reader notices the destroyed subject and reports 0. A reader
     // hollowed to a constant returns its expected value no matter what it is handed, so it still

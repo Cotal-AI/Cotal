@@ -170,12 +170,28 @@
       "cell": "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading"
     },
     {
-      "name": "the field reader becomes an exit-code oracle, never parsing a row",
+      "name": "the field reader becomes an exit-code oracle, which the rows-only signature reduces to always-undefined",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
       "find": "  return new RegExp(`\\\\b${field}=(\\\\d+)\\\\/`).exec(row ?? \"\")?.[1];",
-      "replace": "  return run.exitCode === 0 ? \"1\" : \"0\";",
+      "replace": "  return rows.exitCode === 0 ? \"1\" : \"0\";",
       "expectRed": "reader control: the field reader returns each named field for each named cell, and undefined for a miss",
       "cell": "reader control: the field reader returns each named field for each named cell, and undefined for a miss"
+    },
+    {
+      "name": "the signature guard stops reporting readers that reach into a run, so a reverted signature passes",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    visit(sf);\n    return { found, seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
+      "replace": "    visit(sf);\n    return { found: found.length ? [found[0]] : found, seen };\n  };\n  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+    },
+    {
+      "name": "the signature guard reads the wrong file, so it can never see a reverted reader in this suite",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
+      "replace": "  const suiteSource = \"const cellSecondary = (rows, id) => rows.find(id);\";",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     }
   ]
 }
