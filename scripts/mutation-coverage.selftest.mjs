@@ -110,7 +110,7 @@ try {
     'console.log(used);\n');
   write("bin/smoke/dead-copy.smoke.ts",
     'import { cpSync } from "node:fs";\n' +
-    'function never() { cpSync(join(ROOT, "packages", "seat"), clone, { recursive: true }); }\n' +
+    'function never() { cpSync(join(process.cwd(), "packages", "seat"), clone, { recursive: true }); }\n' +
     'console.log("never is never called");\n');
   write("packages/seat/smoke/referenced-import.smoke.ts",
     'async function used() { return await import("../src/impl.js"); }\n' +
@@ -252,10 +252,10 @@ try {
     'const unused = join(ROOT, "packages", "seat");\n');
   write("bin/smoke/dead-read.smoke.ts",
     'import { readFileSync } from "node:fs";\n' +
-    'function never() { readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8"); }\n' +
+    'function never() { readFileSync(join(process.cwd(), "packages", "seat", "package.json"), "utf8"); }\n' +
     'console.log("never is never called");\n');
   write("bin/smoke/dead-launch.smoke.ts",
-    'function never() { spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]); }\n' +
+    'function never() { spawnSync(process.execPath, [join(process.cwd(), "scripts", "direct.mjs")]); }\n' +
     'console.log("never is never called");\n');
   write("bin/smoke/copy-into-root.smoke.ts",
     'import { x } from "@cotal-ai/seat";\n' +
