@@ -676,6 +676,59 @@ try {
   result = run("scalar-own-scope");
   check("a scalar declared in the launch's own scope still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
 
+  // A block is a scope, and the resolver finds the FIRST matching declaration, so the decoy is
+  // tested in BOTH source orders. One order alone passes against a resolver that treats a block
+  // as transparent, which is how a first-match walk hides half its behaviour.
+  for (const [name, before] of [["block-decoy-before", true], ["block-decoy-after", false]]) {
+    const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+    const real = '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n  spawnSync(process.execPath, [ENTRY]);\n';
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${before ? decoy + real : real + decoy}}\nrun(false);\n`);
+    config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`a binding in a block the launch is not inside cannot witness it (${before ? "decoy first" : "decoy last"})`, refusedForReach(name, result), report(result));
+  }
+  // The accept twin. Refusing every block binding closes the false accept by breaking real suites,
+  // so a launch INSIDE the block, using that block's own binding, must still be witnessed.
+  write("bin/smoke/block-own-scope.smoke.ts",
+    'function run(flag) {\n' +
+    '  if (flag) {\n' +
+    '    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '    spawnSync(process.execPath, [ENTRY]);\n' +
+    '  }\n' +
+    '}\n' +
+    'run(true);\n');
+  config("block-own-scope", { suite: ["bin/smoke/block-own-scope.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("block-own-scope");
+  check("a binding in the block the launch sits in still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A use before its own declaration is a temporal dead zone error, not a launch. Resolving it
+  // reports a data-flow fact the program cannot reach.
+  write("bin/smoke/use-before-decl.smoke.ts",
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run();\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n');
+  config("use-before-decl", { suite: ["bin/smoke/use-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("use-before-decl");
+  check("a use before its declaration cannot witness an entrypoint launch", refusedForReach("use-before-decl", result), report(result));
+
+  // Its accept twin, differing in ONE fact: the declaration precedes the use.
+  write("bin/smoke/decl-before-use.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run();\n');
+  config("decl-before-use", { suite: ["bin/smoke/decl-before-use.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("decl-before-use");
+  check("a declaration before the use still witnesses the launch", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // `const A = B` beside `const B = A` is a program. A resolver without a visited set answers it
+  // with a stack overflow, which is a crash rather than a verdict.
+  write("bin/smoke/cyclic-binding.smoke.ts",
+    'const A = B;\nconst B = A;\nconst ENTRY = A;\nspawnSync(process.execPath, [ENTRY]);\n');
+  config("cyclic-binding", { suite: ["bin/smoke/cyclic-binding.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("cyclic-binding");
+  check("a cyclic binding is refused rather than crashing the resolver",
+    refusedForReach("cyclic-binding", result) && !/Maximum call stack/.test(report(result)), report(result));
+
   // B1 slot. A path sitting in argv AFTER `-e` is an argument to the evaluated program, and node
   // never opens it. Both spellings, because the slot rule is not about how the argv was written.
   for (const [name, suite] of [

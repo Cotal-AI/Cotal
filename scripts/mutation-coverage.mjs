@@ -93,26 +93,49 @@ const pathEval = (suite, source, env = new Map()) => {
   // in an unrelated function would stand in for the one the launcher actually passes, which
   // asserts a data-flow fact the program does not have. That is the #1586 class, and fixing it
   // for an argv ARRAY while leaving it for the SCALAR the array holds only moves the hole.
+  const functionLike = (node) => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node)
+    || ts.isClassDeclaration(node);
+  // A block is a scope. Treating only functions as scopes reads a `const` from a sibling `if`
+  // branch that never ran, which is the same false-accept one level down.
+  const blockLike = (node) => ts.isBlock(node) || ts.isForStatement(node) || ts.isForOfStatement(node)
+    || ts.isForInStatement(node) || ts.isCatchClause(node) || ts.isCaseBlock(node) || ts.isModuleBlock(node);
   const scopeOf = (node) => {
     for (let s = node; s !== undefined; s = s.parent) {
-      if (ts.isFunctionDeclaration(s) || ts.isFunctionExpression(s) || ts.isArrowFunction(s)
-        || ts.isMethodDeclaration(s) || ts.isClassDeclaration(s) || ts.isSourceFile(s)) return s;
+      if (ts.isSourceFile(s) || functionLike(s) || blockLike(s)) return s;
     }
     return sf;
   };
-  // Declarations that are in scope for a use, nearest first. A scan stops at a nested function
-  // rather than descending into it, so a sibling scope's binding is never visible.
-  const declaredIn = (scope, name) => {
+  // Declared here, but with no value this tool may claim: a parameter, a declaration with no
+  // initializer, or one that appears after the use. Each SHADOWS an outer binding of the same
+  // name, so resolution stops rather than walking outward and reporting the outer one's value.
+  const OPAQUE = Symbol("declared, value unknown");
+  const declarationKind = (declaration) => {
+    const list = declaration.parent;
+    if (list === undefined || !ts.isVariableDeclarationList(list)) return "other";
+    if (list.flags & ts.NodeFlags.Let) return "let";
+    if (list.flags & ts.NodeFlags.Const) return "const";
+    return "var";
+  };
+  // What `scope` itself declares for `name`, by the language's rules rather than an approximation
+  // of them, because every place the approximation differs is a data-flow fact the program does
+  // not have. `var` hoists out of inner blocks to its function and so is collected from them; a
+  // `let` or `const` in an inner block is not visible here and is deliberately not collected.
+  const declaredIn = (scope, name, usePos) => {
     let found;
-    const scan = (node) => {
+    const record = (value) => { if (found === undefined) found = value; };
+    const scan = (node, hoistedOnly) => {
       if (found !== undefined) return;
-      if (node !== scope && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
-        || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isClassDeclaration(node))) return;
+      if (node !== scope && (functionLike(node) || ts.isSourceFile(node))) return;
+      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, true)); return; }
+      if (!hoistedOnly && ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === name) record(OPAQUE);
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name
-        && node.initializer) found = node.initializer;
-      ts.forEachChild(node, scan);
+        && (!hoistedOnly || declarationKind(node) === "var")) {
+        record(node.initializer === undefined || node.end > usePos ? OPAQUE : node.initializer);
+      }
+      ts.forEachChild(node, (child) => scan(child, hoistedOnly));
     };
-    scan(scope);
+    scan(scope, false);
     return found;
   };
   // The repository root, and ONLY where the program actually computes it. An identifier's spelling
@@ -128,18 +151,29 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     return false;
   };
+  const resolving = new Set();
   const evalPath = (node) => {
     if (!node) return undefined;
     if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
     const literal = stringValue(node);
     if (literal !== undefined) return literal;
     if (ts.isIdentifier(node)) {
-      for (let scope = scopeOf(node); scope !== undefined; scope = scope.parent && scopeOf(scope.parent)) {
-        const initializer = declaredIn(scope, node.text);
-        if (initializer !== undefined) return initializer === node.parent ? undefined : evalPath(initializer);
-        if (ts.isSourceFile(scope)) break;
+      // `const A = B` with `const B = A` is a program, and a resolver without a visited set is a
+      // stack overflow rather than a verdict. A name already being resolved has no known value.
+      if (resolving.has(node.text)) return undefined;
+      const usePos = node.getStart(sf);
+      resolving.add(node.text);
+      try {
+        for (let scope = scopeOf(node); scope !== undefined;
+          scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {
+          const declared = declaredIn(scope, node.text, usePos);
+          if (declared === OPAQUE) return undefined;
+          if (declared !== undefined) return evalPath(declared);
+        }
+        return undefined;
+      } finally {
+        resolving.delete(node.text);
       }
-      return undefined;
     }
     if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
       if (node.name.text === "dirname") return dirname(resolve(suite));

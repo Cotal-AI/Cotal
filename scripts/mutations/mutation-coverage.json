@@ -418,6 +418,30 @@
       "replace": "      let flat;\n      const flatScan = (n) => {\n        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === node.text && n.initializer) flat = n.initializer;\n        ts.forEachChild(n, flatScan);\n      };\n      flatScan(sf);\n      return flat === undefined || flat === node.parent ? undefined : evalPath(flat);",
       "expectRed": "a same-named scalar in another scope cannot witness an entrypoint launch",
       "cell": "a same-named scalar in another scope cannot witness an entrypoint launch"
+    },
+    {
+      "name": "a block is not treated as a scope",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isSourceFile(s) || functionLike(s) || blockLike(s)) return s;",
+      "replace": "      if (ts.isSourceFile(s) || functionLike(s)) return s;",
+      "expectRed": "a binding in a block the launch is not inside cannot witness it (decoy first)",
+      "cell": "a binding in a block the launch is not inside cannot witness it (decoy first)"
+    },
+    {
+      "name": "a declaration after the use is still resolved",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        record(node.initializer === undefined || node.end > usePos ? OPAQUE : node.initializer);",
+      "replace": "        record(node.initializer === undefined ? OPAQUE : node.initializer);",
+      "expectRed": "a use before its declaration cannot witness an entrypoint launch",
+      "cell": "a use before its declaration cannot witness an entrypoint launch"
+    },
+    {
+      "name": "the resolver has no cycle guard",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (resolving.has(node.text)) return undefined;",
+      "replace": "      if (false) return undefined;",
+      "expectRed": "a cyclic binding is refused rather than crashing the resolver",
+      "cell": "a cyclic binding is refused rather than crashing the resolver"
     }
   ]
 }
