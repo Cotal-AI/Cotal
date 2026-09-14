@@ -96,43 +96,11 @@ const check = (name, condition, detail) => {
 };
 
 /** Run a scanner file's self-test and return its exit code plus the rows it emitted. */
-/**
- * A run whose `exitCode` COUNTS ITS OWN READS.
- *
- * Every guard in this file before this one asked a question about SHAPE, and review answered each
- * by writing one more line of harness. A reader census was beaten by a renamed parameter, taint by
- * an alias and then a destructure, an escape rule by moving the launderer one frame out, and a
- * file-wide argument rule by five shapes that pass no argument at all. The last of those needed no
- * helper, no alias and no handover:
- *
- *     const secondary = run.exitCode === 2 ? "0" : cellSecondary(run.rows, cell, field);
- *
- * It propagates nothing, so every rule about how a value TRAVELS has nothing to see, and it cannot
- * be told apart from the legitimate third kill assertion by reading the source: both consult
- * `exitCode` in the same scope, and one of them is a check the fixture exists to make. A source
- * guard cannot separate them, which is why the last four rules each moved the frame by one line.
- *
- * So this stops asking what the source looks like and observes what the run DOES. The field is an
- * accessor that increments a counter, and the kill loop below requires EXACTLY ONE read per cell,
- * the one its own exit-code assertion makes. An oracle has to consult the exit code to know when to
- * lie, so it reads a second time and the count says so, whatever spelling it uses. A lie that does
- * not read the exit code is not an exit-code oracle at all.
- */
-const countingRun = (status, output) => {
-  const rows = output.split(/\r?\n/).filter(Boolean);
-  let reads = 0;
-  return {
-    get exitCode() {
-      reads += 1;
-      return status;
-    },
-    // Not an accessor, deliberately. The count must not move when the harness asks how many times
-    // the exit code was read, or reading the meter would change it.
-    exitCodeReads: () => reads,
-    output,
-    rows,
-  };
-};
+const makeRun = (status, output) => ({
+  exitCode: status,
+  output,
+  rows: output.split(/\r?\n/).filter(Boolean),
+});
 
 const runSelftest = (file) => {
   const result = spawnSync(process.execPath, [file, "--selftest", "--root", ROOT], {
@@ -141,7 +109,7 @@ const runSelftest = (file) => {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw new Error(`could not run ${file}: ${result.error.message}`);
-  return countingRun(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`);
+  return makeRun(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`);
 };
 
 /**
@@ -161,7 +129,7 @@ const runTrackedSelftest = () => {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw new Error(`could not run ${SCANNER}: ${result.error.message}`);
-  return countingRun(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`);
+  return makeRun(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`);
 };
 
 /**
@@ -468,6 +436,7 @@ const readCellInventory = (source) => {
   const factories = new Set();
   const byFactory = new Map();
   const inline = [];
+  const unclassified = [];
   let total = 0;
   const literalText = (node) =>
     node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
@@ -494,13 +463,28 @@ const readCellInventory = (source) => {
           );
           const text = id && ts.isPropertyAssignment(id) ? literalText(id.initializer) : undefined;
           inline.push(text ?? "(unnamed inline cell)");
+        } else {
+          // REFUSE WHAT CANNOT BE CLASSIFIED, rather than skipping it.
+          //
+          // This branch used to be absent, so any element that was neither a call nor an object
+          // literal was silently not counted. Review spread a live cell into this array,
+          // `...[matchCell('extra', ...)],`, and a SpreadElement is neither: the scanner executed
+          // 35 cells and this reader reported 34, while the marker reader also reported 34 because
+          // the spread carried no comments. Two readers, one shared convention, mutual agreement on
+          // an omission.
+          //
+          // Unpacking spreads would be an enumeration of syntaxes, and this file's history is that
+          // every enumeration is defeated by the construction it did not list. Refusing is the
+          // opposite shape: a new spelling fails LOUDLY here instead of passing silently, so the
+          // failure mode of a future change is a red build rather than an ungraded cell.
+          unclassified.push(ts.SyntaxKind[element.kind]);
         }
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { factories: [...factories], byFactory, inline, total };
+  return { factories: [...factories], byFactory, inline, total, unclassified };
 };
 
 /**
@@ -736,6 +720,73 @@ try {
     `markers=${declaredCells.length} parsed=${parsedIds.length} (factory=${parsedIds.length - inventory.inline.length} inline=${inventory.inline.length})${onlyInMarkers.length ? ` MARKER ONLY [${onlyInMarkers.join(", ")}]` : ""}${onlyInParsed.length ? ` PARSED ONLY [${onlyInParsed.join(", ")}]` : ""}`,
   );
 
+  // The parsed reader must not have SKIPPED anything in that array. See its refusal branch: an
+  // element it cannot classify is recorded rather than ignored, and this is where that is graded.
+  // The control is planted against a synthetic source rather than against the real one, because the
+  // real one is required to be empty here and an empty list proves nothing about the reader.
+  const plantedUnclassified = readCellInventory(
+    "const SELFTEST_CELLS = [matchCell('a'), ...[matchCell('b')], { id: 'c' }];",
+  );
+  check(
+    "census: the cell array holds nothing the parsed reader cannot classify, and the reader is proven able to say so",
+    inventory.unclassified.length === 0 && plantedUnclassified.unclassified.length === 1
+      && plantedUnclassified.unclassified[0] === "SpreadElement",
+    `unclassified=${inventory.unclassified.length}/0${inventory.unclassified.length ? ` [${inventory.unclassified.join(", ")}]` : ""} planted_control=${plantedUnclassified.unclassified.length}/1 [${plantedUnclassified.unclassified.join(", ")}]`,
+  );
+
+  // A THIRD INPUT THAT IS NOT A READING OF THE SOURCE AT ALL: THE CELLS THAT ACTUALLY RAN.
+  //
+  // The two readers above are independent in their METHOD, one walking comments and one walking the
+  // AST, and review showed that independence is not enough, because they share a CONVENTION. A cell
+  // spread into the array with no marker comments,
+  //
+  //     ...[matchCell('extra', ...)],
+  //
+  // executes and emits a real result row, but a SpreadElement is neither a call nor an object
+  // literal so the AST reader does not count it, and it carries no comments so the marker reader
+  // does not either. Both readers agreed at 34/34 while the scanner ran 35 cells, and the scanner's
+  // own summary said `cells=34/34 status=PASS` because its denominator is the expectation map
+  // rather than the array. Three readers, one silence, measured.
+  //
+  // Bidirectional set equality cannot escape that: it proves the two inputs name the same cells,
+  // never that either input is complete. So the third input is the RUN: every `cell=` id the
+  // baseline scanner actually emitted a result row for. It cannot share a source-shape convention
+  // with the other two because it does not read the source. A cell that runs is in it, whatever it
+  // is spelled like, and a cell that is declared but silently never executed is missing from it.
+  const executedIds = baseline.rows
+    .filter((row) => row.startsWith("SELFTEST_RESULT_ROW "))
+    .map((row) => /\bcell=([^\s]+)/.exec(row)?.[1])
+    .filter(Boolean);
+  const executedExtra = executedIds.filter((id) => !declaredCells.includes(id));
+  const executedMissing = declaredCells.filter((id) => !executedIds.includes(id));
+  check(
+    "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
+    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0,
+    `executed=${executedIds.length} declared=${declaredCells.length}${executedExtra.length ? ` UNDECLARED [${executedExtra.join(", ")}]` : ""}${executedMissing.length ? ` NEVER RAN [${executedMissing.join(", ")}]` : ""}`,
+  );
+
+  // And its planted control, because an id reader that returns nothing would report the same tidy
+  // agreement as one that works. Both directions are planted: a row for a cell nobody declared, and
+  // a declared cell with no row. A control that only planted one direction would let the other rule
+  // be deleted silently.
+  const controlRows = [
+    "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=alpha primary=1/1 secondary=1/1 status=PASS",
+    "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=ghost primary=1/1 secondary=1/1 status=PASS",
+  ];
+  const controlExecuted = controlRows
+    .filter((row) => row.startsWith("SELFTEST_RESULT_ROW "))
+    .map((row) => /\bcell=([^\s]+)/.exec(row)?.[1])
+    .filter(Boolean);
+  const controlDeclared = ["alpha", "never-ran"];
+  const controlExtra = controlExecuted.filter((id) => !controlDeclared.includes(id));
+  const controlMissing = controlDeclared.filter((id) => !controlExecuted.includes(id));
+  check(
+    "census control: an executed cell nobody declared and a declared cell that never ran are both reported",
+    controlExtra.length === 1 && controlExtra[0] === "ghost"
+      && controlMissing.length === 1 && controlMissing[0] === "never-ran",
+    `planted_undeclared=${controlExtra.length}/1 [${controlExtra.join(", ")}] planted_never_ran=${controlMissing.length}/1 [${controlMissing.join(", ")}]`,
+  );
+
   // The comparison's own planted positive, and it must plant a SWAP rather than an absence: two
   // lists of equal length naming different cells. An extra or missing entry would also be caught by
   // a mere count, so only a swap can tell an identity comparison from a count. Without this,
@@ -878,40 +929,19 @@ try {
     `gradable=${gradable.length}/${FACTORIES.length}_factories covered=${gradable.length - ungraded.length}${ungraded.length ? ` MISSING [${ungraded.map((e) => e.name).join(", ")}]` : ""}`,
   );
 
-  // THE FIELD READER'S OWN CONTROL, on SYNTHETIC ROWS it supplies itself.
+  // A UNIT TEST OF THE FIELD READER, on synthetic rows it supplies itself.
   //
-  // Everything below depends on `cellSecondary` actually parsing a named field for a named cell,
-  // and grading it against real runs cannot establish that. Both halves of every kill correlate
-  // perfectly with run identity: the untampered copy always exits 0 and wants a nonzero, every
-  // tampered run exits 2 and wants a zero. Three reviewers independently measured the consequence,
-  // and `return run.exitCode === 0 ? "1" : "0"` passed the whole suite at 90/90 exit 0 without
-  // reading a row. A control asking "nonzero here, zero there" grades responsiveness to the RUN,
-  // not to the FIELD, which is the same defect one level in from the one it replaced.
+  // All thirteen kills below are decided by `cellSecondary` parsing a named field for a named cell,
+  // so this checks that it does, against four mutually inconsistent values that no constant can
+  // satisfy at once, plus two miss cases that require `undefined`.
   //
-  // So the reader is handed rows it cannot recognise: two cells whose fields hold four MUTUALLY
-  // INCONSISTENT values. No constant can satisfy 2, 3, 5 and 7 at once, so a reader tuned to any
-  // single expected value fails on the other three, and the two miss cases require `undefined`,
-  // which no value-returning shortcut can produce.
-  //
-  // THIS CONTROL AND THE ROWS-ONLY SIGNATURE ARE TWO INSTRUMENTS AND NEITHER SUBSUMES THE OTHER.
-  // The signature removes the run-status oracle by construction, because a reader that never
-  // receives the exit code cannot answer from it. This control grades what remains: that the reader
-  // picks the named CELL and the named FIELD rather than any row or any number. An earlier revision
-  // shipped this control against a synthetic RUN, and it was defeated by a reader that special-cased
-  // exit codes, which is why the fixture below is a bare array.
-  //
-  // ITS BOUND, STATED RATHER THAN LEFT TO BE DISCOVERED: a control proves the reader works on the
-  // inputs THE CONTROL chooses; it cannot prove the reader takes the same path on the inputs the
-  // SUITE uses. A reader that parsed honestly for exactly the six probes below and cheated
-  // elsewhere would pass here, which review classed as deliberate gaming rather than plausible
-  // drift. The 13 real-row assertions that follow are what cover the suite's own inputs, and the
-  // rows-only signature is what stops those assertions being answered without a parse.
-  //
-  // All four reads and both misses are asserted in ONE check with every value printed, deliberately.
-  // The mechanism here is the mutual inconsistency, and it is only visible when the values appear
-  // together: `7/7 7/2 7/5 7/3` on one line is self-evidently a constant, where four separate
-  // red/green lines would not be. A reviewer's own testing error was caught exactly this way, by
-  // reading the printed values rather than the exit code.
+  // ITS SCOPE IS THIS READER AND NOTHING MORE. An earlier revision claimed this control established
+  // that the kills are honestly graded. It does not, and that was measured: a TWIN reader added
+  // beside this one, returning "0" whenever the rows contain `status=FAIL`, fakes all thirteen
+  // kills at a full green while this control passes untouched, because synthetic rows carry
+  // `status=PASS` so the twin's lie never fires here. A control grades the reader it is handed, and
+  // readers are addable. Treat this as a unit test, which is worth having, and not as evidence that
+  // the suite cannot be blinded.
   const syntheticRows = [
     "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=alpha primary=2/9 secondary=7/9 status=PASS",
     "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=beta primary=3/9 secondary=5/9 status=PASS",
@@ -926,264 +956,53 @@ try {
   const missCell = cellSecondary(syntheticRows, "no-such-cell", "secondary");
   const missField = cellSecondary(syntheticRows, "alpha", "no_such_field");
   check(
-    "reader control: the field reader returns each named field for each named cell, and undefined for a miss",
+    "unit test: the field reader returns each named field for each named cell, and undefined for a miss",
     Object.keys(expected).every((key) => reads[key] === expected[key])
       && missCell === undefined && missField === undefined,
     `${Object.keys(expected).map((key) => `${key}=${reads[key] ?? "undefined"}/${expected[key]}`).join(" ")} miss_cell=${missCell ?? "undefined"} miss_field=${missField ?? "undefined"}`,
   );
 
-  // THE SIGNATURE IS THE FIX, SO THE SIGNATURE IS GUARDED.
+  // WHAT THIS SUITE DOES NOT PROVE, AND WHY THE GUARDS THAT CLAIMED IT ARE GONE.
   //
-  // Everything above rests on the three row readers being UNABLE to see a run's exit code, and that
-  // property lives in a parameter list, where nothing else would notice it changing. Restoring the
-  // old `(run, id)` signature and one `.exitCode` test reopens a hole that passed 91/91 in full, so
-  // the guard has to be structural rather than a comment asking future readers not to.
+  // Everything above grades THE SCANNER: 34 cells from a derived census, tampered one at a time,
+  // each required to go red BY NAME. That part held under eleven rounds of review without a single
+  // finding against it, and it is what this file is for.
   //
-  // It parses THIS file and requires that none of the three readers mention any property of a run
-  // object. The reader is the AST, not a regex, for the reason established earlier in this suite:
-  // a text scan for `exitCode` is defeated by `run["exit"+"Code"]`, and by the same token it fires
-  // on the word appearing in a comment, so it is wrong in both directions. Walking the function
-  // bodies asks the question that is actually meant, which is whether the reader can reach the run.
+  // What this suite does NOT do is prove itself. Earlier revisions carried five instruments that
+  // tried to: a reader census, taint tracking through aliases and destructuring, an escape rule on
+  // handovers, a file-wide rule on call arguments, and a counter on reads of the exit code. Each
+  // closed a real hole, and each was then defeated by a construction it did not enumerate. The
+  // measured sequence, every one a green suite deciding every kill from a lie:
   //
-  // The control is planted, not assumed: the same walker is run over a synthetic function that DOES
-  // read `exitCode`, and must report it. An absence-detector that is broken reports the same clean
-  // absence as one that is working, which is the failure this whole file exists to catch.
+  //   a launderer inside a row reader, then the same launderer one frame out in the kill loop
+  //   `pickRows({ ...r })`, a wrapper expression rather than a bare identifier
+  //   `run.exitCode === 2 ? "0" : ...`, which hands nothing to anything and propagates nothing
+  //   a lie keyed on row TEXT rather than on the exit code, which spends no counted read at all
+  //   `const stolen = run.exitCode;` reused by both the lie and the honest assertion, one read total
   //
-  // ITS DENOMINATOR IS DERIVED, NOT ENUMERATED, AND REVIEW HAD TO SAY SO TWICE IN THIS FILE. An
-  // earlier revision named the three readers in a list. A list is checked against itself: a FOURTH
-  // reader added later, taking a run and reading its exit code, is simply not in it, and the guard
-  // reports the same tidy `examined=3/3 leaks=0` while the new reader goes ungraded. That is this
-  // suite's own subject one level up, and it is the same shape as the census that had to stop
-  // counting factories and start counting cells. So the denominator is every top-level function in
-  // this file whose FIRST PARAMETER is named `rows` or `run`, which is what "a row reader" means
-  // here, and the guard requires that at least the known three are among them, so a rename cannot
-  // shrink the denominator to nothing and still read clean.
-  const runFieldsNamedBy = (source) => {
-    const sf = ts.createSourceFile("suite.mjs", source, ts.ScriptTarget.Latest, true);
-    const found = [];
-    const seen = [];
-    // WHAT COUNTS AS A ROW READER IS A BEHAVIOUR, NOT A NAME. An earlier revision selected on the
-    // first parameter being spelled `rows` or `run`, and review defeated it by spelling it `r`:
-    // a copy of the round-7 blocker, wired into the real kill assertion with the run passed in,
-    // scored a full green 92/92 while the guard reported a tidy `examined=3_derived leaks=0`. That
-    // is the round-3 defect for the fifth time in this lane, where `function matchCell(` became
-    // `function matchCell (` and a factory left the census. A pattern over spellings is defeated by
-    // the next spelling, so the selector must ask what the function DOES.
-    //
-    // A row reader is any function whose body names a `SELFTEST_..._ROW` marker literal, which is
-    // what parsing this suite's rows consists of and cannot be renamed away without ceasing to
-    // parse. The leak test then binds to THAT function's own first parameter, whatever it is
-    // called, so `r.exitCode` is caught exactly as `run.exitCode` is.
-    const ROW_MARKER = /^SELFTEST_[A-Z_]*ROW/;
-    // Reaching a row reader's parameter through an ARRAY method is the whole point of the thing.
-    // Anything else is reaching into a run: `.rows`, `.exitCode`, `.output`, a computed key.
-    const ARRAY_USE = new Set([
-      "find", "filter", "map", "some", "every", "slice", "join", "length", "includes",
-      "indexOf", "at", "forEach", "reduce", "flatMap", "concat", "entries", "keys", "values",
-    ]);
-    const namesRowMarker = (fn) => {
-      let hit = false;
-      const scan = (node) => {
-        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-          && ROW_MARKER.test(node.text)) hit = true;
-        ts.forEachChild(node, scan);
-      };
-      if (fn.body) scan(fn.body);
-      return hit;
-    };
-    // THE PARAMETER IS TAINTED, AND SO IS ANYTHING COPIED OUT OF IT. Tracking the parameter's own
-    // identifier is not enough, which review demonstrated twice in one round: `const source = r;`
-    // then `source.exitCode`, and `const { exitCode, rows } = r;`, both passed at a full green with
-    // the guard reporting `leaks=0`. Following one name is the same mistake as matching one
-    // spelling, one level along: the value moved and the reader did not.
-    //
-    // So the taint set starts at the first parameter and grows: an alias binds the whole value and
-    // inherits it, and a destructure of a tainted value names the very fields this guard exists to
-    // forbid, so a destructured binding IS the leak and is reported at the point of binding.
-    //
-    // AND TAINT MAY NOT ESCAPE THROUGH A CALL, which is the door review walked through next. An
-    // earlier revision let a reader pass its parameter on, reasoning that the function at the other
-    // end would be derived and walked itself. That holds only if the other end parses rows, and a
-    // LAUNDERER need not: `const pickRows = (anything) => anything.exitCode === 2 ? [] : anything.rows;`
-    // names no row literal, so it is not a row reader, is never derived, and is never walked. The
-    // reader calling it stayed honest, touched neither field, and the exit-2 oracle was restored in
-    // full at 92/92. Every component behaved exactly as specified and the SCOPE was the defect.
-    //
-    // So handing a tainted value to another function is itself the leak, reported at the call site.
-    // The three real readers never do this, measured before the rule was written, so it costs them
-    // nothing: a reader needing a helper can hand it the ROWS, which is what it was given. This
-    // replaces a claim about where taint goes with a rule that it does not leave, and that is the
-    // only version which does not need a second denominator naming every function that might
-    // receive one. A denominator of launderers would be this lane's defect for the seventh time.
-    const walkBody = (node, owner, param) => {
-      const tainted = new Set([param]);
-      const scan = (current) => {
-        // A tainted value handed to any function escapes this walker's view, so the handover is the
-        // leak. The callee is named so the row says where it went, not merely that it went.
-        if (ts.isCallExpression(current)) {
-          for (const argument of current.arguments) {
-            if (ts.isIdentifier(argument) && tainted.has(argument.text)) {
-              const callee = ts.isIdentifier(current.expression) ? current.expression.text : "call";
-              found.push(`${owner}:escapes_into(${callee})`);
-            }
-          }
-        }
-        if (ts.isVariableDeclaration(current) && current.initializer) {
-          // `const source = r;` aliases the whole tainted value.
-          if (ts.isIdentifier(current.initializer) && tainted.has(current.initializer.text)) {
-            if (ts.isIdentifier(current.name)) tainted.add(current.name.text);
-            // `const { exitCode, rows } = r;` names run fields directly; the binding is the leak.
-            if (ts.isObjectBindingPattern(current.name)) {
-              for (const element of current.name.elements) {
-                const key = element.propertyName ?? element.name;
-                const field = ts.isIdentifier(key) ? key.text : "computed";
-                if (!ARRAY_USE.has(field)) found.push(`${owner}:destructured.${field}`);
-              }
-            }
-          }
-        }
-        if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)
-          && tainted.has(current.expression.text) && !ARRAY_USE.has(current.name.text)) {
-          found.push(`${owner}:${current.expression.text}.${current.name.text}`);
-        }
-        if (ts.isElementAccessExpression(current) && ts.isIdentifier(current.expression)
-          && tainted.has(current.expression.text)) {
-          found.push(`${owner}:${current.expression.text}[computed]`);
-        }
-        ts.forEachChild(current, scan);
-      };
-      scan(node);
-    };
-    const consider = (fn, name) => {
-      const first = fn.parameters?.[0];
-      if (!first || !ts.isIdentifier(first.name)) return;
-      if (!namesRowMarker(fn)) return;
-      seen.push(name);
-      walkBody(fn.body, name, first.name.text);
-    };
-    const visit = (node) => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
-        && node.initializer
-        && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
-        consider(node.initializer, node.name.text);
-      }
-      if (ts.isFunctionDeclaration(node) && node.name && node.body) {
-        consider(node, node.name.text);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sf);
-    return { found, seen };
-  };
-  // The known three are a FLOOR on the derived set, never the set itself: if a rename or a parser
-  // change drops them, `examined` stops containing them and the guard goes red rather than quietly
-  // grading fewer readers than it did yesterday.
-  const REQUIRED_READERS = ["cellStatus", "cellSecondary", "summary"];
-  const suiteSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
-  const { found: leaked, seen: examined } = runFieldsNamedBy(suiteSource);
-  // The planted control names a marker literal, because the selector is behavioural now: a control
-  // that would not be DERIVED as a row reader proves nothing about a guard that only walks derived
-  // readers. It also spells its parameter `r`, so the control exercises the exact evasion review
-  // used rather than the shape that was already caught.
+  // The pattern is not that those guards were written badly. It is that each one anchored to a
+  // NAMED THING and was beaten by a thing beside it: a function beside the walked function, a field
+  // beside the counted field. A guard that reads this file to decide whether this file can be
+  // trusted has no fixed point, so the claim has been removed rather than defended with a sixth
+  // rule. Known holes are named above so the next contributor inherits the truth instead of a
+  // reassuring green.
   //
-  // It reaches the exit code through an ALIAS and a DESTRUCTURE as well as directly, because those
-  // are the two hops review used to walk past an earlier version, and a control that only exercises
-  // the direct spelling would report a healthy nonzero while taint propagation was broken.
-  // It also HANDS THE VALUE TO A FUNCTION, because the escape rule is the fourth thing this walker
-  // does and a control that never escapes would let the escape rule be deleted silently.
-  const { found: plantedLeak } = runFieldsNamedBy(
-    'const planted = (r, id) => { const alias = r; const { output } = alias;'
-      + ' if (alias.exitCode === 2 || output) return "0";'
-      + ' const laundered = launder(r);'
-      + ' return r.rows.find((c) => c.startsWith("SELFTEST_RESULT_ROW ") && c.includes(id)); };',
-  );
-  // Each hop must be represented, not just the total: `planted_control=4` could be four direct
-  // reads with both propagation paths dead. The row names them so the reader can see all three.
-  const PLANTED_PATHS = ["alias.exitCode", "destructured.output", "r.rows", "escapes_into(launder)"];
-  check(
-    "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-    leaked.length === 0 && plantedLeak.length > 0
-      && PLANTED_PATHS.every((path) => plantedLeak.some((entry) => entry.endsWith(path)))
-      && REQUIRED_READERS.every((name) => examined.includes(name)),
-    `examined=${examined.length}_derived required=${REQUIRED_READERS.filter((name) => examined.includes(name)).length}/${REQUIRED_READERS.length} [${examined.join(", ")}] leaks=${leaked.length}/0${leaked.length ? ` [${leaked.join(", ")}]` : ""} planted_control=${plantedLeak.length}/>0 [${plantedLeak.join(", ")}]`,
-  );
-
-  // AND THE SAME RULE FILE-WIDE, ON ARGUMENTS RATHER THAN ON READERS.
+  // ONE STRUCTURAL PROPERTY IS KEPT, because it is not a guard. The three row readers take `rows`
+  // and not the run, so they cannot see an exit code. Every tampered run here exits 2 and every
+  // kill expects 0, so a reader holding the run can answer from the exit code instead of from the
+  // row, and three reviewers independently wrote `if (run.exitCode === 2) return "0";` above the
+  // parse, which reads naturally as "a failed run has no live discriminator" and scored a full
+  // green. Taking `rows` makes that shortcut UNWRITABLE rather than detectable, since the value it
+  // would key on is not in scope and `rows.exitCode` on an array is inert. Every evasion listed
+  // above therefore has to be a deliberate, visible edit to the kill loop rather than a plausible
+  // early return, which is a cost, not a proof.
   //
-  // The guard above asks whether a DERIVED READER hands its parameter onward, and review moved the
-  // identical launderer one frame out to defeat it: `cellSecondary(pickRows(run), cell, field)` in
-  // the kill loop restored the exit-2 oracle with the reader untouched, `examined` unmoved at 3, and
-  // the guard's row BYTE-IDENTICAL to a healthy run. The launderer ran 13 times and decided 13
-  // assertions. Nothing was reintroduced and no rule was broken; the SUBJECT was wrong.
-  //
-  // Every round so far moved the frame rather than breaking the rule, so this asks the question with
-  // no next frame: A RUN-SHAPED VALUE MAY NOT BE PASSED TO ANY CALL, ANYWHERE IN THIS FILE. Not "no
-  // reader may pass it on", which is a claim about one frame. Runs are found by their CONSTRUCTORS
-  // rather than by name, aliases inherit to a FIXED POINT so a chain of any length is covered, and
-  // every argument position in the file is the subject.
-  //
-  // Reading `.rows` or `.exitCode` off a run stays legal, because that is how the harness asserts on
-  // exit codes at all, measured at 2 construction points and 7 assertion reads. What is forbidden is
-  // handing the OBJECT to something, which is the only way a value these walkers cannot see gets to
-  // decide an assertion.
-  const RUN_MAKERS = new Set(["runSelftest", "runTrackedSelftest"]);
-  const runsPassedToCalls = (source) => {
-    const sf = ts.createSourceFile("suite.mjs", source, ts.ScriptTarget.Latest, true);
-    const runs = new Set();
-    const passed = [];
-    // Alias propagation runs to a FIXED POINT, not for a fixed number of passes. A two-pass version
-    // covers `const a = run;` and quietly misses `const b = a;` later in the file, which is the
-    // same one-hop blindness the taint walker was already corrected for once.
-    const collect = (node) => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-        const init = node.initializer;
-        if (ts.isCallExpression(init) && ts.isIdentifier(init.expression)
-          && RUN_MAKERS.has(init.expression.text)) runs.add(node.name.text);
-        if (ts.isIdentifier(init) && runs.has(init.text)) runs.add(node.name.text);
-      }
-      ts.forEachChild(node, collect);
-    };
-    let previous = -1;
-    while (runs.size !== previous) {
-      previous = runs.size;
-      collect(sf);
-    }
-    const audit = (node) => {
-      if (ts.isCallExpression(node)) {
-        node.arguments.forEach((argument, index) => {
-          if (ts.isIdentifier(argument) && runs.has(argument.text)) {
-            const callee = ts.isIdentifier(node.expression)
-              ? node.expression.text
-              : (ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : "call");
-            passed.push(`${callee}(arg${index}=${argument.text})`);
-          }
-        });
-      }
-      ts.forEachChild(node, audit);
-    };
-    audit(sf);
-    return { runs: [...runs], passed };
-  };
-  const { runs: runBindings, passed: runsPassed } = runsPassedToCalls(suiteSource);
-  // The control plants the exact shape review used AND a two-hop alias chain, so a walker that had
-  // stopped resolving the constructor, or that propagated only one hop, reports a zero that reads
-  // exactly like compliance. `planted_runs` must be 3: the run and both aliases.
-  const { runs: plantedRuns, passed: plantedPassed } = runsPassedToCalls(
-    // Declared in REVERSE order deliberately: r2 aliases r1 and r1 aliases r0, but each appears
-    // BEFORE the binding it copies. One traversal resolves only the hop whose source it has already
-    // seen, so a single pass reports planted_runs=1 and this control goes red. Source order is what
-    // makes the fixed point observable; a forward-ordered chain resolves in one pass and would grade
-    // nothing.
-    'const r2 = r1; const r1 = r0; const r0 = runSelftest(p);'
-      + ' const rows = pickRows(r2); const ok = summary(r0.rows);',
-  );
-  check(
-    "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias",
-    runsPassed.length === 0 && runBindings.length >= 3
-      && plantedPassed.length > 0 && plantedRuns.length === 3,
-    `runs=${runBindings.length}/>=3 [${runBindings.join(", ")}] passed=${runsPassed.length}/0${runsPassed.length ? ` [${runsPassed.join(", ")}]` : ""} planted_control=${plantedPassed.length}/>0 [${plantedPassed.join(", ")}] planted_runs=${plantedRuns.length}/3 [${plantedRuns.join(", ")}]`,
-  );
-
+  // IF YOU ARE CHECKING WHETHER THIS SUITE STILL WORKS: a clean run is not evidence. In eleven
+  // rounds, every blinded decider was caught by planting a lie and requiring a named cell to go
+  // red, and NONE was ever caught by reading the code. Note also that `grep -c FAIL` over this
+  // suite's output returns 26 on a healthy green run, because passing rows legitimately contain
+  // `status=FAIL/FAIL` as asserted data. Real failures are stderr-only and two-space indented:
+  // count `^  FAIL`, or a wrong-green will read to you as a kill.
   for (const testCase of CASES) {
     const { cell, reader, find, replace, family, helper } = testCase;
     const secondaryField = FACTORIES.find((entry) => entry.name === family)?.secondaryField
@@ -1268,23 +1087,6 @@ try {
       observedExit === 2 && runSummary !== undefined && runSummary.status === "FAIL"
         && runSummary.passed === runSummary.total - 1,
       `exit=${observedExit}/2 cells=${runSummary?.passed}/${runSummary?.total} status=${runSummary?.status}`,
-    );
-
-    // THE READ BUDGET. This is the guard that does not care how the source is spelled.
-    //
-    // Grading this cell needs the exit code exactly once, for the assertion directly above. An
-    // exit-code oracle must consult the exit code to know when to lie, so it spends a second read,
-    // and this counts reads rather than reading code. Every evasion this panel produced becomes the
-    // same number: the launderer, the alias, the destructure, the reconstruction, the spread, and
-    // the bare ternary that passes nothing anywhere all have to ask what the exit code was.
-    //
-    // The counter is a property of the run object, so it cannot be satisfied by a shape the walkers
-    // did not enumerate, and there is no next frame to move to: an oracle that never reads the exit
-    // code cannot tell a tampered run from a clean one, which is the whole capability being denied.
-    check(
-      `${cell}: grading this cell reads the run's exit code exactly once, so no second reader can be consulting it`,
-      run.exitCodeReads() === 1,
-      `exit_code_reads=${run.exitCodeReads()}/1`,
     );
   }
 } finally {

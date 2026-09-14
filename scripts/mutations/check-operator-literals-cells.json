@@ -178,92 +178,28 @@
       "cell": "reader control: the field reader returns each named field for each named cell, and undefined for a miss"
     },
     {
-      "name": "the signature guard's walker reports nothing, so a reader reaching into a run is never seen",
+      "name": "the parsed reader silently skips an element it cannot classify, so a spread cell is never counted",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    visit(sf);\n    return { found, seen };\n  };",
-      "replace": "    visit(sf);\n    return { found: [], seen };\n  };",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+      "find": "          unclassified.push(ts.SyntaxKind[element.kind]);",
+      "replace": "          void element;",
+      "cell": "census: the cell array holds nothing the parsed reader cannot classify, and the reader is proven able to say so",
+      "expectRed": true
     },
     {
-      "name": "the signature guard reads the wrong file, so it can never see a reverted reader in this suite",
+      "name": "the executed-cell reader returns nothing, so a cell that ran without being declared is invisible",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  const suiteSource = readFileSync(fileURLToPath(import.meta.url), \"utf8\");",
-      "replace": "  const suiteSource = \"const cellSecondary = (rows, id) => rows.find(id);\";",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+      "find": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \"))\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);\n  const executedExtra",
+      "replace": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \") && false)\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);\n  const executedExtra",
+      "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
+      "expectRed": true
     },
     {
-      "name": "the row-marker test always says no, so nothing is derived as a row reader",
+      "name": "the executed-cell census stops reporting an undeclared cell, so a cell that ran ungraded passes",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))\n          && ROW_MARKER.test(node.text)) hit = true;",
-      "replace": "        void node;",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
-    },
-    {
-      "name": "the leak walker binds to the literal spelling `run` again, so a reader whose parameter is named otherwise is never inspected",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "        if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)\n          && tainted.has(current.expression.text) && !ARRAY_USE.has(current.name.text)) {",
-      "replace": "        if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)\n          && current.expression.text === \"run\" && !ARRAY_USE.has(current.name.text)) {",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
-    },
-    {
-      "name": "taint stops following an alias, so `const source = run` hides every later read",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "            if (ts.isIdentifier(current.name)) tainted.add(current.name.text);",
-      "replace": "            if (ts.isIdentifier(current.name)) void current.name.text;",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
-    },
-    {
-      "name": "a destructure of the run is no longer reported, so `const { exitCode } = run` is invisible",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "                if (!ARRAY_USE.has(field)) found.push(`${owner}:destructured.${field}`);",
-      "replace": "                void field;",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
-    },
-    {
-      "name": "a tainted value handed to another function stops being a leak, so a laundering helper hides the run",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "            if (ts.isIdentifier(argument) && tainted.has(argument.text)) {",
-      "replace": "            if (false && ts.isIdentifier(argument) && tainted.has(argument.text)) {",
-      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
-      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
-    },
-    {
-      "name": "the argument guard stops recognising run constructors, so no binding is run-shaped and nothing is audited",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  const RUN_MAKERS = new Set([\"runSelftest\", \"runTrackedSelftest\"]);",
-      "replace": "  const RUN_MAKERS = new Set([]);",
-      "expectRed": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias",
-      "cell": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias"
-    },
-    {
-      "name": "alias propagation stops at one hop, so a chained alias of a run is never recognised",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    let previous = -1;\n    while (runs.size !== previous) {\n      previous = runs.size;\n      collect(sf);\n    }",
-      "replace": "    collect(sf);",
-      "expectRed": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias",
-      "cell": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias"
-    },
-    {
-      "name": "the argument audit reports nothing, so a run handed to any call is invisible",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "            passed.push(`${callee}(arg${index}=${argument.text})`);",
-      "replace": "            void callee;",
-      "expectRed": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias",
-      "cell": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias"
-    },
-    {
-      "name": "the exit-code accessor stops counting, so an oracle's extra read is invisible",
-      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    get exitCode() {\n      reads += 1;\n      return status;\n    },",
-      "replace": "    get exitCode() {\n      return status;\n    },",
-      "expectRed": "host-planted: grading this cell reads the run's exit code exactly once, so no second reader can be consulting it",
-      "cell": "host-planted: grading this cell reads the run's exit code exactly once, so no second reader can be consulting it"
+      "find": "    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0,",
+      "replace": "    executedIds.length > 0 && executedMissing.length === 0,",
+      "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
+      "expectRed": true
     }
   ]
 }
