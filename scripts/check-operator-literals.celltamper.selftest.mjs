@@ -926,34 +926,61 @@ try {
     const sf = ts.createSourceFile("suite.mjs", source, ts.ScriptTarget.Latest, true);
     const found = [];
     const seen = [];
-    const isRowReader = (fn) => {
-      const first = fn.parameters?.[0];
-      return Boolean(first && ts.isIdentifier(first.name)
-        && (first.name.text === "rows" || first.name.text === "run"));
+    // WHAT COUNTS AS A ROW READER IS A BEHAVIOUR, NOT A NAME. An earlier revision selected on the
+    // first parameter being spelled `rows` or `run`, and review defeated it by spelling it `r`:
+    // a copy of the round-7 blocker, wired into the real kill assertion with the run passed in,
+    // scored a full green 92/92 while the guard reported a tidy `examined=3_derived leaks=0`. That
+    // is the round-3 defect for the fifth time in this lane, where `function matchCell(` became
+    // `function matchCell (` and a factory left the census. A pattern over spellings is defeated by
+    // the next spelling, so the selector must ask what the function DOES.
+    //
+    // A row reader is any function whose body names a `SELFTEST_..._ROW` marker literal, which is
+    // what parsing this suite's rows consists of and cannot be renamed away without ceasing to
+    // parse. The leak test then binds to THAT function's own first parameter, whatever it is
+    // called, so `r.exitCode` is caught exactly as `run.exitCode` is.
+    const ROW_MARKER = /^SELFTEST_[A-Z_]*ROW/;
+    // Reaching a row reader's parameter through an ARRAY method is the whole point of the thing.
+    // Anything else is reaching into a run: `.rows`, `.exitCode`, `.output`, a computed key.
+    const ARRAY_USE = new Set([
+      "find", "filter", "map", "some", "every", "slice", "join", "length", "includes",
+      "indexOf", "at", "forEach", "reduce", "flatMap", "concat", "entries", "keys", "values",
+    ]);
+    const namesRowMarker = (fn) => {
+      let hit = false;
+      const scan = (node) => {
+        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+          && ROW_MARKER.test(node.text)) hit = true;
+        ts.forEachChild(node, scan);
+      };
+      if (fn.body) scan(fn.body);
+      return hit;
     };
-    const walkBody = (node, owner) => {
+    const walkBody = (node, owner, param) => {
       if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
-        && (node.expression.text === "run" || node.expression.text === "rows")
-        && node.name.text !== "find") {
-        found.push(`${owner}:${node.expression.text}.${node.name.text}`);
+        && node.expression.text === param && !ARRAY_USE.has(node.name.text)) {
+        found.push(`${owner}:${param}.${node.name.text}`);
       }
       if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression)
-        && (node.expression.text === "run" || node.expression.text === "rows")) {
-        found.push(`${owner}:${node.expression.text}[computed]`);
+        && node.expression.text === param) {
+        found.push(`${owner}:${param}[computed]`);
       }
-      ts.forEachChild(node, (child) => walkBody(child, owner));
+      ts.forEachChild(node, (child) => walkBody(child, owner, param));
+    };
+    const consider = (fn, name) => {
+      const first = fn.parameters?.[0];
+      if (!first || !ts.isIdentifier(first.name)) return;
+      if (!namesRowMarker(fn)) return;
+      seen.push(name);
+      walkBody(fn.body, name, first.name.text);
     };
     const visit = (node) => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
         && node.initializer
-        && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
-        && isRowReader(node.initializer)) {
-        seen.push(node.name.text);
-        walkBody(node.initializer.body, node.name.text);
+        && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+        consider(node.initializer, node.name.text);
       }
-      if (ts.isFunctionDeclaration(node) && node.name && node.body && isRowReader(node)) {
-        seen.push(node.name.text);
-        walkBody(node.body, node.name.text);
+      if (ts.isFunctionDeclaration(node) && node.name && node.body) {
+        consider(node, node.name.text);
       }
       ts.forEachChild(node, visit);
     };
@@ -966,8 +993,13 @@ try {
   const REQUIRED_READERS = ["cellStatus", "cellSecondary", "summary"];
   const suiteSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const { found: leaked, seen: examined } = runFieldsNamedBy(suiteSource);
+  // The planted control names a marker literal, because the selector is behavioural now: a control
+  // that would not be DERIVED as a row reader proves nothing about a guard that only walks derived
+  // readers. It also spells its parameter `r`, so the control exercises the exact evasion review
+  // used rather than the shape that was already caught.
   const { found: plantedLeak } = runFieldsNamedBy(
-    'const cellSecondary = (run, id) => { if (run.exitCode === 2) return "0"; return run.rows.find(id); };',
+    'const planted = (r, id) => { if (r.exitCode === 2) return "0";'
+      + ' return r.rows.find((c) => c.startsWith("SELFTEST_RESULT_ROW ") && c.includes(id)); };',
   );
   check(
     "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",

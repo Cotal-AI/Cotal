@@ -194,10 +194,18 @@
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     },
     {
-      "name": "the row-reader test always says no, so the derived denominator is empty and nothing is examined",
+      "name": "the row-marker test always says no, so nothing is derived as a row reader",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "      return Boolean(first && ts.isIdentifier(first.name)\n        && (first.name.text === \"rows\" || first.name.text === \"run\"));",
-      "replace": "      void first;\n      return false;",
+      "find": "        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))\n          && ROW_MARKER.test(node.text)) hit = true;",
+      "replace": "        void node;",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+    },
+    {
+      "name": "the leak walker binds to the literal spelling `run` again, so a reader whose parameter is named otherwise is never inspected",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)\n        && node.expression.text === param && !ARRAY_USE.has(node.name.text)) {",
+      "replace": "      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)\n        && node.expression.text === \"run\" && !ARRAY_USE.has(node.name.text)) {",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     }
