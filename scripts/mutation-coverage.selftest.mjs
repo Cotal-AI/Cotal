@@ -724,6 +724,17 @@ try {
   // with a stack overflow, which is a crash rather than a verdict.
   write("bin/smoke/cyclic-binding.smoke.ts",
     'const A = B;\nconst B = A;\nconst ENTRY = A;\nspawnSync(process.execPath, [ENTRY]);\n');
+  // A launcher whose path is its OWN parameter, shadowing an outer binding that names the
+  // entrypoint. The outer binding is not what the call passes, so reading it reports a launch the
+  // program never makes. The parameter shadows, and resolution stops rather than walking outward.
+  write("bin/smoke/param-shadow.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run(ENTRY) { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run(join(import.meta.dirname, "..", "direct.mjs"));\n');
+  config("param-shadow", { suite: ["bin/smoke/param-shadow.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("param-shadow");
+  check("a parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("param-shadow", result), report(result));
+
   config("cyclic-binding", { suite: ["bin/smoke/cyclic-binding.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("cyclic-binding");
   check("a cyclic binding is refused rather than crashing the resolver",

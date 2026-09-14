@@ -151,29 +151,24 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     return false;
   };
-  const resolving = new Set();
   const evalPath = (node) => {
     if (!node) return undefined;
     if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
     const literal = stringValue(node);
     if (literal !== undefined) return literal;
     if (ts.isIdentifier(node)) {
-      // `const A = B` with `const B = A` is a program, and a resolver without a visited set is a
-      // stack overflow rather than a verdict. A name already being resolved has no known value.
-      if (resolving.has(node.text)) return undefined;
+      // `const A = B` beside `const B = A` is a program, and it terminates here because a cycle
+      // needs one edge pointing at a later declaration, which the use-position rule below stops.
+      // A visited set as well would be a second guard for the same case, and mutating either one
+      // then proves nothing, because the other still holds.
       const usePos = node.getStart(sf);
-      resolving.add(node.text);
-      try {
-        for (let scope = scopeOf(node); scope !== undefined;
-          scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {
-          const declared = declaredIn(scope, node.text, usePos);
-          if (declared === OPAQUE) return undefined;
-          if (declared !== undefined) return evalPath(declared);
-        }
-        return undefined;
-      } finally {
-        resolving.delete(node.text);
+      for (let scope = scopeOf(node); scope !== undefined;
+        scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {
+        const declared = declaredIn(scope, node.text, usePos);
+        if (declared === OPAQUE) return undefined;
+        if (declared !== undefined) return evalPath(declared);
       }
+      return undefined;
     }
     if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
       if (node.name.text === "dirname") return dirname(resolve(suite));
