@@ -19,8 +19,14 @@
  *
  * WHY A SHARED MODULE RATHER THAN A SECOND READ. `--components` already computed this correctly and
  * bare `status` did not, which is precisely how the two surfaces came to disagree about a mesh's
- * health. Both now reduce through {@link deliveryResponderState}, so a future change cannot fix one
- * and leave the other green. It reads; it never mints, writes or repairs.
+ * health. Both now reduce through {@link deliveryResponderFromLease}, so a future change cannot fix
+ * one and leave the other green. It reads; it never mints, writes or repairs.
+ *
+ * The two surfaces differ in ONE deliberate respect, and the split is in the read, not the grading.
+ * Bare `status` reduces a failed read to `unchecked` and so calls {@link deliveryResponderState},
+ * which wraps the read. `--components` must tell a missing lease stream apart from a refused read
+ * and reports them as different verdicts, so it does its own read and calls the pure classifier
+ * directly. Neither surface grades a lease by any other rule.
  */
 import type { DeliveryLeaseInfo } from "@cotal-ai/core";
 

@@ -20,7 +20,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -245,7 +245,16 @@ async function readResponderAxis(selected: Selected): Promise<DeliveryResponderS
       // The holder is resolved BEFORE the read so a dead daemon's surviving `ready:true` cannot be
       // mistaken for the live one's (#837): `ready` alone says some daemon bound recently enough that
       // its record has not expired, which is not the question this row asks.
-      return deliveryResponderFromLease(await ep.readDeliveryLease(0), await expectedDeliveryHolder(target));
+      //
+      // This surface reduces a FAILED read to `unchecked`, which is exactly what
+      // `deliveryResponderState` encapsulates, so it is called here rather than hand-rolled. The
+      // `--components` surface deliberately does NOT use it: that surface must tell a missing lease
+      // stream apart from a refused read, and flattening both to `unknown` would erase a
+      // distinction it reports.
+      return await deliveryResponderState(
+        () => ep.readDeliveryLease(0),
+        await expectedDeliveryHolder(target),
+      );
     } finally {
       await ep.stop().catch(() => {});
     }
