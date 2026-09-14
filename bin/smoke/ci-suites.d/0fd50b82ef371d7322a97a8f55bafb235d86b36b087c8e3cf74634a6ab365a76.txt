@@ -1,0 +1,5 @@
+# A smoke cleanup may only delete what it minted: a recursive delete refuses any target that is not
+# a strict child of the root it was minted under, canonically, so a mutant or a bug upstream of the
+# cleanup cannot walk the shared temp dir (#1625). A control socket path over sun_path is refused
+# by name at construction instead of surfacing as a bare EINVAL from the bind.
+smoke:temp-containment
