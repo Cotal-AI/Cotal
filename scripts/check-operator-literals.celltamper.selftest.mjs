@@ -741,6 +741,24 @@ const readCellInventory = (source) => {
  */
 const UNGRADED_CELLS = [];
 
+/**
+ * Exemptions planted to drive the validator, concatenated onto the real list at its ONE call site.
+ *
+ * They live here rather than inside the check because the real list is empty, so the validator
+ * would otherwise never run on real data and a mutation deleting it would survive. Each entry fails
+ * for a different reason, including both forms review used: a bare cell id, and a cell id with a
+ * satisfying sentence attached. The last is fully formed and still refused, by measurement, on the
+ * strength of the cell's own baseline row.
+ */
+const PLANTED_EXEMPTIONS = [
+  { cell: "ip-loopback" },
+  { cell: "ip-loopback", reason: "   " },
+  { cell: "ip-loopback", reason: "cannot be graded" },
+  { cell: "ip-loopback", reason: "cannot be graded", provenBy: "no gradable field in the baseline row" },
+  { cell: "no-such-cell-anywhere", reason: "stale exemption naming a renamed cell" },
+  { reason: "no cell id at all" },
+];
+
 /** The cell factories, and the field each one's discriminator reports. */
 const FACTORIES = [
   { name: "matchCell", secondaryField: "secondary" },
@@ -1235,7 +1253,25 @@ try {
     }
     return { valid, malformed };
   };
-  const exemptions = validateUngraded(UNGRADED_CELLS, declaredCellSet, baselineFieldFor);
+  // BOTH the real list and the planted one go through THE SAME CALL, and that is deliberate.
+  //
+  // The real list is EMPTY, so a mutation that replaces this call with a bare `entry.cell` read
+  // changes nothing observable and SURVIVES: the corpus reported exactly that. A control that
+  // exercises a private copy of the logic does not defend the call site the product actually uses.
+  // Concatenating the planted entries here means the validator is driven with real data on the
+  // path that matters, and `exemptions` is filtered back to the real list afterwards so the
+  // planted entries can never grant coverage to anything.
+  const allExemptions = validateUngraded(
+    [...UNGRADED_CELLS, ...PLANTED_EXEMPTIONS],
+    declaredCellSet,
+    baselineFieldFor,
+  );
+  const realExemptionCells = new Set(UNGRADED_CELLS.map((entry) => entry && entry.cell));
+  const exemptions = {
+    valid: new Set([...allExemptions.valid].filter((cell) => realExemptionCells.has(cell))),
+    malformed: allExemptions.malformed.filter((entry) => [...realExemptionCells]
+      .some((cell) => typeof cell === "string" && entry.startsWith(`${cell}:`))),
+  };
   const ungradedNamed = exemptions.valid;
 
   // The validator is planted against a synthetic list, because the real one is required to be EMPTY
@@ -1254,18 +1290,11 @@ try {
   // no gradable field, this row goes red and someone decides deliberately whether an exemption is
   // warranted, instead of the category quietly becoming reachable.
   const qualifyingCells = declaredCells.filter((cellId) => baselineFieldFor(cellId) === undefined);
-  const plantedExemptions = validateUngraded(
-    [
-      { cell: "ip-loopback" },
-      { cell: "ip-loopback", reason: "   " },
-      { cell: "ip-loopback", reason: "cannot be graded" },
-      { cell: "ip-loopback", reason: "cannot be graded", provenBy: "no gradable field in the baseline row" },
-      { cell: "no-such-cell-anywhere", reason: "stale exemption naming a renamed cell" },
-      { reason: "no cell id at all" },
-    ],
-    declaredCellSet,
-    baselineFieldFor,
-  );
+  const plantedExemptions = {
+    valid: new Set([...allExemptions.valid].filter((cell) => !realExemptionCells.has(cell))),
+    malformed: allExemptions.malformed.filter((entry) => ![...realExemptionCells]
+      .some((cell) => typeof cell === "string" && entry.startsWith(`${cell}:`))),
+  };
   check(
     "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies",
     exemptions.malformed.length === 0
