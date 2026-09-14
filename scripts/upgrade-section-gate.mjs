@@ -388,7 +388,27 @@ if (process.argv.includes("--self-test")) {
     const cleanMerge = merged("merge-clean", "fix(core): a harmless fix");
     const breakingMerge = merged("merge-breaking", "feat(core)!: rename a wire field");
     const parentsOf = (dir) => git(["rev-list", "--parents", "-n", "1", "HEAD"], dir).stdout.trim().split(/\s+/).length - 1;
-    const runIn = (dir, args) => spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { cwd: dir, encoding: "utf8" });
+    // THE HELPER REFUSES ANY DIRECTORY THIS BLOCK DID NOT BUILD, and that is construction rather
+    // than convention. Mutation found the gap: replacing a built repository with `process.cwd()`
+    // left every cell GREEN, because this lane's own checkout happens to have one parent and so
+    // happens to satisfy the refusal. The cell could not tell a repository it constructed from an
+    // ambient one that merely fit, which is the whole defect restated one level up: a cell whose
+    // result is decided by the weather passes for as long as the weather holds. Pinning the
+    // helper to `tmp` means the ambient checkout cannot be graded here even by accident.
+    //
+    // IT REFUSES BY RETURNING A FAILING RESULT RATHER THAN BY THROWING. A throw ends the run, and
+    // a suite that dies early is red for a reason no cell names: the reader is handed a stack
+    // trace where a verdict belongs, and the mutation proof cannot tell that crash from any other.
+    // Returning an impossible status instead makes the cell that used the wrong directory red on
+    // its own line, which is the only red worth printing.
+    let ungradedDirs = 0;
+    const runIn = (dir, args) => {
+      if (!String(dir).startsWith(tmp)) {
+        ungradedDirs += 1;
+        return { status: -1, stdout: "", stderr: `self-test: refused to grade a repository this block did not build: ${dir}` };
+      }
+      return spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { cwd: dir, encoding: "utf8" });
+    };
     const saysIn = (dir, args, needle, code = 2) => {
       const r = runIn(dir, args);
       return r.status === code && (r.stderr ?? "").includes(needle);
@@ -429,6 +449,12 @@ if (process.argv.includes("--self-test")) {
       runIn(cleanMerge, ["--merge-snapshot"]).status === 0);
     cell("REFUSE CONTROL: …and exits 1 when that merge carries an undocumented breaking commit",
       runIn(breakingMerge, ["--merge-snapshot"]).status === 1);
+    // THE GUARD IS ITSELF GRADED, because a guard nobody checks is the mute button this suite
+    // already caught once in its skip mechanism. If any cell above reached for a repository this
+    // block did not build, the counter is non-zero and this cell reds naming that directly,
+    // rather than a substituted repository quietly satisfying whatever it was asked.
+    cell("every repository graded above was BUILT HERE, not inherited from the ambient checkout",
+      ungradedDirs === 0, { ungradedDirs });
     rmSync(tmp, { recursive: true, force: true });
   }
   // THESE TWO CELLS NEED REAL RELEASE HISTORY, AND A SUITE MUST NOT RED FOR A REASON THAT IS NOT
@@ -481,7 +507,7 @@ if (process.argv.includes("--self-test")) {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  const EXPECTED = 48;
+  const EXPECTED = 50;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
