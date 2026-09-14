@@ -96,6 +96,44 @@ const check = (name, condition, detail) => {
 };
 
 /** Run a scanner file's self-test and return its exit code plus the rows it emitted. */
+/**
+ * A run whose `exitCode` COUNTS ITS OWN READS.
+ *
+ * Every guard in this file before this one asked a question about SHAPE, and review answered each
+ * by writing one more line of harness. A reader census was beaten by a renamed parameter, taint by
+ * an alias and then a destructure, an escape rule by moving the launderer one frame out, and a
+ * file-wide argument rule by five shapes that pass no argument at all. The last of those needed no
+ * helper, no alias and no handover:
+ *
+ *     const secondary = run.exitCode === 2 ? "0" : cellSecondary(run.rows, cell, field);
+ *
+ * It propagates nothing, so every rule about how a value TRAVELS has nothing to see, and it cannot
+ * be told apart from the legitimate third kill assertion by reading the source: both consult
+ * `exitCode` in the same scope, and one of them is a check the fixture exists to make. A source
+ * guard cannot separate them, which is why the last four rules each moved the frame by one line.
+ *
+ * So this stops asking what the source looks like and observes what the run DOES. The field is an
+ * accessor that increments a counter, and the kill loop below requires EXACTLY ONE read per cell,
+ * the one its own exit-code assertion makes. An oracle has to consult the exit code to know when to
+ * lie, so it reads a second time and the count says so, whatever spelling it uses. A lie that does
+ * not read the exit code is not an exit-code oracle at all.
+ */
+const countingRun = (status, output) => {
+  const rows = output.split(/\r?\n/).filter(Boolean);
+  let reads = 0;
+  return {
+    get exitCode() {
+      reads += 1;
+      return status;
+    },
+    // Not an accessor, deliberately. The count must not move when the harness asks how many times
+    // the exit code was read, or reading the meter would change it.
+    exitCodeReads: () => reads,
+    output,
+    rows,
+  };
+};
+
 const runSelftest = (file) => {
   const result = spawnSync(process.execPath, [file, "--selftest", "--root", ROOT], {
     encoding: "utf8",
@@ -103,8 +141,7 @@ const runSelftest = (file) => {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw new Error(`could not run ${file}: ${result.error.message}`);
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  return { exitCode: result.status, output, rows: output.split(/\r?\n/).filter(Boolean) };
+  return countingRun(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`);
 };
 
 /**
@@ -124,8 +161,7 @@ const runTrackedSelftest = () => {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw new Error(`could not run ${SCANNER}: ${result.error.message}`);
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  return { exitCode: result.status, output, rows: output.split(/\r?\n/).filter(Boolean) };
+  return countingRun(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`);
 };
 
 /**
@@ -1220,11 +1256,35 @@ try {
     );
 
     // A dead discriminator must also be visible in the two figures a human actually reads.
+    //
+    // The exit code is read ONCE, into a binding, and the condition and the message both use that
+    // binding. This is not style. The read budget asserted below is the only instrument in this
+    // file that survives review, and it only works if the honest path's consumption is exact and
+    // deliberate: a second read here would raise the budget to two and leave room for an oracle to
+    // hide inside it.
+    const observedExit = run.exitCode;
     check(
       `${cell}: a dead cell is visible in the summary row and the exit code`,
-      run.exitCode === 2 && runSummary !== undefined && runSummary.status === "FAIL"
+      observedExit === 2 && runSummary !== undefined && runSummary.status === "FAIL"
         && runSummary.passed === runSummary.total - 1,
-      `exit=${run.exitCode}/2 cells=${runSummary?.passed}/${runSummary?.total} status=${runSummary?.status}`,
+      `exit=${observedExit}/2 cells=${runSummary?.passed}/${runSummary?.total} status=${runSummary?.status}`,
+    );
+
+    // THE READ BUDGET. This is the guard that does not care how the source is spelled.
+    //
+    // Grading this cell needs the exit code exactly once, for the assertion directly above. An
+    // exit-code oracle must consult the exit code to know when to lie, so it spends a second read,
+    // and this counts reads rather than reading code. Every evasion this panel produced becomes the
+    // same number: the launderer, the alias, the destructure, the reconstruction, the spread, and
+    // the bare ternary that passes nothing anywhere all have to ask what the exit code was.
+    //
+    // The counter is a property of the run object, so it cannot be satisfied by a shape the walkers
+    // did not enumerate, and there is no next frame to move to: an oracle that never reads the exit
+    // code cannot tell a tampered run from a clean one, which is the whole capability being denied.
+    check(
+      `${cell}: grading this cell reads the run's exit code exactly once, so no second reader can be consulting it`,
+      run.exitCodeReads() === 1,
+      `exit_code_reads=${run.exitCodeReads()}/1`,
     );
   }
 } finally {

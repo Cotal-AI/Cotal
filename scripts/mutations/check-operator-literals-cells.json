@@ -256,6 +256,14 @@
       "replace": "            void callee;",
       "expectRed": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias",
       "cell": "argument guard: no run-shaped value is passed to any call in this file, and the walker that says so is proven able to see one through a two-hop alias"
+    },
+    {
+      "name": "the exit-code accessor stops counting, so an oracle's extra read is invisible",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    get exitCode() {\n      reads += 1;\n      return status;\n    },",
+      "replace": "    get exitCode() {\n      return status;\n    },",
+      "expectRed": "host-planted: grading this cell reads the run's exit code exactly once, so no second reader can be consulting it",
+      "cell": "host-planted: grading this cell reads the run's exit code exactly once, so no second reader can be consulting it"
     }
   ]
 }
