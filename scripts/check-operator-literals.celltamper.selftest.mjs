@@ -834,6 +834,25 @@ try {
       `status=${cellStatus(copyRun, cell)}/PASS`,
     );
 
+    // BEFORE TRUSTING A ZERO, PROVE THIS READER CAN REPORT A NONZERO. Every kill below is decided
+    // by `cellSecondary` returning "0", so a reader hardwired to "0" would make all of them pass
+    // vacuously. That is not hypothetical: a reviewer replaced this reader's return with
+    // `return "0"` and the whole suite stayed at a full green, every kill assertion satisfied by a
+    // reader that had stopped reading. The status and summary checks did not expose it, because
+    // they read a different field and still went red on the live tampers.
+    //
+    // So the reader is fed a KNOWN-GOOD input first: the same field, on the same cell, in the
+    // UNTAMPERED run, where the subject is intact and the discriminator must report a positive
+    // count. A constant "0" fails here, and a reader that cannot find its row reports undefined and
+    // fails here too. This is the fixture's own subject applied to the fixture: an instrument that
+    // only ever reports the value meaning "dead" cannot tell you anything is alive.
+    const baselineSecondary = cellSecondary(copyRun, cell, secondaryField);
+    check(
+      `${cell}: the ${secondaryField} reader reports a nonzero count before any tamper, so a later 0 is a reading`,
+      baselineSecondary !== undefined && Number(baselineSecondary) > 0,
+      `baseline ${secondaryField}=${baselineSecondary ?? "undefined"}/>0`,
+    );
+
     let tamperedSource;
     try {
       tamperedSource = helper
