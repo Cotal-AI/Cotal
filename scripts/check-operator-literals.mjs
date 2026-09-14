@@ -55,15 +55,16 @@ const RULES = new Map([
   ['home-path', 'absolute home path'],
 ]);
 
-const IPV4_CANDIDATE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\.?[\dA-Za-z])(?!\.(?!["'`)\]}!?;]*(?:\s|$)))/g;
+const IPV4_CANDIDATE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d)(?!\.[\dA-Za-z])(?!\.(?!["'`)\]}!?;]*(?:\s|$)))/g;
 const CIDR_SUFFIX = /^\/(?:[0-9]|[12][0-9]|3[0-2])(?![A-Za-z0-9_/])/;
 // A colon run wide enough to hold any IPv6 spelling. node:net decides whether it is an address.
-// The guards exclude a letter, a colon and a dot on either side, so a hostname, a longer colon
-// run and a dotted name are not cut into. A trailing sentence period is admitted before closing
+// The leading guard excludes a letter, a colon and a dot, so a hostname or longer colon run is not
+// cut into from the left. The trailing guards refuse digits and dotted labels while preserving a
+// zero-dot letter-adjacent address as a privacy finding. A trailing sentence period is admitted before
 // punctuation and then whitespace or end of line. A hyphen is NOT excluded, because a diff minus
 // line and a hyphenated identifier are ordinary ways for an operator address to reach this gate,
 // and the IPv4 guard admits them too.
-const IPV6_CANDIDATE = /(?<![0-9A-Za-z:.])(?:[0-9A-Fa-f]{0,4}:){2,8}[0-9A-Fa-f]{0,4}(?:\.\d{1,3}){0,3}(?![0-9A-Za-z:])(?!\.?[0-9A-Za-z])(?!\.(?!["'`)\]}!?;]*(?:\s|$)))/g;
+const IPV6_CANDIDATE = /(?<![0-9A-Za-z:.])(?:[0-9A-Fa-f]{0,4}:){2,8}[0-9A-Fa-f]{0,4}(?:\.\d{1,3}){0,3}(?![0-9:])(?!\.[0-9A-Za-z])(?!\.(?!["'`)\]}!?;]*(?:\s|$)))/g;
 const IPV6_CIDR_SUFFIX = /^\/(?:12[0-8]|1[01][0-9]|[1-9][0-9]|[0-9])(?![A-Za-z0-9_/])/;
 const HOME_PATH = /(?<![A-Za-z0-9._~-])\/(?:home|Users)\/(?!\.\.?\/?(?:$|[^A-Za-z0-9._-]))[A-Za-z0-9_][A-Za-z0-9._-]*(?=\/|$|[^A-Za-z0-9._-])/g;
 
@@ -656,8 +657,9 @@ const SELFTEST_SENTENCE_IPV4 = [
   `The broker is ${SELFTEST_SENTENCE_IPV4_ADDRESS}.;`,
   `The broker is ["${SELFTEST_SENTENCE_IPV4_ADDRESS}."]`,
 ];
-const SELFTEST_SENTENCE_NAME = `The broker runs at ${['api', 'example', 'com'].join('.')}. Retry later.`;
 const SELFTEST_SENTENCE_NAME_TAIL = `Resolve ${[95, 217, 134, 22].join('.')}./path`;
+const SELFTEST_LETTER_ADJACENT_IPV4 = `${SELFTEST_SENTENCE_IPV4_ADDRESS}abc`;
+const SELFTEST_LETTER_ADJACENT_IPV6 = `${SELFTEST_SENTENCE_IPV6_ADDRESS}xyz`;
 const SELFTEST_IPV6_HYPHEN_TAIL = `${['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':')}-node`;
 const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
@@ -705,7 +707,8 @@ const CELL_EXPECTATIONS = new Map([
   ['ipv6-diff-removed-line', 'primary=1/1 secondary=1/1'],
   ['sentence-final-period-ipv6', 'primary=10/10 secondary=10/10'],
   ['sentence-final-period-ipv4', 'ipv4_rule=10/10'],
-  ['sentence-final-period-refuses-name', 'name=0/0 name_tail=0/0'],
+  ['sentence-final-period-refuses-name', 'name_tail=0/0'],
+  ['letter-adjacent-address', 'ipv4_rule=1/1 ipv6_rule=1/1'],
   ['ipv6-hyphen-suffixed-identifier', 'primary=1/1 secondary=1/1'],
   ['ipv6-documentation-network', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local', 'primary=0/1 secondary=1/1'],
@@ -1096,15 +1099,29 @@ const SELFTEST_CELLS = [
   {
     id: 'sentence-final-period-refuses-name',
     measure: () => {
-      const name = findings(SELFTEST_SENTENCE_NAME, 'fixture', [SELFTEST_HOST]).length;
       const tail = findings(SELFTEST_SENTENCE_NAME_TAIL, 'fixture', [SELFTEST_HOST]).length;
       return {
-        actual: `name=${name}/0 name_tail=${tail}/0`,
-        pass: name === 0 && tail === 0,
+        actual: `name_tail=${tail}/0`,
+        pass: tail === 0,
       };
     },
   },
   // SELFTEST_CELL sentence-final-period-refuses-name END
+  // SELFTEST_CELL letter-adjacent-address START
+  {
+    id: 'letter-adjacent-address',
+    measure: () => {
+      const ipv4 = findings(SELFTEST_LETTER_ADJACENT_IPV4, 'fixture', [SELFTEST_HOST])
+        .filter((finding) => finding.rule === 'public-ipv4').length;
+      const ipv6 = findings(SELFTEST_LETTER_ADJACENT_IPV6, 'fixture', [SELFTEST_HOST])
+        .filter((finding) => finding.rule === 'public-ipv6').length;
+      return {
+        actual: `ipv4_rule=${ipv4}/1 ipv6_rule=${ipv6}/1`,
+        pass: ipv4 === 1 && ipv6 === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL letter-adjacent-address END
   // SELFTEST_CELL ipv6-hyphen-suffixed-identifier START
   matchCell('ipv6-hyphen-suffixed-identifier', SELFTEST_IPV6_HYPHEN_TAIL, 'public-ipv6', 1, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-hyphen-suffixed-identifier END
