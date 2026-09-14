@@ -641,13 +641,23 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           persona,
           model: model ?? null,
           variant: variant ?? null,
-          cwd: req.cwd ?? null,
-          // #1616 item 3, identity half: the PLACEMENT TARGET is hashed into the step's input, so
-          // replaying the same step against a different manager instance diverges instead of
-          // silently reusing the resolution that was taken against the old one.
-          placement: req.placement === undefined
-            ? null
-            : { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId },
+          // #1616 item 3, identity half: placement and `cwd` are hashed WHEN PRESENT and contribute
+          // NO KEY AT ALL when omitted, which is the same rule `req` above already follows. The
+          // first cut of this wrote `cwd: req.cwd ?? null` and `placement: ... ?? null`
+          // unconditionally, and that is a REPLAY COMPATIBILITY BREAK, not a cosmetic difference: a
+          // legacy spawn that never mentioned either option hashed a six-key object, and hashing an
+          // eight-key object carrying two nulls it never had changes its `inputHash` — so every
+          // recorded pre-#1616 spawn step diverges on resume. `digest` canonicalizes (RFC 8785), so
+          // the key SET is what the hash is over and a present-but-null key is a different set.
+          //
+          // Absent contributes nothing; PRESENT IS HASHED. Not hashing placement at all would also
+          // restore the legacy hash, and would be wrong for the other direction: replaying a step
+          // against a different manager instance must DIVERGE as a migration rather than silently
+          // reuse the resolution that was taken against the old instance.
+          ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
+          ...(req.placement !== undefined
+            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }
+            : {}),
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
