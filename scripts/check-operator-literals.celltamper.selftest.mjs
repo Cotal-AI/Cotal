@@ -268,10 +268,10 @@ const tamperHelper = (source, id, helper, find, replace) => {
  * Each case names a cell, and an edit that destroys the property the cell's SECONDARY reader
  * asserts while leaving the scanner's matching rules untouched.
  *
- * COVERAGE IS BY CONSTRUCTOR FAMILY, NOT BY CELL. The scanner builds its 61 cells from a small
+ * COVERAGE IS BY CONSTRUCTOR FAMILY, NOT BY CELL. The scanner builds its 65 cells from a small
  * number of shared factories, and hollowing a factory's discriminator kills every cell it built at
  * once. One case per family therefore grades every cell in that family, while one case per cell
- * would be 61 cases mostly re-proving the same function. The families are enumerated from the
+ * would be 65 cases mostly re-proving the same function. The families are enumerated from the
  * SOURCE by the census below, so a family added later without a case fails loudly instead of being
  * silently ungraded. That enumeration is what an earlier version of this file lacked: two separate
  * survivors were found in review, both in families the case list did not name.
@@ -590,7 +590,7 @@ const CASES = [
  *
  * COVERAGE IS OVER CELLS, AND THE FACTORY IS ONLY A GROUPING. An earlier version enumerated cell
  * FACTORIES and treated a case per factory as covering everything that factory built. That is true
- * as far as it goes, and it is not far enough: 10 of the scanner's 61 cells are INLINE object
+ * as far as it goes, and it is not far enough: 14 of the scanner's 65 cells are INLINE object
  * literals with a `measure` of their own and no factory at all, so a census over factories cannot
  * see them by construction. Two reviewers found that independently, and it is the same defect as
  * #1580 itself a third time: an enumeration whose denominator silently excludes the thing being
@@ -962,8 +962,8 @@ try {
   //
   // This was pointed at factories for two rounds and it was the wrong denominator. A case list
   // grades what it names and stays silent about what it forgot, so the census exists to make that
-  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 10 of the
-  // scanner's 61 cells are inline object literals built by no factory at all, so no factory
+  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 14 of the
+  // scanner's 65 cells are inline object literals built by no factory at all, so no factory
   // enumeration, however perfect, can see them. A reviewer proved the cost rather than arguing it:
   // hollowing `workflow-host-exclusion`'s inline discriminator to a constant left the scanner at
   // cells=61/61 exit 0 AND this suite at a full green, with a same-run positive control showing the
@@ -1393,7 +1393,7 @@ try {
   // still refused, by measurement, on the strength of the cell's own baseline row.
   //
   // NO ENTRY IN THIS CONTROL IS VALID, and that is the measured state rather than an oversight: all
-  // 61 cells emit a gradable field in the baseline, so no cell can honestly claim it has none, and
+  // 65 cells emit a gradable field in the baseline, so no cell can honestly claim it has none, and
   // the honest arm of this control is currently UNSATISFIABLE. That is reported here rather than
   // papered over with a fabricated passing entry, because a control whose positive case cannot be
   // constructed is exactly the shape of the delete-the-cell proof this suite already rejects.
@@ -1601,7 +1601,7 @@ try {
 
   // WHAT THIS SUITE DOES NOT PROVE, AND WHY THE GUARDS THAT CLAIMED IT ARE GONE.
   //
-  // Everything above grades THE SCANNER: 61 cells from a derived census, tampered one at a time,
+  // Everything above grades THE SCANNER: 65 cells from a derived census, tampered one at a time,
   // each required to go red BY NAME. That part held under eleven rounds of review without a single
   // finding against it, and it is what this file is for.
   //
