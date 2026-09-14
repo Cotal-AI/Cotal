@@ -368,12 +368,115 @@ const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   },
 });
 
-const mk = (runId: string): MeshHandler => new MeshHandler(
+/**
+ * A SECOND (or third) live instance of the same endpoint, served from this process under its own
+ * identity and its own host label. #1616's matrix needs more than one manager to say anything at
+ * all about pinning: with a single instance serving, a route that ignores the target reaches the
+ * same place as a route that honours it, and a broken pin is indistinguishable from a working one.
+ *
+ * It serves `resolve-cwd` and `spawn` only — the two commands a placed spawn uses. Its books are
+ * its own, which is what lets a cell say WHICH manager answered rather than only that one did.
+ */
+interface ExtraManager {
+  readonly instanceId: string;
+  readonly host: string;
+  /** Phase-A asks this instance answered, in order. */
+  readonly resolves: Array<{ asked: string; answered: string | null }>;
+  /** Phase-B submissions this instance accepted, by goalId. */
+  readonly invokes: string[];
+  stop(): Promise<void>;
+}
+const extraManager = async (instanceId: string, host: string): Promise<ExtraManager> => {
+  const gate = serveIssuanceGateKv(authKv, SPACE, { endpoint: EP, instanceId });
+  await provisionEndpointGateOpen(authKv, { endpoint: EP, instanceId, principal: "local.mgr" });
+  await registerServiceInstance(kv, {
+    space: SPACE,
+    spec: { endpoint: EP, owner: "local", clusterDigests: [CLOSURE_DIGEST], protocol: { v: 1 } },
+    instanceId, registrant: { owner: "local" },
+    authority,
+    barrier: endpointRegistrationBarrier(authKv, SPACE, { endpoint: EP, instanceId, opId: instanceId }),
+    readClusterArtifact,
+  });
+  const seen = await gate.observe();
+  if (seen === null) throw new Error(`the extra instance ${instanceId} lost its issuance gate after registration`);
+  const epoch = seen.processEpoch;
+  const g = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: EP, instanceId, epoch,
+    holder: { owner: "local" }, authority, readProcessEpoch: () => epoch, readClusterArtifact,
+  });
+  const resolvesHere: Array<{ asked: string; answered: string | null }> = [];
+  const invokesHere: string[] = [];
+  const resolveHere = (ctx: EpServeContext): unknown => {
+    const asked = String(((ctx.request.args ?? {}) as { cwd?: unknown }).cwd);
+    let answered: string;
+    try {
+      answered = canonicalCwd(asked);
+    } catch (err) {
+      resolvesHere.push({ asked, answered: null });
+      throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on ${host}: ${JSON.stringify(asked)} (${(err as Error).message})`);
+    }
+    resolvesHere.push({ asked, answered });
+    return { cwd: answered, host };
+  };
+  const spawnHere = async (ctx: EpServeContext): Promise<unknown> => {
+    const args = (ctx.request.args ?? {}) as Record<string, unknown>;
+    const goalId = ctx.request.id;
+    invokesHere.push(goalId);
+    const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
+    if (args.cwd !== undefined && (typeof args.cwd !== "string" || !existsSync(args.cwd) || !statSync(args.cwd).isDirectory()))
+      throw new EpEnvelopeError("failed-precondition", `cwd is not an existing directory: ${JSON.stringify(args.cwd)}`);
+    const ref = goalRefOf(ctx.subject, goalId);
+    const b = await bindGoal(goalCtx, ref, fingerprint);
+    if (!b.bound) throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound (SPEC 13.6)`);
+    await createGoal(goalCtx, ref, {
+      fingerprint, command: "spawn",
+      caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
+      acceptedEpoch: epoch, requestId: goalId, sourceSeq: 0, acceptedAt: Date.now(), readinessDeadlineMs: 30_000,
+    });
+    seat += 1;
+    const actor = `seat${seat}`;
+    const uid = `s${String(seat).padStart(25, "0")}`;
+    const name = `${String(args.name)}-${seat}`;
+    mappings.set(`local.${actor}`, { lifecycleUid: uid, mappingRevision: 1 });
+    terminals.push((async () => {
+      await commitGoalResult(goalCtx, {
+        ref, now: Date.now(), cause: "complete", state: "succeeded",
+        data: { name, agent: "claude", id: `local.${actor}`, mode: "pty", lifecycleUid: uid },
+        committer: { instanceId, epoch },
+      });
+    })().catch((err) => { console.log(`  ! ${host} terminal commit failed:`, (err as Error).message); }));
+    return {
+      name, owner: "local", actor, uid, goalId, fingerprint, readinessDeadlineMs: 30_000,
+      executor: { lifecycleUid: instanceId, epoch },
+    };
+  };
+  // Every granted ephemeral command needs a def or `serveEndpoint` refuses the table (SPEC 13.9),
+  // so `despawn` rides the suite's shared handler and the shared seat mappings with it.
+  const handle = serveEndpoint(nc, SPACE, g, [
+    { command: "spawn", contract: COMPILED.spawn, handler: spawnHere },
+    { command: "despawn", contract: COMPILED.despawn, handler: despawnHandler },
+    { command: "resolve-cwd", contract: COMPILED["resolve-cwd"], handler: resolveHere },
+  ] as EpCommandDef[], { public: true }, {
+    resolveTarget: (t) => {
+      const m = mappings.get(`${t.owner}.${t.actor}`);
+      return m !== undefined && !gone.has(m.lifecycleUid) ? m : undefined;
+    },
+  });
+  return { instanceId, host, resolves: resolvesHere, invokes: invokesHere, stop: () => handle.stop() };
+};
+
+/** The DRIVER's own instance id: the process running the program, never the one serving `manager`. */
+const DRIVER_IID = "i".repeat(26);
+/** A CLI-held run, shaped like `cliHolder()` in run-command.ts: a holder that is not a manager. */
+const CLI_IID = "c".repeat(26);
+const CLI_HOLDER = { id: "cli-run-3f9ab210", lifecycleUid: "u_cli_meshspawn" };
+const mkAs = (runId: string, holder: { id: string; lifecycleUid: string }, instanceId: string): MeshHandler => new MeshHandler(
   nc, kv, js, jsm,
-  { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+  { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId, epoch: 1, holder, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => Date.now(),
 );
+const mk = (runId: string): MeshHandler => mkAs(runId, HOLDER, DRIVER_IID);
 /** A step context as the interpreter hands it over, with the suite's hand on the cancel signal. */
 const stepCtx = (requestId: string, resume?: Record<string, unknown>) => {
   const listeners: ((reason: string) => void)[] = [];
@@ -571,6 +674,161 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
       && boundRes.host === "mesh-spawn-smoke-host",
     { bound: boundRes });
   rmSync(aliasLink, { force: true });
+}
+
+// ── 3e) #1616 THE ACCEPTANCE MATRIX (design record line 106) ──────────────────────
+// The five rows the record asks for that the wrong-instance cell in 3d does not reach: whose
+// identity resolves a placement, two managers that are BOTH up, an instance that is gone, an
+// instance that was replaced at the same host, and a replay whose target was edited. Every row
+// here runs against live serving instances; none of them reads a table.
+{
+  console.log("• 3e — the acceptance matrix: identities, two live managers, unavailable vs replaced, replay");
+  OUTCOME.roamer = { state: "succeeded" };
+
+  // ROW 1 — DISTINCT CLI HOLDER AND MANAGER IDENTITIES.
+  // The run is held by a CLI-shaped holder on its own instance id; the manager that serves the
+  // endpoint is a third identity. The resolution has to name the instance that ANSWERED, read off
+  // the attributed reply, not the caller that asked — otherwise a driver on a different filesystem
+  // signs its own guess with the manager's name. Killed by M27 "the resolution records the
+  // driver's own instance id" (`instanceId: this.binding.instanceId` in `resolveCwd`).
+  const cliHandler = mkAs("sp-3e1", CLI_HOLDER, CLI_IID);
+  const idCtx = stepCtx(token("A"));
+  const held = await withDeadline(
+    cliHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: PLACE }, idCtx.ctx)
+      .then((v) => v, (e: unknown) => { console.log("  ! the CLI-held placed spawn rejected:", (e as Error)?.message?.slice(0, 120)); return undefined; }),
+    30_000, "the CLI-held placed spawn");
+  const heldRes = idCtx.bound.resolution as { cwd?: unknown; endpoint?: unknown; instanceId?: unknown; host?: unknown } | undefined;
+  const heldGoal = allocations.find((a) => a.name === held?.agent?.split("#")[0])?.goalId;
+  c("a CLI-held run places onto a manager that is a different identity in every field, and the resolution names the MANAGER that answered",
+    held !== undefined && CLI_IID !== MGR_IID && CLI_HOLDER.lifecycleUid !== HOLDER.lifecycleUid
+      && heldRes?.instanceId === MGR_IID && heldRes.endpoint === EP && heldRes.host === "mesh-spawn-smoke-host"
+      && acceptances.get(heldGoal ?? "")?.executor !== undefined
+      && (acceptances.get(heldGoal ?? "")?.executor as { lifecycleUid?: string } | undefined)?.lifecycleUid === MGR_IID,
+    { cli: CLI_IID, driverHolder: CLI_HOLDER.lifecycleUid, resolution: heldRes,
+      executor: acceptances.get(heldGoal ?? "")?.executor });
+
+  // ROW 2 — TWO AVAILABLE MANAGERS, DETERMINISTIC PINNING.
+  // Both instances serve the same endpoint at the same time, so "it worked" no longer implies "it
+  // went where it was told". ONE handler places three seats A → B → A and every one of them must
+  // resolve and submit on the instance it named, in that order, with the other instance's books
+  // untouched each time. Killed by M28 "the pinned service handle is memoized across spawns"
+  // (`this.managerService ??= resolveService(..., { instanceId })`): the B-pinned spawn then reuses
+  // A's handle, B's books stay empty and this cell reddens on the first re-pin, deterministically.
+  const MGR_B = await extraManager("b".repeat(26), "mesh-spawn-smoke-host-b");
+  const PLACE_B = { endpoint: EP, instanceId: MGR_B.instanceId } as const;
+  const twoHandler = mkAs("sp-3e2", CLI_HOLDER, CLI_IID);
+  const trail: Array<{ pinned: string; aResolves: number; bResolves: number; aInvokes: number; bInvokes: number; answered: unknown }> = [];
+  for (const [tag, place, want] of [["B1", PLACE, MGR_IID], ["B2", PLACE_B, MGR_B.instanceId], ["B3", PLACE, MGR_IID]] as const) {
+    const a0 = resolves.length, b0 = MGR_B.resolves.length, ai0 = spawnInvokes.length, bi0 = MGR_B.invokes.length;
+    const ctx = stepCtx(token(tag[0] === "B" ? tag[1] : tag[0]));
+    await withDeadline(
+      twoHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: place }, ctx.ctx)
+        .then((v) => v, (e: unknown) => { console.log(`  ! the ${want} placed spawn rejected:`, (e as Error)?.message?.slice(0, 120)); return undefined; }),
+      30_000, `the placed spawn pinned to ${want.slice(0, 4)}`);
+    trail.push({
+      pinned: want, aResolves: resolves.length - a0, bResolves: MGR_B.resolves.length - b0,
+      aInvokes: spawnInvokes.length - ai0, bInvokes: MGR_B.invokes.length - bi0,
+      answered: (ctx.bound.resolution as { instanceId?: unknown; host?: unknown } | undefined),
+    });
+  }
+  const wentTo = (row: typeof trail[number], mine: number, theirs: number): boolean =>
+    row.aResolves === mine && row.aInvokes === mine && row.bResolves === theirs && row.bInvokes === theirs;
+  c("with two managers serving at once, each placed spawn resolves AND submits on the instance it named, in both directions and back again",
+    trail.length === 3
+      && wentTo(trail[0]!, 1, 0) && wentTo(trail[1]!, 0, 1) && wentTo(trail[2]!, 1, 0)
+      && (trail[0]!.answered as { host?: unknown } | undefined)?.host === "mesh-spawn-smoke-host"
+      && (trail[1]!.answered as { host?: unknown } | undefined)?.host === MGR_B.host
+      && (trail[2]!.answered as { host?: unknown } | undefined)?.host === "mesh-spawn-smoke-host",
+    trail);
+
+  // ROW 3 — THE PINNED INSTANCE IS UNAVAILABLE.
+  // B was demonstrably up one cell ago (row 2 is this row's positive control: the same two readers
+  // that must stay at zero here were +1 there). It is now down, while A is still up and still
+  // serving the class rail. The pin must refuse, and must not quietly become A. Killed by M29 "a
+  // pinned resolve that fails falls back to the class handle"
+  // (`resolveService(..., { instanceId }).catch(() => this.manager())`): the request then lands on
+  // A, succeeds, and both halves of this cell fail.
+  await MGR_B.stop();
+  const downA0 = resolves.length, downAi0 = spawnInvokes.length, downAlloc0 = allocations.length;
+  const down = await withDeadline(
+    twoHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: PLACE_B }, stepCtx(token("D")).ctx)
+      .then(() => null, (e: unknown) => e as Error),
+    45_000, "the spawn pinned to a stopped instance");
+  c("a placed spawn pinned to an instance that is no longer serving refuses, and never retargets the manager that is still up",
+    down !== null && down !== undefined
+      && resolves.length === downA0 && spawnInvokes.length === downAi0 && allocations.length === downAlloc0,
+    { err: down === null ? "resolved" : String((down as Error)?.message ?? down).slice(0, 140),
+      aResolves: resolves.length - downA0, aInvokes: spawnInvokes.length - downAi0, aAllocs: allocations.length - downAlloc0 });
+
+  // ROW 4 — THE PINNED INSTANCE WAS REPLACED.
+  // Not the same row as row 3. Here somebody IS serving at B's host label — a successor instance,
+  // the shape a restarted manager takes — and the old pin still must not reach it, because the pin
+  // names an identity and not a host. Killed by the same M29, which makes the stale pin fall
+  // through to whichever instance answers the class rail.
+  const MGR_C = await extraManager("d".repeat(26), MGR_B.host);
+  const repA0 = resolves.length, repAi0 = spawnInvokes.length, repC0 = MGR_C.invokes.length;
+  const stale = await withDeadline(
+    twoHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: PLACE_B }, stepCtx(token("E")).ctx)
+      .then(() => null, (e: unknown) => e as Error),
+    45_000, "the spawn pinned to a replaced instance");
+  c("a placed spawn pinned to a REPLACED instance refuses and never reaches the successor serving that same host",
+    stale !== null && stale !== undefined
+      && MGR_C.resolves.length === 0 && MGR_C.invokes.length === repC0
+      && resolves.length === repA0 && spawnInvokes.length === repAi0,
+    { err: stale === null ? "resolved" : String((stale as Error)?.message ?? stale).slice(0, 140),
+      successorResolves: MGR_C.resolves.length, successorInvokes: MGR_C.invokes.length - repC0 });
+  // The positive control for the row above: the successor was reachable AT THAT MOMENT, so the
+  // refusal was about the identity in the pin and not about the host being unusable. Without this
+  // cell, a successor that simply never came up would score the row green.
+  const freshCtx = stepCtx(token("F"));
+  const fresh = await withDeadline(
+    twoHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: { endpoint: EP, instanceId: MGR_C.instanceId } }, freshCtx.ctx)
+      .then((v) => v, (e: unknown) => { console.log("  ! the successor-pinned spawn rejected:", (e as Error)?.message?.slice(0, 120)); return undefined; }),
+    30_000, "the successor-pinned placed spawn");
+  c("and the successor was live at that moment: pinned by its OWN id the same spawn succeeds on it",
+    fresh !== undefined && MGR_C.resolves.length === 1 && MGR_C.invokes.length === repC0 + 1
+      && (freshCtx.bound.resolution as { instanceId?: unknown; host?: unknown } | undefined)?.instanceId === MGR_C.instanceId
+      && (freshCtx.bound.resolution as { host?: unknown } | undefined)?.host === MGR_B.host,
+    { agent: fresh?.agent, resolution: freshCtx.bound.resolution, successorInvokes: MGR_C.invokes.length - repC0 });
+
+  // ROW 5 — A TARGET EDIT ON AN ACTUAL REPLAY.
+  // Not the static `hashedOptions` check in 3d: a real run is driven, its spawn settles on A, and
+  // the SAME run id is then re-driven from a source whose only edit is the placement instance id.
+  // The interpreter's journal lookup must call that divergence rather than replay A's recorded
+  // resolution under B's name. Killed by M20 "the placement target leaves the step identity"
+  // (drop `placement` from `PRIMITIVES.spawn.hashedOptions`): the two hashes then match, the
+  // recorded entry replays, and nothing diverges.
+  const place5 = (iid: string) => `{ endpoint: ${JSON.stringify(EP)}, instanceId: ${JSON.stringify(iid)} }`;
+  const prog5 = (iid: string) => `const d = await spawn("roamer", { name: "pinned", cwd: ${JSON.stringify(preparedRoot)}, placement: ${place5(iid)} });\nlog("seat", d.agent);\nawait sleep("8s", { name: "park" });`;
+  const parked = driven({ space: SPACE, endpoint: EP, kv, runId: "sp-3e", lease: lease(), source: prog5(MGR_IID), handler: mk("sp-3e") });
+  parked.catch(() => undefined);
+  let recorded: JournalEntry[] = [];
+  for (let i = 0; i < 200 && !recorded.some((e) => e.state === "settled"); i += 1) {
+    await wait(100);
+    recorded = await journalEntries("sp-3e", "spawn");
+  }
+  const settled5 = recorded.find((e) => e.state === "settled");
+  c("the recorded program placed its seat on the first manager and parked, so there is a real entry to replay",
+    settled5?.status === "ok" && settled5.name === "pinned"
+      && (recorded.filter((e) => e.state === "pending").at(-1)?.external?.resolution as { instanceId?: unknown } | undefined)?.instanceId === MGR_IID,
+    { status: settled5?.status, name: settled5?.name, entries: recorded.length });
+  const bInvokesBefore = MGR_C.invokes.length;
+  const retarget = await withDeadline(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "sp-3e", source: prog5(MGR_C.instanceId), lease: lease(), handler: mk("sp-3e"),
+  }).then(() => undefined, (e: unknown) => e as Error), 60_000, "the retargeted replay");
+  const dmsg = String((retarget as Error | undefined)?.message ?? "");
+  const rec5 = /recorded\s+(sha256:[0-9a-f]+)/.exec(dmsg)?.[1];
+  const prg5 = /program\s+(sha256:[0-9a-f]+)/.exec(dmsg)?.[1];
+  c("a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",
+    retarget !== undefined && /INPUT CHANGED/.test(dmsg) && /spawn:pinned/.test(dmsg)
+      && rec5 !== undefined && prg5 !== undefined && rec5 !== prg5
+      && MGR_C.invokes.length === bInvokesBefore,
+    { name: (retarget as Error | undefined)?.name, recorded: rec5, program: prg5,
+      dispatched: MGR_C.invokes.length - bInvokesBefore, msg: dmsg.slice(0, 160) });
+
+  // Both extra instances go down before the suite's later sections, which stop the ONE endpoint
+  // they know about and then assert that nobody answers.
+  await MGR_C.stop();
 }
 
 // ── 2) an idempotent resubmission is served, never re-allocated ───────────────────────────────
@@ -965,7 +1223,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 58;
+const EXPECTED_CELLS = 65;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
