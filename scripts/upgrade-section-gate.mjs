@@ -39,7 +39,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 export const UPGRADING_PATH = join("docs", "UPGRADING.md");
@@ -165,6 +165,23 @@ export function addedSectionsBetween(basePage, headPage) {
  * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
  * something new here.
  */
+/** Which OTHER job names a document still claims runs the gate.
+ *
+ *  PURE, EXPORTED, AND TESTED AGAINST BUILT INPUTS, because the live repository is the one input
+ *  that cannot prove this works. When the docs are correct, deleting this check changes nothing
+ *  observable, so a cell that only reads the real files passes either way and is decoration.
+ *  Measured: three mutations disabling the live-file cells all SURVIVED for exactly that reason.
+ *  The self-test therefore drives this function with documents it writes itself, one carrying a
+ *  known stale claim and one clean, so the cells fail when the detector is broken rather than when
+ *  the repository happens to be dirty.
+ *
+ *  `hostJob` is read from the workflow at the call site rather than passed as a constant, so moving
+ *  the step makes every document that names the old job go red until the prose follows it. */
+export function staleJobClaims(text, hostJob, candidates = ["unit", "ci-ok"]) {
+  return candidates.filter((j) => j !== hostJob
+    && new RegExp(`(runs?|grades?|grading path is|step in|in) the .${j}. job`).test(text));
+}
+
 export function verdict({ breaking, addedSections }) {
   // "no breaking commits DETECTED", never "no breaking commits". The gate reads markers, and the
   // design note is explicit that no marker-keyed detector can see an unmarked break, so a pass
@@ -193,6 +210,13 @@ A credential minted before 0.49.0 cannot be renewed.
 
 Every changeset marked breaking adds a section.
 `;
+
+/** The repository this script is shipped inside, found from the script's own location rather than
+ *  from `process.cwd()`. The self-test asserts facts about THIS repository's workflows and docs, so
+ *  it must not depend on where the caller happened to be standing. */
+function repoRootForDocs() {
+  return join(dirname(fileURLToPath(import.meta.url)), "..");
+}
 
 if (process.argv.includes("--self-test")) {
   let pass = 0, fail = 0, skipped = 0;
@@ -507,7 +531,105 @@ if (process.argv.includes("--self-test")) {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  const EXPECTED = 49;
+  // ---- THE DOCUMENTS MUST AGREE WITH THE WORKFLOW THEY DESCRIBE ------------------------------
+  //
+  // THIS CLASS SHIPPED THREE TIMES IN THIS TOOL'S OWN PULL REQUEST. The body claimed 36 cells and
+  // 9 mutants against a measured 50 and 16; an open question said the gate "currently self-tests"
+  // after it had been wired into CI; and, worst, docs/UPGRADING.md told operators the check runs
+  // in the `unit` job and that a red "reports the problem without blocking the merge" AFTER the
+  // step had been moved into the required job and a red had started blocking. That last one was
+  // generated into the shipped docs bundle, so the false promise reached users of the product.
+  //
+  // NO EXISTING CHECK COULD SEE IT, and that is the point. `check:docsbundle` regenerates and
+  // diffs, which proves the bundle MATCHES its source and cannot prove the source is TRUE: it
+  // propagates a faithful copy of a false claim at exit 0. This gate reads whether a SECTION
+  // EXISTS, not whether prose agrees with a workflow. So the tool written to stop documentation
+  // going stale against a change had no way to notice its own documentation going stale against
+  // its own change.
+  //
+  // The check is narrow on purpose. It does not grade prose. It asserts ONE fact that is
+  // mechanically derivable from the workflow files and is stated in the docs: WHICH JOB RUNS THE
+  // GATE. The job is read from the YAML rather than hard-coded here, so moving the step again
+  // makes these cells fail until the sentence follows it, which is the failure that was missing.
+  const workflowDir = join(repoRootForDocs(), ".github", "workflows");
+  const hostJob = (() => {
+    if (!existsSync(workflowDir)) return null;
+    for (const f of readdirSync(workflowDir).filter((n) => n.endsWith(".yml"))) {
+      const text = readFileSync(join(workflowDir, f), "utf8");
+      if (!text.includes("upgrade-section-gate.mjs")) continue;
+      // The nearest `  <job>:` key above the step is the job that hosts it. Two-space indent is
+      // the job level in every workflow here, and the step sits deeper, so scanning upward from
+      // the step's line finds the owning job without a YAML parser.
+      const lines = text.split("\n");
+      const at = lines.findIndex((l) => l.includes("upgrade-section-gate.mjs"));
+      for (let i = at; i >= 0; i--) {
+        const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(lines[i]);
+        if (m) return { job: m[1], file: f };
+      }
+    }
+    return null;
+  })();
+
+  cell("the workflow hosting this gate is discoverable from the repository itself",
+    hostJob !== null && typeof hostJob.job === "string" && hostJob.job.length > 0, hostJob);
+
+  if (hostJob) {
+    // A reader who cannot find the job name in the file learns nothing from a green cell, so the
+    // ACCEPT leg is asserted first: the name really is present and really is what we think.
+    const docPaths = [join(repoRootForDocs(), "docs", "UPGRADING.md"),
+      join(repoRootForDocs(), "docs", "design", "upgrade-section-gate.md")];
+    for (const dp of docPaths) {
+      if (!existsSync(dp)) { cell(`documentation present: ${dp}`, false, dp); continue; }
+      const doc = readFileSync(dp, "utf8");
+      const namesHost = doc.includes(`\`${hostJob.job}\``);
+      cell(`${dp.split("/").slice(-1)[0]} names the job that actually runs the gate (\`${hostJob.job}\`)`,
+        namesHost, { job: hostJob.job, from: hostJob.file });
+      // REFUSE LEG. Naming the right job is not enough if the page ALSO names a job that no longer
+      // runs it. This is the exact shape that shipped: the correct job appeared in one paragraph
+      // while a stale one still appeared in another, and a reader met whichever they reached first.
+      const stale = staleJobClaims(doc, hostJob.job);
+      cell(`…and does not ALSO claim a different job runs it`, stale.length === 0, { stale });
+    }
+    // THE SHIPPED COPY IS THE ONE THAT REACHES USERS. A correction that stops at the source leaves
+    // the product serving the old promise, which is what happened here.
+    const bundle = join(repoRootForDocs(), "extensions", "connector-core", "src", "docs-bundle.generated.ts");
+    if (existsSync(bundle)) {
+      const b = readFileSync(bundle, "utf8");
+      const staleB = staleJobClaims(b, hostJob.job);
+      cell("the SHIPPED docs bundle does not claim a job that no longer runs the gate", staleB.length === 0, { stale: staleB });
+    }
+  }
+
+  // THE DETECTOR ITSELF, DRIVEN BY BUILT INPUTS. These cells are the ones that can actually fail:
+  // they do not depend on the repository's documents being in any particular state, so breaking
+  // the detector reddens them whether or not the real docs happen to be clean today.
+  cell("ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
+    staleJobClaims("CI runs its self-test and, in the `unit` job, grades each PR.", "attribution")
+      .join() === "unit");
+  cell("…and the same page is silent once the claim is corrected",
+    staleJobClaims("CI runs its self-test and, as a step of the `attribution` job, grades each PR.",
+      "attribution").length === 0);
+  cell("the host job is honoured rather than assumed: `unit` is not stale when `unit` runs it",
+    staleJobClaims("the gate runs in the `unit` job", "unit").length === 0);
+  cell("…and `attribution` IS stale once the step lives in `unit`",
+    staleJobClaims("the gate runs in the `attribution` job", "unit", ["attribution"]).join() === "attribution");
+  cell("REFUSE CONTROL: prose merely mentioning a job name is not a claim that it runs the gate",
+    staleJobClaims("start it under a systemd unit, or in the unit of work described above",
+      "attribution").length === 0);
+  cell("every stale claim in one page is reported, not just the first",
+    staleJobClaims("it runs in the `unit` job, and grades in the `ci-ok` job", "attribution").length === 2);
+  // THE SHIPPED COPY IS A SEPARATE ARTEFACT AND NEEDS ITS OWN PROOF. The bundle stores each page
+  // as one escaped JSON string, so backticks survive but newlines become literal `\n`. A reader
+  // written for the markdown can therefore pass on the source and miss the generated copy, which
+  // is the half that reaches users. This cell drives the detector with a bundle-shaped line.
+  cell("ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",
+    staleJobClaims('"body": "CI runs its self-test and, in the `unit` job, grades each\\nPR."',
+      "attribution").join() === "unit");
+  cell("…and a corrected bundle string is silent",
+    staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
+      "attribution").length === 0);
+
+  const EXPECTED = 63;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons

@@ -158,6 +158,33 @@
       "expectRed": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
       "cell": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
       "note": "THIS IS THE DEFECT THAT TOOK THE SUITE RED IN CI. The cell used to run against whatever checkout the suite was in, so its result was decided by that checkout parent count: 42 passed on a branch head, 41 passed 1 failed on the pull request merge ref, which is exactly what CI checks out at fetch-depth 0. The mutation proof then refused to grade against a red baseline and all 13 mutants went UNGRADED. A cell must build the condition it names."
+    },
+    {
+      "name": "the detector hard-codes the job name instead of honouring the one passed in",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return candidates.filter((j) => j !== hostJob\n    && new RegExp",
+      "replace": "  return candidates.filter((j) => j !== \"attribution\"\n    && new RegExp",
+      "cell": "the host job is honoured rather than assumed: `unit` is not stale when `unit` runs it",
+      "expectRed": "the host job is honoured rather than assumed",
+      "note": "A detector that assumes the answer cannot notice the step moving, which is the only thing it exists to notice."
+    },
+    {
+      "name": "the stale-claim detector returns nothing, so every page reads as clean",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return candidates.filter((j) => j !== hostJob\n    && new RegExp(`(runs?|grades?|grading path is|step in|in) the .${j}. job`).test(text));",
+      "replace": "  return [];",
+      "cell": "ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
+      "expectRed": "ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
+      "note": "This is the shape that actually shipped: one paragraph correct, another still naming `unit`. Pinned against BUILT documents rather than the live ones, because when the real docs are clean a disabled detector is unobservable: the live-file version of this mutation SURVIVED."
+    },
+    {
+      "name": "the bundle-shaped cell is stubbed true, so the generated copy is graded by nothing",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  cell(\"ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED\",",
+      "replace": "  cell(\"ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED\", true) || cell(\"dead\",",
+      "cell": "ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",
+      "expectRed": "every cell ran or was reported ungraded",
+      "note": "The bundle is the copy connector-core serves to users, stored as one escaped JSON string. A reader written for the markdown can pass on the source and miss the generated copy, which is the half that reaches users. Stubbing the cell trips the cell-count sentinel, so the suite refuses rather than quietly grading one artefact less."
     }
   ]
 }
