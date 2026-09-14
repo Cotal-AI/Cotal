@@ -212,7 +212,7 @@
     {
       "name": "an unclassifiable reader shape is given the benefit of the doubt and shares its factory's class instead of standing alone",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "  // inherited coverage. When the two errors are not symmetric, take the one that shouts.\n  return `opaque@${cellId}`;",
+      "find": "  return `opaque@${cellId}`;",
       "replace": "  return `owned@${factoryName}`;",
       "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
       "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"

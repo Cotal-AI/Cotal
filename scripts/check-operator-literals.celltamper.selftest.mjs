@@ -1226,11 +1226,26 @@ try {
   // That is the whole difference: an exemption now has to be WRONG ABOUT AN OBSERVABLE to pass,
   // rather than merely unembarrassed.
   const declaredCellSet = new Set(declaredCells);
+  // THE FIELD READER DECIDES EVERY EXEMPTION, so it is fed known inputs below rather than trusted.
+  // Two defects were found that way, both of which GRANT a false exemption, which is the silent
+  // direction:
+  //   prefix collision   `new RegExp("\\bcell=" + id + "\\b")` matched `cell=prefix-trap` for the
+  //                      id `prefix`, because `-` is a word boundary. A cell could inherit another
+  //                      cell's row. The id is now compared for EQUALITY against the parsed value.
+  //   missed field name  `[a-z_]+` does not match `ipv4_rule`, so a cell whose only field contains
+  //                      a digit read as HAVING NO FIELD, which is precisely the claim an exemption
+  //                      needs to be true. Field names now allow digits after the first character.
+  // The cell id is also stripped from the body before fields are read, so an id that itself looks
+  // like `name=1/1` cannot be mistaken for a measured field.
   const baselineFieldFor = (cellId) => {
-    const row = baseline.rows.find((line) => line.startsWith("SELFTEST_RESULT_ROW ")
-      && new RegExp(`\\bcell=${cellId}\\b`).test(line));
+    const row = baseline.rows.find((line) => {
+      if (!line.startsWith("SELFTEST_RESULT_ROW ")) return false;
+      const match = /\bcell=(\S+)/.exec(line);
+      return match !== null && match[1] === cellId;
+    });
     if (!row) return undefined;
-    const fields = [...row.matchAll(/\b([a-z_]+)=(\d+)\/\d+/g)]
+    const body = row.replace(/^SELFTEST_RESULT_ROW\s+/, "").replace(/\bcell=\S+\s*/, "");
+    const fields = [...body.matchAll(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=(\d+)\/\d+/g)]
       .filter((match) => match[1] !== "cells");
     return fields.length ? fields.map((match) => `${match[1]}=${match[2]}`).join(" ") : undefined;
   };
@@ -1290,6 +1305,39 @@ try {
   // no gradable field, this row goes red and someone decides deliberately whether an exemption is
   // warranted, instead of the category quietly becoming reachable.
   const qualifyingCells = declaredCells.filter((cellId) => baselineFieldFor(cellId) === undefined);
+
+  // The field reader is graded on SYNTHETIC rows, because on the real ones every cell has a field
+  // and the undefined branch, the one that grants exemptions, would never be exercised. Feeding it
+  // a known-good input before trusting an UNDEFINED is the whole point: an undefined that means
+  // "reader is broken" is indistinguishable from one that means "no field" unless the reader has
+  // been shown to find a field it should find.
+  const probeRows = [
+    "SELFTEST_RESULT_ROW sha=a utc=t cell=probe-normal primary=0/1 secondary=1/1 status=PASS",
+    "SELFTEST_RESULT_ROW sha=a utc=t cell=probe-nofields status=PASS",
+    "SELFTEST_RESULT_ROW sha=a utc=t cell=probe-prefix-trap primary=0/1 status=PASS",
+    "SELFTEST_RESULT_ROW sha=a utc=t cell=probe-digit ipv4_rule=1/1 status=PASS",
+  ];
+  const probeField = (cellId) => {
+    const row = probeRows.find((line) => {
+      if (!line.startsWith("SELFTEST_RESULT_ROW ")) return false;
+      const match = /\bcell=(\S+)/.exec(line);
+      return match !== null && match[1] === cellId;
+    });
+    if (!row) return undefined;
+    const body = row.replace(/^SELFTEST_RESULT_ROW\s+/, "").replace(/\bcell=\S+\s*/, "");
+    const fields = [...body.matchAll(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=(\d+)\/\d+/g)]
+      .filter((match) => match[1] !== "cells");
+    return fields.length ? fields.map((match) => `${match[1]}=${match[2]}`).join(" ") : undefined;
+  };
+  check(
+    "unit test: the baseline field reader finds fields it should, misses none it should not, and refuses a prefix of another cell's id",
+    probeField("probe-normal") === "primary=0 secondary=1"
+      && probeField("probe-digit") === "ipv4_rule=1"
+      && probeField("probe-nofields") === undefined
+      && probeField("probe-prefix") === undefined
+      && probeField("probe-absent") === undefined,
+    `normal=${probeField("probe-normal")}/primary=0 secondary=1 digit=${probeField("probe-digit")}/ipv4_rule=1 nofields=${probeField("probe-nofields")}/undefined prefix=${probeField("probe-prefix")}/undefined absent=${probeField("probe-absent")}/undefined`,
+  );
   const plantedExemptions = {
     valid: new Set([...allExemptions.valid].filter((cell) => !realExemptionCells.has(cell))),
     malformed: allExemptions.malformed.filter((entry) => ![...realExemptionCells]
