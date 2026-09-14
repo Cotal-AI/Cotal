@@ -9,14 +9,14 @@
  * independent instruments. A `primary` (the scanner's real `findings()`) and a `secondary` (a
  * small reader asserting the subject genuinely carries what the cell claims to plant). Hollow a
  * secondary out to a constant, `() => 1`, and the cell still reports `status=PASS`, the summary
- * still reports `cells=34/34 status=PASS`, and the process still exits 0.
+ * still reports `cells=61/61 status=PASS`, and the process still exits 0.
  *
  * Measured by hollowing three different secondaries one at a time, each inside its own cell block:
- *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=34/34 status=PASS   SURVIVED
- *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=34/34 status=PASS   SURVIVED
- *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=34/34 status=PASS   SURVIVED
+ *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=61/61 status=PASS   SURVIVED
+ *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=61/61 status=PASS   SURVIVED
+ *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=61/61 status=PASS   SURVIVED
  * against a same-session behaviour control proving the scanner is not simply blind: weakening the
- * real CIDR_SUFFIX pattern gave exit 2, cells=19/34 status=FAIL. A dead discriminator is invisible
+ * real CIDR_SUFFIX pattern gave exit 2, cells=54/61 status=FAIL. A dead discriminator is invisible
  * to the instrument it belongs to, while dead behaviour is not.
  *
  * These figures are re-derivable at THIS head, which is deliberate. They previously cited a prior
@@ -261,10 +261,10 @@ const tamperHelper = (source, id, helper, find, replace) => {
  * Each case names a cell, and an edit that destroys the property the cell's SECONDARY reader
  * asserts while leaving the scanner's matching rules untouched.
  *
- * COVERAGE IS BY CONSTRUCTOR FAMILY, NOT BY CELL. The scanner builds its 34 cells from a small
+ * COVERAGE IS BY CONSTRUCTOR FAMILY, NOT BY CELL. The scanner builds its 61 cells from a small
  * number of shared factories, and hollowing a factory's discriminator kills every cell it built at
  * once. One case per family therefore grades every cell in that family, while one case per cell
- * would be 34 cases mostly re-proving the same function. The families are enumerated from the
+ * would be 61 cases mostly re-proving the same function. The families are enumerated from the
  * SOURCE by the census below, so a family added later without a case fails loudly instead of being
  * silently ungraded. That enumeration is what an earlier version of this file lacked: two separate
  * survivors were found in review, both in families the case list did not name.
@@ -384,7 +384,7 @@ const CASES = [
   // `scanCell` RECEIVES its measure as an argument, so `allowlisted-fixture` having a case said
   // nothing whatever about these four, and review measured the consequence: hollowing two of these
   // readers to a constant that satisfies its own expectation left `scanEntries` uncalled, the
-  // scanner reporting `cells=34/34 status=PASS`, and this suite fully green. Two cells graded by
+  // scanner reporting `cells=61/61 status=PASS`, and this suite fully green. Two cells graded by
   // nothing, reported as graded by their family. The coverage rule now groups by reader, which put
   // all four here as uncovered singletons, and this is that debt paid rather than renamed.
   //
@@ -532,7 +532,7 @@ const CASES = [
  *
  * COVERAGE IS OVER CELLS, AND THE FACTORY IS ONLY A GROUPING. An earlier version enumerated cell
  * FACTORIES and treated a case per factory as covering everything that factory built. That is true
- * as far as it goes, and it is not far enough: 7 of the scanner's 34 cells are INLINE object
+ * as far as it goes, and it is not far enough: 10 of the scanner's 61 cells are INLINE object
  * literals with a `measure` of their own and no factory at all, so a census over factories cannot
  * see them by construction. Two reviewers found that independently, and it is the same defect as
  * #1580 itself a third time: an enumeration whose denominator silently excludes the thing being
@@ -687,7 +687,7 @@ const readCellInventory = (source) => {
           // This branch used to be absent, so any element that was neither a call nor an object
           // literal was silently not counted. Review spread a live cell into this array,
           // `...[matchCell('extra', ...)],`, and a SpreadElement is neither: the scanner executed
-          // 35 cells and this reader reported 34, while the marker reader also reported 34 because
+          // 62 cells and this reader reported 61, while the marker reader also reported 61 because
           // the spread carried no comments. Two readers, one shared convention, mutual agreement on
           // an omission.
           //
@@ -866,10 +866,10 @@ try {
   // This was pointed at factories for two rounds and it was the wrong denominator. A case list
   // grades what it names and stays silent about what it forgot, so the census exists to make that
   // silence loud; but a census over FACTORIES inherits the same blindness one level up. 7 of the
-  // scanner's 34 cells are inline object literals built by no factory at all, so no factory
+  // scanner's 61 cells are inline object literals built by no factory at all, so no factory
   // enumeration, however perfect, can see them. A reviewer proved the cost rather than arguing it:
   // hollowing `workflow-host-exclusion`'s inline discriminator to a constant left the scanner at
-  // cells=34/34 exit 0 AND this suite at a full green, with a same-run positive control showing the
+  // cells=61/61 exit 0 AND this suite at a full green, with a same-run positive control showing the
   // cell really was reached. Live code that both instruments declined to grade.
   //
   // Two earlier readers were defeated here and both failures came from reading TEXT rather than
@@ -887,7 +887,7 @@ try {
   //
   // A line-anchored regex cannot tell a COMMENT from a LINE INSIDE A STRING, and a reviewer proved
   // the distinction is reachable: deleting the real `ip-zero START` marker and planting that exact
-  // line inside a multi-line template literal left every row unchanged at `starts=34 ends=34
+  // line inside a multi-line template literal left every row unchanged at `starts=61 ends=61
   // duplicates=0 unpaired=0` while the cell's real marker was gone. The suite even carried a
   // control claiming the reader "refuses a marker quoted in a string", and that control passed,
   // because it only ever fed the reader a ONE-LINE string. A control that tests a narrower case
@@ -902,12 +902,12 @@ try {
   //
   // Trivia attaches to tokens, and punctuation tokens are not nodes. The scanner's cell array ends
   // with `];`, so its last END marker is leading trivia of that `]`. A node-only walk therefore
-  // reported `starts=34 ends=33 unpaired=1 [missing-subject]` on a perfectly healthy file, and my
+  // reported `starts=61 ends=60 unpaired=1 [missing-subject]` on a perfectly healthy file, and my
   // own planted control caught the same hole in the same run at `planted_unpaired=0/1`.
   //
   // A RAW TOKEN SCANNER IS NOT THE ANSWER EITHER, and it was tried: `ts.createScanner` over the
   // text has no parser context, so it cannot resolve whether `/` opens a regex or divides, and it
-  // desynced and found 3 of 34 markers. That failed loudly, in the ALARMING direction, and the
+  // desynced and found 3 of 61 markers. That failed loudly, in the ALARMING direction, and the
   // fix was to take positions from the parsed tree instead of re-deciding them.
   const readMarkers = (source) => {
     const sf = ts.createSourceFile("scanner.mjs", source, ts.ScriptTarget.Latest, true);
@@ -954,9 +954,9 @@ try {
   // EVERY MARKER ID MUST BE UNIQUE AND PAIRED. A COUNT IS NOT A SET, and that distinction was a
   // BLOCK: an earlier version compared only how MANY markers and parsed cells existed, and a
   // reviewer defeated it with a single-token edit. Renaming one START marker
-  // (`ip-zero` -> `ip-private`, a cell id already in use) kept the count at 34 while LOSING one id
+  // (`ip-zero` -> `ip-private`, a cell id already in use) kept the count at 61 while LOSING one id
   // and DUPLICATING another, leaving a START/END pair mismatched. Every row still read
-  // `markers=34 parsed_cells=34 ... unaccounted=0` and the suite passed in full.
+  // `markers=61 parsed_cells=61 ... unaccounted=0` and the suite passed in full.
   //
   // Two totals can agree while the things they count differ, so equal counts prove nothing about
   // membership. Duplicates are what make that possible, and a duplicate id is independently fatal:
@@ -1055,8 +1055,8 @@ try {
   //
   // executes and emits a real result row, but a SpreadElement is neither a call nor an object
   // literal so the AST reader does not count it, and it carries no comments so the marker reader
-  // does not either. Both readers agreed at 34/34 while the scanner ran 35 cells, and the scanner's
-  // own summary said `cells=34/34 status=PASS` because its denominator is the expectation map
+  // does not either. Both readers agreed at 61/61 while the scanner ran 62 cells, and the scanner's
+  // own summary said `cells=61/61 status=PASS` because its denominator is the expectation map
   // rather than the array. Three readers, one silence, measured.
   //
   // Bidirectional set equality cannot escape that: it proves the two inputs name the same cells,
@@ -1077,10 +1077,10 @@ try {
   // MEMBERSHIP IS NOT MULTIPLICITY, which is this lane's opening blocker inverted. That round's
   // finding was that a COUNT IS NOT A SET: an earlier census compared totals while the membership
   // differed. The inverse is equally false. Two mutual-inclusion passes are satisfied by a
-  // DUPLICATED id, so duplicating an already-declared cell printed `executed=36 declared=34` and
+  // DUPLICATED id, so duplicating an already-declared cell printed `executed=63 declared=61` and
   // still read `ok`, with the disagreement visible in the detail string nobody would be reading on
   // a green run. The predicate therefore checks identity, count AND uniqueness, and the row prints
-  // `unique` so that 36/34 with 34 unique (a duplicate) is distinguishable from 36/36 (two new
+  // `unique` so that 63/61 with 61 unique (a duplicate) is distinguishable from 63/63 (two new
   // cells) rather than merely red.
   const censusAgreement = (executed, declared) => ({
     ranButUndeclared: executed.filter((id) => !declared.includes(id)),
@@ -1093,7 +1093,7 @@ try {
   // same file was killed in the same run, so the suite provably reached it and the gap was real.
   //
   // The reason the deletion was invisible is exact and worth keeping. On the honest tree the four
-  // clauses are not independent. With `declared` holding 34 distinct ids, an executed id that
+  // clauses are not independent. With `declared` holding 61 distinct ids, an executed id that
   // nobody declared forces `declaredButNeverRan` to be non-empty too, because equal lengths plus a
   // stranger in one list means a missing one in the other. The surviving clauses therefore cover
   // for the deleted one on every honest input, and on every input the old control supplied. The
@@ -1504,7 +1504,7 @@ try {
 
   // WHAT THIS SUITE DOES NOT PROVE, AND WHY THE GUARDS THAT CLAIMED IT ARE GONE.
   //
-  // Everything above grades THE SCANNER: 34 cells from a derived census, tampered one at a time,
+  // Everything above grades THE SCANNER: 61 cells from a derived census, tampered one at a time,
   // each required to go red BY NAME. That part held under eleven rounds of review without a single
   // finding against it, and it is what this file is for.
   //
@@ -1537,13 +1537,13 @@ try {
   // arguments>)` and the argument text stays verbatim, so the tamper still finds its anchor and
   // still applies, while the scan is never evaluated. That much is true, and at the SCANNER level
   // it is a genuine hollow: `node --check` passes, the scan never runs, and the scanner's own
-  // self-test reports `cells=34/34 status=PASS` at exit 0, blind to it.
+  // self-test reports `cells=61/61 status=PASS` at exit 0, blind to it.
   //
   // The suite kills it anyway, measured on the real file rather than reasoned about:
   //
   //   FAIL must-come-back-dirty: destroying the planted subject drives this cell's findings to 0 - findings=1/0
   //   FAIL must-come-back-dirty: that dead reading turns the cell red - status=PASS/FAIL
-  //   FAIL must-come-back-dirty: a dead cell is visible in the summary row and the exit code - exit=0/2 cells=34/34 status=PASS
+  //   FAIL must-come-back-dirty: a dead cell is visible in the summary row and the exit code - exit=0/2 cells=61/61 status=PASS
   //
   // The reason is the structure of a case, not luck. A case does not ask what the source says. It
   // RE-RUNS the scanner over the tampered copy and requires the number to MOVE. A constant answers
