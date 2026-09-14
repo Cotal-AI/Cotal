@@ -333,6 +333,15 @@ if (process.argv.includes("--self-test")) {
     const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { encoding: "utf8" });
     return r.status;
   };
+  // TWO REFUSALS THAT BOTH EXIT 2 ARE INDISTINGUISHABLE TO AN EXIT-CODE READER, and the mutation
+  // proof caught exactly that: a cell asserting `=== 2` for the combination refusal stayed green
+  // with the combination refusal deleted, because the parent check fires first and also exits 2.
+  // The cell was passing for a reason unrelated to the line it names. Reading the refusal's own
+  // words is what makes the two separable, so this helper returns them.
+  const runSelfSays = (args, needle) => {
+    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { encoding: "utf8" });
+    return r.status === 2 && (r.stderr ?? "").includes(needle);
+  };
   cell("EXIT 2 on an unresolvable ref: misuse is never reported as a refusal", runSelf(["--range", "qqzzNoSuchRef77..HEAD"]) === 2);
   cell("EXIT 2 on missing arguments", runSelf([]) === 2);
   // `--merge-snapshot` EXISTS TO STOP THE RANGE'S TWO ENDS COMING FROM DIFFERENT SNAPSHOTS, and
@@ -343,9 +352,9 @@ if (process.argv.includes("--self-test")) {
   // the wrong thing". The tool must refuse that itself and not rely on its caller checking,
   // because a local hook or a future workflow inherits none of the caller's care.
   cell("EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
-    runSelf(["--merge-snapshot"]) === 2);
+    runSelfSays(["--merge-snapshot"], "needs a two-parent merge commit"));
   cell("EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
-    runSelf(["--merge-snapshot", "--range", "HEAD~1..HEAD"]) === 2);
+    runSelfSays(["--merge-snapshot", "--range", "HEAD~1..HEAD"], "cannot be combined with --base or --range"));
   // THESE TWO CELLS NEED REAL RELEASE HISTORY, AND A SUITE MUST NOT RED FOR A REASON THAT IS NOT
   // A DEFECT. In a shallow checkout the commits behind these tags are absent, so the CLI answers
   // 2 (nothing was graded) and an assertion of 1 or 0 fails while the tool is behaving exactly as
