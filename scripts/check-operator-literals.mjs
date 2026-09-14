@@ -17,8 +17,13 @@
 // Workflow files are excluded from host-name matching because CI configuration must name its pool.
 // Shared-address and public-address network notation is excluded because it names a range, not a
 // host. Finding rows never print the matched token.
-// An IPv6 literal is a finding only inside global unicast space, so the special-use table of
-// RFC 6890 and the documentation range of RFC 9637 are silent without a separate exclusion list.
+// An IPv6 literal is a finding only inside global unicast space, which leaves most of the
+// special-use registry silent without a separate exclusion list, and the exclusion table below
+// names the four ranges that do fall inside it and must not be reported. That is a reduction of
+// the second list, not a removal of it: a special-use range marked globally reachable can sit
+// inside global unicast and still be reported. 2620:4f:8000::/48, the direct delegation AS112
+// service, is such a range and is deliberately reported, because it is a reachable address and a
+// committed literal pointing at it is as much an operator detail as any other reachable host.
 // An IPv4-mapped address such as the embedded form sits outside global unicast space, so it is
 // classified by the IPv4 rules and never by public-ipv6. That keeps one address to one class.
 //
@@ -559,6 +564,7 @@ const SELFTEST_DOC_IPV6_PREFIX = ['2001', 'db8', '', ''].join(':');
 const SELFTEST_TEREDO_IPV6 = ['2001', '0', '', '1'].join(':');
 const SELFTEST_6TO4_IPV6 = ['2002', 'c000', '204', '', '1'].join(':');
 const SELFTEST_DOC2_IPV6 = ['3fff', '0', '', '1'].join(':');
+const SELFTEST_AS112_IPV6 = ['2620', '4f', '8000', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
 
@@ -589,6 +595,7 @@ const CELL_EXPECTATIONS = new Map([
   ['ipv6-teredo', 'primary=0/1 secondary=1/1'],
   ['ipv6-6to4', 'primary=0/1 secondary=1/1'],
   ['ipv6-documentation-3fff', 'primary=0/1 secondary=1/1'],
+  ['ipv6-globally-reachable-special-use', 'primary=1/1 secondary=1/1'],
   ['ipv6-documentation-network', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local-network', 'primary=0/1 secondary=1/1'],
@@ -899,6 +906,9 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL ipv6-documentation-3fff START
   matchCell('ipv6-documentation-3fff', SELFTEST_DOC2_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-documentation-3fff END
+  // SELFTEST_CELL ipv6-globally-reachable-special-use START
+  matchCell('ipv6-globally-reachable-special-use', SELFTEST_AS112_IPV6, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-globally-reachable-special-use END
   // SELFTEST_CELL ipv6-unique-local START
   matchCell('ipv6-unique-local', SELFTEST_UNIQUE_LOCAL_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-unique-local END
