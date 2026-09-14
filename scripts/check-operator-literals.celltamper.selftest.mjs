@@ -955,16 +955,45 @@ try {
       if (fn.body) scan(fn.body);
       return hit;
     };
+    // THE PARAMETER IS TAINTED, AND SO IS ANYTHING COPIED OUT OF IT. Tracking the parameter's own
+    // identifier is not enough, which review demonstrated twice in one round: `const source = r;`
+    // then `source.exitCode`, and `const { exitCode, rows } = r;`, both passed at a full green with
+    // the guard reporting `leaks=0`. Following one name is the same mistake as matching one
+    // spelling, one level along: the value moved and the reader did not.
+    //
+    // So the taint set starts at the first parameter and grows: an alias binds the whole value and
+    // inherits it, and a destructure of a tainted value names the very fields this guard exists to
+    // forbid, so a destructured binding IS the leak and is reported at the point of binding. Taint
+    // does not cross a call, deliberately: passing the parameter on is out of scope here and is
+    // covered by the readers on the other end being derived and walked themselves.
     const walkBody = (node, owner, param) => {
-      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
-        && node.expression.text === param && !ARRAY_USE.has(node.name.text)) {
-        found.push(`${owner}:${param}.${node.name.text}`);
-      }
-      if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression)
-        && node.expression.text === param) {
-        found.push(`${owner}:${param}[computed]`);
-      }
-      ts.forEachChild(node, (child) => walkBody(child, owner, param));
+      const tainted = new Set([param]);
+      const scan = (current) => {
+        if (ts.isVariableDeclaration(current) && current.initializer) {
+          // `const source = r;` aliases the whole tainted value.
+          if (ts.isIdentifier(current.initializer) && tainted.has(current.initializer.text)) {
+            if (ts.isIdentifier(current.name)) tainted.add(current.name.text);
+            // `const { exitCode, rows } = r;` names run fields directly; the binding is the leak.
+            if (ts.isObjectBindingPattern(current.name)) {
+              for (const element of current.name.elements) {
+                const key = element.propertyName ?? element.name;
+                const field = ts.isIdentifier(key) ? key.text : "computed";
+                if (!ARRAY_USE.has(field)) found.push(`${owner}:destructured.${field}`);
+              }
+            }
+          }
+        }
+        if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)
+          && tainted.has(current.expression.text) && !ARRAY_USE.has(current.name.text)) {
+          found.push(`${owner}:${current.expression.text}.${current.name.text}`);
+        }
+        if (ts.isElementAccessExpression(current) && ts.isIdentifier(current.expression)
+          && tainted.has(current.expression.text)) {
+          found.push(`${owner}:${current.expression.text}[computed]`);
+        }
+        ts.forEachChild(current, scan);
+      };
+      scan(node);
     };
     const consider = (fn, name) => {
       const first = fn.parameters?.[0];
@@ -997,13 +1026,22 @@ try {
   // that would not be DERIVED as a row reader proves nothing about a guard that only walks derived
   // readers. It also spells its parameter `r`, so the control exercises the exact evasion review
   // used rather than the shape that was already caught.
+  //
+  // It reaches the exit code through an ALIAS and a DESTRUCTURE as well as directly, because those
+  // are the two hops review used to walk past an earlier version, and a control that only exercises
+  // the direct spelling would report a healthy nonzero while taint propagation was broken.
   const { found: plantedLeak } = runFieldsNamedBy(
-    'const planted = (r, id) => { if (r.exitCode === 2) return "0";'
+    'const planted = (r, id) => { const alias = r; const { output } = alias;'
+      + ' if (alias.exitCode === 2 || output) return "0";'
       + ' return r.rows.find((c) => c.startsWith("SELFTEST_RESULT_ROW ") && c.includes(id)); };',
   );
+  // Each hop must be represented, not just the total: `planted_control=4` could be four direct
+  // reads with both propagation paths dead. The row names them so the reader can see all three.
+  const PLANTED_PATHS = ["alias.exitCode", "destructured.output", "r.rows"];
   check(
     "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
     leaked.length === 0 && plantedLeak.length > 0
+      && PLANTED_PATHS.every((path) => plantedLeak.some((entry) => entry.endsWith(path)))
       && REQUIRED_READERS.every((name) => examined.includes(name)),
     `examined=${examined.length}_derived required=${REQUIRED_READERS.filter((name) => examined.includes(name)).length}/${REQUIRED_READERS.length} [${examined.join(", ")}] leaks=${leaked.length}/0${leaked.length ? ` [${leaked.join(", ")}]` : ""} planted_control=${plantedLeak.length}/>0 [${plantedLeak.join(", ")}]`,
   );

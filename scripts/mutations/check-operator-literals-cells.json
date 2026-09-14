@@ -208,6 +208,22 @@
       "replace": "      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)\n        && node.expression.text === \"run\" && !ARRAY_USE.has(node.name.text)) {",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+    },
+    {
+      "name": "taint stops following an alias, so `const source = run` hides every later read",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "            if (ts.isIdentifier(current.name)) tainted.add(current.name.text);",
+      "replace": "            if (ts.isIdentifier(current.name)) void current.name.text;",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+    },
+    {
+      "name": "a destructure of the run is no longer reported, so `const { exitCode } = run` is invisible",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "                if (!ARRAY_USE.has(field)) found.push(`${owner}:destructured.${field}`);",
+      "replace": "                void field;",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     }
   ]
 }
