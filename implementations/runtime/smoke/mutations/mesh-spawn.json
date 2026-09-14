@@ -41,8 +41,8 @@
     {
       "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (ext === undefined) {\n        let reply: EpAttributedReply | undefined;\n        try {\n          const service = await this.manager();",
-      "replace": "      if (true) {\n        let reply: EpAttributedReply | undefined;\n        try {\n          const service = await this.manager();",
+      "find": "      if (ext === undefined) {",
+      "replace": "      if (true) {",
       "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "cell": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "note": "Measured 2026-09-03: KILLED. mesh-spawn.smoke: 32 passed, 1 failed Named cell red: the resume sent NOTHING to the endpoint: the recorded acceptance is the submission"
