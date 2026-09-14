@@ -301,6 +301,49 @@ const CASES = [
     replace: "'no address literal here'",
   },
   {
+    cell: "ipv6-planted",
+    reader: "shapeIPv6Count",
+    family: "matchCell",
+    // The IPv6 cells all pass the SAME named function, `shapeIPv6Count`, so they are one
+    // equivalence class and this single case grades every one of them: hollowing that function
+    // reddens all 27 together. They arrived on main after this fixture was first written, and the
+    // positional census reported them as `declared=61 unaccounted=27` rather than absorbing them
+    // into a neighbouring class, which is how they were noticed at all.
+    //
+    // The cell plants a real public IPv6 literal that must be reported. Replace it with text
+    // carrying no IPv6 shape and the shape counter must drop to 0.
+    find: "`connect ${SELFTEST_PUBLIC_IPV6} now`",
+    replace: "'no address literal here'",
+  },
+  {
+    cell: "ipv6-spelling-pair",
+    reader: "inline spelling-pair comparison (own reader)",
+    family: "inline",
+    // An INLINE cell: it carries its own reader, so it is a singleton and no other case can cover
+    // it. Its `planted` field counts how many of the two spellings the shape reader recognises, so
+    // destroying the subject it reads drives that count to 0 and the cell must report it.
+    find: "[SELFTEST_PUBLIC_IPV6, SELFTEST_PUBLIC_IPV6_EXPANDED].filter(",
+    replace: "['no address literal here', 'none here either'].filter(",
+  },
+  {
+    cell: "ipv6-hex-embedded-ipv4",
+    reader: "inline hex-vs-dotted rule comparison (own reader)",
+    family: "inline",
+    // INLINE, singleton. Its `ipv4_rule` field counts the IPv4 findings in the hex-spelled text,
+    // so destroying that planted subject drives the count to 0 and the cell must report it.
+    find: "const hex = rulesFor(SELFTEST_IPV6_HEX_MAPPED);",
+    replace: "const hex = rulesFor('no address literal here');",
+  },
+  {
+    cell: "ipv6-embedded-ipv4",
+    reader: "inline embedded-ipv4 rule split (own reader)",
+    family: "inline",
+    // INLINE, singleton. Its claim is that an IPv4-mapped IPv6 literal is reported under the IPv4
+    // rule and not the IPv6 one. Remove the embedded address and both counts collapse.
+    find: "`::ffff:${SELFTEST_PUBLIC_IP}`",
+    replace: "'no address literal here'",
+  },
+  {
     cell: "home-relative",
     reader: "homeFragmentCount",
     family: "matchCell",
@@ -685,6 +728,9 @@ const FACTORIES = [
  * check below requires it to match the inline cells actually present, in both directions.
  */
 const INLINE_CELLS = [
+  { name: "ipv6-spelling-pair", secondaryField: "planted" },
+  { name: "ipv6-hex-embedded-ipv4", secondaryField: "ipv4_rule" },
+  { name: "ipv6-embedded-ipv4", secondaryField: "planted" },
   { name: "workflow-host-exclusion", secondaryField: "planted" },
   { name: "short-host-token", secondaryField: "configured_errors" },
   { name: "host-token-ceiling", secondaryField: "errors" },
