@@ -822,6 +822,50 @@ try {
     `gradable=${gradable.length}/${FACTORIES.length}_factories covered=${gradable.length - ungraded.length}${ungraded.length ? ` MISSING [${ungraded.map((e) => e.name).join(", ")}]` : ""}`,
   );
 
+  // THE FIELD READER'S OWN CONTROL, on SYNTHETIC ROWS it supplies itself.
+  //
+  // Everything below depends on `cellSecondary` actually parsing a named field for a named cell,
+  // and grading it against real runs cannot establish that. Both halves of every kill correlate
+  // perfectly with run identity: the untampered copy always exits 0 and wants a nonzero, every
+  // tampered run exits 2 and wants a zero. Three reviewers independently measured the consequence,
+  // and `return run.exitCode === 0 ? "1" : "0"` passed the whole suite at 90/90 exit 0 without
+  // reading a row. A control asking "nonzero here, zero there" grades responsiveness to the RUN,
+  // not to the FIELD, which is the same defect one level in from the one it replaced.
+  //
+  // So the reader is handed a run it cannot recognise: ONE synthetic run, with an exit code that is
+  // neither 0 nor 2, carrying two cells whose fields hold four MUTUALLY INCONSISTENT values. No
+  // constant can satisfy 2, 3, 5 and 7 at once, so a reader tuned to any single expected value
+  // fails on the other three; an exit-code oracle fails on all four; and the two miss cases require
+  // `undefined`, which no value-returning shortcut can produce.
+  //
+  // All four reads and both misses are asserted in ONE check with every value printed, deliberately.
+  // The mechanism here is the mutual inconsistency, and it is only visible when the values appear
+  // together: `7/7 7/2 7/5 7/3` on one line is self-evidently a constant, where four separate
+  // red/green lines would not be. A reviewer's own testing error was caught exactly this way, by
+  // reading the printed values rather than the exit code.
+  const syntheticRun = {
+    exitCode: 7,
+    rows: [
+      "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=alpha primary=2/9 secondary=7/9 status=PASS",
+      "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=beta primary=3/9 secondary=5/9 status=PASS",
+    ],
+  };
+  const reads = {
+    "alpha.secondary": cellSecondary(syntheticRun, "alpha", "secondary"),
+    "alpha.primary": cellSecondary(syntheticRun, "alpha", "primary"),
+    "beta.secondary": cellSecondary(syntheticRun, "beta", "secondary"),
+    "beta.primary": cellSecondary(syntheticRun, "beta", "primary"),
+  };
+  const expected = { "alpha.secondary": "7", "alpha.primary": "2", "beta.secondary": "5", "beta.primary": "3" };
+  const missCell = cellSecondary(syntheticRun, "no-such-cell", "secondary");
+  const missField = cellSecondary(syntheticRun, "alpha", "no_such_field");
+  check(
+    "reader control: the field reader returns each named field for each named cell, and undefined for a miss",
+    Object.keys(expected).every((key) => reads[key] === expected[key])
+      && missCell === undefined && missField === undefined,
+    `${Object.keys(expected).map((key) => `${key}=${reads[key] ?? "undefined"}/${expected[key]}`).join(" ")} miss_cell=${missCell ?? "undefined"} miss_field=${missField ?? "undefined"}`,
+  );
+
   for (const testCase of CASES) {
     const { cell, reader, find, replace, family, helper } = testCase;
     const secondaryField = FACTORIES.find((entry) => entry.name === family)?.secondaryField

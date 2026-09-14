@@ -14,7 +14,7 @@
     "The census is BIDIRECTIONAL and it reads CELLS, both established by review rather than by reasoning. Checking only that everything found is named cannot notice something the reader failed to find: the behaviour-neutral edit `function matchCell(` to `function matchCell (` once removed a factory from the census while the suite still reported unaccounted=0 and a full green, and a declaration-shaped line inside a template literal once stood in for a factory that had been refactored away. Both failures came from reading text rather than structure, and widening a pattern only moves the boundary to the next spelling. The denominator now comes from the `// SELFTEST_CELL <id> START/END` markers, the same reader the tampers key on, which review probed hard: a renamed cell reports `found 0/0`, a reformatted one `occurs 0 time(s)`, and a marker quoted in a comment `found 2/2`. A second independent reader parses the SELFTEST_CELLS array from the AST and the two must agree on the count. Each reader carries its own planted control, because a control on one reader says nothing about another.",
     "Nothing is exempt. An earlier version recorded scanCell as a KNOWN LIMIT that reported no secondary reading. That was wrong, and hollowing its metricCount SURVIVED: the field is simply named for the cell's metric rather than `secondary`. A limitation asserted rather than measured is a gap with a label on it, and the label makes it less likely anyone looks again. Being LISTED is likewise not coverage: the suite knows which field each inline cell reports, and deliberately does not accept that as grading it.",
     "The last three mutations guard the harness rather than the scanner: they blind each census direction and make the positional tamper silently do nothing. Any of them would let every case report a pass it did not earn. This matters more than usual here, because an absence-detector emits the same unaccounted=0 whether it is working or blinded, so it cannot be graded by reading its output.",
-    "The reader that DECIDES every kill is itself graded, and it was not until a reviewer showed why. Every case concludes by requiring a discriminator field to read 0, so a field reader hardwired to return \"0\" satisfies all of them at once: measured, replacing its return with `return \"0\"` left the suite at a full 77/77 green with every kill assertion vacuously true. The status and summary checks did not expose it because they read a different field and still went red on the live tampers. So each case now feeds that reader a known-good input first, the same field on the same cell in the UNTAMPERED run, and requires a positive count before any later 0 is believed. The same mutation now produces 13 named failures, one per cell. An instrument that can only ever report the value meaning \"dead\" cannot tell you that anything is alive."
+    "The reader that DECIDES every kill is graded against SYNTHETIC rows it supplies itself, and three reviewers were needed to get this right. Grading it against real runs cannot work, because both halves of every kill correlate perfectly with run identity: the untampered copy always exits 0 and wants a nonzero, every tampered run exits 2 and wants a zero. Measured, `return \"0\"` passed the suite at 77/77, and after a nonzero-baseline check was added, `return run.exitCode === 0 ? \"1\" : \"0\"` still passed at 90/90 without reading a row. So the control hands the reader ONE run with an exit code that is neither 0 nor 2, carrying four mutually inconsistent field values plus two cases that must return undefined. No constant satisfies 2, 3, 5 and 7 at once, an oracle fails all four, and no value-returning shortcut produces undefined. All six reads print on one line, because the inconsistency is the mechanism and is only visible when the values appear together."
   ],
   "mutations": [
     {
@@ -170,12 +170,12 @@
       "cell": "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading"
     },
     {
-      "name": "the field reader always reports 0, the value every kill assertion expects",
+      "name": "the field reader becomes an exit-code oracle, never parsing a row",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
       "find": "  return new RegExp(`\\\\b${field}=(\\\\d+)\\\\/`).exec(row ?? \"\")?.[1];",
-      "replace": "  return \"0\";",
-      "expectRed": "reader reports a nonzero count before any tamper, so a later 0 is a reading",
-      "cell": "host-planted: the secondary reader reports a nonzero count before any tamper, so a later 0 is a reading"
+      "replace": "  return run.exitCode === 0 ? \"1\" : \"0\";",
+      "expectRed": "reader control: the field reader returns each named field for each named cell, and undefined for a miss",
+      "cell": "reader control: the field reader returns each named field for each named cell, and undefined for a miss"
     }
   ]
 }
