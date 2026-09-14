@@ -185,6 +185,15 @@
       "cell": "ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",
       "expectRed": "every cell ran or was reported ungraded",
       "note": "The bundle is the copy connector-core serves to users, stored as one escaped JSON string. A reader written for the markdown can pass on the source and miss the generated copy, which is the half that reaches users. Stubbing the cell trips the cell-count sentinel, so the suite refuses rather than quietly grading one artefact less."
+    },
+    {
+      "name": "an absent candidate list silently falls back to a hard-coded pair",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (!Array.isArray(candidates) || candidates.length === 0)\n    throw new Error(\"staleJobClaims: candidates must be a non-empty array of job names read from the workflows\");",
+      "replace": "  if (!Array.isArray(candidates) || candidates.length === 0)\n    candidates = [\"unit\", \"ci-ok\"];",
+      "cell": "REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
+      "expectRed": "REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
+      "note": "Found by review end to end: with a hard-coded pair, a page naming the CORRECT host AND ALSO a false third job passes everything, because the positive check is satisfied while the refuse leg never looks at the third. A silent default is how that list stops tracking the workflows, so the absence must throw rather than guess."
     }
   ]
 }

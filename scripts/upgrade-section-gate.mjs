@@ -177,7 +177,20 @@ export function addedSectionsBetween(basePage, headPage) {
  *
  *  `hostJob` is read from the workflow at the call site rather than passed as a constant, so moving
  *  the step makes every document that names the old job go red until the prose follows it. */
-export function staleJobClaims(text, hostJob, candidates = ["unit", "ci-ok"]) {
+export function staleJobClaims(text, hostJob, candidates) {
+  // CANDIDATES ARE REQUIRED, NOT DEFAULTED, AND THAT IS THE POINT OF THIS SIGNATURE.
+  //
+  // An earlier version defaulted to ["unit", "ci-ok"], the two jobs that had actually gone stale.
+  // Found by review, end to end rather than by reading: a page naming the CORRECT host AND ALSO a
+  // false third job passed everything. The positive cell was satisfied because the right job
+  // appeared, and the refuse leg never looked at the third because it was not in the hard-coded
+  // pair. That is a page simultaneously correct and false, shipping green, and it is the exact
+  // shape this leg exists to catch, surviving for any job outside those two.
+  //
+  // Callers pass the jobs the repository actually defines, so the leg tracks the workflows the way
+  // the host lookup already does. A literal list can only ever notice yesterday's mistake.
+  if (!Array.isArray(candidates) || candidates.length === 0)
+    throw new Error("staleJobClaims: candidates must be a non-empty array of job names read from the workflows");
   return candidates.filter((j) => j !== hostJob
     && new RegExp(`(runs?|grades?|grading path is|step in|in) the .${j}. job`).test(text));
 }
@@ -552,6 +565,19 @@ if (process.argv.includes("--self-test")) {
   // GATE. The job is read from the YAML rather than hard-coded here, so moving the step again
   // makes these cells fail until the sentence follows it, which is the failure that was missing.
   const workflowDir = join(repoRootForDocs(), ".github", "workflows");
+  // Every job name the workflows define, so the refuse leg below can notice a claim naming ANY of
+  // them rather than only the two that happened to go stale on this change.
+  const allJobNames = (() => {
+    const names = new Set();
+    if (!existsSync(workflowDir)) return names;
+    for (const f of readdirSync(workflowDir).filter((n) => n.endsWith(".yml")))
+      for (const l of readFileSync(join(workflowDir, f), "utf8").split("\n")) {
+        const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(l);
+        if (m) names.add(m[1]);
+      }
+    return names;
+  })();
+
   const hostJob = (() => {
     if (!existsSync(workflowDir)) return null;
     for (const f of readdirSync(workflowDir).filter((n) => n.endsWith(".yml"))) {
@@ -587,7 +613,7 @@ if (process.argv.includes("--self-test")) {
       // REFUSE LEG. Naming the right job is not enough if the page ALSO names a job that no longer
       // runs it. This is the exact shape that shipped: the correct job appeared in one paragraph
       // while a stale one still appeared in another, and a reader met whichever they reached first.
-      const stale = staleJobClaims(doc, hostJob.job);
+      const stale = staleJobClaims(doc, hostJob.job, [...allJobNames]);
       cell(`…and does not ALSO claim a different job runs it`, stale.length === 0, { stale });
     }
     // THE SHIPPED COPY IS THE ONE THAT REACHES USERS. A correction that stops at the source leaves
@@ -595,7 +621,7 @@ if (process.argv.includes("--self-test")) {
     const bundle = join(repoRootForDocs(), "extensions", "connector-core", "src", "docs-bundle.generated.ts");
     if (existsSync(bundle)) {
       const b = readFileSync(bundle, "utf8");
-      const staleB = staleJobClaims(b, hostJob.job);
+      const staleB = staleJobClaims(b, hostJob.job, [...allJobNames]);
       cell("the SHIPPED docs bundle does not claim a job that no longer runs the gate", staleB.length === 0, { stale: staleB });
     }
   }
@@ -604,32 +630,48 @@ if (process.argv.includes("--self-test")) {
   // they do not depend on the repository's documents being in any particular state, so breaking
   // the detector reddens them whether or not the real docs happen to be clean today.
   cell("ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
-    staleJobClaims("CI runs its self-test and, in the `unit` job, grades each PR.", "attribution")
+    staleJobClaims("CI runs its self-test and, in the `unit` job, grades each PR.", "attribution", ["unit", "ci-ok"])
       .join() === "unit");
   cell("…and the same page is silent once the claim is corrected",
     staleJobClaims("CI runs its self-test and, as a step of the `attribution` job, grades each PR.",
-      "attribution").length === 0);
+      "attribution", ["unit", "ci-ok"]).length === 0);
   cell("the host job is honoured rather than assumed: `unit` is not stale when `unit` runs it",
-    staleJobClaims("the gate runs in the `unit` job", "unit").length === 0);
+    staleJobClaims("the gate runs in the `unit` job", "unit", ["unit", "ci-ok"]).length === 0);
   cell("…and `attribution` IS stale once the step lives in `unit`",
     staleJobClaims("the gate runs in the `attribution` job", "unit", ["attribution"]).join() === "attribution");
   cell("REFUSE CONTROL: prose merely mentioning a job name is not a claim that it runs the gate",
     staleJobClaims("start it under a systemd unit, or in the unit of work described above",
-      "attribution").length === 0);
+      "attribution", ["unit", "ci-ok"]).length === 0);
   cell("every stale claim in one page is reported, not just the first",
-    staleJobClaims("it runs in the `unit` job, and grades in the `ci-ok` job", "attribution").length === 2);
+    staleJobClaims("it runs in the `unit` job, and grades in the `ci-ok` job", "attribution", ["unit", "ci-ok"]).length === 2);
+  // THE EVASION THAT DEFAULTING HID, found end to end by review rather than by reading. A page
+  // naming the CORRECT host AND ALSO a false third job satisfied the positive cell and slipped past
+  // the refuse leg, because the third job was not in the hard-coded pair. The candidates now come
+  // from the workflows, so any job the repository defines is a candidate.
+  cell("a page that names the right job AND a false third job is still NAMED",
+    staleJobClaims("as a step of the `attribution` job, and the grading path is the `live` job",
+      "attribution", ["unit", "ci-ok", "live", "smoke"]).join() === "live");
+  cell("…and the same page with only the right job is silent",
+    staleJobClaims("as a step of the `attribution` job", "attribution",
+      ["unit", "ci-ok", "live", "smoke"]).length === 0);
+  // A MISSING CANDIDATE LIST MUST THROW RATHER THAN GRADE NOTHING. An empty or absent list would
+  // make every page read clean, which is the silent-pass shape this whole tool refuses.
+  cell("REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
+    (() => { try { staleJobClaims("the gate runs in the `unit` job", "attribution", []); return false; }
+             catch { return true; } })());
+
   // THE SHIPPED COPY IS A SEPARATE ARTEFACT AND NEEDS ITS OWN PROOF. The bundle stores each page
   // as one escaped JSON string, so backticks survive but newlines become literal `\n`. A reader
   // written for the markdown can therefore pass on the source and miss the generated copy, which
   // is the half that reaches users. This cell drives the detector with a bundle-shaped line.
   cell("ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",
     staleJobClaims('"body": "CI runs its self-test and, in the `unit` job, grades each\\nPR."',
-      "attribution").join() === "unit");
+      "attribution", ["unit", "ci-ok"]).join() === "unit");
   cell("…and a corrected bundle string is silent",
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
-      "attribution").length === 0);
+      "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 63;
+  const EXPECTED = 66;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons

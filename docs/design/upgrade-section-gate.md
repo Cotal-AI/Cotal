@@ -91,9 +91,17 @@ real merge ref: `pull_request` grades and exits 0, while `push` and `schedule` e
 **It checks that the documents name the right job, and NOTHING else about the prose.** The
 self-test reads which job hosts the gate out of the workflow files, then requires
 `docs/UPGRADING.md`, this note, and the generated docs bundle to name that job and not to also
-claim a different one runs it. This exists because the class shipped three times inside this very
-change: a stale cell count, a self-test-only sentence after the step was wired into CI, and an
-operator page still promising the gate was advisory after it had started blocking.
+claim a different one runs it. The set of job names it will recognise as a wrong answer is read
+from the workflows too, so a document naming ANY job the repository defines is graded, rather than
+only the ones that have gone stale before. An earlier version hard-coded that pair, and review found
+the evasion by execution: a page naming the CORRECT host and ALSO a false third job passed
+everything, because the positive check was satisfied by the right job appearing while the refuse
+leg never looked at the third. A page simultaneously correct and false, shipping green. Grading with
+no candidate list now throws rather than reporting every page clean.
+
+This exists because the class shipped three times inside this very change: a stale cell count, a
+self-test-only sentence after the step was wired into CI, and an operator page still promising the
+gate was advisory after it had started blocking.
 
 **THE CEILING IS SHARP AND IS WORTH STATING RATHER THAN DISCOVERING.** The check asserts one fact
 that is mechanically derivable from the workflow: which job runs the gate. A future false claim that
