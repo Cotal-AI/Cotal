@@ -204,8 +204,8 @@
     {
       "name": "the leak walker binds to the literal spelling `run` again, so a reader whose parameter is named otherwise is never inspected",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)\n        && node.expression.text === param && !ARRAY_USE.has(node.name.text)) {",
-      "replace": "      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)\n        && node.expression.text === \"run\" && !ARRAY_USE.has(node.name.text)) {",
+      "find": "        if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)\n          && tainted.has(current.expression.text) && !ARRAY_USE.has(current.name.text)) {",
+      "replace": "        if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)\n          && current.expression.text === \"run\" && !ARRAY_USE.has(current.name.text)) {",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     },
