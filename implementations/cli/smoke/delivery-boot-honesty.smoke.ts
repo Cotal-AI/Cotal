@@ -78,6 +78,9 @@ const WRAPPER = join(import.meta.dirname, "signal-ownership-wrapper.fixture.ts")
 let broker: ChildProcess | undefined, holder: ChildProcess | undefined;
 let releaseBroker: () => void = () => {};
 let releaseHolder: () => void = () => {};
+// `undefined` until the kill cell adopts the wrapper, so the cell below grades the adoption itself
+// rather than trusting it. A no-op default would make an unadopted wrapper indistinguishable.
+let releaseWrapper: (() => void) | undefined;
 const origCwd = process.cwd();
 try {
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
@@ -222,6 +225,14 @@ try {
   // killed, and survivors are counted from here. A happy-path assertion proves nothing about this:
   // the `finally` below is correct and is exactly what a signal skips.
   const wrapper = spawn(TSX, [WRAPPER], { cwd: WT_ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  // ADOPT THE WRAPPER. Until this line the one spawn in this file that was NOT owned by the signal
+  // path was the wrapper inside the cell that grades the signal path: a SIGTERM here leaked a tsx
+  // process, its nats server and its holder to init. That is not hypothetical -- a reviewer's timeout
+  // kill during verification reparented exactly this tree. Owning `wrapper` is sufficient for the
+  // whole subtree precisely because of the property this cell grades: killing the wrapper takes its
+  // children with it. Released only AFTER the survivor count below, so the window in which the tree
+  // is unowned is empty rather than merely short.
+  releaseWrapper = teardownOnSignal(wrapper);
   let wrapperErr = "";
   wrapper.stderr?.on("data", (c) => { wrapperErr += String(c); });
   const grandchildPid = await new Promise<number>((res, rej) => {
@@ -248,6 +259,16 @@ try {
   if (survivors > 0) { try { process.kill(grandchildPid, "SIGKILL"); } catch { /* raced */ } }
   check("CELL: killing the wrapper leaves ZERO surviving children (survivor count, not a happy path)",
     survivors === 0, { grandchildPid, survivors, wrapperErr });
+  // Grades the ADOPTION, not the signal delivery: `teardownOnSignal` installs process-local handlers,
+  // so a suite cannot raise a real signal at itself and still report. What is checkable in-process is
+  // that the wrapper tree was owned for the whole span in which it existed -- registration before the
+  // kill, still registered when the count is taken. Removing the `teardownOnSignal(wrapper)` line
+  // leaves this `undefined` and REDDENS here instead of failing silently only on a signal nobody sent.
+  check("SIGNAL OWNERSHIP: the wrapper itself was adopted by the signal path (it is the one spawn this cell is about)",
+    releaseWrapper !== undefined, { adopted: releaseWrapper !== undefined });
+  // Release LAST: the tree stays owned until its survivors have actually been counted.
+  releaseWrapper?.();
+  releaseWrapper = undefined;
 
   console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and
@@ -259,6 +280,9 @@ try {
   // Tear down first, then RELEASE: the helper must keep owning each child until it is actually gone,
   // so a signal arriving mid-teardown still reaps. `killAndAwaitExit` does not return until the
   // process has exited, which is what keeps the `rmSync` below from racing a still-writing broker.
+  // If the kill cell threw before its own release, the wrapper is still owned; drop it here so a dead
+  // entry cannot outlive the run in the helper's `owned` set.
+  releaseWrapper?.();
   if (holder) await killAndAwaitExit(holder);
   releaseHolder();
   if (broker) await killAndAwaitExit(broker);
