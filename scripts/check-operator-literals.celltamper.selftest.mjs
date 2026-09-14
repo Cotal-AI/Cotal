@@ -923,13 +923,15 @@ try {
   // stays invisible. That is the whole lesson of the survivor this control was added for.
   //
   // `declaredButNeverRan` is DELIBERATELY NOT LISTED. It is not missing: it is redundant, and that
-  // was measured rather than assumed. Exhaustive search over every pair of sequences up to length
-  // four from a four-symbol alphabet, 116281 pairs, found NO input that the full predicate refuses
-  // and the predicate without that clause accepts. The other four imply it, because equal lengths
-  // plus no stranger in `executed` plus no repeat in `executed` leaves nothing for `declared` to
-  // hold that `executed` does not. It is kept in the predicate because it names the failure
-  // directly in the row a human reads, and it is claimed here as covered by nothing, because
-  // claiming otherwise would be the exact error this file keeps catching.
+  // is provable rather than merely unobserved. If `executed` has no duplicates, has no id absent
+  // from `declared`, and the two have equal length, then `executed` is a subset of `declared` of
+  // the same size, so the two name the same set and nothing can be left over for `declared` to hold
+  // alone. The clause is therefore implied by the other four for ANY finite input, not just for
+  // small ones. Search agreed before the argument was found: 116281 pairs up to length four over
+  // four symbols, then 15256836 pairs up to length five over five symbols, with no separating input
+  // in either. It is kept in the predicate because it names the failure directly in the row a human
+  // reads, and it is claimed here as covered by nothing, because claiming otherwise would be the
+  // exact error this file keeps catching.
   const verdictHonest = censusVerdict(["alpha", "beta"], ["alpha", "beta"]);
   const verdictUndeclared = censusVerdict(["alpha", "ghost"], ["alpha", "alpha"]);
   const verdictLength = censusVerdict(["alpha"], ["alpha", "alpha"]);
@@ -1167,20 +1169,34 @@ try {
   // rule. Known holes are named above so the next contributor inherits the truth instead of a
   // reassuring green.
   //
-  // WHAT A CASE PROVES, AND THE EXACT SHAPE IT DOES NOT CATCH. Every case below tampers with a
-  // cell's SUBJECT and requires that cell's count to fall to 0. That grades the path from subject
-  // to reported number, which is what caught every hollowed reader review has planted. It does not
-  // grade a reader that keeps the subject text in the file and stops consuming it. Measured, at
-  // this head: rewriting a cell's measure to `CONSTANT ?? scanEntries(<original arguments>)` leaves
-  // the whole argument text verbatim, so the tamper still finds its anchor and still applies, while
-  // the scan is never evaluated and the constant answers both the untampered baseline and the
-  // tampered run. The cell reports its expected count either way and the suite stays green.
+  // WHAT A CASE PROVES. Every case below tampers with a cell's SUBJECT and requires that cell's
+  // count to fall to 0. That grades the path from subject to reported number, which is what catches
+  // a hollowed reader, and it reaches further than it first appears.
   //
-  // This was measured against a case added in this change AND against `allowlisted-fixture`, which
-  // has shipped since round three, with the same result on both. It is a property of subject
-  // tampering, not of the new cases: no case here is weaker than the thirteen that preceded it, and
-  // none is stronger. Naming it is the point, since the previous five attempts to close exactly
-  // this class of hole are what the paragraph above is a record of.
+  // An earlier revision of this comment claimed a limit here that DOES NOT EXIST, and the correction
+  // is worth more than the claim was. The claim was that a reader which keeps its subject text and
+  // stops consuming it survives: rewrite a measure to `CONSTANT ?? scanEntries(<original
+  // arguments>)` and the argument text stays verbatim, so the tamper still finds its anchor and
+  // still applies, while the scan is never evaluated. That much is true, and at the SCANNER level
+  // it is a genuine hollow: `node --check` passes, the scan never runs, and the scanner's own
+  // self-test reports `cells=34/34 status=PASS` at exit 0, blind to it.
+  //
+  // The suite kills it anyway, measured on the real file rather than reasoned about:
+  //
+  //   FAIL must-come-back-dirty: destroying the planted subject drives this cell's findings to 0 - findings=1/0
+  //   FAIL must-come-back-dirty: that dead reading turns the cell red - status=PASS/FAIL
+  //   FAIL must-come-back-dirty: a dead cell is visible in the summary row and the exit code - exit=0/2 cells=34/34 status=PASS
+  //
+  // The reason is the structure of a case, not luck. A case does not ask what the source says. It
+  // RE-RUNS the scanner over the tampered copy and requires the number to MOVE. A constant answers
+  // the tampered run exactly as it answered the untampered one, so the count that must fall to 0
+  // stays at 1 and the kill assertion goes red naming the cell. A reader that cannot say `no` fails
+  // here precisely because it cannot say anything different.
+  //
+  // The false claim came from a probe that re-derived an answer from the tampered SOURCE instead of
+  // RUNNING the suite against it, which is the error this whole file exists to punish, made by its
+  // own author while documenting it. Review caught it by running the thing. That is the thirteenth
+  // consecutive time a question here was settled by building the construction and not by reading.
   //
   // ONE STRUCTURAL PROPERTY IS KEPT, because it is not a guard. The three row readers take `rows`
   // and not the run, so they cannot see an exit code. Every tampered run here exits 2 and every
