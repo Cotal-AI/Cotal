@@ -54,13 +54,39 @@ rather than relying on the check.
 **It does not know about releases, only ranges.** It answers a question about the commits between
 two refs. Squashing, reverting, or splitting a break across ranges can each move the answer.
 
-**It cannot block a merge, and that is deliberate for now.** The gate reports through `ci-ok`, and
-the only required context on `main` today is `attribution`, so a red gate is advisory. Making
-`ci-ok` required would block every merge behind a flaky shard, because the org sits on a
-20-concurrent-job cap and the board carries a known wrong-red rate. The enforcement that actually
-exists is the operator gate: a maintainer reads a terminal-green rollup before merging. Whether to
-require `ci-ok` is a repository governance question rather than a code change, and it is filed
-separately.
+**It blocks a merge, and it had to be moved to do so.** The gate runs as a step of the
+`attribution` job, which is the only required status context on `main` today. That placement is
+the whole point rather than an implementation detail. An earlier revision of this change ran the
+step in `unit`, reporting through the `ci-ok` rollup, and `ci-ok` is not a required context: a red
+there is ADVISORY, and the merge proceeds anyway. A refusal nobody has to answer is
+indistinguishable from a pass to the person clicking merge, which is the same "a green check tells
+a reviewer somebody looked" failure this gate exists to remove, one level up.
+
+The alternative was to make `ci-ok` required. That was rejected on measured cost: it would block
+every merge behind a flaky shard, because the org sits on a 20-concurrent-job cap and the board
+carries a known wrong-red rate. This change reached enforcement without paying that cost, by
+running in the required job instead of enlarging what is required.
+
+Hosting it there is free. The script imports only node builtins (`child_process`, `fs`, `os`,
+`path`, `url`), exactly like the two checks already in that job, and it was measured running to a
+correct verdict in a clone with no `node_modules` at all. The job installs no dependencies and
+still does not need to. The checkout it already performs is the shape the gate wants:
+`fetch-depth: 0` with `actions/checkout`'s default pull request ref, which is the two-parent merge
+snapshot the gate requires and verifies for itself.
+
+**It grades pull requests only, and there is deliberately no push path.** The workflow triggers on
+`pull_request` alone. An earlier revision of the step carried a `HEAD~1..HEAD` branch for push
+events, inherited from when it lived in a workflow that had both triggers. In this job that branch
+is unreachable, and unreachable code that claims to grade something is worse than absent: it
+advertises coverage the triggers cannot exercise, and it leaves a second range path free to drift
+out of step with the one that actually runs. It is removed rather than left dormant. The reason it
+is not wanted is the same one this workflow already gives for the attribution check: a push to
+`main` is already merged, so a red there is a report and not a gate.
+
+The event is asserted rather than assumed. If a trigger is ever added to this workflow, the step
+exits 2 and grades nothing instead of silently taking a path nobody re-checked. Measured on the
+real merge ref: `pull_request` grades and exits 0, while `push` and `schedule` each refuse at exit
+2 by name.
 
 **A shallow checkout grades less than a full one, and says so.** The smoke suite runs
 `--self-test`, which in a depth-1 clone reports the two cells that need real release history as
@@ -151,10 +177,12 @@ directions are held.
    section added by a swallowed main commit reads as coverage for a breaking commit on the branch
    that documented nothing. `HEAD^1..HEAD` cannot drift, since both ends are read off the commit in
    the working tree.
-2. FILED SEPARATELY rather than open here. Whether `ci-ok` should be a required context is a
-   repository governance decision, not a code change, and the reason it is not one today is written
-   under "What the gate cannot prove" so a reader meets it beside the limitation rather than in a
-   list of questions.
+2. RESOLVED during review, and the resolution was to stop asking the question. This was filed as
+   "whether `ci-ok` should be a required context", which framed enforcement as a repository
+   governance decision outside the diff. That framing was wrong: it assumed the gate had to run
+   where it was first put. Moving the step into the already-required `attribution` job reaches
+   enforcement with no settings change, no new required context, and no merge blocked behind a
+   flaky shard. The measured end-to-end proof is recorded under "What the gate cannot prove".
 3. Should an unmarked but credential-touching change be detectable at all, or is prose plus review
    the honest answer? This note takes the second position, and it is the position most worth
    arguing with.
