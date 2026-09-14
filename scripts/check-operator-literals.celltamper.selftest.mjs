@@ -333,6 +333,78 @@ const CASES = [
     replace: "[{ path: 'fixtures/scrubber.txt', text: 'no literal here' }], [SELFTEST_HOST], SELFTEST_ALLOWLIST",
   },
 
+  // THE FOUR REMAINING `scanCell` CELLS, each carrying a reader no other cell uses.
+  //
+  // These were not omitted by oversight. They were reported as COVERED by a coverage rule that
+  // grouped cells by FACTORY, on the premise that one case driving a factory's shared discriminator
+  // grades every cell it builds. That premise holds only for a factory that OWNS its discriminator.
+  // `scanCell` RECEIVES its measure as an argument, so `allowlisted-fixture` having a case said
+  // nothing whatever about these four, and review measured the consequence: hollowing two of these
+  // readers to a constant that satisfies its own expectation left `scanEntries` uncalled, the
+  // scanner reporting `cells=34/34 status=PASS`, and this suite fully green. Two cells graded by
+  // nothing, reported as graded by their family. The coverage rule now groups by reader, which put
+  // all four here as uncovered singletons, and this is that debt paid rather than renamed.
+  //
+  // Each also reports under its OWN metric name, because that too is an argument: `findings`,
+  // `errors` and `missing` rather than the family's `allowed`. Hence the per-case `secondaryField`.
+  {
+    cell: "same-token-elsewhere",
+    reader: "scanCell findings count",
+    family: "scanCell",
+    secondaryField: "findings",
+    // The cell's point is that an allowlisted fixture absorbs its own occurrence while the SAME
+    // token in an ordinary source file is still reported, so `findings` must be exactly 1 with two
+    // entries carrying the literal. Emptying the non-fixture entry leaves only the allowlisted one,
+    // which the allowlist then absorbs: a live count reports 0 and the scan comes back `clean`.
+    find: "path: 'src/output.txt', text: SELFTEST_HOME",
+    replace: "path: 'src/output.txt', text: 'no literal here'",
+  },
+  {
+    cell: "allowlist-fixture-deleted",
+    reader: "scanCell errors count",
+    family: "scanCell",
+    secondaryField: "errors",
+    // This cell's planted subject is an ABSENCE: the allowlist requires one `home-path` in
+    // `fixtures/scrubber.txt`, the fixture no longer contains it, and the scan must come back
+    // `broken` with exactly 1 error. The tamper therefore RESTORES the literal rather than removing
+    // one. That is the same move as every other case here, destroying whatever condition this cell
+    // was planted to detect: with the fixture intact the allowlist is satisfied, a live error count
+    // reports 0, and a count hollowed to its expectation still says 1.
+    find: "text: 'fixture removed'",
+    replace: "text: SELFTEST_HOME",
+  },
+  {
+    cell: "must-come-back-dirty",
+    reader: "scanCell findings count",
+    family: "scanCell",
+    secondaryField: "findings",
+    // An unallowlisted public address in an ordinary source file is the plainest thing the scanner
+    // must catch, and this cell is the one that says so: `dirty` with exactly 1 finding and no
+    // allowlist in play. Emptying the subject leaves nothing to find, so a live count reports 0 and
+    // the scan comes back `clean`.
+    find: "text: SELFTEST_PUBLIC_IP",
+    replace: "text: 'no address'",
+  },
+  {
+    cell: "missing-subject",
+    reader: "missingSubjectResult missing count",
+    family: "scanCell",
+    secondaryField: "missing",
+    helper: "missingSubjectResult",
+    // The only one of the five whose measure is a NAMED function rather than an inline closure, so
+    // the tamper goes through the helper path: the cell's marker block contains just the identifier
+    // and there is nothing inside it to destroy.
+    //
+    // Its subject is a path that must NOT exist. `missingSubjectResult` makes a temporary directory
+    // and stats a name inside it that was never created, so the stat throws and `missing` is 1.
+    // Pointing that stat at the directory itself, which does exist, means the stat succeeds and a
+    // live count reports 0, while a count hollowed to `Array(1)` still says 1. The scan keeps
+    // coming back `broken` either way, since the entry list is empty, which is precisely why the
+    // status assertion alone never graded this cell and the count has to.
+    find: "lstatSync(join(dir, 'missing'))",
+    replace: "lstatSync(dir)",
+  },
+
   // THE SEVEN INLINE CELLS. Each is an object literal with a `measure` of its own and no factory,
   // so nothing about its reader can be inferred from a sibling and each needs its own case. Two
   // reviewers independently hollowed one of these discriminators and watched it SURVIVE at a full
@@ -436,6 +508,7 @@ const readCellInventory = (source) => {
   const factories = new Set();
   const byFactory = new Map();
   const inline = [];
+  const readerById = new Map();
   const unclassified = [];
   let total = 0;
   const literalText = (node) =>
@@ -456,6 +529,42 @@ const readCellInventory = (source) => {
           const id = literalText(element.arguments[0]);
           if (!byFactory.has(name)) byFactory.set(name, []);
           if (id) byFactory.get(name).push(id);
+          // AND THE DISCRIMINATOR THIS CELL ACTUALLY CARRIES, by identity rather than by factory.
+          //
+          // A factory that OWNS its discriminator is one equivalence class: hollowing the shared
+          // function kills every cell it builds, so one case genuinely grades all of them. A
+          // factory that RECEIVES the discriminator as an ARGUMENT is not. `matchCell` takes its
+          // secondary reader as a parameter, so two of its cells can carry entirely different
+          // functions, and review demonstrated the consequence: a new `matchCell` cell with its own
+          // inline reader was counted, declared and accounted as covered, and hollowing that reader
+          // left the suite fully green. Nothing graded it.
+          //
+          // So the reader is recorded as the argument's own text. An IDENTIFIER is a shared class,
+          // since every cell naming it dies together when it is hollowed. An inline function
+          // expression is its OWN class, because it is a distinct function object no other cell
+          // uses, which is what the case list must then cover.
+          // The discriminator is found by SHAPE, scanning from the end, not at a fixed index.
+          // Factories differ: `matchCell` takes its reader fifth, `scanCell` fifth of five, and
+          // `cidrBoundaryCell` takes none at all because it OWNS its logic. A fixed index reported
+          // the cidr cells as having no reader and made them unaccounted, which is a reader census
+          // that cannot read some of its subjects. Scanning from the end also avoids the opposite
+          // error: several cells pass an identifier as their SUBJECT TEXT in an early argument,
+          // and a forward scan would class the cell by its input instead of by its discriminator.
+          if (id) {
+            let reader = `owned@${name}`;
+            for (let i = element.arguments.length - 1; i >= 1; i -= 1) {
+              const arg = element.arguments[i];
+              if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
+                reader = `inline@${id}`;
+                break;
+              }
+              if (ts.isIdentifier(arg)) {
+                reader = arg.text;
+                break;
+              }
+            }
+            readerById.set(id, reader);
+          }
         } else if (ts.isObjectLiteralExpression(element)) {
           total += 1;
           const id = element.properties.find(
@@ -484,7 +593,7 @@ const readCellInventory = (source) => {
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { factories: [...factories], byFactory, inline, total, unclassified };
+  return { factories: [...factories], byFactory, inline, total, unclassified, readerById };
 };
 
 /**
@@ -763,6 +872,14 @@ try {
   // undeclared cell, so the deleted clause had nothing to report, and a control that computes its
   // own answer beside the real one proves only that the control works. A control must reach the
   // code it licenses.
+  // MEMBERSHIP IS NOT MULTIPLICITY, which is this lane's opening blocker inverted. That round's
+  // finding was that a COUNT IS NOT A SET: an earlier census compared totals while the membership
+  // differed. The inverse is equally false. Two mutual-inclusion passes are satisfied by a
+  // DUPLICATED id, so duplicating an already-declared cell printed `executed=36 declared=34` and
+  // still read `ok`, with the disagreement visible in the detail string nobody would be reading on
+  // a green run. The predicate therefore checks identity, count AND uniqueness, and the row prints
+  // `unique` so that 36/34 with 34 unique (a duplicate) is distinguishable from 36/36 (two new
+  // cells) rather than merely red.
   const censusAgreement = (executed, declared) => ({
     ranButUndeclared: executed.filter((id) => !declared.includes(id)),
     declaredButNeverRan: declared.filter((id) => !executed.includes(id)),
@@ -771,8 +888,10 @@ try {
     censusAgreement(executedIds, declaredCells);
   check(
     "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
-    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0,
-    `executed=${executedIds.length} declared=${declaredCells.length}${executedExtra.length ? ` UNDECLARED [${executedExtra.join(", ")}]` : ""}${executedMissing.length ? ` NEVER RAN [${executedMissing.join(", ")}]` : ""}`,
+    executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0
+      && executedIds.length === declaredCells.length
+      && new Set(executedIds).size === executedIds.length,
+    `executed=${executedIds.length} declared=${declaredCells.length} unique=${new Set(executedIds).size}${executedExtra.length ? ` UNDECLARED [${executedExtra.join(", ")}]` : ""}${executedMissing.length ? ` NEVER RAN [${executedMissing.join(", ")}]` : ""}`,
   );
 
   // And its planted control, because an id reader that returns nothing would report the same tidy
@@ -827,8 +946,9 @@ try {
   // UNGRADED_CELLS with a reason. There is no fourth category and no silent remainder, which is the
   // whole point. A cell added in either style lands here rather than in an unmeasured gap.
   const casesByCell = new Set(CASES.map((entry) => entry.cell));
-  const factoryCovered = new Set(
-    CASES.filter((entry) => entry.family).map((entry) => entry.family),
+  const readerByCell = inventory.readerById;
+  const coveredReaders = new Set(
+    CASES.map((entry) => readerByCell.get(entry.cell)).filter((reader) => reader !== undefined),
   );
   const inlineNamed = new Set(INLINE_CELLS.map((entry) => entry.name));
   const ungradedNamed = new Set(UNGRADED_CELLS.map((entry) => entry.cell));
@@ -840,19 +960,30 @@ try {
   const accountFor = (cellId) => {
     if (casesByCell.has(cellId)) return "case";
     if (ungradedNamed.has(cellId)) return "named-ungraded";
-    // A factory cell is covered when a case drives that factory's shared discriminator: hollowing
-    // it kills every cell that factory builds, so one case genuinely grades all of them.
-    for (const factory of FACTORIES) {
-      if (factoryCovered.has(factory.name) && factoryCellIds.get(factory.name)?.includes(cellId)) {
-        return "factory";
-      }
-    }
+    // A factory cell is covered when a case drives THE DISCRIMINATOR THIS CELL CARRIES, which is
+    // not the same as its factory having a case somewhere.
+    //
+    // This used to return "factory" for any cell whose constructor was named by any case, on the
+    // premise that hollowing a factory's shared discriminator kills every cell it builds. That
+    // premise is true only for a factory that OWNS its discriminator. `matchCell` RECEIVES one, so
+    // review added a `matchCell` cell with its own inline reader, no case, and watched it be
+    // declared, counted and accounted as covered while hollowing its reader left the suite green.
+    // A cell graded by nothing was reported as graded by its family.
+    //
+    // So coverage is asked per READER: a cell is covered when some case's cell carries the same
+    // discriminator. Cells sharing a named reader form one class and one case covers them, which is
+    // measured rather than assumed, because hollowing that named function reddens every cell in the
+    // class. A cell with an inline function is its own class and needs its own case. This is the
+    // round-3 fix one level in: the census stopped counting factories and started counting cells,
+    // and coverage now stops counting factories and starts counting readers.
+    const reader = readerByCell.get(cellId);
+    if (reader !== undefined && coveredReaders.has(reader)) return "reader";
     return undefined;
   };
   const findUnaccounted = (cellIds) => cellIds.filter((cellId) => accountFor(cellId) === undefined);
   const unaccountedCells = findUnaccounted(declaredCells);
   check(
-    "census: every declared cell is graded, covered by its factory, or named as ungraded",
+    "census: every declared cell is graded by a case, covered by a case driving the same reader, or named as ungraded",
     declaredCells.length > 0 && unaccountedCells.length === 0,
     `declared=${declaredCells.length} unaccounted=${unaccountedCells.length}${unaccountedCells.length ? ` [${unaccountedCells.join(", ")}]` : ""}`,
   );
@@ -932,13 +1063,13 @@ try {
 
   // A UNIT TEST OF THE FIELD READER, on synthetic rows it supplies itself.
   //
-  // All thirteen kills below are decided by `cellSecondary` parsing a named field for a named cell,
+  // All seventeen kills below are decided by `cellSecondary` parsing a named field for a named cell,
   // so this checks that it does, against four mutually inconsistent values that no constant can
   // satisfy at once, plus two miss cases that require `undefined`.
   //
   // ITS SCOPE IS THIS READER AND NOTHING MORE. An earlier revision claimed this control established
   // that the kills are honestly graded. It does not, and that was measured: a TWIN reader added
-  // beside this one, returning "0" whenever the rows contain `status=FAIL`, fakes all thirteen
+  // beside this one, returning "0" whenever the rows contain `status=FAIL`, fakes all seventeen
   // kills at a full green while this control passes untouched, because synthetic rows carry
   // `status=PASS` so the twin's lie never fires here. A control grades the reader it is handed, and
   // readers are addable. Treat this as a unit test, which is worth having, and not as evidence that
@@ -988,6 +1119,21 @@ try {
   // rule. Known holes are named above so the next contributor inherits the truth instead of a
   // reassuring green.
   //
+  // WHAT A CASE PROVES, AND THE EXACT SHAPE IT DOES NOT CATCH. Every case below tampers with a
+  // cell's SUBJECT and requires that cell's count to fall to 0. That grades the path from subject
+  // to reported number, which is what caught every hollowed reader review has planted. It does not
+  // grade a reader that keeps the subject text in the file and stops consuming it. Measured, at
+  // this head: rewriting a cell's measure to `CONSTANT ?? scanEntries(<original arguments>)` leaves
+  // the whole argument text verbatim, so the tamper still finds its anchor and still applies, while
+  // the scan is never evaluated and the constant answers both the untampered baseline and the
+  // tampered run. The cell reports its expected count either way and the suite stays green.
+  //
+  // This was measured against a case added in this change AND against `allowlisted-fixture`, which
+  // has shipped since round three, with the same result on both. It is a property of subject
+  // tampering, not of the new cases: no case here is weaker than the thirteen that preceded it, and
+  // none is stronger. Naming it is the point, since the previous five attempts to close exactly
+  // this class of hole are what the paragraph above is a record of.
+  //
   // ONE STRUCTURAL PROPERTY IS KEPT, because it is not a guard. The three row readers take `rows`
   // and not the run, so they cannot see an exit code. Every tampered run here exits 2 and every
   // kill expects 0, so a reader holding the run can answer from the exit code instead of from the
@@ -1006,7 +1152,16 @@ try {
   // count `^  FAIL`, or a wrong-green will read to you as a kill.
   for (const testCase of CASES) {
     const { cell, reader, find, replace, family, helper } = testCase;
-    const secondaryField = FACTORIES.find((entry) => entry.name === family)?.secondaryField
+    // THE FIELD IS ASKED OF THE CASE FIRST, because a factory's field is not always a property of
+    // the factory. `matchCell` and `cidrBoundaryCell` report under one field each, so the family
+    // answers for them. `scanCell` does not: it RECEIVES its metric name as an argument, and its
+    // five cells report under four different fields (`allowed`, `findings`, `errors`, `missing`).
+    // Reading the family's single `allowed` for all five would hand the reader a field four of them
+    // never emit, `cellSecondary` would return undefined, and the baseline control below would go
+    // red for a live cell. This is the same confusion the coverage rule above was just fixed for,
+    // one level down: what a factory OWNS may be asked of the family, what it RECEIVES may not.
+    const secondaryField = testCase.secondaryField
+      ?? FACTORIES.find((entry) => entry.name === family)?.secondaryField
       ?? INLINE_CELLS.find((entry) => entry.name === cell)?.secondaryField
       ?? "secondary";
 
@@ -1078,10 +1233,11 @@ try {
     // A dead discriminator must also be visible in the two figures a human actually reads.
     //
     // The exit code is read ONCE, into a binding, and the condition and the message both use that
-    // binding. This is not style. The read budget asserted below is the only instrument in this
-    // file that survives review, and it only works if the honest path's consumption is exact and
-    // deliberate: a second read here would raise the budget to two and leave room for an oracle to
-    // hide inside it.
+    // binding. That is now style rather than instrumentation: an earlier revision asserted a BUDGET
+    // on reads of this field, and review defeated it with an oracle that STOLE the one permitted
+    // read, using it for the lie and handing the same value to this assertion. The budget counted
+    // one read and stayed green through thirteen faked kills, because a count is not an ownership.
+    // The budget is gone. The single read stays because it is clearer, and nothing rests on it.
     const observedExit = run.exitCode;
     check(
       `${cell}: a dead cell is visible in the summary row and the exit code`,
