@@ -88,6 +88,28 @@ exits 2 and grades nothing instead of silently taking a path nobody re-checked. 
 real merge ref: `pull_request` grades and exits 0, while `push` and `schedule` each refuse at exit
 2 by name.
 
+**It checks that the documents name the right job, and NOTHING else about the prose.** The
+self-test reads which job hosts the gate out of the workflow files, then requires
+`docs/UPGRADING.md`, this note, and the generated docs bundle to name that job and not to also
+claim a different one runs it. This exists because the class shipped three times inside this very
+change: a stale cell count, a self-test-only sentence after the step was wired into CI, and an
+operator page still promising the gate was advisory after it had started blocking.
+
+**THE CEILING IS SHARP AND IS WORTH STATING RATHER THAN DISCOVERING.** The check asserts one fact
+that is mechanically derivable from the workflow: which job runs the gate. A future false claim that
+avoids naming a job would pass every leg of it. Prose about what the gate PROVES, what it cannot
+see, or how an operator should respond to a red is not graded by anything and cannot be, because
+those are claims about meaning rather than about a value that exists in a file. Read this check as
+closing one hole with a mechanical answer, not as making the documentation trustworthy.
+
+**The cells that can fail are driven by documents the suite builds itself.** A first version read
+only the real files and was decoration: when the live documents are already correct, deleting the
+detector changes nothing observable, so three mutations disabling it all SURVIVED. The detector is
+now a pure function exercised against constructed inputs, including a bundle-shaped escaped string,
+because the bundle stores each page as one JSON line and a markdown-shaped reader passes on the
+source while missing the generated copy. A detector driven only by real files also cannot be proven
+to track the workflow, since moving the workflow under it means moving the files too.
+
 **A shallow checkout grades less than a full one, and says so.** The smoke suite runs
 `--self-test`, which in a depth-1 clone reports the two cells that need real release history as
 UNGRADED and exits 0. That is a degrade rather than a false pass: the same run prints the count and
