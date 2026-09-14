@@ -261,6 +261,51 @@ export class MeshHandler {
     return this.managerService;
   }
 
+  /**
+   * #1616 item 5 — PHASE A, RESOLVE ON THE HOST THAT WILL LAUNCH. A directory is a fact about one
+   * filesystem, so the only process that can canonicalize it is the manager instance that will
+   * `chdir` into it. This asks the PINNED instance for the canonical form and returns it together
+   * with the identity that answered, so phase B dispatches the resolved path and the journal records
+   * which host resolved it. There is deliberately NO envelope `id`: a resolve binds no goal, takes
+   * no reservation and allocates nothing, so a retry or a crash between the phases costs nothing.
+   *
+   * EVERY failure direction is a REFUSAL. A path the target cannot resolve is not passed through as
+   * the raw string: the raw string would launch somewhere plausible on the manager's own root, which
+   * is the fail-open outcome this repair exists to remove.
+   */
+  private async resolveCwd(req: SpawnRequest, service: ResolvedService, cwd: string, instanceId: string): Promise<CwdResolution> {
+    let reply: EpAttributedReply;
+    try {
+      reply = await invokeCommand(this.nc, this.binding.space, service, "resolve-cwd", { cwd }, {
+        deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+      });
+    } catch (err) {
+      // An older manager does not list `resolve-cwd`, and `invokeCommand` refuses an unlisted
+      // command with `not-found` before it publishes anything (endpoint-invoke.ts:349-350). That is
+      // the fail-CLOSED direction and it stays closed: a host that cannot answer the question does
+      // not get handed the caller's guess.
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd,
+        err instanceof EpEnvelopeError && err.code === "not-found"
+          ? `this manager serves no resolve-cwd command, so it can state no canonical form (${err.message})`
+          : String((err as Error)?.message ?? err));
+    }
+    if (reply.reply.ok === false)
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error?.message ?? "refused with no message");
+    const data = reply.reply.data as { cwd?: unknown; host?: unknown } | undefined;
+    if (typeof data?.cwd !== "string" || data.cwd.length === 0 || !isAbsolute(data.cwd))
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd,
+        `the reply names no absolute directory (${JSON.stringify(data?.cwd)})`);
+    // The AUTHORITATIVE identity is the one that answered, off the attributed reply's subject, not
+    // the one the caller asked for: the pinned resolve already rejects a reply from another
+    // instance, so recording the responder is recording what was checked.
+    return {
+      cwd: data.cwd,
+      endpoint: reply.responder.endpoint,
+      instanceId: reply.responder.instanceId,
+      ...(typeof data.host === "string" ? { host: data.host } : {}),
+    };
+  }
+
   /** The branded goal-fact context over this handler's own connection, memoized the same way. */
   private actions: Promise<ActionContext> | undefined;
   private actionCtx(): Promise<ActionContext> {
@@ -1261,13 +1306,30 @@ export class MeshHandler {
     try {
       if (ext === undefined) {
         let reply: EpAttributedReply | undefined;
+        // #1616 item 5 — PHASE A, then phase B. A previous attempt's journalled resolution is
+        // reused rather than re-asked, so the path a resumed spawn launches in is the one the
+        // resolve recorded and cannot drift under a re-resolve. A spawn naming no cwd has nothing
+        // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
+        let resolution = readCwdResolution(recorded?.resolution);
         try {
           const service = await this.manager(req.placement?.instanceId);
-          reply = await invokeCommand(this.nc, this.binding.space, service, "spawn", spawnArgs(req), {
-            id: goalId,
-            deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-          });
+          if (req.cwd !== undefined && resolution === undefined) {
+            // `req.placement` is guaranteed here: a cwd without one refused above, at :1203.
+            resolution = await this.resolveCwd(req, service, req.cwd, req.placement?.instanceId ?? "");
+            // PERSIST BEFORE SUBMITTING. The resolution is what phase B dispatches and what a
+            // resume re-reads; binding it after the submission would leave a crash in between with
+            // a launched seat whose directory no record names.
+            await ctx.bind({ resolution });
+          }
+          reply = await invokeCommand(this.nc, this.binding.space, service, "spawn",
+            spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
+              id: goalId,
+              deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+            });
         } catch (err) {
+          // A refusal this handler RAISED is never a lost reply: it was decided here, before
+          // anything was submitted, so it is re-thrown rather than weighed against a goal record.
+          if (err instanceof EffectError) throw err;
           // The invoke did not come back — which does not prove nothing happened: the request may
           // have been accepted while the reply was lost. The goal record is the arbiter: a durable
           // trace under this goalId means the submission landed, so proceed to its terminal; none
@@ -1295,6 +1357,9 @@ export class MeshHandler {
         ext = {
           goalId,
           ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+          // `bind` REPLACES the external record, so the phase-A resolution is re-stated here or the
+          // acceptance bind would erase it and a resume would re-resolve against a moved target.
+          ...(resolution !== undefined ? { resolution } : {}),
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
           ...(req.permits !== undefined ? { permits: req.permits } : {}),
@@ -2450,12 +2515,33 @@ export function canonicalCwd(cwd: string): string {
   return realpathSync(cwd);
 }
 
-/** {@link canonicalCwd} on the dispatch path: a path that does not resolve is not normalized into
- *  something else, it is handed to the serving manager unchanged so the manager's own
- *  existence check produces the refusal. Only a path that REALLY resolves is claimed, and it is
- *  claimed under its realpath. */
-function canonicalCwdOrRaw(cwd: string): string {
-  try { return canonicalCwd(cwd); } catch { return cwd; }
+/** What phase A establishes and the step journal keeps: the canonical directory as the SERVING host
+ *  stated it, plus the authoritative identity that stated it. Phase B dispatches `cwd` from here. */
+export interface CwdResolution {
+  cwd: string;
+  endpoint: string;
+  instanceId: string;
+  host?: string;
+}
+
+/** The single named refusal every phase-A failure direction produces: the target does not serve
+ *  `resolve-cwd`, refuses the path, or answers with something that is not an absolute directory.
+ *  `L4000` is the host declining the request, and it is raised before any submission, so nothing is
+ *  bound, allocated or launched. There is no raw-path arm: a fall-back to the caller's string is
+ *  fail-OPEN, and launching somewhere plausible is the outcome being removed. */
+export function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
+  return new EffectError("L4000", "spawn",
+    `spawn(${persona}) cwd ${JSON.stringify(cwd)} was not resolved by manager instance ${instanceId}: ${cause}; refusing rather than dispatching a path this host never canonicalized`);
+}
+
+/** A journalled phase-A resolution, read back on resume. A garbled entry is treated as absent and
+ *  phase A runs again: re-resolving is free (no goal, no reservation), trusting a broken record is
+ *  not. */
+function readCwdResolution(value: unknown): CwdResolution | undefined {
+  const r = value as { cwd?: unknown; endpoint?: unknown; instanceId?: unknown; host?: unknown } | undefined;
+  if (typeof r?.cwd !== "string" || r.cwd.length === 0 || typeof r.endpoint !== "string" || typeof r.instanceId !== "string")
+    return undefined;
+  return { cwd: r.cwd, endpoint: r.endpoint, instanceId: r.instanceId, ...(typeof r.host === "string" ? { host: r.host } : {}) };
 }
 
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
@@ -2463,11 +2549,11 @@ export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
     name: req.persona,
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
-    // #1616 item 5: the claim keys on the CANONICAL form, so two physical aliases of one clone
-    // contend for one directory identity instead of each taking its own. An unresolvable path is
-    // left as written and refused by the serving manager, which is the authority for filesystem
-    // validation — the raw string travels only to be refused, never to be launched in.
-    ...(req.cwd !== undefined ? { cwd: canonicalCwdOrRaw(req.cwd) } : {}),
+    // #1616 item 5: the cwd dispatched here is ALREADY the canonical form, resolved by the serving
+    // manager in phase A (see MeshEffectHandler.resolveCwd) and read back off the journalled
+    // resolution. This projection no longer canonicalizes anything: `realpathSync` in the driver
+    // answers about the DRIVER's filesystem, which is a different host's answer to the question.
+    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
     ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
