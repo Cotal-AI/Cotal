@@ -94,6 +94,9 @@ check("a genuine strict child is allowed", allowed === null, allowed);
 
 console.log("\nPART B — an over-long control socket path fails by name, not by EINVAL");
 
+// The limit the guard applies is the platform's: 108 on Linux, 104 on darwin. The cell reads the
+// same figure back so a run on either platform grades the message it would actually get.
+const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
 const originalTmp = process.env.TMPDIR;
 let deep = root;
 while (deep.length <= 64) deep = join(deep, "dddddddddd");
@@ -107,7 +110,7 @@ check(
   overlong !== null
     && /\b\d+ bytes\b/.test(overlong)
     && overlong.includes("sun_path")
-    && overlong.includes("108")
+    && overlong.includes(`${SUN_PATH_LIMIT}-byte`)
     && overlong.includes(deep),
   overlong,
 );
@@ -119,7 +122,7 @@ const minted = controlEndpoint("space", "name");
 process.env.TMPDIR = originalTmp;
 check(
   "a control socket path within the limit is still minted",
-  Buffer.byteLength(minted.path) <= 108 && minted.path.endsWith(".sock"),
+  Buffer.byteLength(minted.path) <= SUN_PATH_LIMIT && minted.path.endsWith(".sock"),
   minted.path,
 );
 
