@@ -63,11 +63,21 @@ export function isBreakingCommit(subject, body = "") {
   return /^BREAKING[ -]CHANGE:/m.test(body);
 }
 
+/** Package names whose changeset front-matter declares a `major` bump. */
+export function majorChangesetPackages(text) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!m) return [];
+  const packages = [];
+  for (const line of m[1].split(/\r?\n/)) {
+    const row = /^\s*(?:"([^"]+)"|'([^']+)'|([^:#][^:]*?))\s*:\s*major\s*$/.exec(line);
+    if (row) packages.push((row[1] ?? row[2] ?? row[3]).trim());
+  }
+  return packages;
+}
+
 /** Is this changeset front-matter a `major` bump for any package? */
 export function isBreakingChangeset(text) {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
-  if (!m) return false;
-  return /:\s*major\s*$/m.test(m[1]);
+  return majorChangesetPackages(text).length > 0;
 }
 
 /**
@@ -336,11 +346,11 @@ if (process.argv.includes("--self-test")) {
       mkdirSync(join(dir, ".changeset"));
       mkdirSync(join(dir, "docs"));
       writeFileSync(join(dir, "docs", "UPGRADING.md"), "# Upgrading\n\n## From 1.0 to 2.0\n\nExisting guidance.\n");
-      if (baseBump) writeFileSync(join(dir, ".changeset", "existing.md"), `---\n"@cotal-ai/core": ${baseBump}\n---\n\nbase\n`);
+      if (baseBump) writeFileSync(join(dir, ".changeset", "existing.md"), baseBump.startsWith("---") ? baseBump : `---\n"@cotal-ai/core": ${baseBump}\n---\n\nbase\n`);
       writeFileSync(join(dir, "README.md"), "base\n");
       git(["add", "."], dir);
       git(["commit", "-qm", "chore: base"], dir);
-      if (headBump) writeFileSync(join(dir, ".changeset", "existing.md"), `---\n"@cotal-ai/core": ${headBump}\n---\n\nhead\n`);
+      if (headBump) writeFileSync(join(dir, ".changeset", "existing.md"), headBump.startsWith("---") ? headBump : `---\n"@cotal-ai/core": ${headBump}\n---\n\nhead\n`);
       writeFileSync(join(dir, "README.md"), "head\n");
       git(["add", "."], dir);
       git(["commit", "-qm", "docs: unrelated readme edit"], dir);
@@ -351,6 +361,13 @@ if (process.argv.includes("--self-test")) {
     const noMajor = run(build("no-major", null, null));
     const newMajor = run(build("new-major", null, "major"));
     const raisedMajor = run(build("patch-to-major", "patch", "major"));
+    const baseOnlyCoreMajor = '---\n"@cotal-ai/core": major\n---\n\nbase\n';
+    const baseCoreMajorAuthPatch = '---\n"@cotal-ai/core": major\n"@cotal-ai/auth": patch\n---\n\nbase\n';
+    const headTwoMajors = '---\n"@cotal-ai/core": major\n"@cotal-ai/auth": major\n---\n\nhead\n';
+    const headOnlyCorePatch = '---\n"@cotal-ai/core": patch\n---\n\nhead\n';
+    const addedBesideMajor = run(build("add-major-beside-major", baseOnlyCoreMajor, headTwoMajors));
+    const raisedBesideMajor = run(build("raise-major-beside-major", baseCoreMajorAuthPatch, headTwoMajors));
+    const removedMajor = run(build("remove-major", baseOnlyCoreMajor, headOnlyCorePatch));
     cell("REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
       unchangedMajor.status === 0, { status: unchangedMajor.status, stdout: unchangedMajor.stdout, stderr: unchangedMajor.stderr });
     cell("REFUSE CONTROL: a range with no major changeset still passes",
@@ -359,6 +376,14 @@ if (process.argv.includes("--self-test")) {
       newMajor.status === 1 && /changeset existing\.md/.test(newMajor.stdout), { status: newMajor.status, stdout: newMajor.stdout });
     cell("changing an existing changeset from patch to major is a breaking signal",
       raisedMajor.status === 1 && /changeset existing\.md/.test(raisedMajor.stdout), { status: raisedMajor.status, stdout: raisedMajor.stdout });
+    cell("adding a second major package beside an existing major is a new breaking signal",
+      addedBesideMajor.status === 1 && /changeset existing\.md/.test(addedBesideMajor.stdout),
+      { status: addedBesideMajor.status, stdout: addedBesideMajor.stdout });
+    cell("promoting a package from patch to major is seen even beside an existing major",
+      raisedBesideMajor.status === 1 && /changeset existing\.md/.test(raisedBesideMajor.stdout),
+      { status: raisedBesideMajor.status, stdout: raisedBesideMajor.stdout });
+    cell("REFUSE CONTROL: removing a major package is not a new breaking signal",
+      removedMajor.status === 0, { status: removedMajor.status, stdout: removedMajor.stdout, stderr: removedMajor.stderr });
     const linkedGate = join(tmp, "gate-link.mjs");
     symlinkSync(fileURLToPath(import.meta.url), linkedGate);
     const throughLink = spawnSync(process.execPath, [linkedGate, "--range", "HEAD^..HEAD"], { cwd: join(tmp, "new-major"), encoding: "utf8" });
@@ -733,7 +758,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 73;
+  const EXPECTED = 76;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
@@ -927,7 +952,10 @@ function main() {
     let headText = "", baseText = "";
     try { headText = gitQuiet(["show", `${rangeHead}:${changesetDir}/${name}`]); } catch { continue; }
     try { baseText = gitQuiet(["show", `${rangeBase}:${changesetDir}/${name}`]); } catch { /* new at head */ }
-    if (isBreakingChangeset(headText) && !isBreakingChangeset(baseText)) breaking.push(`changeset ${name} (major)`);
+    const headMajorPackages = new Set(majorChangesetPackages(headText));
+    const baseMajorPackages = new Set(majorChangesetPackages(baseText));
+    const addedMajorPackages = [...headMajorPackages].filter((pkg) => !baseMajorPackages.has(pkg));
+    if (addedMajorPackages.length > 0) breaking.push(`changeset ${name} (major: ${addedMajorPackages.join(", ")})`);
   }
   // The uncommitted case: the changeset that accompanies the very change being graded is not in
   // any tree yet, so a HEAD run also reads the working directory.
@@ -938,7 +966,10 @@ function main() {
       if (breaking.includes(label)) continue;
       let committedText = "";
       try { committedText = gitQuiet(["show", `HEAD:${changesetDir}/${name}`]); } catch { /* untracked */ }
-      if (isBreakingChangeset(readFileSync(join(changesetDir, name), "utf8")) && !isBreakingChangeset(committedText)) breaking.push(label);
+      const workingMajorPackages = new Set(majorChangesetPackages(readFileSync(join(changesetDir, name), "utf8")));
+      const committedMajorPackages = new Set(majorChangesetPackages(committedText));
+      const addedMajorPackages = [...workingMajorPackages].filter((pkg) => !committedMajorPackages.has(pkg));
+      if (addedMajorPackages.length > 0) breaking.push(`changeset ${name} (major: ${addedMajorPackages.join(", ")})`);
     }
   }
 
