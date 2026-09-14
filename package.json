@@ -539,6 +539,7 @@
     "smoke:mesh-target-rebind": "tsx implementations/cli/smoke/mesh-target-rebind.smoke.ts",
     "smoke:join-target": "tsx implementations/cli/smoke/join-target.smoke.ts",
     "smoke:join-dial-entry": "tsx implementations/cli/smoke/join-dial-entry.smoke.ts",
+    "smoke:join-denial-guidance": "tsx implementations/cli/smoke/join-denial-guidance.smoke.ts",
     "smoke:join-external:live": "tsx implementations/cli/smoke/join-external-broker-live.smoke.ts",
     "smoke:mint-provision:auth": "tsx implementations/cli/smoke/mint-provision.smoke.ts",
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
