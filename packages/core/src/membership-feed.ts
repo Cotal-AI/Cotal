@@ -125,10 +125,22 @@ const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server
  *
  *  Startup is TRANSACTIONAL. Conn A opens first, and every step after it can throw: an rw source that
  *  rejects, credential bytes `idFromCreds` refuses, conn B's own dial (its pre-dial checkpoint refuses a
- *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open,
- *  the first reconcile. The only `drain()` in this file is inside the handle's `stop()`, and a caller
+ *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open.
+ *  The first reconcile is NOT one of them: `poll()` wraps the whole loop in a catch that logs and has
+ *  zero rethrows, so a failing first reconcile resolves startup instead of rejecting it, and the
+ *  `await poll()` below cannot be the step that strands a connection. The only `drain()` in this file
+ *  is inside the handle's `stop()`, and a caller
  *  that never receives the handle can never call it — so a reject left the observer connection open for
- *  the life of the process. Everything acquired is drained here before the rejection propagates. */
+ *  the life of the process. Everything acquired is drained here before the rejection propagates.
+ *
+ *  Scope of the word TRANSACTIONAL, stated rather than assumed: the rollback drains CONNECTIONS, and
+ *  nothing else. It does not clear the rw renewal timer, the safety interval, or the two trigger
+ *  subscriptions, all of which are acquired below. What holds today is narrower than "unreachable":
+ *  six calls run after the timer arm, and the only one that awaits is `await poll()`, which swallows
+ *  its own failures, so the ordinary startup path never rejects down here. `connA.subscribe` on an
+ *  already-closed conn A is the one shape that still could, and it would leak the timer rather than a
+ *  connection. Left as a known gap rather than papered over: a step added below the arm that can
+ *  reject makes this incomplete, and the rollback then has to clear the timer too. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
   const opened: NatsConnection[] = [];
   try {
