@@ -39,6 +39,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - uses: pnpm/action-setup@v6.0.8
+      - name: Install gate dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Operator literal self-test and scan
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
@@ -56,11 +59,10 @@ jobs:
       # to remove, because a red nobody has to answer is indistinguishable from a green to the
       # person clicking merge.
       #
-      # So the check runs where refusal is load-bearing. It costs nothing to host here: the
-      # script imports only node builtins (child_process, fs, os, path, url), exactly like the
-      # two checks already in this job, and it was measured to run to a correct verdict in a
-      # clone with NO node_modules at all. This job does not install dependencies and does not
-      # need to start doing so.
+      # So the check runs where refusal is load-bearing. The changeset reader now uses the same
+      # declared YAML parser as release tooling, so the frozen dependency graph is installed above
+      # before this step. `--ignore-scripts` keeps that setup data-only: no package build or native
+      # lifecycle hook runs in the attribution job.
       #
       # The checkout above is already the right shape for it: `fetch-depth: 0` and
       # actions/checkout's default PR ref, which is the two-parent merge snapshot this gate

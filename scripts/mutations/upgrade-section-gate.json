@@ -248,6 +248,15 @@
       "cell": "a valid quoted-major changeset refuses through the production CLI",
       "expectRed": "a valid quoted-major changeset refuses through the production CLI",
       "note": "Exact-head review used the repository's authoritative Changesets parser to show quoted YAML values and inline maps are valid major declarations while the hand regex returned no signal. The production CLI cell makes parser agreement load-bearing."
+    },
+    {
+      "name": "the required job invokes the YAML-backed gate without installing its dependency",
+      "file": ".github/workflows/attribution.yml",
+      "find": "      - name: Install gate dependencies\n        run: pnpm install --frozen-lockfile --ignore-scripts\n",
+      "replace": "",
+      "cell": "the required attribution job installs the gate's declared YAML dependency before grading",
+      "expectRed": "the required attribution job installs the gate's declared YAML dependency before grading",
+      "note": "Once the gate adopted the release toolchain's YAML parser, the required job failed before printing a verdict because it still installed no dependencies. Removing this step must red by name before another import can silently turn the required gate into a could-not-run result."
     }
   ]
 }

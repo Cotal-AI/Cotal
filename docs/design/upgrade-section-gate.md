@@ -67,10 +67,11 @@ every merge behind a flaky shard, because the org sits on a 20-concurrent-job ca
 carries a known wrong-red rate. This change reached enforcement without paying that cost, by
 running in the required job instead of enlarging what is required.
 
-Hosting it there is free. The script imports only node builtins (`child_process`, `fs`, `os`,
-`path`, `url`), exactly like the two checks already in that job, and it was measured running to a
-correct verdict in a clone with no `node_modules` at all. The job installs no dependencies and
-still does not need to. The checkout it already performs is the shape the gate wants:
+Hosting it there needs no new permission, but it is no longer dependency-free. The changeset
+reader uses the repository's declared YAML parser so it accepts the same front-matter forms as the
+release tooling. The job installs the frozen dependency graph with lifecycle scripts disabled
+before invoking the gate. Invoking the parser without installing it made the required job fail
+before it could print any verdict. The checkout it already performs is the shape the gate wants:
 `fetch-depth: 0` with `actions/checkout`'s default pull request ref, which is the two-parent merge
 snapshot the gate requires and verifies for itself.
 
@@ -168,12 +169,12 @@ because it launders the absence of review into a green tick.
 
 ## Self-test and mutation proof
 
-The gate grades itself in one invocation, `--self-test`, over 89 cells including three replay legs:
+The gate grades itself in one invocation, `--self-test`, over 90 cells including three replay legs:
 breaking with no new section refuses and names what it caught, breaking with a new section passes,
 and non-breaking with no section passes. The middle and last legs are what distinguish a working
-gate from one that reds on everything. Two of the 89 need real release history and report UNGRADED
-rather than passing in a shallow checkout, so the line a run prints is 87 passed plus 2 UNGRADED
-when history is truncated, and 89 passed when it is not. Both numbers are read off a run rather
+gate from one that reds on everything. Two of the 90 need real release history and report UNGRADED
+rather than passing in a shallow checkout, so the line a run prints is 88 passed plus 2 UNGRADED
+when history is truncated, and 90 passed when it is not. Both numbers are read off a run rather
 than counted by hand.
 
 THE SUITE MUST NOT DEPEND ON THE SHAPE OF THE CHECKOUT IT RUNS IN, and it did. Two cells ran
@@ -187,7 +188,7 @@ build the repositories they name, the parent probe is shown to discriminate befo
 believed, and a sentinel cell reds if any cell reaches for a repository the suite did not build.
 The suite is now green on all three shapes: branch head, merge ref at full depth, and depth-1.
 
-A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 26 mutants, each of which
+A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 27 mutants, each of which
 must red a named cell. Several exist because they were real defects during development: one
 accepted a hollow section with a heading and no body, one over-corrected so that a legitimate
 short section was refused, and three are the parser and checkout-shape defects above. Both

@@ -735,6 +735,14 @@ if (process.argv.includes("--self-test")) {
     return null;
   })();
 
+  const attributionWorkflow = existsSync(join(workflowDir, "attribution.yml"))
+    ? readFileSync(join(workflowDir, "attribution.yml"), "utf8") : "";
+  cell("the required attribution job installs the gate's declared YAML dependency before grading",
+    attributionWorkflow.includes("pnpm/action-setup@v6.0.8")
+      && attributionWorkflow.includes("pnpm install --frozen-lockfile --ignore-scripts")
+      && attributionWorkflow.indexOf("pnpm install --frozen-lockfile --ignore-scripts")
+        < attributionWorkflow.indexOf("node scripts/upgrade-section-gate.mjs"));
+
   cell("the workflow hosting this gate is discoverable from the repository itself",
     hostJob !== null && typeof hostJob.job === "string" && hostJob.job.length > 0, hostJob);
 
@@ -813,7 +821,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 88;
+  const EXPECTED = 89;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
