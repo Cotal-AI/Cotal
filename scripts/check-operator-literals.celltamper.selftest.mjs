@@ -757,8 +757,18 @@ try {
     .filter((row) => row.startsWith("SELFTEST_RESULT_ROW "))
     .map((row) => /\bcell=([^\s]+)/.exec(row)?.[1])
     .filter(Boolean);
-  const executedExtra = executedIds.filter((id) => !declaredCells.includes(id));
-  const executedMissing = declaredCells.filter((id) => !executedIds.includes(id));
+  // The comparison is a NAMED FUNCTION so the planted control below can drive THIS code rather than
+  // a copy of it. Written inline, a mutation deleting one direction of the comparison left the
+  // suite GREEN and mutation-proof reported a SURVIVOR, correctly: the honest tree has no
+  // undeclared cell, so the deleted clause had nothing to report, and a control that computes its
+  // own answer beside the real one proves only that the control works. A control must reach the
+  // code it licenses.
+  const censusAgreement = (executed, declared) => ({
+    ranButUndeclared: executed.filter((id) => !declared.includes(id)),
+    declaredButNeverRan: declared.filter((id) => !executed.includes(id)),
+  });
+  const { ranButUndeclared: executedExtra, declaredButNeverRan: executedMissing } =
+    censusAgreement(executedIds, declaredCells);
   check(
     "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
     executedIds.length > 0 && executedExtra.length === 0 && executedMissing.length === 0,
@@ -769,22 +779,13 @@ try {
   // agreement as one that works. Both directions are planted: a row for a cell nobody declared, and
   // a declared cell with no row. A control that only planted one direction would let the other rule
   // be deleted silently.
-  const controlRows = [
-    "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=alpha primary=1/1 secondary=1/1 status=PASS",
-    "SELFTEST_RESULT_ROW sha=synthetic utc=synthetic cell=ghost primary=1/1 secondary=1/1 status=PASS",
-  ];
-  const controlExecuted = controlRows
-    .filter((row) => row.startsWith("SELFTEST_RESULT_ROW "))
-    .map((row) => /\bcell=([^\s]+)/.exec(row)?.[1])
-    .filter(Boolean);
-  const controlDeclared = ["alpha", "never-ran"];
-  const controlExtra = controlExecuted.filter((id) => !controlDeclared.includes(id));
-  const controlMissing = controlDeclared.filter((id) => !controlExecuted.includes(id));
+  const controlAgreement = censusAgreement(["alpha", "ghost"], ["alpha", "never-ran"]);
   check(
-    "census control: an executed cell nobody declared and a declared cell that never ran are both reported",
-    controlExtra.length === 1 && controlExtra[0] === "ghost"
-      && controlMissing.length === 1 && controlMissing[0] === "never-ran",
-    `planted_undeclared=${controlExtra.length}/1 [${controlExtra.join(", ")}] planted_never_ran=${controlMissing.length}/1 [${controlMissing.join(", ")}]`,
+    "census control: an executed cell nobody declared and a declared cell that never ran are both reported, by the same comparison the check above uses",
+    controlAgreement.ranButUndeclared.length === 1 && controlAgreement.ranButUndeclared[0] === "ghost"
+      && controlAgreement.declaredButNeverRan.length === 1
+      && controlAgreement.declaredButNeverRan[0] === "never-ran",
+    `planted_undeclared=${controlAgreement.ranButUndeclared.length}/1 [${controlAgreement.ranButUndeclared.join(", ")}] planted_never_ran=${controlAgreement.declaredButNeverRan.length}/1 [${controlAgreement.declaredButNeverRan.join(", ")}]`,
   );
 
   // The comparison's own planted positive, and it must plant a SWAP rather than an absence: two
