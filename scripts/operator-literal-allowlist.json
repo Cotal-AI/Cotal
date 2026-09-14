@@ -33,6 +33,10 @@
     "public-ipv4": {
       "count": 3,
       "reason": "feed address filtering fixtures"
+    },
+    "public-ipv6": {
+      "count": 2,
+      "reason": "well-known public resolver addresses asserted as public"
     }
   },
   "extensions/connector-claude-code/smoke/agui-map.smoke.ts": {
@@ -73,6 +77,10 @@
     "public-ipv4": {
       "count": 10,
       "reason": "public address classification fixtures"
+    },
+    "public-ipv6": {
+      "count": 1,
+      "reason": "well-known public resolver address in a dial policy fixture"
     },
     "shared-ipv4": {
       "count": 12,
