@@ -785,6 +785,14 @@ for (const m of mutations) {
   // when it may have run to completion.
   results.push({ ...proveOne(m, opts), file: m.file, command: m.command ?? opts.command,
     baseTicks: baseTicksBy.get(m.command ?? opts.command) });
+  // Hand the loop one TIMER turn between mutations. Everything above is synchronous, and
+  // `spawnSync` does not deliver a signal that arrives while it blocks — libuv only reads its
+  // signal pipe in the poll phase, which a `setImmediate` (check phase) does not reach. Measured:
+  // after a SIGTERM during `spawnSync`, the handler is still unrun after `setImmediate` and has
+  // run after `setTimeout(0)`. Without this the handler never runs at all: the run marches on
+  // through the remaining mutations with the tree mutated, restores only from the `exit` handler,
+  // and reports an ordinary status for a run that was killed.
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // ---- APPLIES IS NOT MUTATES: a SURVIVED needs a positive control in the same file ----------

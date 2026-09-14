@@ -848,13 +848,25 @@ for (let i = 0; i < 600 && !observedApplied; i++) {
 }
 check("the kill lands while a mutation is really applied (the control that would otherwise lie)", observedApplied);
 child.kill("SIGTERM");
-await new Promise((done) => child.once("exit", done));
+// Both arguments of `exit` are kept: the tree and the lock say the handler
+// RAN, and only the status says it re-raised instead of returning a tidy 0.
+let killedCode, killedSignal;
+await new Promise((done) =>
+  child.once("exit", (code, signal) => {
+    killedCode = code;
+    killedSignal = signal;
+    done();
+  }),
+);
 await new Promise((done) => setTimeout(done, 250));
 check("a killed proof leaves the tree byte-identical to its pre-run state",
   execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "",
   execSync("git status --porcelain", { cwd: root, encoding: "utf8" }));
 check("...and releases the lock, so the next proof is not blocked by a corpse",
   !existsSync(lockFor(root)), lockFor(root));
+check("...and the exit status still reports the signal, not a tidy 0",
+  killedSignal === "SIGTERM" && killedCode === null,
+  `code=${killedCode} signal=${killedSignal}`);
 
 
 rmSync(root, { recursive: true, force: true });
