@@ -96,6 +96,53 @@ try {
     'import { readdirSync } from "node:fs";\n' +
     'const DIR = join(ROOT, "packages", "seat");\n' +
     'for (const f of readdirSync(DIR, { recursive: true })) { console.log(String(f)); }\n');
+  // The #1575 attack: the sweep still walks the tree, but one `continue` on an equality against a
+  // single known path means only one entry ever reaches the reader. Form of a sweep, substance of
+  // a named read.
+  write("bin/smoke/listing-narrowed.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts") continue;\n' +
+    '  const text = readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  if (text.split("export const impl").length - 1 !== 1) throw new Error("shape");\n' +
+    '}\n');
+  // The same narrowing spelled as a positive guard rather than an early exit.
+  write("bin/smoke/listing-narrowed-eq.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts") { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The narrowing hidden behind a CONSTANT the program computes, so the rule cannot be satisfied
+  // by looking for a string literal next to an equality operator.
+  write("bin/smoke/listing-narrowed-const.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const ONLY = join("src", "impl.ts");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== ONLY) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The direction matters as much as the operator. `!== ONE` admits one file, but `=== ONE`
+  // followed by `continue` EXCLUDES one file and leaves every other entry going through, so the
+  // sweep is still open and still catches a file nobody named.
+  write("bin/smoke/listing-skip-one.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/skipped.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The near neighbour that must stay ACCEPTED: an extension test admits an open set of files, so
+  // a new file still gets caught and nothing is named.
+  write("bin/smoke/listing-filtered-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (!String(f).endsWith(".ts")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
@@ -449,6 +496,34 @@ try {
   config("recursive-listing-source", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("recursive-listing-source");
   check("a recursive sweep that reads every file covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1575. The sweep above earns its accept by never naming its subjects. One `continue` on an
+  // equality against a single known path takes that back: the loop walks the tree, but exactly one
+  // entry can reach the reader, so the suite is reading a file it names and the cell reddens on a
+  // spelling again. What is tested is the CARDINALITY the guard admits, so the same narrowing has
+  // to be caught however it is spelled, and an open filter has to survive.
+  config("sweep-narrowed-literal", { suite: ["bin/smoke/listing-narrowed.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-literal");
+  check("a sweep narrowed to one literal path is a named read", result.status !== 0 && /REFUSED sweep-narrowed-literal/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-positive", { suite: ["bin/smoke/listing-narrowed-eq.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-positive");
+  check("the same narrowing as a positive guard is refused too", result.status !== 0 && /REFUSED sweep-narrowed-positive/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-constant", { suite: ["bin/smoke/listing-narrowed-const.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-constant");
+  check("a narrowing against a computed constant is refused", result.status !== 0 && /REFUSED sweep-narrowed-constant/.test(result.stderr), report(result));
+
+  // The accept control for the three above: a filter that admits an OPEN set is still a sweep, and
+  // refusing it would trade a false accept for a false refusal.
+  config("sweep-open-filter", { suite: ["bin/smoke/listing-filtered-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-open-filter");
+  check("a sweep filtered by extension still covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The discriminator for the DIRECTION of the equality: excluding one entry is not selecting one.
+  config("sweep-skips-one", { suite: ["bin/smoke/listing-skip-one.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-skips-one");
+  check("a sweep that skips one entry is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");

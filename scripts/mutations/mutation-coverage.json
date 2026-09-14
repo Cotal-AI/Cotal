@@ -466,6 +466,30 @@
       "replace": "        }",
       "expectRed": "a destructured declaration shadows an outer binding rather than letting it witness a launch",
       "cell": "a destructured declaration shadows an outer binding rather than letting it witness a launch"
+    },
+    {
+      "name": "a sweep narrowed to one entry still counts as a sweep",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (mentions(arg) && !narrowedToOneEntry(n)) read = true;",
+      "replace": "        if (mentions(arg)) read = true;",
+      "expectRed": "a sweep narrowed to one literal path is a named read",
+      "cell": "a sweep narrowed to one literal path is a named read"
+    },
+    {
+      "name": "only a string literal narrows a sweep, a computed constant does not",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;",
+      "replace": "      const known = (n) => stringValue(n) !== undefined;",
+      "expectRed": "a narrowing against a computed constant is refused",
+      "cell": "a narrowing against a computed constant is refused"
+    },
+    {
+      "name": "any equality narrows a sweep, regardless of which way it is spelled",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (isEq !== holds) return false;",
+      "replace": "      if (!isEq && !isNe) return false;",
+      "expectRed": "a sweep that skips one entry is still open",
+      "cell": "a sweep that skips one entry is still open"
     }
   ]
 }

@@ -451,27 +451,77 @@ const commandEnv = (command) => {
  * it. The listing therefore witnesses a read only when its entries flow into a reader, which is the
  * `for (const f of readdirSync(...)) readFileSync(<f>)` shape. The binding is followed by identity,
  * so a loop that reads some other path does not count.
+ *
+ * A sweep also has to still BE a sweep at the point of the read. A listing is real coverage because
+ * it never enumerates its subjects, so a new file is caught precisely because nothing named it. One
+ * `continue` on an equality against a single known path takes that away: the loop still walks the
+ * tree, but only one entry ever reaches the reader, and the suite is back to reading a file it
+ * names. The question is the CARDINALITY the guard chain admits rather than the presence of a
+ * particular spelling, so the conditions that must hold for control to reach a reader are collected
+ * and a reader that only one value of the loop variable can reach is not counted.
  */
-const listingIsRead = (call, readers) => {
+const listingIsRead = (call, readers, evalPath) => {
   for (let cur = call.parent; cur !== undefined; cur = cur.parent) {
     if (!ts.isForOfStatement(cur)) continue;
     const decl = cur.initializer;
     const name = ts.isVariableDeclarationList(decl) && decl.declarations[0]
       && ts.isIdentifier(decl.declarations[0].name) ? decl.declarations[0].name.text : undefined;
     if (name === undefined) return false;
+    const mentions = (e) => {
+      if (!e) return false;
+      if (ts.isIdentifier(e)) return e.text === name;
+      let found = false;
+      ts.forEachChild(e, (c) => { if (mentions(c)) found = true; });
+      return found;
+    };
+    // Does this condition admit exactly ONE value of the loop variable when it evaluates to
+    // `holds`? A side counts as a single known string when the path evaluator resolves it, which
+    // covers a literal and a constant the program computes, and the other side has to be derived
+    // from the loop variable, or the equality says nothing about which entries get through.
+    const singleValueEquality = (cond, holds) => {
+      if (!cond || !ts.isBinaryExpression(cond)) return false;
+      const kind = cond.operatorToken.kind;
+      const isEq = kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken;
+      const isNe = kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken;
+      if (!isEq && !isNe) return false;
+      // `f === LIT` pins the entry when it HOLDS; `f !== LIT` pins it when it does NOT.
+      if (isEq !== holds) return false;
+      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;
+      return (mentions(cond.left) && known(cond.right)) || (mentions(cond.right) && known(cond.left));
+    };
+    const exits = (stmt) => {
+      if (!stmt) return false;
+      if (ts.isContinueStatement(stmt) || ts.isBreakStatement(stmt)
+        || ts.isReturnStatement(stmt) || ts.isThrowStatement(stmt)) return true;
+      return ts.isBlock(stmt) && stmt.statements.length > 0 && stmt.statements.some(exits);
+    };
+    // Conditions that MUST hold for control to reach this node, walking out to the loop. Two
+    // sources: a branch of an enclosing `if` this node sits in, and a preceding `if (…) continue`
+    // in the same block, whose condition must have been FALSE for the node to be reached at all.
+    const narrowedToOneEntry = (node) => {
+      for (let n = node; n !== undefined && n !== cur; n = n.parent) {
+        const parent = n.parent;
+        if (parent === undefined) break;
+        if (ts.isIfStatement(parent)) {
+          if (parent.thenStatement === n && singleValueEquality(parent.expression, true)) return true;
+          if (parent.elseStatement === n && singleValueEquality(parent.expression, false)) return true;
+        }
+        if (ts.isBlock(parent)) {
+          const index = parent.statements.indexOf(n);
+          for (const earlier of parent.statements.slice(0, index < 0 ? 0 : index)) {
+            if (ts.isIfStatement(earlier) && earlier.elseStatement === undefined
+              && exits(earlier.thenStatement) && singleValueEquality(earlier.expression, false)) return true;
+          }
+        }
+      }
+      return false;
+    };
     let read = false;
     const scan = (n) => {
       if (read) return;
       if (ts.isCallExpression(n) && readers.has(calleeText(n.expression))) {
         const arg = n.arguments[0];
-        const mentions = (e) => {
-          if (!e) return false;
-          if (ts.isIdentifier(e)) return e.text === name;
-          let found = false;
-          ts.forEachChild(e, (c) => { if (mentions(c)) found = true; });
-          return found;
-        };
-        if (mentions(arg)) read = true;
+        if (mentions(arg) && !narrowedToOneEntry(n)) read = true;
       }
       ts.forEachChild(n, scan);
     };
@@ -629,7 +679,7 @@ const readsFile = (suite, source, file, env = new Map()) => {
       if (typeof dir === "string") {
         const base = resolve(dir);
         const under = want === base || want.startsWith(base.endsWith("/") ? base : base + "/");
-        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers)) hit = true;
+        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers, evalPath)) hit = true;
       }
     }
     ts.forEachChild(node, visit);
