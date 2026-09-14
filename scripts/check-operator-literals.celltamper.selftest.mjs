@@ -706,13 +706,38 @@ const readCellInventory = (source) => {
 };
 
 /**
- * Cells deliberately left ungraded, each with the reason.
+ * Cells deliberately left ungraded, each with the reason it cannot be graded.
  *
  * This list is empty, and that is a measurement rather than a default. The one entry it used to
  * carry claimed `scanCell` had no gradable discriminator; a reviewer hollowed the field and showed
  * it did, under the metric's own name. A limitation ASSERTED rather than MEASURED is a gap wearing
  * a label, and the label makes it less likely anyone looks again. Anything added here needs the
  * hollowing attempt that justifies it quoted in the reason.
+ *
+ * THIS LIST IS AN ESCAPE HATCH, AND AN UNVALIDATED ESCAPE HATCH IS A HOLE THE SIZE OF THE WHOLE
+ * SUITE. Review demonstrated it: with a wrapped reader hollowed to a constant, adding the single
+ * line
+ *
+ *     const UNGRADED_CELLS = [{ cell: "wrapped-reader-extra" }];
+ *
+ * with no reason at all, the scanner reported 62/62 PASS and this suite reported 144/144 at exit 0.
+ * The opposite control proved the hidden reader was live: flipping the constant to `() => 0` drove
+ * the product to exit 2 and the suite to 44 real failures. So the exemption was silently restoring
+ * exactly the wrong-green the positional census had just closed, one line at a time. The accounting
+ * check read `entry.cell` and nothing else; the docblock promised a reason and no code required
+ * one.
+ *
+ * Every entry must now carry:
+ *   cell    a declared cell id. An entry naming a cell that does not exist is a stale exemption,
+ *           and a stale exemption is how a grading requirement silently evaporates when a cell is
+ *           renamed, so an unknown id is fatal rather than ignored.
+ *   reason  a nonempty justification, enforced, not merely documented.
+ *
+ * A reason is prose and prose cannot be checked, so the requirement is deliberately not "say
+ * something". The list is EMPTY here and the validator makes adding an entry cost more than a line:
+ * it must name a real cell and state why. That does not make an exemption honest, and it is not
+ * meant to. It makes an exemption VISIBLE and ATTRIBUTABLE, so the loud path stays loud and the
+ * silent path stops being one line long.
  */
 const UNGRADED_CELLS = [];
 
@@ -1160,7 +1185,96 @@ try {
     CASES.map((entry) => readerByCell.get(entry.cell)).filter((reader) => reader !== undefined),
   );
   const inlineNamed = new Set(INLINE_CELLS.map((entry) => entry.name));
-  const ungradedNamed = new Set(UNGRADED_CELLS.map((entry) => entry.cell));
+
+  // AN EXEMPTION IS VALIDATED BEFORE IT IS HONOURED, or it is not an exemption but a hole.
+  //
+  // `ungradedNamed` used to be built straight from `entry.cell`. Review hollowed a wrapped reader
+  // to a constant and added one line, `[{ cell: "wrapped-reader-extra" }]`, with no reason: product
+  // 62/62 PASS, suite 144/144 exit 0. The `() => 0` control proved the reader was live, so the
+  // exemption was reinstating the wrong-green this census had just closed.
+  //
+  // A reason is PROSE, and prose is not a measurement. Requiring one only raises the price of the
+  // hole from one line to two: measured here, `{ cell: "wrapped-reader-extra", reason: "cannot be
+  // graded" }` bought a full 145/145 green with the same hollowed reader underneath. A rule that a
+  // liar can satisfy by typing is not a rule.
+  //
+  // So an exemption must state a FALSIFIABLE claim and the suite checks it. `reason` is retained
+  // for humans, and `provenBy` carries the claim: the cell's own measured field is read from the
+  // untampered baseline, and the exemption stands only if that field is genuinely ABSENT. The claim
+  // being made is "this cell exposes no field I can drive to zero", and the one cell review kept
+  // exempting, `wrapped-reader-extra`, reports `secondary=1/1` in the baseline, so the claim is
+  // false and the exemption is refused with the value that refutes it.
+  //
+  // That is the whole difference: an exemption now has to be WRONG ABOUT AN OBSERVABLE to pass,
+  // rather than merely unembarrassed.
+  const declaredCellSet = new Set(declaredCells);
+  const baselineFieldFor = (cellId) => {
+    const row = baseline.rows.find((line) => line.startsWith("SELFTEST_RESULT_ROW ")
+      && new RegExp(`\\bcell=${cellId}\\b`).test(line));
+    if (!row) return undefined;
+    const fields = [...row.matchAll(/\b([a-z_]+)=(\d+)\/\d+/g)]
+      .filter((match) => match[1] !== "cells");
+    return fields.length ? fields.map((match) => `${match[1]}=${match[2]}`).join(" ") : undefined;
+  };
+  const validateUngraded = (entries, known, fieldFor) => {
+    const malformed = [];
+    const valid = new Set();
+    for (const [index, entry] of entries.entries()) {
+      const cell = entry && typeof entry.cell === "string" ? entry.cell : undefined;
+      const reason = entry && typeof entry.reason === "string" ? entry.reason.trim() : "";
+      const label = cell ?? `#${index}`;
+      const observed = cell ? fieldFor(cell) : undefined;
+      if (!cell) malformed.push(`${label}: no cell id`);
+      else if (!known.has(cell)) malformed.push(`${label}: names no declared cell`);
+      else if (!reason) malformed.push(`${label}: no reason`);
+      else if (entry.provenBy !== "no gradable field in the baseline row") {
+        malformed.push(`${label}: no falsifiable claim`);
+      } else if (observed !== undefined) {
+        malformed.push(`${label}: claims no gradable field, baseline reports ${observed}`);
+      } else valid.add(cell);
+    }
+    return { valid, malformed };
+  };
+  const exemptions = validateUngraded(UNGRADED_CELLS, declaredCellSet, baselineFieldFor);
+  const ungradedNamed = exemptions.valid;
+
+  // The validator is planted against a synthetic list, because the real one is required to be EMPTY
+  // and an empty list exercises none of its branches. Each planted entry fails for a DIFFERENT
+  // reason, INCLUDING the two that review actually used: a bare cell id, and a cell id with a
+  // satisfying sentence attached. The last is the one that matters, because it is fully formed and
+  // still refused, by measurement, on the strength of the cell's own baseline row.
+  //
+  // NO ENTRY IN THIS CONTROL IS VALID, and that is the measured state rather than an oversight: all
+  // 61 cells emit a gradable field in the baseline, so no cell can honestly claim it has none, and
+  // the honest arm of this control is currently UNSATISFIABLE. That is reported here rather than
+  // papered over with a fabricated passing entry, because a control whose positive case cannot be
+  // constructed is exactly the shape of the delete-the-cell proof this suite already rejects.
+  //
+  // `qualifying_cells=0` is therefore an assertion, not a description: if a cell ever appears with
+  // no gradable field, this row goes red and someone decides deliberately whether an exemption is
+  // warranted, instead of the category quietly becoming reachable.
+  const qualifyingCells = declaredCells.filter((cellId) => baselineFieldFor(cellId) === undefined);
+  const plantedExemptions = validateUngraded(
+    [
+      { cell: "ip-loopback" },
+      { cell: "ip-loopback", reason: "   " },
+      { cell: "ip-loopback", reason: "cannot be graded" },
+      { cell: "ip-loopback", reason: "cannot be graded", provenBy: "no gradable field in the baseline row" },
+      { cell: "no-such-cell-anywhere", reason: "stale exemption naming a renamed cell" },
+      { reason: "no cell id at all" },
+    ],
+    declaredCellSet,
+    baselineFieldFor,
+  );
+  check(
+    "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies",
+    exemptions.malformed.length === 0
+      && qualifyingCells.length === 0
+      && plantedExemptions.valid.size === 0
+      && plantedExemptions.malformed.length === 6
+      && plantedExemptions.malformed.some((entry) => entry.includes("baseline reports")),
+    `real_malformed=${exemptions.malformed.length}/0${exemptions.malformed.length ? ` [${exemptions.malformed.join("; ")}]` : ""} qualifying_cells=${qualifyingCells.length}/0 planted_valid=${plantedExemptions.valid.size}/0 planted_refused=${plantedExemptions.malformed.length}/6 [${plantedExemptions.malformed.join("; ")}]`,
+  );
 
   // Being LISTED in INLINE_CELLS is deliberately NOT a way to be accounted for. That list only
   // records which field a cell's own reader reports; naming a field is not driving it, and an

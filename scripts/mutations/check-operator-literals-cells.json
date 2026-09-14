@@ -224,6 +224,22 @@
       "replace": "  if (!contract) return `opaque@${cellId}`;",
       "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
       "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
+    },
+    {
+      "name": "the ungraded-cell exemption is honoured on its cell id alone, so a reasonless exemption silences an ungraded cell",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const exemptions = validateUngraded(UNGRADED_CELLS, declaredCellSet, baselineFieldFor);",
+      "replace": "  const exemptions = { valid: new Set(UNGRADED_CELLS.map((entry) => entry.cell)), malformed: [] };",
+      "expectRed": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies",
+      "cell": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies"
+    },
+    {
+      "name": "an exemption's claim is accepted as written instead of being checked against the cell's own baseline row",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "      } else if (observed !== undefined) {\n        malformed.push(`${label}: claims no gradable field, baseline reports ${observed}`);\n      } else valid.add(cell);",
+      "replace": "      } else valid.add(cell);",
+      "expectRed": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies",
+      "cell": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies"
     }
   ]
 }
