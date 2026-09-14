@@ -98,20 +98,38 @@ because it launders the absence of review into a green tick.
 
 ## Self-test and mutation proof
 
-The gate grades itself in one invocation, `--self-test`, over 36 cells including three replay legs:
+The gate grades itself in one invocation, `--self-test`, over 39 cells including three replay legs:
 breaking with no new section refuses and names what it caught, breaking with a new section passes,
 and non-breaking with no section passes. The middle and last legs are what distinguish a working
-gate from one that reds on everything.
+gate from one that reds on everything. Two of the 39 need real release history and report UNGRADED
+rather than passing in a shallow checkout, so the count a run prints is 37 passed plus 2 UNGRADED
+when history is truncated, and 39 passed when it is not.
 
-A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 9 mutants, each of which
+A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 11 mutants, each of which
 must red a named cell. Two of them exist because they were real defects during development: one
 accepted a hollow section with a heading and no body, and one over-corrected so that a legitimate
 short section was refused. Both directions are held.
 
 ## Open questions for review
 
-1. Should the gate run on every PR, or only on release ranges? It currently self-tests as a smoke
-   suite; wiring it to a real range is a separate decision with a different noise profile.
-2. Should an unmarked but credential-touching change be detectable at all, or is prose plus review
+1. RESOLVED, and the resolution is in this change. The gate runs on every PR, in the `unit` job,
+   over the range the merge snapshot itself defines. Self-testing alone was decoration: it grades
+   two fixed historical ranges, so the change being merged was examined by nothing.
+
+   The range must come from ONE object. An earlier revision of this step took its base from
+   `github.event.pull_request.base.sha` and its head from the checked-out merge commit. Those are
+   two different snapshots and they drift the moment main moves: measured on this pull request, the
+   event base was six commits behind the merge's own first parent, which widened the graded set
+   from 8 paths to 26. That inverts verdicts rather than merely widening them, because any release
+   section added by a swallowed main commit reads as coverage for a breaking commit on the branch
+   that documented nothing. `HEAD^1..HEAD` cannot drift, since both ends are read off the commit in
+   the working tree.
+2. OPEN, and it is the one that decides whether any of this binds. The gate reports through
+   `ci-ok`, and `ci-ok` is not in the branch protection rule set: the only required context on main
+   today is `attribution`. A red gate therefore tells a reviewer something and stops nothing. Making
+   it required is a repository administration change rather than a code change, so it is not in this
+   diff, and until it happens the honest description of this gate is advisory. Both this note and
+   the operator page say so in those words rather than implying enforcement.
+3. Should an unmarked but credential-touching change be detectable at all, or is prose plus review
    the honest answer? This note takes the second position, and it is the position most worth
    arguing with.

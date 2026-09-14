@@ -87,13 +87,45 @@ jobs:
       # a green check tells a reviewer somebody looked.
       - name: Upgrade section present for breaking changes
         env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -eu
-          base="$BASE"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
-            echo "no base commit on this event; using first parent $base"
+          # BOTH ENDS OF THE RANGE COME FROM THE CHECKED-OUT SNAPSHOT, NEVER FROM THE EVENT PAYLOAD.
+          #
+          # `github.event.pull_request.base.sha` is the base recorded when the event was CREATED,
+          # while actions/checkout gives you GitHub's synthetic merge commit, whose first parent is
+          # whatever main was when that merge was computed. Those two drift apart the moment main
+          # moves, and the drift is silent. Measured on this very PR: the event base was
+          # 0e2d46409e44cbcd10eeaa90c90f13418c6c0801 while the merge's first parent was already
+          # 04f1b610bb2334e4c72ebb2a5582d49ac736ef48, so the step graded 26 changed paths and six
+          # commits instead of the eight paths and five commits the contribution actually carries.
+          #
+          # That is not a cosmetic widening, it INVERTS the verdict. A main commit that happens to
+          # add any release section is swallowed into the range and reads as coverage for a
+          # breaking commit on the branch that documented nothing. Reproduced end to end: with an
+          # unrelated main-side section in range, a `feat(core)!` carrying no section of its own
+          # exits 0 and prints "covered by 1 new section(s)"; over HEAD^1..HEAD the identical
+          # commit exits 1 and REFUSES. A gate that can be made to pass by someone else's unrelated
+          # commit is the reporter's own defect one level up.
+          #
+          # HEAD^1..HEAD reads both ends off one object, so nothing can move between them.
+          if [ "$EVENT" = "pull_request" ]; then
+            # A `pull_request` checkout is the merge snapshot, so it MUST have two parents. If it
+            # has one, the workflow was reconfigured to check out the PR head (`ref: ...head.sha`)
+            # and HEAD^1 silently becomes the branch's previous commit rather than the merge base.
+            # That reads as a tiny clean range and greens everything, so it is a misuse exit, not a
+            # guess: the gate says it cannot grade rather than grading the wrong thing.
+            parents="$(git rev-list --parents -n 1 HEAD | wc -w)"
+            [ "$parents" = "3" ] || {
+              echo "pull_request checkout is not a merge snapshot ($((parents - 1)) parent(s));"
+              echo "expected actions/checkout's default merge ref. Refusing to guess a base."
+              exit 2
+            }
+            base="$(git rev-parse HEAD^1)"
+            echo "grading the merge snapshot's own range: $base..$(git rev-parse HEAD)"
+          else
+            base="$(git rev-parse HEAD~1)" || { echo "no first parent to grade against"; exit 2; }
+            echo "push event; grading $base..$(git rev-parse HEAD)"
           fi
           # The range must be REACHABLE before it can be graded. An unreachable base makes the
           # gate misuse-exit, and a misuse must never be mistaken for "no breaking change here".
