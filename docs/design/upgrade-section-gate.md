@@ -188,7 +188,7 @@ build the repositories they name, the parent probe is shown to discriminate befo
 believed, and a sentinel cell reds if any cell reaches for a repository the suite did not build.
 The suite is now green on all three shapes: branch head, merge ref at full depth, and depth-1.
 
-A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 27 mutants, each of which
+A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 29 mutants, each of which
 must red a named cell. Several exist because they were real defects during development: one
 accepted a hollow section with a heading and no body, one over-corrected so that a legitimate
 short section was refused, and three are the parser and checkout-shape defects above. Both
