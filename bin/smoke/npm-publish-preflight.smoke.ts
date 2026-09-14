@@ -700,15 +700,23 @@ function resolvedResultBlock(dts: string, fn: string): string | null {
  * ABOVE a top-level `state: string;` left the old reader with ZERO refusals, so the published type
  * of a real entry point could be widened back to bare `string` with this whole suite green. A
  * nested property is not the contract, and reading one as the contract defeats the cell.
+ *
+ * The OPTIONAL MARKER is captured rather than tolerated, and the caller refuses it. A reviewer
+ * measured the false green: `state?: NpmPublishPreflightState` passed 78 of 78 cells, because this
+ * pattern swallowed the `?` and graded the VALUE, which is a correct two-member union. Under the
+ * repository's own tsc that shape is the #1585 harm itself (`Type 'S | undefined' is not
+ * assignable` at any caller branching on the verdict), and the module cannot even produce it:
+ * both returns set the property unconditionally. `S | undefined` was already refused while
+ * `state?:` was accepted, so one consumer-visible contract had two spellings and opposite verdicts.
  */
 function topLevelPropertyValues(block: string, key: string): string[] {
-  const property = new RegExp(`^\\s*${key}\\??:\\s*(.+?);\\s*$`);
+  const property = new RegExp(`^\\s*${key}(\\??):\\s*(.+?);\\s*$`);
   const values: string[] = [];
   let depth = 0;
   for (const line of block.split("\n")) {
     if (depth === 1) {
       const written = property.exec(line);
-      if (written) values.push(written[1].trim());
+      if (written) values.push(`${written[1]}${written[2].trim()}`);
     }
     for (const character of line) {
       if (character === "{") depth++;
@@ -778,6 +786,7 @@ function censusStateRefusals(dts: string): string[] {
     const written = topLevelPropertyValues(block, "state");
     if (written.length === 0) { refusals.push(`${fn}: the result carries no top-level state property`); continue; }
     if (written.length > 1) { refusals.push(`${fn}: carries ${written.length} top-level state properties: ${written.join(", ")}`); continue; }
+    if (written[0].startsWith("?")) { refusals.push(`${fn}: state is optional, so the census verdict may be absent from the published result`); continue; }
     const type = written[0];
     const resolved = followAlias(dts, type);
     if (resolved === null) { refusals.push(`${fn}: state is ${type}, which this declaration never defines`); continue; }
@@ -965,6 +974,18 @@ const stateFixtures: Array<{ name: string; dts: () => string; names: string; bra
     branch: "not a union of the census literals",
   },
   {
+    name: "the state property marked optional on preflightNpmPublish",
+    branch: "state is optional, so the census verdict may be absent",
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", "state?: NpmPublishPreflightState;"),
+    names: "preflightNpmPublish",
+  },
+  {
+    name: "the state property marked optional on preflightFromRepository",
+    branch: "state is optional, so the census verdict may be absent",
+    dts: () => widenTopLevelState(acceptingBase, "preflightFromRepository", "state?: NpmPublishPreflightState;"),
+    names: "preflightFromRepository",
+  },
+  {
     name: "two top-level state properties, so which one publishes is ambiguous",
     dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", `${stateProperty}\n    state: string;`),
     names: "preflightNpmPublish",
@@ -1023,6 +1044,7 @@ const CENSUS_STATE_BRANCHES = [
   "no top-level state property",
   "top-level state properties",
   "which this declaration never defines",
+  "state is optional, so the census verdict may be absent",
   "not a union of the census literals",
   "state union is missing",
   "which the census never returns",
