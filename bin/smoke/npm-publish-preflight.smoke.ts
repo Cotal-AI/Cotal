@@ -966,6 +966,29 @@ const CENSUS_STATE_BRANCHES = [
 ];
 const branchesHit = new Set(stateFixtures.map((fixture) => fixture.branch));
 const branchesUnreached = CENSUS_STATE_BRANCHES.filter((branch) => !branchesHit.has(branch));
+/**
+ * The enumerated set is itself checked against the GRADER'S SOURCE, because a hand-maintained
+ * list of branches is exactly the kind of second copy that rots: adding a tenth `refusals.push`
+ * without extending the list would leave the coverage cell above reporting full coverage of a set
+ * that no longer describes the grader. Counting the pushes in the source closes that, so the
+ * coverage claim degrades into a red rather than into a silent overstatement.
+ */
+const graderSource = readFileSync(new URL(import.meta.url), "utf8");
+const graderBody = graderSource.slice(
+  graderSource.indexOf("function censusStateRefusals"),
+  graderSource.indexOf("function replaceNth"),
+);
+const graderPushes = graderBody.match(/refusals\.push\(/g) ?? [];
+check(
+  "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+  graderPushes.length === CENSUS_STATE_BRANCHES.length,
+  { refusalsInGrader: graderPushes.length, enumerated: CENSUS_STATE_BRANCHES.length },
+);
+check(
+  "every enumerated branch string appears in the grader source, so a reworded branch is caught",
+  CENSUS_STATE_BRANCHES.every((branch) => graderBody.includes(branch)),
+  CENSUS_STATE_BRANCHES.filter((branch) => !graderBody.includes(branch)),
+);
 check(
   `every one of the ${CENSUS_STATE_BRANCHES.length} census state refusal branches has a refusing fixture`,
   branchesUnreached.length === 0,
