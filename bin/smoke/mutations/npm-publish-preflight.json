@@ -200,6 +200,86 @@
       "replace": "    if (response.status === 401) return \"createPackage\";\n",
       "expectRed": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
       "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
+    },
+    {
+      "name": "the census state grader stops refusing: the declaration never declares this entry point",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (declared === 0) { refusals.push(`${fn}: the declaration never declares this entry point`); continue; }\n",
+      "replace": "    if (declared === 0) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: so which result a caller resolves is ambiguous",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (declared > 1) { refusals.push(`${fn}: declared ${declared} times, so which result a caller resolves is ambiguous`); continue; }\n",
+      "replace": "    if (declared > 1) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: no resolved result object in the declaration",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (block === null) { refusals.push(`${fn}: no resolved result object in the declaration`); continue; }\n",
+      "replace": "    if (block === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: no top-level state property",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written.length === 0) { refusals.push(`${fn}: the result carries no top-level state property`); continue; }\n",
+      "replace": "    if (written.length === 0) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: top-level state properties",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written.length > 1) { refusals.push(`${fn}: carries ${written.length} top-level state properties: ${written.join(\", \")}`); continue; }\n",
+      "replace": "    if (written.length > 1) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: which this declaration never defines",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (resolved === null) { refusals.push(`${fn}: state is ${type}, which this declaration never defines`); continue; }\n",
+      "replace": "    if (resolved === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: state is optional, so the census verdict may be absent",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written[0].startsWith(\"?\")) { refusals.push(`${fn}: state is optional, so the census verdict may be absent from the published result`); continue; }\n",
+      "replace": "    if (written[0].startsWith(\"?\")) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: not a union of the census literals",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (members === null) { refusals.push(`${fn}: state is ${resolved}, not a union of the census literals`); continue; }\n",
+      "replace": "    if (members === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: state union is missing",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (missing.length) { refusals.push(`${fn}: state union is missing ${missing.join(\", \")}`); continue; }\n",
+      "replace": "    if (missing.length) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: which the census never returns",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (extra.length) refusals.push(`${fn}: state union carries ${extra.join(\", \")}, which the census never returns`);\n",
+      "replace": "    if (extra.length) void extra;\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
     }
   ]
 }
