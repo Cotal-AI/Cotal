@@ -705,9 +705,14 @@ function resolvedResultBlock(dts: string, fn: string): string | null {
  * measured the false green: `state?: NpmPublishPreflightState` passed 78 of 78 cells, because this
  * pattern swallowed the `?` and graded the VALUE, which is a correct two-member union. Under the
  * repository's own tsc that shape is the #1585 harm itself (`Type 'S | undefined' is not
- * assignable` at any caller branching on the verdict), and the module cannot even produce it:
- * both returns set the property unconditionally. `S | undefined` was already refused while
- * `state?:` was accepted, so one consumer-visible contract had two spellings and opposite verdicts.
+ * assignable` at any caller branching on the verdict). The module's two returns do set the
+ * property unconditionally, but that is NOT why this branch is needed and the shape is NOT
+ * unreachable: the declaration is emitted by `tsc --declaration` over the module's `@returns`
+ * JSDoc, not over its return statements, so editing either `@returns` to `state?:` publishes an
+ * optional verdict while every runtime return still sets it. A reviewer measured exactly that
+ * against the real module through the real generator: the emit produced `state?:` on BOTH entry
+ * points and this cell caught it. `S | undefined` was already refused while `state?:` was
+ * accepted, so one consumer-visible contract had two spellings and opposite verdicts.
  */
 function topLevelPropertyValues(block: string, key: string): string[] {
   const property = new RegExp(`^\\s*${key}(\\??):\\s*(.+?);\\s*$`);
