@@ -6,7 +6,10 @@
  * recursive publish set, a refused exchange, a
  * stage-only Allowed-actions sibling, and a stage-only this-workflow publisher next to an
  * unrelated GitHub publisher that lists createPackage all refuse without any write-shaped
- * request. An opaque HTTP 201 exchange is not treated as publish-ready.
+ * request. An opaque HTTP 201 exchange is not treated as publish-ready. A registry that answers
+ * the exact-version read with neither 200 nor 404, and a transport that throws instead of
+ * answering, both leave the census unable to say whether a version is already published, and
+ * both refuse as inconclusive before any credential or write work.
  *
  * Run: pnpm smoke:npm-publish-preflight
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/npm-publish-preflight.json
@@ -94,6 +97,7 @@ type ScenarioOpts = {
   exchangeStatus?: number;
   trust?: Record<string, unknown>;
   trustStatus?: number | ((name: string) => number);
+  exactStatus?: (name: string) => number | undefined;
 };
 async function scenario({
   present = new Set(),
@@ -101,6 +105,7 @@ async function scenario({
   exchangeStatus = 201,
   trust,
   trustStatus = 200,
+  exactStatus,
 }: ScenarioOpts = {}) {
   const seen: Seen[] = [];
   const logs: string[] = [];
@@ -128,7 +133,8 @@ async function scenario({
     }
     const exact = req.url?.match(/^\/(.+)\/9\.9\.9$/)?.[1] ?? "";
     const name = decodeURIComponent(exact);
-    res.writeHead(present.has(name) ? 200 : 404, { "content-type": "application/json" });
+    const forced = exactStatus?.(name);
+    res.writeHead(forced ?? (present.has(name) ? 200 : 404), { "content-type": "application/json" });
     res.end(JSON.stringify({ name }));
   });
   server.listen(0, "127.0.0.1");
@@ -411,6 +417,120 @@ check(
   "partial prior publish prints the complete package and version census",
   fixed.every((name) => partial.logs.some((line) => line.includes(`${name}\t9.9.9\t`))),
   partial.logs,
+);
+
+// A registry that answers the exact-version read with neither 200 nor 404 leaves the census
+// unable to say whether the version is already published. Publishing on an unreadable census
+// risks a partial recursive publish that cannot be rolled back, so the preflight must refuse.
+const serviceUnavailable = await scenario({ exactStatus: (name) => (name === "@cotal-ai/seat" ? 503 : undefined) });
+check(
+  "a 503 on one exact-version read refuses the release as inconclusive",
+  serviceUnavailable.error instanceof Error
+    && serviceUnavailable.error.message.includes("registry census was inconclusive for 1/3 packages"),
+  serviceUnavailable.error,
+);
+check(
+  "the inconclusive census names the unreadable package and carries its registry status",
+  serviceUnavailable.logs.some((line) => line.includes("@cotal-ai/seat\t9.9.9\tunknown:503")),
+  serviceUnavailable.logs,
+);
+check(
+  "an inconclusive census refuses before any OIDC exchange, trust GET, or publish call",
+  serviceUnavailable.seen.every((call) => !call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/"))
+    && serviceUnavailable.seen.every((call) => !call.url.includes("/trust"))
+    && serviceUnavailable.seen.every((call) => !isWriteShaped(call)),
+  serviceUnavailable.seen,
+);
+check(
+  "an inconclusive census prints the complete package and version census before exiting",
+  fixed.every((name) => serviceUnavailable.logs.some((line) => line.includes(`${name}\t9.9.9\t`))),
+  serviceUnavailable.logs,
+);
+
+// A redirect is not an answer either: `redirect: "manual"` means a 3xx arrives as a status,
+// not as a followed response, and it must not be read as absent.
+const redirected = await scenario({ exactStatus: () => 302 });
+check(
+  "a 302 on every exact-version read refuses the release rather than reading as absent",
+  redirected.error instanceof Error
+    && redirected.error.message.includes("registry census was inconclusive for 3/3 packages"),
+  redirected.error,
+);
+
+// A transport failure reaches the same refusal by the other branch of readExactVersion,
+// and the census must carry the thrown message rather than a bare status.
+const transportFailure = await (async () => {
+  const logs: string[] = [];
+  const attempted: string[] = [];
+  try {
+    const result = await preflightNpmPublish({
+      fixedPackages: fixed,
+      workspacePackages: workspace,
+      registryBase: "https://fake.registry",
+      env: { NPM_TOKEN: "test-only" },
+      fetchImpl: (async (url: unknown) => {
+        attempted.push(String(url));
+        throw new Error("ECONNREFUSED 127.0.0.1:443");
+      }) as unknown as typeof fetch,
+      log: (line: string) => logs.push(line),
+    });
+    return { result, logs, attempted, error: undefined };
+  } catch (error) {
+    return { result: undefined, logs, attempted, error };
+  }
+})();
+check(
+  "a thrown fetch on the exact-version read refuses the release as inconclusive",
+  transportFailure.error instanceof Error
+    && transportFailure.error.message.includes("registry census was inconclusive for 3/3 packages"),
+  transportFailure.error,
+);
+check(
+  "the inconclusive census carries the thrown transport message, not a bare status",
+  fixed.every((name) => transportFailure.logs.some((line) => line.includes(`${name}\t9.9.9\tunknown:ECONNREFUSED 127.0.0.1:443`))),
+  transportFailure.logs,
+);
+check(
+  "a thrown exact-version read stops after the census and never reaches OIDC or trust work",
+  transportFailure.attempted.every((url) => !url.includes("/-/npm/v1/oidc/token/exchange/package/"))
+    && transportFailure.attempted.every((url) => !url.includes("/trust")),
+  transportFailure.attempted,
+);
+
+// Accept control for the three cells above: an all-200 census must still reach the named
+// no-op and must NOT be dragged into the inconclusive refusal by the new fixture plumbing.
+const inconclusiveAcceptControl = await scenario({ present: new Set(fixed), exactStatus: () => undefined });
+check(
+  "accept control: an all-present census still reports the no-op and is not read as inconclusive",
+  inconclusiveAcceptControl.error === undefined
+    && inconclusiveAcceptControl.result?.state === "nothing-to-publish",
+  inconclusiveAcceptControl.error ?? inconclusiveAcceptControl.result,
+);
+
+// The `incomplete` rung is a backstop for a registry state the current status domain cannot
+// produce: with no unknown rows, zero present rows forces absent === rows, which the earlier
+// all-absent rung already claims. This cell pins that domain. If a later change adds a fourth
+// readExactVersion outcome, or lets a row carry a value outside this set, the backstop becomes
+// reachable and this cell reds to say the ladder needs a fixture rather than a deletion.
+const domainProbe: Array<{ label: string; exact: (name: string) => number | undefined }> = [
+  { label: "all-200", exact: () => 200 },
+  { label: "all-404", exact: () => 404 },
+  { label: "all-503", exact: () => 503 },
+];
+const observedRegistryValues = new Set<string>();
+for (const probe of domainProbe) {
+  const run = await scenario({ exactStatus: probe.exact });
+  for (const line of run.logs) {
+    const [name, version, field] = line.split("\t");
+    if (!fixed.includes(name) || version !== "9.9.9" || !field) continue;
+    observedRegistryValues.add(field.startsWith("unknown:") ? "unknown:*" : field);
+  }
+}
+check(
+  "every census row value stays inside the present, absent, unknown domain the verdict ladder covers",
+  observedRegistryValues.size > 0
+    && [...observedRegistryValues].every((value) => value === "present" || value === "absent" || value === "unknown:*"),
+  [...observedRegistryValues],
 );
 
 const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });

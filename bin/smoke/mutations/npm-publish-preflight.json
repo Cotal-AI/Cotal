@@ -194,6 +194,46 @@
       "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
     },
     {
+      "name": "the inconclusive guard block is deleted whole",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n    throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);\n  }\n",
+      "replace": "",
+      "expectRed": "a 503 on one exact-version read refuses the release as inconclusive",
+      "cell": "a 503 on one exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "an unreadable exact-version response is treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${response.status}`;\n",
+      "replace": "    return \"absent\";\n",
+      "expectRed": "a 302 on every exact-version read refuses the release rather than reading as absent",
+      "cell": "a 302 on every exact-version read refuses the release rather than reading as absent"
+    },
+    {
+      "name": "a thrown exact-version read is swallowed and treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n",
+      "replace": "    return \"absent\";\n",
+      "expectRed": "a thrown fetch on the exact-version read refuses the release as inconclusive",
+      "cell": "a thrown fetch on the exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "the inconclusive rung is reordered below all-absent so unknown rows fall through",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absent.length === rows.length\n      ? \"all-absent\"\n",
+      "replace": "  const registryVerdict = absent.length === rows.length\n    ? \"all-absent\"\n    : unknown.length > 0\n      ? \"inconclusive\"\n",
+      "expectRed": "a 503 on one exact-version read refuses the release as inconclusive",
+      "cell": "a 503 on one exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "the inconclusive refusal skips the census print, hiding which package was unreadable",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n",
+      "replace": "  if (registryVerdict === \"inconclusive\") {\n",
+      "expectRed": "the inconclusive census names the unreadable package and carries its registry status",
+      "cell": "the inconclusive census names the unreadable package and carries its registry status"
+    },
+    {
       "name": "an unverifiable trust read is admitted as createPackage proof",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    if (response.status === 401) return \"unverifiable:trust-endpoint-needs-npm-token\";\n",
