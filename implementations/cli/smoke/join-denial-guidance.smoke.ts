@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join as pjoin, resolve } from "node:path";
 import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = pjoin(WT, "bin", "cotal.ts");
@@ -78,6 +78,9 @@ function cli(...args: string[]): { status: number | null; text: string } {
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined;
+// Declared out here, not in the `try`, because the `finally` releases it: a `const` inside the block
+// is not in scope there, and a suite that fails to compile proves nothing about broker ownership.
+let releaseBroker: (() => void) | undefined;
 try {
   // ONE space, one operator. A second independently-created space cannot share this broker (the
   // product refuses to compose trust across operators, correctly), so the denial is produced the way
@@ -90,6 +93,13 @@ try {
     serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: pjoin(root, "js") }),
   );
   broker = spawn("nats-server", ["-c", pjoin(root, "server.conf")], { stdio: "ignore" });
+  // OWN the broker, do not just unwind it. The `finally` below is correct and still runs on the
+  // normal path, but it never runs when this process is SIGNALLED, and a killed suite then leaves a
+  // broker reparented to init holding a port and a JetStream store. That is the second defect named
+  // in `broker-teardown.ts`, and it is the one a tool timeout produces: the wrapper dies, the child
+  // does not. `root` is passed as the owned path because the store dir lives at `root/js`, so the
+  // signal path removes the same tree the normal path does.
+  releaseBroker = teardownOnSignal(broker, root);
   for (let i = 0; i < 120 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture auth broker started", await portOpen(port));
   await setupSpaceStreams({ servers: server, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -152,7 +162,13 @@ try {
   emitSentinel({ passed: pass, failed: fail });
   process.exitCode = fail === 0 ? 0 : 1;
 } finally {
-  try { broker?.kill("SIGKILL"); } catch { /* gone */ }
+  // Wait for the broker to actually exit before removing its tree: a graceful shutdown keeps
+  // flushing JetStream state to disk, which races the recursive removal below and fails it with
+  // ENOTEMPTY after every cell has passed.
+  if (broker !== undefined) await killAndAwaitExit(broker);
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
+  // Released LAST, once the paths are gone, so the signal backstop stays armed for the whole window
+  // in which there is still something to clean up.
+  releaseBroker?.();
 }
