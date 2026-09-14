@@ -720,6 +720,32 @@ try {
   result = run("decl-before-use");
   check("a declaration before the use still witnesses the launch", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
 
+  // Textual order is not execution order, and a first-match walk tested in ONE order hides half its
+  // behaviour, so the same declaration/use pair is driven in BOTH execution orders. The launcher is
+  // a function, so what decides the verdict is where that function is CALLED relative to the
+  // binding, not where the identifier sits in the file.
+  //
+  // Call after the declaration: ENTRY is initialized before `run` runs, so the launch is real and
+  // refusing it is a false refusal of a correct suite.
+  write("bin/smoke/call-after-decl.smoke.ts",
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'run();\n');
+  config("call-after-decl", { suite: ["bin/smoke/call-after-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("call-after-decl");
+  check("a launcher called after the declaration witnesses the launch it makes", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // Its opposite twin, differing in ONE fact: the call precedes the declaration. The identifier now
+  // sits textually AFTER the binding, which is exactly what a source-position rule accepts, and the
+  // program reads ENTRY in its dead zone. Accepting this is a launch that is not there.
+  write("bin/smoke/call-before-decl.smoke.ts",
+    'run();\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n');
+  config("call-before-decl", { suite: ["bin/smoke/call-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("call-before-decl");
+  check("a launcher called before the declaration cannot witness an entrypoint launch", refusedForReach("call-before-decl", result), report(result));
+
   // `const A = B` beside `const B = A` is a program. A resolver without a visited set answers it
   // with a stack overflow, which is a crash rather than a verdict.
   write("bin/smoke/cyclic-binding.smoke.ts",
@@ -734,6 +760,32 @@ try {
   config("param-shadow", { suite: ["bin/smoke/param-shadow.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("param-shadow");
   check("a parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("param-shadow", result), report(result));
+
+  // The DESTRUCTURED twin of the cell above. These differ only in how the parameter is written, so a
+  // verdict that flips between them is about the spelling of a binding and nothing else. A rule that
+  // only recognises an Identifier parameter lets the outer target-valued ENTRY resolve through, and
+  // reports a launch the program never makes -- a false witness, the dangerous direction.
+  write("bin/smoke/destructured-param.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run({ ENTRY }) { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run({ ENTRY: join(import.meta.dirname, "..", "direct.mjs") });\n');
+  config("destructured-param", { suite: ["bin/smoke/destructured-param.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("destructured-param");
+  check("a destructured parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("destructured-param", result), report(result));
+
+  // A destructured LEXICAL declaration binds the name just as a parameter does, and its value comes
+  // from a call this tool cannot follow. Walking past it to an outer ENTRY reports that outer value
+  // as the launched path, which is the same false witness one declaration form over.
+  write("bin/smoke/destructured-decl.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run(opts) {\n' +
+    '  const { ENTRY } = opts;\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'run({ ENTRY: join(import.meta.dirname, "..", "direct.mjs") });\n');
+  config("destructured-decl", { suite: ["bin/smoke/destructured-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("destructured-decl");
+  check("a destructured declaration shadows an outer binding rather than letting it witness a launch", refusedForReach("destructured-decl", result), report(result));
 
   config("cyclic-binding", { suite: ["bin/smoke/cyclic-binding.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("cyclic-binding");

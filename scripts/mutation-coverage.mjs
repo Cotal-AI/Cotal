@@ -106,6 +106,59 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     return sf;
   };
+  // Textual position is not execution order. A use inside a function body runs when that function
+  // is INVOKED: `function run(){ spawn([ENTRY]) } const ENTRY = target; run()` initializes ENTRY
+  // before the call and is a real launch, while `run(); const ENTRY = target; function run(){...}`
+  // reads ENTRY in its dead zone and is not. The identifier's own offset cannot tell those apart,
+  // so the position compared against a declaration is the earliest CALL of the enclosing function.
+  const namedFunction = (node) => {
+    if (ts.isFunctionDeclaration(node)) return node.name?.text;
+    const parent = node.parent;
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+      && (ts.isFunctionExpression(node) || ts.isArrowFunction(node))) return parent.name.text;
+    return undefined;
+  };
+  const earliestCall = (name, within) => {
+    let earliest;
+    const scan = (node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+        const pos = node.getStart(sf);
+        if (earliest === undefined || pos < earliest) earliest = pos;
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(within);
+    return earliest;
+  };
+  // Where `use` actually evaluates, relative to declarations in `scope`: its own offset when no
+  // function boundary separates the two, and otherwise the earliest call of each function crossed
+  // on the way out. `undefined` means the order could not be established -- an anonymous or
+  // never-called function -- and every caller must treat that as a refusal rather than a value.
+  // A refusal is a claim this tool can back; a guess at invocation order is not.
+  const executionPos = (use, scope) => {
+    let pos = use.getStart(sf);
+    for (let s = use.parent; s !== undefined && s !== scope; s = s.parent) {
+      if (!functionLike(s)) continue;
+      const name = namedFunction(s);
+      if (name === undefined) return undefined;
+      const call = earliestCall(name, scope);
+      if (call === undefined) return undefined;
+      pos = call;
+    }
+    return pos;
+  };
+  // A destructuring pattern is a binding. `function run({ENTRY})` declares ENTRY, and reading it as
+  // no binding at all lets an outer target-valued ENTRY stand in for the parameter the call really
+  // passes, which witnesses a launch THAT IS NOT THERE -- the dangerous direction. The value a
+  // pattern binds is not one this tool can follow, so a pattern that can bind the name stops
+  // resolution instead of letting the walk continue outward.
+  const bindsName = (nameNode, name) => {
+    if (ts.isIdentifier(nameNode)) return nameNode.text === name;
+    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
+      return nameNode.elements.some((element) => ts.isBindingElement(element) && bindsName(element.name, name));
+    }
+    return false;
+  };
   // Declared here, but with no value this tool may claim: a parameter, a declaration with no
   // initializer, or one that appears after the use. Each SHADOWS an outer binding of the same
   // name, so resolution stops rather than walking outward and reporting the outer one's value.
@@ -121,17 +174,19 @@ const pathEval = (suite, source, env = new Map()) => {
   // of them, because every place the approximation differs is a data-flow fact the program does
   // not have. `var` hoists out of inner blocks to its function and so is collected from them; a
   // `let` or `const` in an inner block is not visible here and is deliberately not collected.
-  const declaredIn = (scope, name, usePos) => {
+  const declaredIn = (scope, name, useNode) => {
+    const usePos = executionPos(useNode, scope);
     let found;
     const record = (value) => { if (found === undefined) found = value; };
     const scan = (node, hoistedOnly) => {
       if (found !== undefined) return;
       if (node !== scope && (functionLike(node) || ts.isSourceFile(node))) return;
       if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, true)); return; }
-      if (!hoistedOnly && ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === name) record(OPAQUE);
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name
-        && (!hoistedOnly || declarationKind(node) === "var")) {
-        record(node.initializer === undefined || node.end > usePos ? OPAQUE : node.initializer);
+      if (!hoistedOnly && ts.isParameter(node) && bindsName(node.name, name)) record(OPAQUE);
+      if (ts.isVariableDeclaration(node) && (!hoistedOnly || declarationKind(node) === "var")) {
+        if (ts.isIdentifier(node.name) && node.name.text === name) {
+          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);
+        } else if (!ts.isIdentifier(node.name) && bindsName(node.name, name)) record(OPAQUE);
       }
       ts.forEachChild(node, (child) => scan(child, hoistedOnly));
     };
@@ -161,10 +216,9 @@ const pathEval = (suite, source, env = new Map()) => {
       // needs one edge pointing at a later declaration, which the use-position rule below stops.
       // A visited set as well would be a second guard for the same case, and mutating either one
       // then proves nothing, because the other still holds.
-      const usePos = node.getStart(sf);
       for (let scope = scopeOf(node); scope !== undefined;
         scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {
-        const declared = declaredIn(scope, node.text, usePos);
+        const declared = declaredIn(scope, node.text, node);
         if (declared === OPAQUE) return undefined;
         if (declared !== undefined) return evalPath(declared);
       }

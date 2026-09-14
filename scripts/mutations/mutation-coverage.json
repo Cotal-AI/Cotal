@@ -414,7 +414,7 @@
     {
       "name": "a scalar binding resolves by name instead of by scope",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      const usePos = node.getStart(sf);\n      for (let scope = scopeOf(node); scope !== undefined;\n        scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {\n        const declared = declaredIn(scope, node.text, usePos);\n        if (declared === OPAQUE) return undefined;\n        if (declared !== undefined) return evalPath(declared);\n      }\n      return undefined;",
+      "find": "      for (let scope = scopeOf(node); scope !== undefined;\n        scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {\n        const declared = declaredIn(scope, node.text, node);\n        if (declared === OPAQUE) return undefined;\n        if (declared !== undefined) return evalPath(declared);\n      }\n      return undefined;",
       "replace": "      let flat;\n      const flatScan = (n) => {\n        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === node.text && n.initializer) flat = n.initializer;\n        ts.forEachChild(n, flatScan);\n      };\n      flatScan(sf);\n      return flat === undefined || flat === node.parent ? undefined : evalPath(flat);",
       "expectRed": "a same-named scalar in another scope cannot witness an entrypoint launch",
       "cell": "a same-named scalar in another scope cannot witness an entrypoint launch"
@@ -430,18 +430,42 @@
     {
       "name": "a declaration after the use is still resolved",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        record(node.initializer === undefined || node.end > usePos ? OPAQUE : node.initializer);",
-      "replace": "        record(node.initializer === undefined ? OPAQUE : node.initializer);",
+      "find": "          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);",
+      "replace": "          record(node.initializer === undefined || usePos === undefined ? OPAQUE : node.initializer);",
       "expectRed": "a use before its declaration cannot witness an entrypoint launch",
       "cell": "a use before its declaration cannot witness an entrypoint launch"
     },
     {
       "name": "a parameter is not a binding",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (!hoistedOnly && ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === name) record(OPAQUE);",
+      "find": "      if (!hoistedOnly && ts.isParameter(node) && bindsName(node.name, name)) record(OPAQUE);",
       "replace": "      if (false) record(OPAQUE);",
       "expectRed": "a parameter shadows an outer binding rather than letting it witness a launch",
       "cell": "a parameter shadows an outer binding rather than letting it witness a launch"
+    },
+    {
+      "name": "textual position is treated as execution order",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const executionPos = (use, scope) => {\n    let pos = use.getStart(sf);\n    for (let s = use.parent; s !== undefined && s !== scope; s = s.parent) {\n      if (!functionLike(s)) continue;\n      const name = namedFunction(s);\n      if (name === undefined) return undefined;\n      const call = earliestCall(name, scope);\n      if (call === undefined) return undefined;\n      pos = call;\n    }\n    return pos;\n  };",
+      "replace": "  const executionPos = (use) => use.getStart(sf);",
+      "expectRed": "a launcher called after the declaration witnesses the launch it makes",
+      "cell": "a launcher called after the declaration witnesses the launch it makes"
+    },
+    {
+      "name": "a destructuring pattern is not a binding",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {\n      return nameNode.elements.some((element) => ts.isBindingElement(element) && bindsName(element.name, name));\n    }",
+      "replace": "    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) return false;",
+      "expectRed": "a destructured parameter shadows an outer binding rather than letting it witness a launch",
+      "cell": "a destructured parameter shadows an outer binding rather than letting it witness a launch"
+    },
+    {
+      "name": "a destructured declaration is not a binding",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        } else if (!ts.isIdentifier(node.name) && bindsName(node.name, name)) record(OPAQUE);",
+      "replace": "        }",
+      "expectRed": "a destructured declaration shadows an outer binding rather than letting it witness a launch",
+      "cell": "a destructured declaration shadows an outer binding rather than letting it witness a launch"
     }
   ]
 }
