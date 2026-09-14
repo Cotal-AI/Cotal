@@ -73,7 +73,6 @@ import { runMediatorGrants, PLACEMENT_COMMANDS } from "../../../packages/core/sr
 // Read from LANG SOURCE on purpose, like the core grant builder above: the identity contract under
 // review is the one in src, not whatever a stale dist was compiled from.
 import { PRIMITIVES } from "../../../packages/lang/src/primitives.js";
-import { spawnArgs } from "../src/mesh-handler.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshspawn";
@@ -173,16 +172,29 @@ const DESPAWN_OUTPUT = {
   properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
 
+/** #1616 item 5, PHASE A. The serving manager answers about ITS OWN filesystem: the caller cannot,
+ *  and a caller that guesses is the fail-open path this command replaces. */
+const RESOLVE_CWD_INPUT = {
+  type: "object", additionalProperties: false, required: ["cwd"],
+  properties: { cwd: { type: "string", minLength: 1 } },
+} as const;
+const RESOLVE_CWD_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["cwd", "host"],
+  properties: { cwd: { type: "string" }, host: { type: "string" } },
+} as const;
+
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  "resolve-cwd": { input: cc(RESOLVE_CWD_INPUT), output: cc(RESOLVE_CWD_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.spawnmgr", revision: 1, attributes: [], events: [],
   commands: [
     { name: "spawn", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED.spawn.input.closureDigest, outputDigest: COMPILED.spawn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
+    { name: "resolve-cwd", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED["resolve-cwd"].input.closureDigest, outputDigest: COMPILED["resolve-cwd"].output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -194,7 +206,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, RESOLVE_CWD_INPUT, RESOLVE_CWD_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -234,6 +246,11 @@ const spawnInvokes: string[] = [];                       // every spawn submissi
 const allocations: Array<{ goalId: string; name: string; owner: string; actor: string; uid: string; persona: string }> = [];
 const despawns: Array<{ owner: string; actor: string; lifecycleUid: string; graceful: unknown }> = [];
 const placements: Array<{ goalId: string; cwd: string; head: string }> = [];
+/** #1616 item 5: what phase A was ASKED and what this host ANSWERED, and the cwd phase B then
+ *  dispatched. The pair is how a cell tells "the manager stated the canonical form" apart from
+ *  "the caller guessed it and happened to be on the same box". */
+const resolves: Array<{ asked: string; answered: string | null }> = [];
+const dispatchedCwds: string[] = [];
 const mappings = new Map<string, { lifecycleUid: string; mappingRevision: number }>();
 const gone = new Set<string>();                          // despawned lifecycleUids → not-found on re-despawn
 /** Scripted per-persona outcome; default is a prompt `succeeded`. `readinessMs` narrows the
@@ -263,6 +280,7 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   if (args.cwd !== undefined &&
       (typeof args.cwd !== "string" || !existsSync(args.cwd) || !statSync(args.cwd).isDirectory()))
     throw new EpEnvelopeError("failed-precondition", `cwd is not an existing directory: ${JSON.stringify(args.cwd)}`);
+  if (typeof args.cwd === "string") dispatchedCwds.push(args.cwd);
   if (persona === "placed") {
     const observed = join(sd, `placement-${goalId}.json`);
     const child = spawnProc(process.execPath, ["-e", `const {execFileSync}=require('node:child_process');const {writeFileSync}=require('node:fs');writeFileSync(${JSON.stringify(observed)},JSON.stringify({cwd:process.cwd(),head:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()}))`], {
@@ -320,9 +338,26 @@ const despawnHandler = (ctx: EpServeContext): unknown => {
   return { name: `${t.owner}.${t.actor}`, stopped: true, graceful: graceful !== false };
 };
 
+/** #1616 item 5, the phase-A responder. It is the manager side on purpose: `canonicalCwd` runs
+ *  against THIS process's filesystem, which is the one the child will be launched on. A path that
+ *  does not resolve here is refused here; there is no form of it the caller may still dispatch. */
+const resolveCwdHandler = (ctx: EpServeContext): unknown => {
+  const asked = String(((ctx.request.args ?? {}) as { cwd?: unknown }).cwd);
+  let answered: string;
+  try {
+    answered = canonicalCwd(asked);
+  } catch (e) {
+    resolves.push({ asked, answered: null });
+    throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${(e as Error).message})`);
+  }
+  resolves.push({ asked, answered });
+  return { cwd: answered, host: "mesh-spawn-smoke-host" };
+};
+
 const defs: EpCommandDef[] = [
   { command: "spawn", contract: COMPILED.spawn, handler: spawnHandler },
   { command: "despawn", contract: COMPILED.despawn, handler: despawnHandler },
+  { command: "resolve-cwd", contract: COMPILED["resolve-cwd"], handler: resolveCwdHandler },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   resolveTarget: (t) => {
@@ -445,10 +480,18 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   const absent = join(sd, "does-not-exist");
   const missing = await handler.spawn({ persona: "placed", cwd: absent, placement: PLACE }, stepCtx(token("x")).ctx)
     .then(() => undefined, (e: unknown) => e as EffectError);
-  c("a missing cwd is explicitly refused by the serving manager",
-    missing instanceof EffectError && missing.code === "L4000" && /not an existing directory/.test(missing.message), missing?.message);
+  // #1616 item 5, THE FAILURE DIRECTION. Killed by M25 "an unresolvable cwd falls back to the raw
+  // string": with the fallback restored the refusal never happens here, the submission goes out
+  // carrying the caller's guess, and the count cell below moves off zero.
+  c("a cwd the target cannot resolve is refused L4000 by the target's own resolution, with no raw-path fallback",
+    missing instanceof EffectError && missing.code === "L4000"
+      && /was not resolved by manager instance/.test(missing.message)
+      && resolves.at(-1)?.asked === absent && resolves.at(-1)?.answered === null, missing?.message);
+  // ZERO submissions now, where the pre-phase-A code submitted one and let the manager refuse it:
+  // an unresolvable path never reaches a spawn submission at all. The non-zero control for this
+  // same counter is the aliased placed spawn in §1, which asserts `+ 1` on the identical reader.
   c("neither bad path leaves a fallback seat, partial allocation, or child",
-    spawnInvokes.length === invokesBefore + 1 && allocations.length === allocationsBefore && placements.length === launchesBefore,
+    spawnInvokes.length === invokesBefore && allocations.length === allocationsBefore && placements.length === launchesBefore,
     { invokes: spawnInvokes.length - invokesBefore, allocations: allocations.length - allocationsBefore, launches: placements.length - launchesBefore });
 }
 
@@ -488,17 +531,40 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     PRIMITIVES.spawn.hashedOptions.includes("placement") && PRIMITIVES.spawn.hashedOptions.includes("cwd")
       && PRIMITIVES.spawn.options.includes("placement"),
     { hashed: PRIMITIVES.spawn.hashedOptions });
-  // ITEM 5. Killed by M10 "cwd alias normalization returns the caller's raw path": the claim the
-  // manager takes must key on the REALPATH, or two aliases of one clone each take their own.
-  const cReal = mkdtempSync(join(realpathSync(tmpdir()), "sp-claim-"));
-  const cLink = join(mkdtempSync(join(realpathSync(tmpdir()), "sp-clink-")), "clone");
-  execFileSync("ln", ["-s", cReal, cLink]);
-  c("the dispatched claim keys on the canonical realpath, so two aliases of one clone contend",
-    spawnArgs({ persona: "placed", cwd: cLink, placement: PLACE }).cwd === cReal
-      && spawnArgs({ persona: "placed", cwd: cReal, placement: PLACE }).cwd === cReal && cLink !== cReal,
-    { link: cLink, real: cReal, dispatched: spawnArgs({ persona: "placed", cwd: cLink, placement: PLACE }).cwd });
-  rmSync(cReal, { recursive: true, force: true });
-  rmSync(cLink, { force: true });
+  // ITEM 5, PHASE A. Killed by M24 "the driver dispatches req.cwd without asking the host": phase A
+  // never runs, so `resolves` does not grow and the manager receives the caller's ALIAS instead of
+  // the realpath it would have stated. The two halves are the whole point of A2 — the alias is what
+  // the host was ASKED, the realpath is what the host ANSWERED and what phase B then dispatched, so
+  // the canonical form is demonstrably the target's statement and not the caller's guess.
+  const aliasLink = join(mkdtempSync(join(realpathSync(tmpdir()), "sp-alias-")), "prepared");
+  execFileSync("ln", ["-s", preparedRoot, aliasLink]);
+  const realPrepared = realpathSync(preparedRoot);
+  const resolvesBefore = resolves.length;
+  const aliasInvokesBefore = spawnInvokes.length;
+  const aliased = await withDeadline(
+    handler.spawn({ persona: "placed", cwd: aliasLink, placement: PLACE }, stepCtx(token("y")).ctx)
+      .then((v) => v, (e: unknown) => { console.log("  ! aliased placed spawn rejected:", (e as Error)?.message?.slice(0, 120)); return undefined; }),
+    30_000, "the aliased placed spawn");
+  c("phase A asks the SERVING host and phase B dispatches that host's answer, so an alias reaches the manager as its realpath",
+    aliased !== undefined && resolves.length === resolvesBefore + 1
+      && resolves.at(-1)?.asked === aliasLink && resolves.at(-1)?.answered === realPrepared
+      && dispatchedCwds.at(-1) === realPrepared && aliasLink !== realPrepared
+      && spawnInvokes.length === aliasInvokesBefore + 1,
+    { asked: resolves.at(-1)?.asked, answered: resolves.at(-1)?.answered, dispatched: dispatchedCwds.at(-1),
+      resolved: resolves.length - resolvesBefore, invokes: spawnInvokes.length - aliasInvokesBefore });
+  // The resolution is PERSISTED, not just used: a resume reads the directory the host stated rather
+  // than re-asking a target that may have moved. Killed by M26 "the acceptance bind drops the
+  // resolution", which is the wholesale-replace bug `journal.bind` makes easy to write.
+  const aliasCtx = stepCtx(token("z"));
+  await withDeadline(
+    handler.spawn({ persona: "placed", cwd: aliasLink, placement: PLACE }, aliasCtx.ctx)
+      .then((v) => v, () => undefined), 30_000, "the second aliased placed spawn");
+  const boundRes = aliasCtx.bound.resolution as { cwd?: unknown; endpoint?: unknown; instanceId?: unknown; host?: unknown } | undefined;
+  c("the step journal keeps the canonical directory beside the identity that stated it",
+    boundRes?.cwd === realPrepared && boundRes.endpoint === EP && boundRes.instanceId === MGR_IID
+      && boundRes.host === "mesh-spawn-smoke-host",
+    { bound: boundRes });
+  rmSync(aliasLink, { force: true });
 }
 
 // ── 2) an idempotent resubmission is served, never re-allocated ───────────────────────────────
@@ -876,7 +942,9 @@ log("winner", out.index);
       && legacy.publish.filter((r) => r.includes(".inst.")).length === 0,
     { added, legacyInst: legacy.publish.filter((r) => r.includes(".inst.")) });
   // Item C, proof item 5: two physical aliases of ONE clone collapse to a single identity, and the
-  // canonical form is the REALPATH — what the child's own process.cwd() reports. Killed by M10.
+  // canonical form is the REALPATH — what the child's own process.cwd() reports. This is the rule
+  // the phase-A responder applies ON THE SERVING HOST (see resolveCwdHandler); the driver no longer
+  // calls it. Killed by M10.
   const aliasReal = mkdtempSync(join(realpathSync(tmpdir()), "sp-alias-"));
   const aliasLink = join(mkdtempSync(join(realpathSync(tmpdir()), "sp-link-")), "clone");
   execFileSync("ln", ["-s", aliasReal, aliasLink]);
@@ -891,7 +959,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 57;
+const EXPECTED_CELLS = 58;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
