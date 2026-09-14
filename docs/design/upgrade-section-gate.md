@@ -112,18 +112,30 @@ because it launders the absence of review into a green tick.
 
 ## Self-test and mutation proof
 
-The gate grades itself in one invocation, `--self-test`, over 42 cells including three replay legs:
+The gate grades itself in one invocation, `--self-test`, over 50 cells including three replay legs:
 breaking with no new section refuses and names what it caught, breaking with a new section passes,
 and non-breaking with no section passes. The middle and last legs are what distinguish a working
-gate from one that reds on everything. Two of the 42 need real release history and report UNGRADED
-rather than passing in a shallow checkout, so the line a run prints is 40 passed plus 2 UNGRADED
-when history is truncated, and 42 passed when it is not. Both numbers are read off a run rather
+gate from one that reds on everything. Two of the 50 need real release history and report UNGRADED
+rather than passing in a shallow checkout, so the line a run prints is 48 passed plus 2 UNGRADED
+when history is truncated, and 50 passed when it is not. Both numbers are read off a run rather
 than counted by hand.
 
-A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 13 mutants, each of which
-must red a named cell. Two of them exist because they were real defects during development: one
-accepted a hollow section with a heading and no body, and one over-corrected so that a legitimate
-short section was refused. Both directions are held.
+THE SUITE MUST NOT DEPEND ON THE SHAPE OF THE CHECKOUT IT RUNS IN, and it did. Two cells ran
+`--merge-snapshot` against whatever repository the suite happened to be in, so their result was
+decided by that checkout's parent count rather than by the tool. Measured: 42 passed on a branch
+head, 41 passed and 1 failed on a pull request's own merge ref, because the refusal a cell asserted
+cannot happen on a merge snapshot, where the flag correctly succeeds. CI checks that merge ref out
+at `fetch-depth: 0`, so the suite went red on the one checkout that mattered, and the mutation
+proof, which refuses to grade against a red baseline, left every mutant ungraded. Those cells now
+build the repositories they name, the parent probe is shown to discriminate before they are
+believed, and a sentinel cell reds if any cell reaches for a repository the suite did not build.
+The suite is now green on all three shapes: branch head, merge ref at full depth, and depth-1.
+
+A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 16 mutants, each of which
+must red a named cell. Several exist because they were real defects during development: one
+accepted a hollow section with a heading and no body, one over-corrected so that a legitimate
+short section was refused, and three are the parser and checkout-shape defects above. Both
+directions are held.
 
 ## Open questions for review
 
