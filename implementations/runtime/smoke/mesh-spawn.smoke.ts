@@ -58,8 +58,6 @@ import {
   readGoalResult,
   replayRunJournal,
   readRunRecord,
-  runMediatorGrants,
-  PLACEMENT_COMMANDS,
   newTakeoverId,
   EpEnvelopeError,
   type EpCommandDef,
@@ -69,6 +67,9 @@ import {
 } from "@cotal-ai/core";
 import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration, canonicalCwd } from "../src/index.js";
+// Read from core SOURCE, not the package dist: the grant builder is pure, and a source import is
+// what makes the two placement mutants below grade the code under review rather than a stale build.
+import { runMediatorGrants, PLACEMENT_COMMANDS } from "../../../packages/core/src/run-driver-grants.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshspawn";
@@ -801,8 +802,9 @@ log("winner", out.index);
 // what would be minted, and shape is exactly what the design bounds.
 {
   const GSPACE = "netcup";
-  const legacy = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: newTakeoverId(), instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1 }, "01234567890123456789012");
-  const pinned = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: newTakeoverId(), instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1, placement: { instanceId: "zyxwvutsrqponmlkjihgfedcba" } }, "01234567890123456789012");
+  const GTAKE = newTakeoverId();
+  const legacy = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: GTAKE, instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1 }, "01234567890123456789012");
+  const pinned = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: GTAKE, instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1, placement: { instanceId: "zyxwvutsrqponmlkjihgfedcba" } }, "01234567890123456789012");
   const added = pinned.publish.filter((r) => !legacy.publish.includes(r));
   const instRows = added.filter((r) => r.includes(".inst."));
   // Item B, grant present: naming a target mints the inst rail for EXACTLY describe, resolve-cwd
