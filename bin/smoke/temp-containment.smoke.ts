@@ -59,9 +59,13 @@ console.log("\nPART A — a cleanup may only remove what it minted");
 // The exact shape that fired: `candidate + "/.."` resolves to the mkdtemp's PARENT. Equal-to must
 // be a refusal, because deleting the root itself IS the incident.
 const rootItself = refusal(() => assertContainedIn(`${inside}/..`, root));
+// The message is graded, not just the throw. If the equal-to branch is removed the target still
+// gets refused — the root does not start with `root + sep`, so the outside-check catches it — and
+// the refusal then blames an escape that did not happen. The distinct diagnosis IS the behaviour
+// here, so a cell that only asserted "it threw" would grade a guard that no longer exists.
 check(
   "a target that resolves to the root itself is refused, not treated as contained",
-  rootItself !== null && rootItself.includes(root),
+  rootItself !== null && rootItself.includes(root) && /\bIS the root\b/.test(rootItself),
   rootItself,
 );
 
