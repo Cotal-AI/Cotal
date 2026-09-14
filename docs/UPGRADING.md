@@ -281,6 +281,11 @@ npm install -g cotal-ai@0.49.0
 #    Record the manager log's size BEFORE starting, so step 3a can tell THIS
 #    boot's output from every earlier one. It must be captured here, ahead of
 #    the start: taken afterwards it sits past the new line and the wait hangs.
+#    `<spaceKey>` is NOT the space name. It is lowercase hex of the name's
+#    UTF-8 bytes, so space `prod` is `manager.70726f64.log`. Do not guess it:
+#    `cotal up` prints the real path on its launch line. Substituting the
+#    plain name points at a file that does not exist, and the wait below then
+#    burns its full timeout before telling you.
 LOG=.cotal/manager.<spaceKey>.log
 OFF=$( [ -f "$LOG" ] && wc -c < "$LOG" || echo 0 )
 cotal up --detach --host 0.0.0.0 --space <space>
