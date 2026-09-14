@@ -200,6 +200,30 @@
       "replace": "    return executed.length > 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
       "cell": "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it",
       "expectRed": "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it"
+    },
+    {
+      "name": "the reader is found by scanning arguments backward for a plausible shape, so a wrapped reader is attributed to an earlier argument",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  if (ts.isIdentifier(arg)) return arg.text;",
+      "replace": "  for (let i = args.length - 1; i >= 1; i -= 1) { const a = args[i]; if (ts.isArrowFunction(a) || ts.isFunctionExpression(a)) return `inline@${cellId}`; if (ts.isIdentifier(a)) return a.text; }",
+      "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+      "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
+    },
+    {
+      "name": "an unclassifiable reader shape is given the benefit of the doubt and shares its factory's class instead of standing alone",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  // inherited coverage. When the two errors are not symmetric, take the one that shouts.\n  return `opaque@${cellId}`;",
+      "replace": "  return `owned@${factoryName}`;",
+      "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+      "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
+    },
+    {
+      "name": "the factory arity is not checked, so a signature change silently moves the reader while the table keeps reading the old slot",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  if (!contract || args.length !== contract.arity) return `opaque@${cellId}`;",
+      "replace": "  if (!contract) return `opaque@${cellId}`;",
+      "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+      "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
     }
   ]
 }
