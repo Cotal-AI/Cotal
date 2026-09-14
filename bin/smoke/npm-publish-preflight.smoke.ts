@@ -791,6 +791,47 @@ function censusStateRefusals(dts: string): string[] {
   return refusals;
 }
 
+/**
+ * Rewrite the TOP-LEVEL `state` property of ONE NAMED entry point's result block.
+ *
+ * This exists because positional indexing into the base is the same defect the grader was just
+ * fixed for, one level up. `replaceNth(base, "state: <alias>;", "state: string;", 2)` means "the
+ * second occurrence in the file", which is only "the second entry point" while no other `state`
+ * exists anywhere. A reviewer's nested-decoy attack added a third occurrence and occurrence 2
+ * became the NESTED property, so the fixture widened something other than the thing it was named
+ * for and reported an EMPTY refusal list: a red for a reason unrelated to its name, which is noise
+ * rather than evidence. Naming the entry point and the nesting depth cannot drift that way.
+ */
+function widenTopLevelState(dts: string, fn: string, replacement: string): string {
+  const needle = `export function ${fn}(`;
+  const start = dts.indexOf(needle);
+  if (start < 0) throw new Error(`fixture is stale: ${fn} is not in the declaration`);
+  const open = dts.indexOf("): Promise<{", start);
+  if (open < 0) throw new Error(`fixture is stale: ${fn} has no resolved result object to widen`);
+  const lines = dts.slice(open).split("\n");
+  let depth = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const before = depth;
+    for (const character of lines[index]) {
+      if (character === "{") depth++;
+      else if (character === "}") depth--;
+    }
+    if (before === 1 && /^\s*state\??:\s*[^;]+;\s*$/.test(lines[index])) {
+      lines[index] = lines[index].replace(/state\??:\s*[^;]+;/, replacement);
+      return dts.slice(0, open) + lines.join("\n");
+    }
+    if (before >= 1 && depth === 0) break;
+  }
+  throw new Error(`fixture is stale: ${fn} has no top-level state property to widen`);
+}
+
+/** Remove the TOP-LEVEL `state` property of one NAMED entry point, by name rather than by position. */
+function dropTopLevelState(dts: string, fn: string): string {
+  const marker = "__FIXTURE_DROPPED_STATE__: never;";
+  const withMarker = widenTopLevelState(dts, fn, marker);
+  return withMarker.replace(new RegExp(`^\\s*${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`, "m"), "");
+}
+
 function replaceNth(text: string, needle: string, replacement: string, nth: number): string {
   let index = -1;
   for (let seen = 0; seen < nth; seen++) {
@@ -848,94 +889,116 @@ check(
   (acceptingBase.match(/^export type NpmPublishPreflightState\b/gm) ?? []).length === 1,
   (acceptingBase.match(/^export type NpmPublishPreflightState .*$/gm) ?? []),
 );
-const stateFixtures: Array<{ name: string; dts: string; names: string; branch: string }> = [
+/**
+ * Each fixture's declaration is built LAZILY, and a builder that cannot find its subject reds one
+ * NAMED cell instead of throwing.
+ *
+ * A reviewer found why this matters: widening the second entry point's result to `Promise<void>`
+ * makes the contract cells red correctly, and then the fixture builder threw "occurrence 2 is not
+ * in the declaration" at module scope. The process died with NO `SUITE COMPLETE` line and 17 of 78
+ * cells never ran, so a real fault reported itself as a stack trace about test scaffolding and took
+ * the rest of the suite's signal with it. A suite that dies on a fault it correctly detected has
+ * converted a precise red into an outage, and the operator has to read a trace to find out which.
+ */
+const stateFixtures: Array<{ name: string; dts: () => string; names: string; branch: string }> = [
   {
     name: "state widened back to string on preflightNpmPublish",
     branch: "not a union of the census literals",
-    dts: replaceNth(acceptingBase, stateProperty, "state: string;", 1),
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", "state: string;"),
     names: "preflightNpmPublish",
   },
   {
     name: "state widened back to string on preflightFromRepository",
     branch: "not a union of the census literals",
-    dts: replaceNth(acceptingBase, stateProperty, "state: string;", 2),
+    dts: () => widenTopLevelState(acceptingBase, "preflightFromRepository", "state: string;"),
     names: "preflightFromRepository",
   },
   {
     name: "a state property dropped from the result object",
     branch: "no top-level state property",
-    dts: replaceNth(acceptingBase, `    ${stateProperty}\n`, "", 1),
+    dts: () => dropTopLevelState(acceptingBase, "preflightNpmPublish"),
     names: "preflightNpmPublish",
   },
   {
     name: "an entry point the declaration never declares",
     branch: "the declaration never declares this entry point",
-    dts: replaceNth(acceptingBase, "export function preflightFromRepository(", "export function preflightElsewhere(", 1),
+    dts: () => replaceNth(acceptingBase, "export function preflightFromRepository(", "export function preflightElsewhere(", 1),
     names: "preflightFromRepository",
   },
   {
     name: "a state alias this declaration never defines",
     branch: "which this declaration never defines",
-    dts: acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, ""),
+    dts: () => acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, ""),
     names: "preflightNpmPublish",
   },
   {
     name: "a census member dropped from the union",
     branch: "state union is missing",
-    dts: acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish";'),
+    dts: () => acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish";'),
     names: "preflightNpmPublish",
   },
   {
     name: "a state the census can never return added to the union",
     branch: "which the census never returns",
-    dts: acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish" | "ready" | "inconclusive";'),
+    dts: () => acceptingBase.replace(/^export type NpmPublishPreflightState = .*$/m, 'export type NpmPublishPreflightState = "nothing-to-publish" | "ready" | "inconclusive";'),
     names: "preflightNpmPublish",
   },
   {
     name: "a tuple the declaration never defines behind the state alias",
     branch: "which this declaration never defines",
-    dts: `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
+    dts: () => `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
       .replace(/^export type NpmPublishPreflightState = .*$/m, "")}\nexport type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];\n`,
     names: "preflightNpmPublish",
   },
   {
     name: "a census member dropped from the tuple behind the state alias",
     branch: "state union is missing",
-    dts: `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
+    dts: () => `${acceptingBase.replace(/^export const NPM_PUBLISH_PREFLIGHT_STATES: .*$/m, "")
       .replace(/^export type NpmPublishPreflightState = .*$/m, "")}\nexport const NPM_PUBLISH_PREFLIGHT_STATES: readonly ["nothing-to-publish"];\nexport type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];\n`,
     names: "preflightNpmPublish",
   },
   {
     name: "a nested state read instead of the widened top-level one",
-    dts: replaceNth(acceptingBase, `    ${stateProperty}\n`,
-      `    census: {\n        ${stateProperty}\n    };\n    state: string;\n`, 1),
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish",
+      `census: {\n        ${stateProperty}\n    };\n    state: string;`),
     names: "preflightNpmPublish",
     branch: "not a union of the census literals",
   },
   {
     name: "two top-level state properties, so which one publishes is ambiguous",
-    dts: replaceNth(acceptingBase, `    ${stateProperty}\n`, `    ${stateProperty}\n    state: string;\n`, 1),
+    dts: () => widenTopLevelState(acceptingBase, "preflightNpmPublish", `${stateProperty}\n    state: string;`),
     names: "preflightNpmPublish",
     branch: "top-level state properties",
   },
   {
     name: "a second declaration of the same entry point appended after the first",
-    dts: `${acceptingBase}\nexport function preflightFromRepository(options?: any): Promise<{\n    state: string;\n    rows: any[];\n}>;\n`,
+    dts: () => `${acceptingBase}\nexport function preflightFromRepository(options?: any): Promise<{\n    state: string;\n    rows: any[];\n}>;\n`,
     names: "preflightFromRepository",
     branch: "so which result a caller resolves is ambiguous",
   },
   {
     name: "an entry point whose result object is not resolved in its own declaration",
-    dts: replaceNth(acceptingBase, "): Promise<{", "): Promise<any>;", 1),
+    dts: () => replaceNth(acceptingBase, "): Promise<{", "): Promise<any>;", 1),
     names: "preflightNpmPublish",
     branch: "no resolved result object in the declaration",
   },
 ];
 for (const fixture of stateFixtures) {
-  const refusals = censusStateRefusals(fixture.dts);
+  let built: string;
+  try {
+    built = fixture.dts();
+  } catch (error) {
+    check(
+      `the census state fixture for ${fixture.name} still finds its subject in the declaration`,
+      false,
+      error instanceof Error ? error.message : error,
+    );
+    continue;
+  }
+  const refusals = censusStateRefusals(built);
   check(
     `the census state grader refuses ${fixture.name}`,
-    fixture.dts !== acceptingBase
+    built !== acceptingBase
       && refusals.length > 0
       && refusals.some((refusal) => refusal.startsWith(`${fixture.names}:`) && refusal.includes(fixture.branch)),
     { refusals, expectedBranch: fixture.branch },
