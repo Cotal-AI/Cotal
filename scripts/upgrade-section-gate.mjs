@@ -336,15 +336,6 @@ if (process.argv.includes("--self-test")) {
     const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { encoding: "utf8" });
     return r.status;
   };
-  // TWO REFUSALS THAT BOTH EXIT 2 ARE INDISTINGUISHABLE TO AN EXIT-CODE READER, and the mutation
-  // proof caught exactly that: a cell asserting `=== 2` for the combination refusal stayed green
-  // with the combination refusal deleted, because the parent check fires first and also exits 2.
-  // The cell was passing for a reason unrelated to the line it names. Reading the refusal's own
-  // words is what makes the two separable, so this helper returns them.
-  const runSelfSays = (args, needle) => {
-    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { encoding: "utf8" });
-    return r.status === 2 && (r.stderr ?? "").includes(needle);
-  };
   cell("EXIT 2 on an unresolvable ref: misuse is never reported as a refusal", runSelf(["--range", "qqzzNoSuchRef77..HEAD"]) === 2);
   cell("EXIT 2 on missing arguments", runSelf([]) === 2);
   // `--merge-snapshot` EXISTS TO STOP THE RANGE'S TWO ENDS COMING FROM DIFFERENT SNAPSHOTS, and
@@ -354,10 +345,92 @@ if (process.argv.includes("--self-test")) {
   // commit and a breaking change behind it reads as absent: a clean green meaning "I looked at
   // the wrong thing". The tool must refuse that itself and not rely on its caller checking,
   // because a local hook or a future workflow inherits none of the caller's care.
-  cell("EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
-    runSelfSays(["--merge-snapshot"], "needs a two-parent merge commit"));
-  cell("EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
-    runSelfSays(["--merge-snapshot", "--range", "HEAD~1..HEAD"], "cannot be combined with --base or --range"));
+  // A CELL MUST BUILD THE CONDITION IT NAMES RATHER THAN INHERIT IT FROM THE AMBIENT CHECKOUT.
+  // These two cells previously ran `--merge-snapshot` against whatever repository the suite
+  // happened to be in, so their result was decided by that checkout's parent count. Measured: on
+  // a branch head (1 parent) the suite read 42 passed; on the pull request's own merge ref
+  // (2 parents) the same tree read 41 passed 1 failed, because the refusal a cell asserted cannot
+  // happen on a merge snapshot, where the flag correctly SUCCEEDS. CI checks out that merge ref at
+  // fetch-depth 0, so the suite went red on the one checkout that matters and the mutation proof,
+  // which refuses to grade against a red baseline, left all 13 mutants UNGRADED.
+  //
+  // That is the same defect as the one this suite caught in itself an hour earlier: a cell whose
+  // outcome turns on a fact nobody declared. There it passed for a reason unrelated to its name;
+  // here it failed for one. A suite that grades a tool must not also be reading the weather.
+  // So both refusals, and the happy path, are now graded in repositories built here, and the
+  // parent probe is shown to discriminate before any of them are believed.
+  {
+    const tmp = mkdtempSync(join(tmpdir(), "upgrade-gate-merge-"));
+    const git = (args, cwd) => spawnSync("git", args, { cwd, encoding: "utf8" });
+    const build = (name, subject) => {
+      const dir = join(tmp, name);
+      mkdirSync(dir);
+      git(["init", "-q", "."], dir);
+      git(["config", "user.email", "selftest@example.invalid"], dir);
+      git(["config", "user.name", "selftest"], dir);
+      writeFileSync(join(dir, "f.txt"), "base\n");
+      git(["add", "f.txt"], dir);
+      git(["commit", "-qm", "chore: base"], dir);
+      git(["branch", "-q", "-M", "main"], dir);
+      git(["checkout", "-q", "-b", "topic"], dir);
+      writeFileSync(join(dir, "f.txt"), "topic\n");
+      git(["add", "f.txt"], dir);
+      git(["commit", "-qm", subject], dir);
+      return dir;
+    };
+    const merged = (name, subject) => {
+      const dir = build(name, subject);
+      git(["checkout", "-q", "main"], dir);
+      git(["merge", "-q", "--no-ff", "topic", "-m", `Merge topic into main`], dir);
+      return dir;
+    };
+    const linear = build("linear", "feat(core)!: rename a wire field");
+    const cleanMerge = merged("merge-clean", "fix(core): a harmless fix");
+    const breakingMerge = merged("merge-breaking", "feat(core)!: rename a wire field");
+    const parentsOf = (dir) => git(["rev-list", "--parents", "-n", "1", "HEAD"], dir).stdout.trim().split(/\s+/).length - 1;
+    const runIn = (dir, args) => spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { cwd: dir, encoding: "utf8" });
+    const saysIn = (dir, args, needle, code = 2) => {
+      const r = runIn(dir, args);
+      return r.status === code && (r.stderr ?? "").includes(needle);
+    };
+
+    // The probe first, for the same reason the shallow block probes before it asserts: every cell
+    // below is a claim about a parent count, and an unproven probe makes all of them decoration.
+    cell("the parent probe DISCRIMINATES: 1 on a branch head, 2 on a merge commit",
+      parentsOf(linear) === 1 && parentsOf(cleanMerge) === 2,
+      { linear: parentsOf(linear), merge: parentsOf(cleanMerge) });
+
+    cell("EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      saysIn(linear, ["--merge-snapshot"], "needs a two-parent merge commit"));
+    // GRADED ON A TWO-PARENT REPOSITORY ON PURPOSE. On a single-parent checkout the parent check
+    // fires first and also exits 2, so this cell would pass with the combination refusal deleted:
+    // that exact mutant survived once already. Here the parent check cannot fire, so only the
+    // refusal this cell names can produce the sentence it reads.
+    cell("EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
+      saysIn(breakingMerge, ["--merge-snapshot", "--range", "HEAD~1..HEAD"], "cannot be combined with --base or --range"));
+    cell("…and with --base, the other way to name a second range",
+      saysIn(breakingMerge, ["--merge-snapshot", "--base", "HEAD^1"], "cannot be combined with --base or --range"));
+
+    // A FLAG THAT IS SILENTLY DROPPED IS A GATE THAT GREENS ON A TYPO. Measured on a real
+    // two-parent checkout: `--merge-snapshot --range` with no value, `--base` with no value, and
+    // any unknown flag all graded anyway and exited 0, because the parser read an option's value
+    // by looking one slot to the right and never checked that the slot held one, nor that it had
+    // read every argument it was given. The well-formed combination refused correctly, which is
+    // why this went unnoticed: the shapes that were tested were the shapes that worked.
+    cell("EXIT 2 when --range is given no value: a dropped argument is misuse, not a pass",
+      saysIn(breakingMerge, ["--merge-snapshot", "--range"], "expects a value"));
+    cell("…the same for --base", saysIn(breakingMerge, ["--base"], "expects a value"));
+    cell("EXIT 2 on an UNKNOWN flag: an argument this tool does not understand is never ignored",
+      saysIn(breakingMerge, ["--merge-snapshot", "--typo"], "unknown argument"));
+
+    // THE PAIR THAT MAKES THE REFUSALS MEAN SOMETHING. Without these two, "refuses a single-parent
+    // checkout" and "refuses everything" are the same measurement.
+    cell("ACCEPT CONTROL: --merge-snapshot GRADES a real two-parent merge and exits 0",
+      runIn(cleanMerge, ["--merge-snapshot"]).status === 0);
+    cell("REFUSE CONTROL: …and exits 1 when that merge carries an undocumented breaking commit",
+      runIn(breakingMerge, ["--merge-snapshot"]).status === 1);
+    rmSync(tmp, { recursive: true, force: true });
+  }
   // THESE TWO CELLS NEED REAL RELEASE HISTORY, AND A SUITE MUST NOT RED FOR A REASON THAT IS NOT
   // A DEFECT. In a shallow checkout the commits behind these tags are absent, so the CLI answers
   // 2 (nothing was graded) and an assertion of 1 or 0 fails while the tool is behaving exactly as
@@ -408,7 +481,7 @@ if (process.argv.includes("--self-test")) {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  const EXPECTED = 41;
+  const EXPECTED = 48;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
@@ -455,10 +528,43 @@ if (RUN_AS_CLI) {
 
 function main() {
   const argv = process.argv.slice(2);
-  const flag = (name) => {
-    const i = argv.indexOf(`--${name}`);
-    return i === -1 ? undefined : argv[i + 1];
-  };
+  // A GATE THAT GREENS ON A TYPO IS THE DECORATION THIS TOOL EXISTS TO REMOVE, and this parser
+  // was that gate. It read an option's value by looking ONE SLOT TO THE RIGHT and never asked
+  // whether the slot held one, nor whether every argument it was handed had been understood.
+  // Measured on a real two-parent checkout: `--merge-snapshot --range` with no value, `--base`
+  // with no value, and `--merge-snapshot --typo` ALL GRADED ANYWAY AND EXITED 0. A value-less
+  // `--range` read `undefined`, which is falsy, so the "cannot be combined" refusal never fired
+  // and the tool proceeded on the merge snapshot as though nothing had been asked of it.
+  //
+  // It went unnoticed because the shapes anyone tested were the shapes that worked: the
+  // WELL-FORMED combination refuses correctly, and a control built from it reports the property
+  // as settled. The failure lives entirely in the malformed forms, which is where a typo lives.
+  // So: every argument must be recognised, and every option that takes a value must be given one.
+  const OPTIONS_WITH_VALUES = new Set(["--base", "--range"]);
+  const BARE_FLAGS = new Set(["--merge-snapshot", "--self-test"]);
+  const values = new Map();
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (OPTIONS_WITH_VALUES.has(arg)) {
+      const value = argv[i + 1];
+      // A following argument that is itself an option is a MISSING value, not a value. Without
+      // this, `--base --merge-snapshot` would quietly grade the range `--merge-snapshot..HEAD`.
+      if (value === undefined || value.startsWith("--")) {
+        console.error(`upgrade-section-gate: ${arg} expects a value, and none was given.`);
+        console.error("Nothing was graded. This is a MISUSE exit (2), not a pass and not a refusal.");
+        process.exit(2);
+      }
+      values.set(arg, value);
+      i += 1;
+      continue;
+    }
+    if (BARE_FLAGS.has(arg)) continue;
+    console.error(`upgrade-section-gate: unknown argument \`${arg}\`.`);
+    console.error("Nothing was graded. This is a MISUSE exit (2), not a pass and not a refusal.");
+    console.error("usage: node scripts/upgrade-section-gate.mjs --base <ref> | --range <a..b> | --merge-snapshot | --self-test");
+    process.exit(2);
+  }
+  const flag = (name) => values.get(`--${name}`);
   // EVERY git read here swallows stderr, and that is a deliberate single policy rather than a
   // convenience. Two shapes of git failure reach this tool and neither should print git's own
   // words: a path absent from an old tree is an ORDINARY answer (the page did not exist yet), and
