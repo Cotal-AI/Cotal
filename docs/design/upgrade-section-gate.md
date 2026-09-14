@@ -91,8 +91,8 @@ real merge ref: `pull_request` grades and exits 0, while `push` and `schedule` e
 **A shallow checkout grades less than a full one, and says so.** The smoke suite runs
 `--self-test`, which in a depth-1 clone reports the two cells that need real release history as
 UNGRADED and exits 0. That is a degrade rather than a false pass: the same run prints the count and
-the reason. The grading path is the `unit` job, which checks out with `fetch-depth: 0`. Pointing the
-gate at a range inside a shallow clone is a misuse exit, never a pass.
+the reason. The grading path is the `attribution` job, which checks out with `fetch-depth: 0`.
+Pointing the gate at a range inside a shallow clone is a misuse exit, never a pass.
 
 ## Would it have caught the change that caused #1578?
 
@@ -165,9 +165,10 @@ directions are held.
 
 ## Open questions for review
 
-1. RESOLVED, and the resolution is in this change. The gate runs on every PR, in the `unit` job,
-   over the range the merge snapshot itself defines. Self-testing alone was decoration: it grades
-   two fixed historical ranges, so the change being merged was examined by nothing.
+1. RESOLVED, and the resolution is in this change. The gate runs on every PR, as a step of the
+   `attribution` job, over the range the merge snapshot itself defines. Self-testing alone was
+   decoration: it grades two fixed historical ranges, so the change being merged was examined by
+   nothing.
 
    The range must come from ONE object. An earlier revision of this step took its base from
    `github.event.pull_request.base.sha` and its head from the checked-out merge commit. Those are

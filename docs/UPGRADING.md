@@ -338,11 +338,11 @@ no cut and no backup inside it, so the window is the stop, the install and the r
 operator must do, in what order, or what stops working, is not finished until the section exists.
 `scripts/upgrade-section-gate.mjs` grades a commit range for this: run it as
 `pnpm upgrade-section-gate --base <ref>` and it reds when the range carries a breaking change and
-adds no new release section. CI runs its self-test and, in the `unit` job, grades each pull
-request's own range as `HEAD^1..HEAD` over the merge snapshot it checked out. That check is not in
-the branch protection rule set, where `attribution` is currently the only required context, so a red
-gate reports the problem without blocking the merge, and a maintainer reading a terminal-green
-rollup before merging is the enforcement that exists. Be precise about what the check proves either
+adds no new release section. CI runs its self-test and, as a step of the `attribution` job, grades
+each pull request's own range as `HEAD^1..HEAD` over the merge snapshot it checked out. That job is
+the only context in the branch protection rule set, so a red gate FAILS A REQUIRED CHECK AND BLOCKS
+THE MERGE. The section is not optional and a reviewer cannot wave it through without an
+administrator overriding branch protection. Be precise about what the check proves either
 way, because one trusted past its evidence is worse than none. It proves a section for a release
 **was written here**. It cannot prove the section is **correct**, or that it describes the break
 that actually landed, and it cannot see a breaking change that carries no marker at all. Reviewing
