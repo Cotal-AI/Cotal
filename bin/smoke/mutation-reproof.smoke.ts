@@ -568,9 +568,11 @@ try {
     }
     // A PUSH that lands several commits and ends on a merge commit. The first-parent rule is correct
     // for a pull request and WRONG here: on a push the whole pushed range is the change, so taking
-    // HEAD^1 would discard `github.event.before` and diff only the merge itself. Measured on main,
-    // where `allow_merge_commit` is on: replaying real push heads, an ungated rule loses `glama.json`
-    // at 934f2ca8a, and `plugin.json` and `skills/cotal-mesh/SKILL.md` at d956e5782.
+    // HEAD^1 would discard `github.event.before` and diff only the merge itself, dropping every other
+    // commit the push landed. `allow_merge_commit` is on for main, so this shape is reachable. How much
+    // an ungated rule would lose depends on how many commits the push carried, which is
+    // `event.before` and is not recoverable from history after the fact, so this cell constructs the
+    // shape rather than citing a count from a past push.
     {
       const { root, baseTip, topic } = prMergeRepo(1);
       // `event.before` is where main was before the push: one commit behind the merged-in tip, so the
@@ -594,6 +596,23 @@ try {
         "the same merge head resolves differently by event, which is what makes the gate load-bearing",
         asPr.status === 0 && asPr.sha === git(root, ["rev-parse", "HEAD^1"]) && asPr.sha !== pushed.sha,
         JSON.stringify({ asPush: pushed.sha, asPr: asPr.sha }),
+      );
+      // `pull_request_target` is NOT treated as a pull request, and this cell is why. GitHub runs it
+      // with GITHUB_SHA at the last commit on the DEFAULT BRANCH, "rather than in the context of the
+      // merge commit, as the pull_request event does", and its payload is a `pull_request` payload,
+      // which has no `before`, so the workflow's BASE expression hands this script an empty string.
+      // On a repository whose default branch tip is a merge (this one), that checkout DOES have a
+      // second parent, but it belongs to somebody else's merged pull request, so the first-parent
+      // rule would resolve to main-before-that-unrelated-merge and select that pull request's
+      // fixtures while exiting 0. Deleting only the arm reaches the same wrong commit by the
+      // empty-base `HEAD~1` fallback. Neither spelling can find this pull request's base, because
+      // its head is not in the checkout at all, so the only honest answer is to refuse.
+      const asPrTarget = resolveBase(root, "", "HEAD", "pull_request_target");
+      check(
+        "pull_request_target is refused rather than resolved from a checkout that lacks the pull request",
+        asPrTarget.status === 2 && asPrTarget.out.includes("UNMEASURED")
+          && asPrTarget.out.includes("pull_request_target") && asPrTarget.sha === "",
+        JSON.stringify({ status: asPrTarget.status, out: asPrTarget.out }),
       );
     }
 

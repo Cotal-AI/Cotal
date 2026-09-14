@@ -14,7 +14,7 @@
     {
       "name": "the event base is used unchanged, as it was before the fix",
       "file": "scripts/mutation-reproof-base.sh",
-      "find": "if [ \"$event\" = pull_request ] || [ \"$event\" = pull_request_target ]; then\n  second=\"$(git rev-parse --verify --quiet \"${head}^2\" 2>/dev/null || true)\"\nfi",
+      "find": "if [ \"$event\" = pull_request ]; then\n  second=\"$(git rev-parse --verify --quiet \"${head}^2\" 2>/dev/null || true)\"\nfi",
       "replace": "if false; then\n  second=\"$(git rev-parse --verify --quiet \"${head}^2\" 2>/dev/null || true)\"\nfi",
       "expectRed": "a branch behind its base selects only the paths its own diff touches",
       "cell": "a branch behind its base selects only the paths its own diff touches"
@@ -46,7 +46,7 @@
     {
       "name": "the first-parent rule is applied on every event, not only on a pull request",
       "file": "scripts/mutation-reproof-base.sh",
-      "find": "if [ \"$event\" = pull_request ] || [ \"$event\" = pull_request_target ]; then",
+      "find": "if [ \"$event\" = pull_request ]; then",
       "replace": "if true; then",
       "expectRed": "a push landing several commits onto a merge head keeps its whole pushed range",
       "cell": "a push landing several commits onto a merge head keeps its whole pushed range"
@@ -90,6 +90,14 @@
       "replace": "  if [ -z \"$base\" ]; then",
       "expectRed": "an absent base still falls back to the first parent and says so",
       "cell": "an absent base still falls back to the first parent and says so"
+    },
+    {
+      "name": "pull_request_target is admitted again, resolving a base from a checkout that lacks the pull request",
+      "file": "scripts/mutation-reproof-base.sh",
+      "find": "  pull_request|push|schedule|workflow_dispatch) ;;",
+      "replace": "  pull_request|pull_request_target|push|schedule|workflow_dispatch) ;;",
+      "expectRed": "pull_request_target is refused rather than resolved from a checkout that lacks the pull request",
+      "cell": "pull_request_target is refused rather than resolved from a checkout that lacks the pull request"
     }
   ]
 }

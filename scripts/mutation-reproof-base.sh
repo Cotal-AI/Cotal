@@ -27,12 +27,16 @@
 # it is already an ancestor. A first push or a missing base falls back to the first parent.
 #
 # THE FIRST-PARENT RULE IS GATED ON THE EVENT, and it must be: a merge head is not exclusive to pull
-# requests. `allow_merge_commit` is on, main carries 28 merge commits since 2026-09-06, and a push
-# that lands several commits and ends on one would otherwise discard `event.before` and diff only the
-# merge itself. Replaying real push heads, an ungated rule loses `glama.json` at 934f2ca8a, and
-# `bin/package.json`, `implementations/cli/package.json`, `plugin.json` and `skills/cotal-mesh/SKILL.md`
-# at d956e5782. Those were direct-to-main commits that no pull request run ever proved, so the loss is
-# coverage nothing else replaces. On a push the whole pushed range is the change, merge head or not.
+# requests. `allow_merge_commit` is on, main carries 28 merge commits since 2026-09-06, and six real
+# push-triggered runs of this workflow had a two-parent head (34001974040, 33991120039, 33985829621,
+# 33981431625, 33979071588, 33972300304). A push landing on a merge is therefore a shape that really
+# occurs. On a push the whole pushed range is the change, merge head or not: taking HEAD^1 there would
+# discard `event.before` and diff only the merge itself, dropping every commit the push also landed.
+# Direct-to-main commits are exactly the ones no pull request run ever proved, so that loss is coverage
+# nothing else replaces. How much a given push would lose depends on `event.before`, which is not
+# recoverable from history after the fact, so no such count is quoted here. Consecutive run heads do
+# NOT bound one push, because a commit marked [skip ci] produces no run at all. The push cell in the
+# smoke suite pins the behaviour by construction instead.
 #
 # An unresolvable base FAILS LOUD. A shallow checkout returns an empty merge base, which is
 # indistinguishable from "no common ancestor"; diffing against nothing selects zero fixtures and the
@@ -51,14 +55,34 @@ die() {
 
 # An unknown event is refused rather than guessed at. Guessing here picks the wrong base silently,
 # which is the entire defect this script exists to remove.
+#
+# `pull_request_target` is deliberately NOT listed, and that is a correction: an earlier revision of
+# this script named it beside `pull_request` on the assumption that a fork pull request checks out a
+# merge ref the same way. It does not. GitHub documents `pull_request_target` as running with
+# GITHUB_SHA at the last commit on the DEFAULT BRANCH, "rather than in the context of the merge
+# commit, as the pull_request event does", and it carries a `pull_request` payload, which has no
+# `before` field, so the workflow's BASE expression yields an empty string on it.
+#
+# Measured consequence of listing it, on a repository whose default branch tip is a merge (this one:
+# `allow_merge_commit` is on and main carries 28 merge commits since 2026-09-06). The checkout is
+# main's tip, so `HEAD^2` exists and belongs to somebody else's merged pull request. The first-parent
+# rule then resolves to main-before-that-unrelated-merge and selects THAT pull request's fixtures,
+# exiting 0 and saying nothing. Dropping only the arm does not help either: the empty-base fallback
+# takes `HEAD~1`, which on a merge is the same commit, so it reaches the identical wrong answer.
+# Both spellings are silently wrong; there is no base for "this pull request" to be found in that
+# checkout at all, because the pull request's head is not in it.
+#
+# So the event is refused. If this workflow ever adds a `pull_request_target` trigger, the selector
+# stops loudly and whoever adds it must decide what base it means, rather than inheriting an answer
+# derived from a premise that was never true. That refusal is the behaviour a cell pins below.
 case "$event" in
-  pull_request|pull_request_target|push|schedule|workflow_dispatch) ;;
+  pull_request|push|schedule|workflow_dispatch) ;;
   "") die "no event name given; pass github.event_name as the first argument" ;;
   *) die "unknown event '$event'; this selector must not guess which base an unrecognised event implies" ;;
 esac
 
 second=""
-if [ "$event" = pull_request ] || [ "$event" = pull_request_target ]; then
+if [ "$event" = pull_request ]; then
   second="$(git rev-parse --verify --quiet "${head}^2" 2>/dev/null || true)"
 fi
 if [ -n "$second" ]; then
