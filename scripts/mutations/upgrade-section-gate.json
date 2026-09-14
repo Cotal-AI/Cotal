@@ -257,6 +257,24 @@
       "cell": "the required attribution job installs the gate's declared YAML dependency before grading",
       "expectRed": "the required attribution job installs the gate's declared YAML dependency before grading",
       "note": "Once the gate adopted the release toolchain's YAML parser, the required job failed before printing a verdict because it still installed no dependencies. Removing this step must red by name before another import can silently turn the required gate into a could-not-run result."
+    },
+    {
+      "name": "M28 malformed front-matter boundaries stop refusing: a changeset with no closing delimiter is read as 'no major packages' instead of being rejected",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (!m) throw new Error(\"changeset is missing or has invalid front matter delimiters\");",
+      "replace": "  if (!m) return [];",
+      "expectRed": "CHANGESETS AGREEMENT E2E: missing closing delimiter",
+      "cell": "CHANGESETS AGREEMENT E2E: missing closing delimiter",
+      "note": "Added to close the reviewer's one blocker: the agreement cell read well and graded nothing. The shipped fixture's only parser mutant changes major-VALUE selection, which cannot move a cell whose subject is boundary REJECTION. This mutant turns the throw into a clean empty result, so malformed input becomes exit 0 'no breaking commits DETECTED' where the installed @changesets/parse rejects it and the cell expects misuse exit 2. That is the fail-OPEN direction and the one worth guarding: a changeset the real parser refuses would otherwise pass this gate silently."
+    },
+    {
+      "name": "M29 the empty-front-matter disposition inverts: a changeset with an empty YAML mapping is rejected as malformed instead of carrying no major bump",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (parsed === null) return [];",
+      "replace": "  if (parsed === null) throw new Error(\"changeset front matter must be a YAML mapping of package names to bump levels\");",
+      "expectRed": "CHANGESETS AGREEMENT E2E: empty frontmatter block",
+      "cell": "CHANGESETS AGREEMENT E2E: empty frontmatter block",
+      "note": "Added to close the reviewer's one blocker. `---\\n---` parses to null, which the installed @changesets/parse ACCEPTS as a changeset with no releases, so the cell expects exit 0. Throwing instead makes the gate refuse valid input as misuse exit 2. This is the fail-CLOSED twin of M28 and it grades the opposite arm of the same branch, so the pair covers both dispositions of the boundary parse rather than only the permissive one."
     }
   ]
 }
