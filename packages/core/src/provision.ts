@@ -1240,6 +1240,14 @@ export function permissionsFor(
       `$JS.API.CONSUMER.CREATE.${MEMKV}.>`,
       `$JS.API.CONSUMER.INFO.${MEMKV}.>`,
       `$JS.API.CONSUMER.DELETE.${MEMKV}.>`,
+      // Delivery lease/readiness: READ-ONLY (STREAM.INFO + kv.get), the same pair the `agent` arm
+      // below already carries for its non-gating `cotal_channels` health surface. A read-only
+      // DIAGNOSTIC profile needs this axis for the same reason an agent does, and more: without it
+      // an operator-facing surface can only report the daemon's PROCESS, which is green while the
+      // responder is unbound (#1576). No `$KV.${deliveryBucket(space)}` publish — the lease has
+      // exactly one writer, the `delivery` cred, and that is unchanged here.
+      `$JS.API.STREAM.INFO.${DLVKV}`,
+      `$JS.API.STREAM.MSG.GET.${DLVKV}`,
       "$JS.FC.>", // ordered-consumer flow control
     ];
     if (profile === "admin") {

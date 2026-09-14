@@ -9,10 +9,11 @@ import {
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
-import { selfArgv } from "./self-exec.js";
+import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
+import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
  *  minted a space-scoped cred and binds that space's durables, so a root-scoped record gave one root
@@ -159,8 +160,14 @@ export function startDeliveryDetached(o: Opts = {}): number {
  *  while an old Plane-3-hosting manager is live (the preflight should have stopped it) so the daemon
  *  never double-binds. Mints a SCOPED `delivery` cred from the local signer ONCE, writes it to
  *  `.cotal/delivery.creds` (0600), and launches the daemon WITHOUT signer access. Best-effort — callers
- *  treat it as non-fatal (a missing daemon degrades durable delivery, never live). */
-export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean }> {
+ *  treat it as non-fatal (a missing daemon degrades durable delivery, never live).
+ *
+ *  RETURNS TWO FACTS, NOT ONE (#1576). `running` is about the PROCESS; `responderBound` is about the
+ *  `ctl.delivery` responder, which is what spawn, retirement and join actually require. They are not
+ *  the same question, and collapsing them into one boolean is how a mesh came to report healthy for
+ *  22 hours while none of those three operations could complete. `responderBound` is false when the
+ *  readiness wait elapsed without the lease flipping ready, and absent when no daemon applies. */
+export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean; responderBound?: boolean }> {
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
   const space = o.space ?? folderSpace();
   if (oldHostingManagerVerdict(probe, space) === "stop-it") {
@@ -226,8 +233,27 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
         `NEXT: read that log; if no other daemon is running, wait for the stale lease to expire and re-run.`,
     );
   if (!ready)
-    console.error("• delivery daemon not yet ready (responder not bound) - boot durable joins will reconcile when it is");
-  return { running: true };
+    // #1576. THIS USED TO PRINT A PROMISE AND RETURN SUCCESS, and that combination is the defect.
+    // The promise was true — `reconcileBootJoin` really does retry with capped backoff and really
+    // does establish the memberships once a daemon binds — but it was the ONLY thing said, at info
+    // level, once, and it described the RECOVERY rather than the state. A reporter's fleet then ran
+    // 22 hours in exactly this condition: `cotal up` alive, systemctl green, and spawn, retirement
+    // and join all failing, with nothing anywhere naming the responder.
+    //
+    // So the line now names the CONSEQUENCE first (what does not work while this holds), then the
+    // recovery, and it says the wait is open-ended rather than implying it has been handled. The
+    // reconcile keeps its sentence because an operator who respawns agents over this loses live
+    // sessions for nothing — the daemon re-mints and the agents rejoin on their own.
+    console.error(
+      `! delivery daemon started but its responder is NOT BOUND yet (the shard-0 lease has not flipped ready) - ${RESPONDER_UNBOUND_CONSEQUENCE}.\n` +
+        `  This does not time out on its own: the boot durable joins retry with backoff and WILL reconcile when the responder binds, however long that takes, and agents rejoin WITHOUT being respawned.\n` +
+        `  Check it with \`${displayCmd()} status --components\` (delivery row) and read ${canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space))} for the daemon's own reason.`,
+    );
+  // The caller hears WHICH of the two states it got. `running` still means "a daemon process is
+  // there" (unchanged for every existing caller), but a caller that needs the responder — anything
+  // that is about to spawn, retire or join — can now ask instead of assuming, which it could not do
+  // when this returned a bare `running: true` over an admittedly unbound responder.
+  return { running: true, responderBound: ready };
 }
 
 /** Stop the detached delivery daemon if we started one, and drop its creds from the store. The pid
@@ -324,12 +350,17 @@ export async function stopDelivery(
  *  marker). The manager no longer depends on the daemon (it hosts no Plane-3), so the daemon is started
  *  first only to close the old-manager double-bind window and so freshly-spawned agents find the
  *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only). */
-export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean }> {
+export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean; responderBound?: boolean }> {
   // One space for all three steps. The preflight used to resolve its own from the cwd while the two
   // ensures took `o.space`; with per-space records that would preflight one tenant's manager and then
   // start another's.
   const space = o.space ?? folderSpace();
   await stopOldHostingManagerIfPresent(probeLiveness, undefined, space);
-  await ensureDelivery({ ...o, space });
-  return ensureManager({ ...o, space });
+  // The delivery answer is CARRIED, not discarded (#1576). This used to drop `ensureDelivery`'s
+  // result on the floor and return only the manager's, so `cotal up` had no way to say that the
+  // dependency every spawn/retirement/join needs had not come up — the boot line inside
+  // `ensureDelivery` was the only trace, and it read as a progress note.
+  const delivery = await ensureDelivery({ ...o, space });
+  const manager = await ensureManager({ ...o, space });
+  return { ...manager, responderBound: delivery.responderBound };
 }

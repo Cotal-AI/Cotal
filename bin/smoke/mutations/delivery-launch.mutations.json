@@ -43,12 +43,12 @@
     {
       "name": "M1 the delivery launcher re-derives the transport from the broker policy instead of taking the caller's decision (#836)",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "    await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });",
-      "replace": "    void tlsRequired;\n    await ensureControlPlane({ space, server, tls: readBrokerPolicy(cotalRoot())?.transport.kind === \"tls-required\", ...(mgr ?? {}) });",
+      "find": "    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });",
+      "replace": "    void tlsRequired;\n    const plane = await ensureControlPlane({ space, server, tls: readBrokerPolicy(cotalRoot())?.transport.kind === \"tls-required\", ...(mgr ?? {}) });",
       "expectRed": "GATE FAILED (S11/#836): refresh relaunched delivery WITHOUT --tls against a TLS-required broker",
       "note": "The exact shape that shipped: the caller's decision present and unused, the callee consulting a SECOND durable record. A root that records tlsRequired in the mesh registry without a broker-policy file - which is what the S11 route builds, and what a refresh of an adopted mesh looks like - then launches the daemon flagless. `void tlsRequired` keeps the parameter used so the mutant compiles; a mutation that cannot build grades the compiler, not the suite.",
       "command": "pnpm build > /dev/null && pnpm smoke:up-tls-routes",
-      "completionMarker": "── route outcomes ──",
+      "completionMarker": "\u2500\u2500 route outcomes \u2500\u2500",
       "afterRestore": "pnpm build > /dev/null"
     },
     {

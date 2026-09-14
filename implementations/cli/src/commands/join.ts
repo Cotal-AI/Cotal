@@ -38,8 +38,16 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
     return true;
   }
   if (/authoriz|permission|not authorized/i.test(msg)) {
+    // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
+    // unexpired creds spent days pursuing that hypothesis. A durable join is authorized by the
+    // delivery daemon off the ACL row, so when its responder is not bound the broker denies the
+    // consumer the join needs and the failure surfaces here as a permission error — indistinguishable
+    // from a genuinely bad credential unless this sentence says so. Credentials remain the first
+    // cause because they usually are; the daemon is now named as the second rather than left out.
     console.error(
-      c.red(`not authorized to join ${space}'s channels - pass --creds/--token, or ask the mesh operator for a join link.`),
+      c.red(`not authorized to join ${space}'s channels.\n`) +
+        c.red(`  - if your credentials are wrong or missing: pass --creds/--token, or ask the mesh operator for a join link.\n`) +
+        c.red(`  - if they are valid: the space's DELIVERY DAEMON may not have its responder bound, which denies durable joins with this same message. Ask the operator to check \`cotal status --components\` (delivery row); a join needs it bound.`),
     );
     return true;
   }

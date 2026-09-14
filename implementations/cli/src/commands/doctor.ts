@@ -29,6 +29,7 @@ import {
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
+import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { c } from "../ui.js";
 
 export const doctorFlags = [
@@ -45,6 +46,10 @@ interface CredReport {
   /** A finding that must block `healthy`, with its exact repair. */
   problem?: string;
   repair?: string;
+  /** An expired incarnation file whose alias HAS a live successor on disk (#1576). Rendered, and
+   *  given a cleanup, but deliberately NOT a `problem`: it is a leftover file, not a broken agent,
+   *  and counting it as one is what reported a healthy fleet as 15 failures. */
+  superseded?: boolean;
 }
 
 /** `cotal doctor auth` — the ONE stale-credential repair surface (D5 slice 6). Read-only diagnosis
@@ -123,22 +128,149 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   // must never let `auth: healthy` / exit 0 stand (the whole point of the renewal-honesty slice).
   const rec = readRenewalRecord(root);
   const adoptionRefused = rec?.adoption?.ok === false;
+  // Superseded leftovers are reported but never block `healthy` (#1576). An operator whose fleet is
+  // fine must be told so in one word; the leftovers are a tidy-up, and burying that in an `auth: 15
+  // cred problems` line is what sent one operator toward respawning 18 working agents.
+  //
+  // REPORTED ON BOTH PATHS, and that is not symmetry for its own sake. During the reported incident
+  // there WERE genuine problems alongside the 15 husks, so a note printed only on the healthy path
+  // would have been absent exactly when the operator needed it — and the one thing they must not
+  // conclude, while reading real failures, is that the husks are more of the same.
+  const superseded = reports.filter((r) => r.superseded);
+  const leftovers = superseded.length
+    ? ` (${superseded.length} superseded credential file${superseded.length === 1 ? "" : "s"} left on disk from earlier incarnations - safe to delete, the agents using their successors are unaffected)`
+    : "";
   if (!problems.length && !adoptionRefused) {
-    console.log(c.green("\nauth: healthy"));
+    console.log(c.green("\nauth: healthy") + c.dim(leftovers));
+    if (superseded.length) printSuperseded(superseded);
     return;
   }
   const parts: string[] = [];
   if (problems.length) parts.push(`${problems.length} cred problem${problems.length === 1 ? "" : "s"}`);
   if (adoptionRefused) parts.push("last renewal not broker-accepted");
-  console.log(c.red(`\nauth: ${parts.join(", ")}`));
+  console.log(c.red(`\nauth: ${parts.join(", ")}`) + c.dim(leftovers));
   for (const p of problems) console.log(`  ${c.red("✗")} ${p.label}: ${p.problem}\n    next: ${p.repair}`);
   if (adoptionRefused)
     console.log(`  ${c.red("✗")} the last renewal pass was refused by the broker: ${rec?.adoption?.error ?? "unknown"}\n    next: start or repair the mesh's manager (the renewal owner) so it re-signs and re-proves the daemon creds`);
+  if (superseded.length) printSuperseded(superseded);
   process.exitCode = 1;
+}
+
+/** The superseded leftovers, with their cleanup, rendered BELOW the verdict on both paths (#1576).
+ *
+ *  Each one repeats "not a broken agent" and its own cleanup rather than sharing one footnote,
+ *  because the failure mode being designed against is an operator scanning a long list during an
+ *  incident and acting per row. A single note at the top of 15 rows is a note that gets skipped, and
+ *  the action it would have prevented destroys live sessions. */
+function printSuperseded(reports: CredReport[]): void {
+  console.log(c.dim(`  ${reports.length} superseded credential file${reports.length === 1 ? "" : "s"} (not a broken agent - the live successor of each is listed above):`));
+  for (const r of reports) console.log(c.dim(`    ⊖ ${r.label}\n      next: ${r.repair}`));
 }
 
 function isRemintable(kind: CredentialKind): boolean {
   return kind === "delivery" || kind === "membership-rw";
+}
+
+/** One agent credential file's place in its alias's family (#1576).
+ *
+ *  `current`     — the newest incarnation of this alias on disk: the one a live agent is using.
+ *  `superseded`  — an OLDER incarnation of an alias that HAS a newer one. The successor's existence
+ *                  is the proof: incarnation files are `<alias>.<lifecycleUid>.creds` and a new
+ *                  lifecycle only ever appears because a new incarnation was provisioned.
+ *  `sole`        — a standing (`<alias>.creds`) file, or the only incarnation of its alias. Nothing
+ *                  supersedes it, so an expiry here is a real finding. */
+type AgentFileRole = "current" | "superseded" | "sole";
+
+interface LivePresence {
+  role: AgentFileRole;
+}
+
+/** THE REMEDY SPLIT (#1576 ask 2).
+ *
+ *  The old text was one sentence for every agent credential: "respawn the agent - its old cred is
+ *  dead by design". It is correct for exactly one of the three cases below and DESTRUCTIVE for the
+ *  other two. A reporter was shown it for 15 credentials during an outage; following it would have
+ *  destroyed 18 live agent sessions, each holding working context, to fix a state the manager's own
+ *  renewal pass repaired by itself thirty minutes later.
+ *
+ *  WHAT THE MANAGER ACTUALLY DOES, which is what makes the distinction real rather than softer
+ *  wording: its renewal pass walks its managed agents and re-signs any whose credential is expired
+ *  or near expiry for the SAME nkey, and the agent adopts the new file through its own source
+ *  re-read. It explicitly does NOT renew an `unbounded` or `unreadable` credential. So:
+ *    - an EXPIRED current incarnation is re-minted by a running manager: start it, do not respawn;
+ *    - an UNBOUNDED/UNREADABLE one genuinely cannot be renewed: respawn is the honest answer;
+ *    - a SUPERSEDED incarnation belongs to no live agent at all: it is a leftover FILE, and the
+ *      repair is to delete it, never to touch the running agent that replaced it. */
+function agentRepair(path: string, live?: LivePresence): string {
+  if (live?.role === "superseded")
+    return `nothing is wrong with this agent - this file is a SUPERSEDED incarnation left on disk after a re-mint, and its live successor is listed above. Delete it when convenient (\`rm ${path}\`). DO NOT respawn the agent.`;
+  return `if the mesh's manager is running it RE-MINTS this credential by itself (it is the renewal owner for managed agents; start it with \`${displayCmd()} up\` and the agent adopts the new file without being restarted). Respawn only if the manager cannot: \`${displayCmd()} spawn\``;
+}
+
+/** The repair for a credential no renewal pass can rescue — the one case where respawning is right.
+ *  An `unbounded` credential predates the renewal slice and an `unreadable` one cannot be parsed to
+ *  re-sign; the manager skips both by name, so promising a re-mint here would be a false hope. */
+function agentUnrenewableRepair(): string {
+  return `respawn the agent (\`${displayCmd()} spawn\`) - this credential cannot be re-minted from disk (the manager's renewal pass skips unbounded/unreadable material), so its old cred is dead by design`;
+}
+
+/** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a
+ *  broken fleet (#1576 ask 3).
+ *
+ *  PURELY ON-DISK, AND DELIBERATELY SO. `doctor auth` is the OFFLINE credential surface: it resolves
+ *  no mesh, opens no connection and, on a user-auth mesh, is forbidden to mint at all. The filename
+ *  grammar already carries the answer — `agentIncarnationBase` writes `<alias>.<lifecycleUid>` and
+ *  refuses `.` inside a standing alias, so the two families are structurally disjoint and an alias's
+ *  incarnations are enumerable without asking anyone. Ordering is by issued-at (`iat`), which is the
+ *  credential's own claim rather than a filesystem timestamp a copy would destroy. */
+function classifyAgentFamilies(reports: CredReport[]): Map<string, AgentFileRole> {
+  const byAlias = new Map<string, CredReport[]>();
+  for (const r of reports) {
+    if (r.kind !== "agent" || !r.health) continue;
+    const alias = aliasOf(r.label);
+    const family = byAlias.get(alias);
+    if (family) family.push(r);
+    else byAlias.set(alias, [r]);
+  }
+  const roles = new Map<string, AgentFileRole>();
+  for (const [, family] of byAlias) {
+    const incarnations = family.filter((r) => incarnationUidOf(r.label) !== undefined);
+    // A single file (standing or lone incarnation) is nobody's predecessor: leave it a real finding.
+    if (incarnations.length < 2) {
+      for (const r of family) roles.set(r.label, "sole");
+      continue;
+    }
+    // Newest `iat` wins. A file with no readable `iat` cannot be ordered, so it is never promoted to
+    // `current` and never demoted to `superseded` — an unorderable file keeps its own verdict rather
+    // than being explained away by a neighbour.
+    let newest: CredReport | undefined;
+    for (const r of incarnations) {
+      if (r.health?.iat === undefined) continue;
+      if (newest?.health?.iat === undefined || r.health.iat > newest.health.iat) newest = r;
+    }
+    for (const r of family) {
+      if (r === newest) roles.set(r.label, "current");
+      else if (newest && incarnationUidOf(r.label) !== undefined && r.health?.iat !== undefined) roles.set(r.label, "superseded");
+      else roles.set(r.label, "sole");
+    }
+  }
+  return roles;
+}
+
+/** The lifecycle uid of an incarnation filename, or undefined for a standing `<alias>.creds`. The
+ *  grammar is the one `agentIncarnationBase` writes: a 26-32 char lowercase-alphanumeric token. */
+function incarnationUidOf(label: string): string | undefined {
+  const base = label.replace(/\.sentinel\.creds$|\.actor-token$|\.creds$/, "");
+  const m = /^(.+)\.([a-z0-9]{26,32})$/.exec(base);
+  return m ? m[2] : undefined;
+}
+
+/** The agent ALIAS a credential filename belongs to — the part before the lifecycle uid, or the
+ *  whole base for a standing file. Two incarnations of one agent share this; two agents never do. */
+function aliasOf(label: string): string {
+  const base = label.replace(/\.sentinel\.creds$|\.actor-token$|\.creds$/, "");
+  const m = /^(.+)\.([a-z0-9]{26,32})$/.exec(base);
+  return m ? m[1] : base;
 }
 
 /** Inspect every managed credential file for this folder. Missing files are noted (with how they
@@ -172,10 +304,17 @@ function inventory(root: string, space: string, sysPub?: string): CredReport[] {
       reports.push(report(basename(f), "agent", join(agentDir, f)));
     }
   }
-  return reports;
+  // SECOND PASS over the agent files (#1576). Supersession is a property of an alias's FAMILY, not of
+  // a file, so it cannot be decided while the files are still being read one at a time — which is
+  // exactly why the old single pass reported 15 leftovers as a broken fleet. Now each family is
+  // classified once every member is known, and the affected rows are re-derived with that role.
+  const roles = classifyAgentFamilies(reports);
+  return reports.map((r) =>
+    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }) : r,
+  );
 }
 
-function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LivePresence): CredReport {
   if (!existsSync(path)) return { label, kind, path };
   const creds = readFileSync(path, "utf8");
   const health = inspectCredHealth(creds);
@@ -185,7 +324,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   const repair = isRemintable(kind)
     ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
-      ? `respawn the agent (\`${displayCmd()} spawn\`) - its old cred is dead by design`
+      ? agentRepair(path, live)
         // The $SYS pair. A plain `down` + `up` does NOT touch these: `up` mints them only on the
         // branch that CREATES the trust record, so re-upping an existing space reuses the same
         // expired files and reports success. The rotation must be asked for.
@@ -205,9 +344,22 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   switch (health.state) {
     case "unreadable":
       r.problem = `unreadable credential file (${health.error})`;
-      r.repair = repair;
+      // Unreadable material cannot be re-signed, so the honest agent remedy here is the respawn
+      // the old code gave to every case — this is the ONE case it fitted.
+      r.repair = kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : repair;
       break;
     case "expired":
+      // #1576 ASK 3. A SUPERSEDED incarnation is expected to be expired — that is what supersession
+      // MEANS: the daemon re-minted the alias, the successor is live and listed, and this file is the
+      // husk of the incarnation it replaced. Reporting it as "EXPIRED - the broker denies this
+      // credential" is true of the FILE and false about the FLEET, and it is what made a healthy
+      // 30-agent deployment read as 15 broken agents. It stays visible as a superseded leftover with
+      // a cleanup, but it is no longer a problem, so it no longer poisons the exit code.
+      if (live?.role === "superseded") {
+        r.superseded = true;
+        r.repair = agentRepair(path, live);
+        break;
+      }
       r.problem = "EXPIRED - the broker denies this credential";
       r.repair = repair;
       break;
@@ -241,12 +393,17 @@ function render(title: string, reports: CredReport[]): void {
     const h = r.health;
     const lastRenewal = h.iat ? c.dim(` · last renewal ${at(h.iat)}`) : "";
     const expiry = h.exp ? c.dim(` · expires ${at(h.exp)}`) : "";
-    const badge =
-      h.state === "healthy" ? c.green("● healthy")
+    // A superseded incarnation is dim and NAMED, never red (#1576): its expiry is the expected
+    // consequence of the re-mint that replaced it, and an operator scanning red rows during an
+    // incident must not be sent to destroy the live agent that succeeded it.
+    const badge = r.superseded
+      ? c.dim("⊖ superseded")
+      : h.state === "healthy" ? c.green("● healthy")
       : h.state === "near-expiry" ? c.yellow("◐ near-expiry")
       : h.state === "unbounded" ? (r.problem ? c.red("∞ unbounded") : c.dim("∞ static (dies at the flip)"))
       : c.red(`✗ ${h.state}`);
-    console.log(`    ${badge}  ${r.label}${lastRenewal}${expiry}`);
+    const note = r.superseded ? c.dim(` · replaced by a newer incarnation of "${aliasOf(r.label)}" - leftover file, not a broken agent`) : "";
+    console.log(`    ${badge}  ${r.label}${lastRenewal}${expiry}${note}`);
   }
 }
 
@@ -283,6 +440,28 @@ function renderRenewalRecord(root: string): void {
       : c.yellow(`renewal not accepted - ${rec.adoption.error ?? "unknown"}${perComponent}`);
   console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} - re-signed [${resigned.join(", ") || "none"}] · ${adoption}`);
   for (const f of failed) console.log(`    ${c.red("✗")} last pass failed on ${f.file}: ${f.error}`);
+  // #1576: NAME THE DELIVERY RESPONDER, OFFLINE. `doctor auth` resolves no mesh and opens no
+  // connection by design (and on a user-auth mesh it is forbidden to mint at all), so it cannot read
+  // the delivery lease that `cotal status` reads. It does not have to: when the manager's renewal
+  // pass finds no responder on the delivery-admin rail it RECORDS that, in this file, which doctor
+  // already reads. That record was being rendered only as a generic "renewal not accepted", so the
+  // one surface an operator reaches for when credentials look wrong never said the word "delivery"
+  // — and in the reported incident credentials were exactly what the operator wrongly suspected.
+  if (responderUnboundAtLastRenewal(rec.adoption?.error))
+    console.log(
+      `    ${c.red("✗")} the delivery daemon's responder was NOT BOUND at that pass - ${RESPONDER_UNBOUND_CONSEQUENCE}\n` +
+        `      next: start it (\`${displayCmd()} up\`) and confirm with \`${displayCmd()} status --components\`. Expired agent creds above are re-minted once it binds - do NOT respawn agents for this.`,
+    );
+}
+
+/** Did the last renewal pass fail because the delivery-admin rail had NO RESPONDER (#1576)?
+ *
+ *  Matched on the manager's own recorded sentence for that case. A TIMEOUT is deliberately excluded:
+ *  a hung rail is a bound responder that did not answer in time, which is a different fault with a
+ *  different repair, and the daemon-side helper that classifies this rail draws the same line. */
+function responderUnboundAtLastRenewal(error?: string): boolean {
+  if (!error || /timeout/i.test(error)) return false;
+  return /no delivery-admin responder|no responders/i.test(error);
 }
 
 function at(sec?: number): string {
