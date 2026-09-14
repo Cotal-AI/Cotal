@@ -151,6 +151,15 @@ function inIPv6Prefix(hextets, prefix, bits) {
   return true;
 }
 
+// A candidate can absorb a delimiting colon, as in a remote copy target where the address is
+// followed by a colon and a path. One trailing colon is dropped so the address behind it is
+// classified, which is what the IPv4 class already does for the same spelling. A token ending in
+// a compressed run keeps both colons, since there the second colon is part of the address.
+function ipv6CandidateBody(token) {
+  if (token.endsWith('::') || !token.endsWith(':')) return token;
+  return token.slice(0, -1);
+}
+
 export function isPublicIPv6(value) {
   if (!isIPv6(value)) return false;
   const hextets = ipv6ToHextets(value);
@@ -305,8 +314,9 @@ export function findings(text, where, hostTokens) {
 
     IPV6_CANDIDATE.lastIndex = 0;
     for (const match of lineText.matchAll(IPV6_CANDIDATE)) {
-      const cidrNotation = IPV6_CIDR_SUFFIX.test(lineText.slice(match.index + match[0].length));
-      if (!cidrNotation && isPublicIPv6(match[0])) {
+      const body = ipv6CandidateBody(match[0]);
+      const cidrNotation = IPV6_CIDR_SUFFIX.test(lineText.slice(match.index + body.length));
+      if (!cidrNotation && isPublicIPv6(body)) {
         add('public-ipv6', lineIndex + 1, match.index + 1);
       }
     }
@@ -541,7 +551,7 @@ function shapeIPv6Count(text) {
   let count = 0;
   IPV6_CANDIDATE.lastIndex = 0;
   for (const match of String(text).matchAll(IPV6_CANDIDATE)) {
-    if (isIPv6(match[0])) count += 1;
+    if (isIPv6(ipv6CandidateBody(match[0]))) count += 1;
   }
   return count;
 }
@@ -565,6 +575,8 @@ const SELFTEST_TEREDO_IPV6 = ['2001', '0', '', '1'].join(':');
 const SELFTEST_6TO4_IPV6 = ['2002', 'c000', '204', '', '1'].join(':');
 const SELFTEST_DOC2_IPV6 = ['3fff', '0', '', '1'].join(':');
 const SELFTEST_AS112_IPV6 = ['2620', '4f', '8000', '', '1'].join(':');
+const SELFTEST_IPV6_SCP = `scp user@${['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':')}:/srv/data`;
+const SELFTEST_IPV6_TRAILING_RUN = ['2a01', '4f8', '1c17', 'd00d', '', ''].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
 
@@ -596,6 +608,8 @@ const CELL_EXPECTATIONS = new Map([
   ['ipv6-6to4', 'primary=0/1 secondary=1/1'],
   ['ipv6-documentation-3fff', 'primary=0/1 secondary=1/1'],
   ['ipv6-globally-reachable-special-use', 'primary=1/1 secondary=1/1'],
+  ['ipv6-remote-copy-target', 'primary=1/1 secondary=1/1'],
+  ['ipv6-trailing-compressed-run', 'primary=1/1 secondary=1/1'],
   ['ipv6-documentation-network', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local', 'primary=0/1 secondary=1/1'],
   ['ipv6-unique-local-network', 'primary=0/1 secondary=1/1'],
@@ -909,6 +923,12 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL ipv6-globally-reachable-special-use START
   matchCell('ipv6-globally-reachable-special-use', SELFTEST_AS112_IPV6, 'public-ipv6', 1, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-globally-reachable-special-use END
+  // SELFTEST_CELL ipv6-remote-copy-target START
+  matchCell('ipv6-remote-copy-target', SELFTEST_IPV6_SCP, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-remote-copy-target END
+  // SELFTEST_CELL ipv6-trailing-compressed-run START
+  matchCell('ipv6-trailing-compressed-run', `net ${SELFTEST_IPV6_TRAILING_RUN} here`, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-trailing-compressed-run END
   // SELFTEST_CELL ipv6-unique-local START
   matchCell('ipv6-unique-local', SELFTEST_UNIQUE_LOCAL_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
   // SELFTEST_CELL ipv6-unique-local END
