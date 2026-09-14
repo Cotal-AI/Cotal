@@ -27,7 +27,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { parsePid, probeLiveness } from "@cotal-ai/workspace";
 
 /**
@@ -82,6 +82,64 @@ export function cotalRootCaptor(start: string): string | null {
   const lex = resolve(start);
   const phys = physical(start);
   return walkUp(lex) ?? (phys === lex ? null : walkUp(phys));
+}
+
+/**
+ * Refuse a recursive delete whose target is not a STRICT child of the root it was minted under,
+ * and return the canonical path that passed.
+ *
+ * A cleanup with no containment check deletes whatever it is handed, so any defect UPSTREAM of it —
+ * a mutant, an ordinary bug, a caller passing the wrong variable — stops being a failed test and
+ * becomes an arbitrary recursive delete. Measured: a mint that returned `candidate + "/.."` made
+ * its own teardown delete the PARENT of its mkdtemp, and where `tmpdir()` is `/tmp` that removed an
+ * orchestrator relay socket and fourteen seats' control sockets before aborting on a root-owned
+ * `EPERM`. The lesson is not "do not write that bug"; it is that the delete must not be willing.
+ *
+ * CANONICAL, NOT LEXICAL, for the same reason {@link makeScratch} canonicalizes at mint time: a
+ * lexical prefix compare is satisfied by a symlink pointing anywhere, and a `..` segment only
+ * resolves away physically. STRICT, because deleting the root itself IS the incident, so equal-to
+ * is a refusal and not a pass.
+ *
+ * THROWS rather than declining. A leaked scratch is recoverable and a wrong delete is not, so a
+ * cleanup that cannot PROVE containment must fail its suite rather than quietly skip and let the
+ * caller believe it tidied up.
+ */
+export function assertContainedIn(target: string, root: string, what = "delete target"): string {
+  const r = physical(root);
+  // A target we cannot canonicalize is unprovable, not clean — the same fail-closed rule `physical`
+  // states for ancestry. Re-thrown in the language of the delete, because `physical`'s own message
+  // is about `.cotal` ancestors and would send the reader to the wrong defect.
+  let t: string;
+  try {
+    t = physical(target);
+  } catch (e) {
+    throw new Error(
+      `refusing to recursively delete ${what} ${target}: its physical path could not be established ` +
+        `(${(e as Error).message}), so containment under ${r} is unproven`,
+      { cause: e },
+    );
+  }
+  if (t === r)
+    throw new Error(
+      `refusing to recursively delete ${what} ${t}: it IS the root ${r} rather than something inside ` +
+        `it — a containment check that accepts the root would permit the very delete it exists to stop`,
+    );
+  if (!t.startsWith(r.endsWith(sep) ? r : r + sep))
+    throw new Error(
+      `refusing to recursively delete ${what} ${t}: it resolves OUTSIDE its root ${r}` +
+        (resolve(target) === t ? "" : ` (given as ${target})`) +
+        ` — a cleanup may only remove what it minted`,
+    );
+  return t;
+}
+
+/**
+ * `rmSync(target, { recursive: true, force: true })`, but only after {@link assertContainedIn}
+ * proves `target` is a strict child of `root`. Every recursive delete of a minted directory should
+ * go through this rather than calling `rmSync` directly.
+ */
+export function removeContained(target: string, root: string, what = "scratch"): void {
+  rmSync(assertContainedIn(target, root, what), { recursive: true, force: true });
 }
 
 /**
@@ -141,7 +199,7 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
       // is. Resolve it once, here, and every later comparison is against the same string.
       scratch = realpathSync.native(made);
     } catch (e) {
-      rmSync(made, { recursive: true, force: true });
+      removeContained(made, base, "uncanonicalizable scratch");
       tried.push(`${base} (created but not canonicalizable, removed: ${(e as Error).message})`);
       continue;
     }
