@@ -410,6 +410,14 @@
       "replace": "    return true;",
       "expectRed": "a build: script that emits no dist is not the build",
       "cell": "a build: script that emits no dist is not the build"
+    },
+    {
+      "name": "a scalar binding resolves by name instead of by scope",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const initializer = declaredIn(scope, node.text);",
+      "replace": "        const initializer = declaredIn(sf, node.text);",
+      "expectRed": "a same-named scalar in another scope cannot witness an entrypoint launch",
+      "cell": "a same-named scalar in another scope cannot witness an entrypoint launch"
     }
   ]
 }

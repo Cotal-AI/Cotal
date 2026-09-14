@@ -186,6 +186,25 @@ try {
     'function decoy() { const args = [ENTRY]; return args; }\n' +
     'function real(args) { spawnSync(process.execPath, args); }\n' +
     'real([join(ROOT, "scripts", "direct.mjs")]); decoy();\n');
+  // B2 scope, the SCALAR twin. Fixing the name collision for the argv ARRAY while leaving it for
+  // the scalar the array holds only moves the hole, so the scalar gets its own pair. The launch
+  // really runs direct.mjs; an unrelated function binds a same-named ENTRY to the declared
+  // entrypoint. Truth: refuse.
+  write("bin/smoke/scalar-decoy.smoke.ts",
+    'function real() {\n' +
+    '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'real();\n' +
+    'function decoy() { const ENTRY = join(import.meta.dirname, "..", "entry.ts"); return ENTRY; }\n');
+  // The accepting twin, differing in ONE fact: the launch's own scalar names the entrypoint. If a
+  // scope-aware lookup ever stops resolving a use to its OWN declaration, this cell is what reds.
+  write("bin/smoke/scalar-own-scope.smoke.ts",
+    'function real() {\n' +
+    '  const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'real();\n');
   // B1/B2 refuse: the entry is in the argv, after `-e`. Node runs the eval program and never opens
   // the file. Once through a bound name, once spelled inline: the slot rule is not about spelling.
   write("bin/smoke/eval-then-entry.smoke.ts",
@@ -645,6 +664,17 @@ try {
   config("scoped-entry-decoy", { suite: ["bin/smoke/scoped-entry-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("scoped-entry-decoy");
   check("a same-named argv array in another scope cannot witness an entrypoint launch", refusedForReach("scoped-entry-decoy", result), report(result));
+
+  // The SCALAR twin of the cell above. These two differ only in the name of the decoy's binding,
+  // so a verdict that flips between them is about scope and nothing else. A lookup by identifier
+  // text grades the first, because an unrelated function's `ENTRY` stands in for the launch's own.
+  config("scalar-decoy", { suite: ["bin/smoke/scalar-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scalar-decoy");
+  check("a same-named scalar in another scope cannot witness an entrypoint launch", refusedForReach("scalar-decoy", result), report(result));
+
+  config("scalar-own-scope", { suite: ["bin/smoke/scalar-own-scope.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scalar-own-scope");
+  check("a scalar declared in the launch's own scope still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
 
   // B1 slot. A path sitting in argv AFTER `-e` is an argument to the evaluated program, and node
   // never opens it. Both spellings, because the slot rule is not about how the argv was written.

@@ -88,12 +88,38 @@ const namedAliases = (source, fromSpec, originals) => {
 const pathEval = (suite, source, env = new Map()) => {
   const sf = ast(suite, source);
   const joiners = namedAliases(source, "path", JOINERS);
-  const variables = new Map();
+  // A scalar binding is resolved at the USE SITE, by walking outward to the nearest enclosing
+  // scope that declares the name. A flat name->value map is not a binding: a same-named `ENTRY`
+  // in an unrelated function would stand in for the one the launcher actually passes, which
+  // asserts a data-flow fact the program does not have. That is the #1586 class, and fixing it
+  // for an argv ARRAY while leaving it for the SCALAR the array holds only moves the hole.
+  const scopeOf = (node) => {
+    for (let s = node; s !== undefined; s = s.parent) {
+      if (ts.isFunctionDeclaration(s) || ts.isFunctionExpression(s) || ts.isArrowFunction(s)
+        || ts.isMethodDeclaration(s) || ts.isClassDeclaration(s) || ts.isSourceFile(s)) return s;
+    }
+    return sf;
+  };
+  // Declarations that are in scope for a use, nearest first. A scan stops at a nested function
+  // rather than descending into it, so a sibling scope's binding is never visible.
+  const declaredIn = (scope, name) => {
+    let found;
+    const scan = (node) => {
+      if (found !== undefined) return;
+      if (node !== scope && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+        || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isClassDeclaration(node))) return;
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name
+        && node.initializer) found = node.initializer;
+      ts.forEachChild(node, scan);
+    };
+    scan(scope);
+    return found;
+  };
   // The repository root, and ONLY where the program actually computes it. An identifier's spelling
   // is not evidence of its value: `const root = mkdtempSync(...)` is a temp directory, and reading
   // it as the repo root invents a data-flow fact that does not exist. A name-shaped root was the
   // exact class #1434 is about, so nothing here looks at identifier text. A binding reaches this
-  // value only by evaluating to it, through the `variables` map.
+  // value only by evaluating to it, through its declaration.
   const rootish = (node) => {
     if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === "process.cwd") return true;
     if (ts.isPropertyAccessExpression(node)) {
@@ -107,7 +133,14 @@ const pathEval = (suite, source, env = new Map()) => {
     if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
     const literal = stringValue(node);
     if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) return variables.get(node.text);
+    if (ts.isIdentifier(node)) {
+      for (let scope = scopeOf(node); scope !== undefined; scope = scope.parent && scopeOf(scope.parent)) {
+        const initializer = declaredIn(scope, node.text);
+        if (initializer !== undefined) return initializer === node.parent ? undefined : evalPath(initializer);
+        if (ts.isSourceFile(scope)) break;
+      }
+      return undefined;
+    }
     if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
       if (node.name.text === "dirname") return dirname(resolve(suite));
       if (node.name.text === "url") return resolve(suite);
@@ -144,14 +177,6 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     return undefined;
   };
-  const walk = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const value = evalPath(node.initializer);
-      if (value !== undefined) variables.set(node.name.text, value);
-    }
-    ts.forEachChild(node, walk);
-  };
-  walk(sf);
   return { sf, evalPath };
 };
 
