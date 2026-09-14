@@ -593,6 +593,14 @@ const readerIdentity = (factoryName, cellId, args) => {
   if (!arg) return `opaque@${cellId}`;
   if (ts.isIdentifier(arg)) return arg.text;
   if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) return `inline@${cellId}`;
+  // A PARENTHESIZED identifier, `(shapeIPv4Count)`, is deliberately NOT unwrapped, though it does
+  // denote the same function object and unwrapping it would be sound. Unwrapping is a rule about
+  // which expressions may be PEELED before classification, and the wrapper defect was exactly a
+  // rule of that kind applied one step too far. No cell in the scanner is written that way (grep
+  // count 0 at this commit), so unwrapping would buy nothing and would reopen the question of what
+  // else deserves peeling. The cost of refusing is bounded and loud: such a cell reports UNCOVERED
+  // and someone adds a case or deletes the parentheses. The cost of peeling wrongly is silent
+  // inherited coverage. When the two errors are not symmetric, take the one that shouts.
   return `opaque@${cellId}`;
 };
 
