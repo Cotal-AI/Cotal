@@ -890,56 +890,26 @@ const entryPackages = (entry) => {
 };
 
 const normalizedPath = (value) => resolve(value).replaceAll("\\", "/");
+/**
+ * Does this suite LAUNCH the declared entrypoint, in the slot the child actually executes?
+ *
+ * This asked a weaker question: whether the declared path appeared ANYWHERE in a launcher's argv,
+ * with the argv identifier resolved through a flat name->value map. Three facts were asserted that
+ * the program does not have. A name is not a binding, so a same-named `args` in an unrelated
+ * function stood in for the launcher's own and witnessed a launch that never happens. An element is
+ * not the script slot, so a path sitting after `-e` counted as executed when node runs the eval
+ * program and never opens the file. A spelling is not an import, so any callee named `spawnProc`
+ * counted, including one imported from a local helper. A conditional argv resolved to `undefined`
+ * and crashed the walk, which surfaced as a config refused for a TypeError rather than a reason.
+ *
+ * `launchedPaths` already answers the real question, and answers it with evidence: bindings are
+ * resolved by walking outward to the nearest enclosing scope that declares the name, the executed
+ * slot is located by node's own flag rules, launcher aliases come from the child_process import,
+ * and dead code is excluded. An entrypoint is witnessed here when it is one of those paths.
+ */
 const spawnsEntrypoint = (suite, entry, source) => {
-  const variables = new Map();
   const target = normalizedPath(entry);
-  const evalPath = (node) => {
-    if (!node) return undefined;
-    const literal = stringValue(node);
-    if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) return variables.get(node.text);
-    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
-      if (node.name.text === "dirname") return dirname(resolve(suite));
-      if (node.name.text === "url") return resolve(suite);
-    }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const parts = node.arguments.map(evalPath);
-      if (parts.some((part) => part === undefined)) return undefined;
-      if (node.expression.text === "dirname" && parts.length === 1) return dirname(parts[0]);
-      if (node.expression.text === "join" || node.expression.text === "resolve") return resolve(...parts);
-      if (node.expression.text === "fileURLToPath" && parts.length === 1) return parts[0];
-    }
-    return undefined;
-  };
-  const entryArray = (node) => {
-    if (ts.isIdentifier(node)) node = variables.get(node.text);
-    if (!ts.isArrayLiteralExpression(node)) return false;
-    return node.elements.some((element) => {
-      const value = evalPath(element);
-      return value !== undefined && normalizedPath(value) === target;
-    });
-  };
-  const executableIsNode = (node) => {
-    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
-      && node.expression.text === "process" && node.name.text === "execPath") return true;
-    const value = evalPath(node);
-    return value !== undefined && /(?:^|\/)tsx(?:\.cmd)?$/.test(value.replaceAll("\\", "/"));
-  };
-  let witnessed = false;
-  const visit = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      variables.set(node.name.text, ts.isArrayLiteralExpression(node.initializer) ? node.initializer : evalPath(node.initializer));
-    }
-    if (ts.isCallExpression(node)) {
-      const callee = ts.isIdentifier(node.expression) ? node.expression.text
-        : ts.isPropertyAccessExpression(node.expression) ? `${node.expression.expression.getText()}.${node.expression.name.text}` : "";
-      if (["spawn", "spawnSync", "spawnProc", "pty.spawn"].includes(callee)
-        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(ast(suite, source));
-  return witnessed;
+  return launchedPaths(suite, source).some((path) => normalizedPath(path) === target);
 };
 
 const packageName = (file) => {

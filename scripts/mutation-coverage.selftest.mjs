@@ -154,6 +154,55 @@ try {
   write("bin/smoke/args-variable.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
     'const ARGS = [ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  // The `executes` witness, one fixture per branch that admits a launch and one per branch that
+  // must not. Each refusing fixture differs from its accepting twin only in the fact under test,
+  // so a verdict that flips between the pair is about that fact and nothing else.
+  //
+  // B3 accept: a conditional argv, each branch a real argument list for THIS call.
+  write("bin/smoke/conditional-argv.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = process.env.X ? [ENTRY] : [ENTRY, "--flag"];\nspawnSync(process.execPath, ARGS);\n');
+  // B3 refuse: the same conditional, with the entry sitting after `-e` in both branches.
+  write("bin/smoke/conditional-eval-argv.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = process.env.X ? ["-e", "void 0", ENTRY] : ["-e", "void 1", ENTRY];\n' +
+    'spawnSync(process.execPath, ARGS);\n');
+  // B4 accept: the launcher is imported from child_process under another name.
+  write("bin/smoke/aliased-entry.smoke.ts",
+    'import { spawnSync as run } from "node:child_process";\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nrun(process.execPath, ARGS);\n');
+  // B4 refuse: a callee merely SPELLED like a launcher, imported from a local helper that is not
+  // child_process. The argument list is identical to the accepting twin above.
+  write("helpers/proc.mjs", "export const spawnProc = () => {};\n");
+  write("bin/smoke/foreign-launcher.smoke.ts",
+    'import { spawnProc } from "../../helpers/proc.mjs";\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nspawnProc(process.execPath, ARGS);\n');
+  // B2 refuse: the launcher's own argv is its PARAMETER, and the array that really runs is passed
+  // by the caller. An unrelated function binds a same-named `args` to the declared entrypoint.
+  write("bin/smoke/scoped-entry-decoy.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function decoy() { const args = [ENTRY]; return args; }\n' +
+    'function real(args) { spawnSync(process.execPath, args); }\n' +
+    'real([join(ROOT, "scripts", "direct.mjs")]); decoy();\n');
+  // B1/B2 refuse: the entry is in the argv, after `-e`. Node runs the eval program and never opens
+  // the file. Once through a bound name, once spelled inline: the slot rule is not about spelling.
+  write("bin/smoke/eval-then-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = ["-e", "void 0", ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  write("bin/smoke/eval-then-entry-inline.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync(process.execPath, ["-e", "void 0", ENTRY]);\n');
+  // B5 accept: the launch is inside a function, and something calls that function.
+  write("bin/smoke/called-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function launch() { spawnSync(process.execPath, [ENTRY]); }\nlaunch();\n');
+  // B5 refuse: the same launch, in a function nobody ever calls.
+  write("bin/smoke/uncalled-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function never() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'console.log("never is never called");\n');
   write("bin/comment-entry.ts", '// import "@cotal-ai/seat";\n');
   write("bin/smoke/comment-import.smoke.ts",
     'const ENTRY = join(import.meta.dirname, "..", "comment-entry.ts");\n' +
@@ -579,6 +628,66 @@ try {
   config("args-variable", { suite: ["bin/smoke/args-variable.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("args-variable");
   check("a genuine subprocess argument array is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The `executes` witness, branch by branch. Every accepting branch below is paired with a
+  // refusing cell whose fixture differs only in the fact under test, because a suite of accepts
+  // cannot tell a witness apart from a rule that says yes to everything.
+  //
+  // Each refusal is anchored on the REASON the validator prints, not merely on a non-zero exit. A
+  // config that crashes the resolver also exits non-zero, and grading that as a refusal is how a
+  // cell reports success over a tool that fell over.
+  const refusedForReach = (name, result) => result.status !== 0
+    && new RegExp(`REFUSED ${name}`).test(result.stderr)
+    && /nor reaches through a declared subprocess entrypoint/.test(result.stderr);
+
+  // B2 scope. The launcher's argv is its own parameter; a same-named `args` elsewhere in the file
+  // is bound to the declared entrypoint. Resolving by NAME reports a launch the program never makes.
+  config("scoped-entry-decoy", { suite: ["bin/smoke/scoped-entry-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scoped-entry-decoy");
+  check("a same-named argv array in another scope cannot witness an entrypoint launch", refusedForReach("scoped-entry-decoy", result), report(result));
+
+  // B1 slot. A path sitting in argv AFTER `-e` is an argument to the evaluated program, and node
+  // never opens it. Both spellings, because the slot rule is not about how the argv was written.
+  for (const [name, suite] of [
+    ["eval-then-entry", "bin/smoke/eval-then-entry.smoke.ts"],
+    ["eval-then-entry-inline", "bin/smoke/eval-then-entry-inline.smoke.ts"],
+  ]) {
+    config(name, { suite: [suite], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`${name}: an entrypoint after -e is not a launched entrypoint`, refusedForReach(name, result), report(result));
+  }
+
+  // B3 conditional argv: each branch is a real argument list for this call, so the accepting form
+  // must grade, and the same conditional with every branch behind `-e` must be refused BY REASON.
+  // The refusing half is the cell that catches the crash: an argv this resolver could not reduce to
+  // an array reached an array-literal test as `undefined` and threw, which reads as a refusal from
+  // the outside while naming a TypeError instead of a reachability fact.
+  config("conditional-argv", { suite: ["bin/smoke/conditional-argv.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("conditional-argv");
+  check("a conditional argv still witnesses the entrypoint it launches", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("conditional-eval-argv", { suite: ["bin/smoke/conditional-eval-argv.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("conditional-eval-argv");
+  check("a conditional argv whose every branch runs -e is refused with a reason, not a crash", refusedForReach("conditional-eval-argv", result), report(result));
+
+  // B4 launcher identity: an alias imported from child_process is a launcher, and a callee merely
+  // SPELLED like one, imported from a local module, is not.
+  config("aliased-entry", { suite: ["bin/smoke/aliased-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("aliased-entry");
+  check("an aliased child_process launcher still witnesses the entrypoint", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("foreign-launcher", { suite: ["bin/smoke/foreign-launcher.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("foreign-launcher");
+  check("a callee merely spelled like a launcher is not one", refusedForReach("foreign-launcher", result), report(result));
+
+  // B5 reachability: a launch runs only if control reaches it.
+  config("called-entry", { suite: ["bin/smoke/called-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("called-entry");
+  check("an entrypoint launched from a function that is called is witnessed", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("uncalled-entry", { suite: ["bin/smoke/uncalled-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("uncalled-entry");
+  check("an entrypoint launch inside a function nobody calls is refused", refusedForReach("uncalled-entry", result), report(result));
 
   config("equals-filter", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: equalsSeatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("equals-filter");

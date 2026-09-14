@@ -174,8 +174,8 @@
     {
       "name": "non-Node executables count as source entrypoint launches",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;",
-      "replace": "        && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;",
+      "find": "      if (command && isNodeExecutable(evalPath, command) && argv) {",
+      "replace": "      if (command && argv) {",
       "expectRed": "wrong-executable cannot fabricate executes evidence",
       "cell": "wrong-executable cannot fabricate executes evidence"
     },
