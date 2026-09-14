@@ -62,8 +62,8 @@
     {
       "name": "bound entry names are ignored",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (value !== undefined) variables.set(node.name.text, value);",
-      "replace": "      if (value !== undefined) variables.set(node.name.text, \"\");",
+      "find": "        if (initializer !== undefined) return initializer === node.parent ? undefined : evalPath(initializer);",
+      "replace": "        if (initializer !== undefined) return initializer === node.parent ? undefined : \"\";",
       "expectRed": "a target bound to a const before the launcher call still witnesses it",
       "cell": "a target bound to a const before the launcher call still witnesses it"
     },
@@ -414,8 +414,8 @@
     {
       "name": "a scalar binding resolves by name instead of by scope",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        const initializer = declaredIn(scope, node.text);",
-      "replace": "        const initializer = declaredIn(sf, node.text);",
+      "find": "      for (let scope = scopeOf(node); scope !== undefined; scope = scope.parent && scopeOf(scope.parent)) {\n        const initializer = declaredIn(scope, node.text);\n        if (initializer !== undefined) return initializer === node.parent ? undefined : evalPath(initializer);\n        if (ts.isSourceFile(scope)) break;\n      }\n      return undefined;",
+      "replace": "      let flat;\n      const flatScan = (n) => {\n        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === node.text && n.initializer) flat = n.initializer;\n        ts.forEachChild(n, flatScan);\n      };\n      flatScan(sf);\n      return flat === undefined || flat === node.parent ? undefined : evalPath(flat);",
       "expectRed": "a same-named scalar in another scope cannot witness an entrypoint launch",
       "cell": "a same-named scalar in another scope cannot witness an entrypoint launch"
     }
