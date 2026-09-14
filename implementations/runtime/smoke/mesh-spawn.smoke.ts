@@ -70,11 +70,17 @@ import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMi
 // Read from core SOURCE, not the package dist: the grant builder is pure, and a source import is
 // what makes the two placement mutants below grade the code under review rather than a stale build.
 import { runMediatorGrants, PLACEMENT_COMMANDS } from "../../../packages/core/src/run-driver-grants.js";
+// Read from LANG SOURCE on purpose, like the core grant builder above: the identity contract under
+// review is the one in src, not whatever a stale dist was compiled from.
+import { PRIMITIVES } from "../../../packages/lang/src/primitives.js";
+import { spawnArgs } from "../src/mesh-handler.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshspawn";
 const EP = "manager";
 const MGR_IID = "m".repeat(26);
+/** #1616: a host-local cwd is only meaningful against a named instance. This is the suite manager. */
+const PLACE = { endpoint: EP, instanceId: MGR_IID } as const;
 const HOLDER = { id: "manager", lifecycleUid: "u_meshspawn" };
 const CALLER: EpCaller = { owner: "local", actor: "wf_meshspawn", uid: "a".repeat(26) };
 
@@ -408,7 +414,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   const T = token("p");
   const handler = mk("sp-3b");
   const firstCtx = stepCtx(T);
-  const first = await withDeadline(handler.spawn({ persona: "placed", cwd: preparedRoot }, firstCtx.ctx), 20_000, "the placed spawn");
+  const first = await withDeadline(handler.spawn({ persona: "placed", cwd: preparedRoot, placement: PLACE }, firstCtx.ctx), 20_000, "the placed spawn");
   const placed = placements.find((p) => p.goalId === T);
   c("the child process cwd is the prepared clone, distinct from the manager root",
     first !== undefined && placed !== undefined && realpathSync(placed.cwd) === realpathSync(preparedRoot)
@@ -419,7 +425,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     { placed: placed?.head, preparedHead, managerHead });
   const invokesBefore = spawnInvokes.length;
   const launchesBefore = placements.length;
-  const resumed = await withDeadline(handler.spawn({ persona: "placed", cwd: preparedRoot }, stepCtx(T, firstCtx.bound).ctx), 20_000, "the placed resume");
+  const resumed = await withDeadline(handler.spawn({ persona: "placed", cwd: preparedRoot, placement: PLACE }, stepCtx(T, firstCtx.bound).ctx), 20_000, "the placed resume");
   c("resume returns the same lifecycle without another submission or child process",
     resumed?.agent === first?.agent && spawnInvokes.length === invokesBefore && placements.length === launchesBefore,
     { first: first?.agent, resumed: resumed?.agent, invokes: spawnInvokes.length - invokesBefore, launches: placements.length - launchesBefore });
@@ -432,18 +438,67 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   const invokesBefore = spawnInvokes.length;
   const allocationsBefore = allocations.length;
   const launchesBefore = placements.length;
-  const malformed = await handler.spawn({ persona: "placed", cwd: "relative/writer" }, stepCtx(token("v")).ctx)
+  const malformed = await handler.spawn({ persona: "placed", cwd: "relative/writer", placement: PLACE }, stepCtx(token("v")).ctx)
     .then(() => undefined, (e: unknown) => e as EffectError);
   c("a malformed cwd is an explicit catchable refusal before manager submission",
     malformed instanceof EffectError && malformed.code === "L4000" && /absolute directory/.test(malformed.message), malformed?.message);
   const absent = join(sd, "does-not-exist");
-  const missing = await handler.spawn({ persona: "placed", cwd: absent }, stepCtx(token("x")).ctx)
+  const missing = await handler.spawn({ persona: "placed", cwd: absent, placement: PLACE }, stepCtx(token("x")).ctx)
     .then(() => undefined, (e: unknown) => e as EffectError);
   c("a missing cwd is explicitly refused by the serving manager",
     missing instanceof EffectError && missing.code === "L4000" && /not an existing directory/.test(missing.message), missing?.message);
   c("neither bad path leaves a fallback seat, partial allocation, or child",
     spawnInvokes.length === invokesBefore + 1 && allocations.length === allocationsBefore && placements.length === launchesBefore,
     { invokes: spawnInvokes.length - invokesBefore, allocations: allocations.length - allocationsBefore, launches: placements.length - launchesBefore });
+}
+
+// ── 3d) #1616 THE AFFINITY GATE: a host-local cwd needs an explicit, pinned target ────────────
+{
+  console.log("• 3d — a cwd with no target refuses; a placed spawn is pinned to the named instance");
+  const handler = mk("sp-3d");
+  const invokesBefore = spawnInvokes.length;
+  const allocationsBefore = allocations.length;
+  const launchesBefore = placements.length;
+  // ITEM 2. Killed by M18 "the affinity gate is disarmed": with the gate removed this request rides
+  // the class queue, is accepted, allocates and launches a child — so both halves of this cell fail.
+  const untargeted = await handler.spawn({ persona: "placed", cwd: preparedRoot }, stepCtx(token("g")).ctx)
+    .then(() => undefined, (e: unknown) => e as EffectError);
+  c("a cwd with no placement target refuses before any describe, allocation or child, with no anycast fallback",
+    untargeted instanceof EffectError && untargeted.code === "L4000"
+      && /no placement target/.test(untargeted.message)
+      && spawnInvokes.length === invokesBefore && allocations.length === allocationsBefore
+      && placements.length === launchesBefore,
+    { msg: untargeted?.message, invokes: spawnInvokes.length - invokesBefore,
+      allocations: allocations.length - allocationsBefore, launches: placements.length - launchesBefore });
+  // ITEM 3, dispatch half. Killed by M19 "pinned dispatch falls back to the class handle": with the
+  // instanceId dropped from the resolve, this WRONG instance id resolves through the class `one`
+  // queue that the real manager still answers, the spawn SUCCEEDS and a child launches.
+  const wrongBefore = placements.length;
+  const wrong = await withDeadline(
+    handler.spawn({ persona: "placed", cwd: preparedRoot, placement: { endpoint: EP, instanceId: "w".repeat(26) } },
+      stepCtx(token("w")).ctx).then(() => null, (x: unknown) => x as Error),
+    30_000, "the wrong-instance placed spawn");
+  c("a placed spawn pinned to a wrong instance refuses and never falls back to the class queue",
+    wrong !== null && wrong !== undefined && placements.length === wrongBefore,
+    { err: wrong === null ? "resolved" : String((wrong as Error)?.message ?? wrong).slice(0, 140),
+      launches: placements.length - wrongBefore });
+  // ITEM 3, identity half. Killed by M20 "the placement target leaves the step identity": unhashed,
+  // a replay that retargets another instance reuses the old resolution instead of diverging.
+  c("the placement target is hashed into the step identity beside cwd, so a retarget diverges",
+    PRIMITIVES.spawn.hashedOptions.includes("placement") && PRIMITIVES.spawn.hashedOptions.includes("cwd")
+      && PRIMITIVES.spawn.options.includes("placement"),
+    { hashed: PRIMITIVES.spawn.hashedOptions });
+  // ITEM 5. Killed by M10 "cwd alias normalization returns the caller's raw path": the claim the
+  // manager takes must key on the REALPATH, or two aliases of one clone each take their own.
+  const cReal = mkdtempSync(join(realpathSync(tmpdir()), "sp-claim-"));
+  const cLink = join(mkdtempSync(join(realpathSync(tmpdir()), "sp-clink-")), "clone");
+  execFileSync("ln", ["-s", cReal, cLink]);
+  c("the dispatched claim keys on the canonical realpath, so two aliases of one clone contend",
+    spawnArgs({ persona: "placed", cwd: cLink, placement: PLACE }).cwd === cReal
+      && spawnArgs({ persona: "placed", cwd: cReal, placement: PLACE }).cwd === cReal && cLink !== cReal,
+    { link: cLink, real: cReal, dispatched: spawnArgs({ persona: "placed", cwd: cLink, placement: PLACE }).cwd });
+  rmSync(cReal, { recursive: true, force: true });
+  rmSync(cLink, { force: true });
 }
 
 // ── 2) an idempotent resubmission is served, never re-allocated ───────────────────────────────
@@ -553,7 +608,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   const allocationsBeforeUnavailable = allocations.length;
   const placementsBeforeUnavailable = placements.length;
   const e = await withDeadline(
-    handler.spawn({ persona: "ghost", cwd: preparedRoot }, stepCtx(T2).ctx).then(() => null, (x: unknown) => x as Error),
+    handler.spawn({ persona: "ghost", cwd: preparedRoot, placement: PLACE }, stepCtx(T2).ctx).then(() => null, (x: unknown) => x as Error),
     40_000, "the no-trace spawn");
   c("an unavailable manager raises the invoke's own explicit failure for a cwd request",
     e !== null && e !== undefined && !(e instanceof EffectError), e === null ? "resolved" : e?.name);
@@ -836,7 +891,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 53;
+const EXPECTED_CELLS = 57;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
