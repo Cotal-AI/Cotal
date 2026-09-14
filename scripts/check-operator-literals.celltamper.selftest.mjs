@@ -532,6 +532,57 @@ const CASES = [
     find: "matchingFiles: HOST_TOKEN_FILE_CEILING + 1,",
     replace: "matchingFiles: 0,",
   },
+  // The four cells #1614 added to the scanner while this branch sat in review. They are INLINE
+  // object literals, so each carries its own reader and is a singleton class: no existing case can
+  // cover them, and the census reported all four as unaccounted the moment this branch was rebased.
+  {
+    cell: "sentence-final-period-ipv6",
+    reader: "the sentence-final IPv6 pair, both arms read from the planted array",
+    secondaryField: "secondary",
+    // Both arms read the SAME planted array, so the subject is destroyed once for both: a live
+    // pair reports 0/0 on clean text, and either arm hardwired to 10 still prints 10 and reds here.
+    find: "      const primary = SELFTEST_SENTENCE_IPV6.filter((text) => findings(text, 'fixture', [SELFTEST_HOST]).some((f) => f.rule === 'public-ipv6')).length;\n      const secondary = SELFTEST_SENTENCE_IPV6.filter((text) => shapeIPv6Count(text) === 1).length;",
+    replace: "      const primary = ['The broker is elsewhere.'].filter((text) => findings(text, 'fixture', [SELFTEST_HOST]).some((f) => f.rule === 'public-ipv6')).length;\n      const secondary = ['The broker is elsewhere.'].filter((text) => shapeIPv6Count(text) === 1).length;",
+  },
+  {
+    cell: "sentence-final-period-ipv4",
+    reader: "public-ipv4 findings over the planted sentence array",
+    secondaryField: "ipv4_rule",
+    find: "SELFTEST_SENTENCE_IPV4.filter((text) => findings(text, 'fixture', [SELFTEST_HOST]).some((f) => f.rule === 'public-ipv4')).length",
+    replace: "['The broker is elsewhere.'].filter((text) => findings(text, 'fixture', [SELFTEST_HOST]).some((f) => f.rule === 'public-ipv4')).length",
+  },
+  {
+    cell: "letter-adjacent-address",
+    reader: "public-ipv4 and public-ipv6 findings on letter-adjacent subjects",
+    secondaryField: "ipv6_rule",
+    // Both subjects are destroyed together for the same reason as the IPv6 pair above: the cell
+    // passes only when BOTH arms read 1, so leaving one arm planted would grade half the cell.
+    find: "      const ipv4 = findings(SELFTEST_LETTER_ADJACENT_IPV4, 'fixture', [SELFTEST_HOST])\n        .filter((finding) => finding.rule === 'public-ipv4').length;\n      const ipv6 = findings(SELFTEST_LETTER_ADJACENT_IPV6, 'fixture', [SELFTEST_HOST])\n        .filter((finding) => finding.rule === 'public-ipv6').length;",
+    replace: "      const ipv4 = findings('no address here', 'fixture', [SELFTEST_HOST])\n        .filter((finding) => finding.rule === 'public-ipv4').length;\n      const ipv6 = findings('no address here', 'fixture', [SELFTEST_HOST])\n        .filter((finding) => finding.rule === 'public-ipv6').length;",
+  },
+  {
+    // A REFUSAL CELL, and the reason this runner needed a second direction.
+    //
+    // Its baseline row is `name_tail=0/0`: it asserts that a path-tailed address is NOT reported.
+    // Destroying its subject leaves the field at 0, so the drive-to-zero kill every other case uses
+    // cannot discriminate here, and the baseline control above would red on a perfectly live cell.
+    // The exemption list cannot take it either: `validateUngraded` accepts only the claim "no
+    // gradable field in the baseline row" and this cell DOES emit one, so an entry for it is
+    // refused with `baseline reports name_tail=0`. Both of the usual doors are shut, which is what
+    // a zero-expectation cell does to a suite that only grades in one direction.
+    //
+    // So the subject is replaced with one the suite already PROVES is reported: the first element
+    // of the array `sentence-final-period-ipv4` measures at 10/10. A live `findings` reads it and
+    // the count rises above 0; a `findings` hollowed to return [] reports 0 both before and after
+    // and fails the kill. The anti-vacuity control is the inversion itself: a reader hardwired to 0
+    // fails the kill, and one hardwired to nonzero fails the baseline.
+    cell: "sentence-final-period-refuses-name",
+    reader: "findings on a path-tailed address, graded by planting a reportable one",
+    secondaryField: "name_tail",
+    refusal: true,
+    find: "findings(SELFTEST_SENTENCE_NAME_TAIL, 'fixture', [SELFTEST_HOST]).length",
+    replace: "findings(SELFTEST_SENTENCE_IPV4[0], 'fixture', [SELFTEST_HOST]).length",
+  },
 ];
 
 /**
@@ -1652,10 +1703,20 @@ try {
     // fails here too. This is the fixture's own subject applied to the fixture: an instrument that
     // only ever reports the value meaning "dead" cannot tell you anything is alive.
     const baselineSecondary = cellSecondary(copyRun.rows, cell, secondaryField);
+    // A REFUSAL CELL grades in the opposite direction: its baseline field is 0 BY DESIGN (it
+    // asserts something is not reported), so "prove the reader can report nonzero" is unavailable
+    // here and its kill plants a reportable subject instead of destroying one. The vacuity guard is
+    // the inversion itself, and it is tighter than the forward one: a reader hardwired to 0 passes
+    // this baseline and fails the kill, a reader hardwired to nonzero fails this baseline.
+    const refusal = testCase.refusal === true;
     check(
-      `${cell}: the ${secondaryField} reader reports a nonzero count before any tamper, so a later 0 is a reading`,
-      baselineSecondary !== undefined && Number(baselineSecondary) > 0,
-      `baseline ${secondaryField}=${baselineSecondary ?? "undefined"}/>0`,
+      refusal
+        ? `${cell}: the ${secondaryField} reader reports 0 before any tamper, so a later nonzero is a reading`
+        : `${cell}: the ${secondaryField} reader reports a nonzero count before any tamper, so a later 0 is a reading`,
+      refusal
+        ? baselineSecondary === "0"
+        : baselineSecondary !== undefined && Number(baselineSecondary) > 0,
+      `baseline ${secondaryField}=${baselineSecondary ?? "undefined"}/${refusal ? "0" : ">0"}`,
     );
 
     let tamperedSource;
@@ -1685,9 +1746,13 @@ try {
     // reports 1 and this check goes red. `undefined` is red too: a cell that stopped emitting a
     // readable row is not a cell that passed.
     check(
-      `${cell}: destroying the planted subject drives this cell's ${secondaryField} to 0, so its ${reader} still discriminates`,
-      secondary === "0",
-      `${secondaryField}=${secondary}/0`,
+      refusal
+        ? `${cell}: planting a reportable subject drives this cell's ${secondaryField} above 0, so its ${reader} still discriminates`
+        : `${cell}: destroying the planted subject drives this cell's ${secondaryField} to 0, so its ${reader} still discriminates`,
+      refusal
+        ? secondary !== undefined && Number(secondary) > 0
+        : secondary === "0",
+      `${secondaryField}=${secondary}/${refusal ? ">0" : "0"}`,
     );
 
     // And the cell must actually go red, so a working reader is not merely printing a number that
