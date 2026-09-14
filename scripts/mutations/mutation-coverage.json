@@ -302,7 +302,7 @@
     {
       "name": "an env assignment is a witness without anything reading it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers)) hit = true;",
+      "find": "        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers, evalPath)) hit = true;",
       "replace": "        if (under && (recursive || dirname(want) === base)) hit = true;",
       "expectRed": "a listing that only observes names is refused",
       "cell": "a listing that only observes names is refused"
