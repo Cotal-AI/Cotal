@@ -30,7 +30,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix } from "../src/lib/delivery-responder.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -96,6 +96,11 @@ function componentRow(text: string): string | undefined {
 }
 async function startHolder(mode: "claim" | "ready", server: string): Promise<ChildProcess> {
   const child = spawn(process.execPath, [HOLDER, server, SPACE, mode], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  // OWN every holder. `startHolder` is called more than once and the previous holder is stopped on
+  // the normal path, so no release handle is threaded back: an entry for an already-dead child is
+  // inert (`killOwnedChild` swallows the kill) and owns no path, while an UNOWNED holder outlives a
+  // signalled suite. Erring toward an extra dead entry is the cheap direction.
+  teardownOnSignal(child);
   child.stderr?.on("data", (c) => process.stderr.write(`holder(${mode}): ${c}`));
   await new Promise<void>((res, rej) => {
     const t = setTimeout(() => rej(new Error(`holder(${mode}) never reported its pid`)), 20_000);
@@ -109,8 +114,14 @@ async function startHolder(mode: "claim" | "ready", server: string): Promise<Chi
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined, holder: ChildProcess | undefined;
+let releaseBroker: () => void = () => {};
 try {
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", join(root, "jetstream")], { stdio: "ignore" });
+  // OWN the broker, do not just unwind it. The `finally` below is correct on the normal path and is
+  // exactly what does NOT run when this process is SIGNALLED — defect 2 in `broker-teardown.ts` —
+  // leaving a reparented nats-server holding a port and a JetStream store. `root` is the owned path
+  // because the store dir is `root/jetstream`, so the signal path removes the tree the normal one does.
+  releaseBroker = teardownOnSignal(broker, root);
   for (let i = 0; i < 120 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture broker started", await portOpen(port));
   const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open");
@@ -173,6 +184,7 @@ try {
   holder = undefined;
   await sleep(11_000); // let the ready lease TTL out so the bucket genuinely has no record
   const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  teardownOnSignal(bystander);
   assert.ok(bystander.pid, "bystander fixture received a pid");
   writeFileSync(join(root, ".cotal", "delivery.pid"), String(bystander.pid));
   try {
@@ -245,8 +257,12 @@ try {
   // the contract. A new suite states its own count in the form the runner reads first.
   emitSentinel({ passed: pass, failed: 0 });
 } finally {
-  await stop(holder);
-  await stop(broker);
+  // Tear down, THEN release: the helper keeps owning each child until it is actually gone, so a
+  // signal arriving mid-teardown still reaps. `killAndAwaitExit` returns only after exit, which is
+  // what keeps the `rmSync` below from racing a broker still flushing JetStream state.
+  if (holder) await killAndAwaitExit(holder);
+  if (broker) await killAndAwaitExit(broker);
+  releaseBroker();
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 }

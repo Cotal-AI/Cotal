@@ -24,12 +24,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createSpaceAuth, deliveryBucket, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -63,16 +63,6 @@ async function portOpen(port: number): Promise<boolean> {
     sock.setTimeout(250, () => done(false));
   });
 }
-async function stop(child: ChildProcess | undefined): Promise<void> {
-  if (!child?.pid) return;
-  try { child.kill("SIGTERM"); } catch { /* gone */ }
-  for (let i = 0; i < 40; i++) {
-    try { process.kill(child.pid, 0); } catch { return; }
-    await sleep(50);
-  }
-  try { child.kill("SIGKILL"); } catch { /* gone */ }
-}
-
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const auth = await createSpaceAuth(SPACE);
@@ -81,10 +71,22 @@ const auth = await createSpaceAuth(SPACE);
 saveSpaceAuth(join(root, ".cotal", "auth"), auth);
 writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(root, "js") }));
 
+const WT_ROOT = resolve(import.meta.dirname, "..", "..", "..");
+const TSX = join(WT_ROOT, "node_modules", ".bin", "tsx");
+const WRAPPER = join(import.meta.dirname, "signal-ownership-wrapper.fixture.ts");
+
 let broker: ChildProcess | undefined, holder: ChildProcess | undefined;
+let releaseBroker: () => void = () => {};
+let releaseHolder: () => void = () => {};
 const origCwd = process.cwd();
 try {
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  // OWN the broker rather than only unwinding it. The `finally` at the foot of this file is correct
+  // and still runs on the normal path, but it never runs when THIS process is SIGNALLED, and the
+  // broker then reparents to init holding a port and a JetStream store. That is defect 2 in
+  // `broker-teardown.ts`, and it is the one a tool timeout produces. `root` is the owned path
+  // because the store dir is `root/js`, so the signal path removes the same tree the normal one does.
+  releaseBroker = teardownOnSignal(broker, root);
   for (let i = 0; i < 120 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture auth broker started", await portOpen(port));
   await setupSpaceStreams({ servers: server, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -95,6 +97,9 @@ try {
   const holderCreds = join(root, "holder.creds");
   writeFileSync(holderCreds, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
   holder = spawn(process.execPath, [join(import.meta.dirname, "delivery-responder-holder.mjs"), server, SPACE, "claim", holderCreds], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  // The holder is a child of this process too, and it outlives a killed wrapper for the same reason.
+  // No store dir is passed: the holder owns no tree of its own, and `root` is already owned above.
+  releaseHolder = teardownOnSignal(holder);
   holder.stderr?.on("data", (c) => process.stderr.write(`holder: ${c}`));
   await new Promise<void>((res, rej) => {
     const t = setTimeout(() => rej(new Error("holder never reported its pid")), 20_000);
@@ -210,6 +215,40 @@ try {
   check("STALE PATH: a ready record from THAT daemon is still bound (no false staleness)",
     deliveryResponderFromLease({ holder: holderId, since: Date.now(), ready: true }, holderId) === "bound");
 
+  // ---------- SIGNAL OWNERSHIP: A KILLED WRAPPER MUST NOT REPARENT ITS CHILDREN ----------
+  // THIS IS THE ONLY CELL HERE THAT GRADES THE SIGNAL PATH, and it has to be a separate process: the
+  // defect is what happens when this suite is killed, and a suite cannot assert about its own
+  // aftermath. So a wrapper is spawned, its grandchild's pid is read off stdout, the WRAPPER is
+  // killed, and survivors are counted from here. A happy-path assertion proves nothing about this:
+  // the `finally` below is correct and is exactly what a signal skips.
+  const wrapper = spawn(TSX, [WRAPPER], { cwd: WT_ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  let wrapperErr = "";
+  wrapper.stderr?.on("data", (c) => { wrapperErr += String(c); });
+  const grandchildPid = await new Promise<number>((res, rej) => {
+    const t = setTimeout(() => rej(new Error(`wrapper never reported a child pid: ${wrapperErr}`)), 30_000);
+    let buf = "";
+    wrapper.stdout?.on("data", (c) => {
+      buf += String(c);
+      const m = /CHILD_PID (\d+)/.exec(buf);
+      if (m) { clearTimeout(t); res(Number(m[1])); }
+    });
+  });
+  const alive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; }
+    catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+  };
+  // POSITIVE CONTROL, so a survivor count of zero cannot be earned by a child that never started.
+  check("SIGNAL OWNERSHIP: the wrapper's child is alive BEFORE the wrapper is killed",
+    alive(grandchildPid), { grandchildPid });
+  const wrapperExited = new Promise<void>((res) => wrapper.once("exit", () => res()));
+  wrapper.kill("SIGTERM");
+  await Promise.race([wrapperExited, sleep(15_000)]);
+  for (let i = 0; i < 60 && alive(grandchildPid); i++) await sleep(50);
+  const survivors = alive(grandchildPid) ? 1 : 0;
+  if (survivors > 0) { try { process.kill(grandchildPid, "SIGKILL"); } catch { /* raced */ } }
+  check("CELL: killing the wrapper leaves ZERO surviving children (survivor count, not a happy path)",
+    survivors === 0, { grandchildPid, survivors, wrapperErr });
+
   console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and
   // the banner above only parses through a legacy compatibility branch.
@@ -217,8 +256,13 @@ try {
   process.exitCode = fail === 0 ? 0 : 1;
 } finally {
   process.chdir(origCwd);
-  await stop(holder);
-  await stop(broker);
+  // Tear down first, then RELEASE: the helper must keep owning each child until it is actually gone,
+  // so a signal arriving mid-teardown still reaps. `killAndAwaitExit` does not return until the
+  // process has exited, which is what keeps the `rmSync` below from racing a still-writing broker.
+  if (holder) await killAndAwaitExit(holder);
+  releaseHolder();
+  if (broker) await killAndAwaitExit(broker);
+  releaseBroker();
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 }
