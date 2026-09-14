@@ -212,6 +212,24 @@
       "cell": "workflow candidates are job keys, not top-level trigger or configuration keys",
       "expectRed": "workflow candidates are job keys, not top-level trigger or configuration keys",
       "note": "Exact-head review measured 32 regex candidates against 27 actual job keys: pull_request, push, release, schedule, and workflow_dispatch leaked in from other top-level mappings. This mutant restores that over-wide extraction and must red the candidate-set cell."
+    },
+    {
+      "name": "unchanged major changesets at the base are counted as new breaking signals",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    if (isBreakingChangeset(headText) && !isBreakingChangeset(baseText)) breaking.push(`changeset ${name} (major)`);",
+      "replace": "    if (isBreakingChangeset(headText)) breaking.push(`changeset ${name} (major)`);",
+      "cell": "REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
+      "expectRed": "REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
+      "note": "Supplementary exact-head review reproduced an unrelated README-only range being refused because a major changeset already existed at both endpoints. The gate's signals must be range-local, so the base-to-head transition is load-bearing."
+    },
+    {
+      "name": "a symlink invocation is mistaken for an import and silently skips the CLI",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);",
+      "replace": "    return import.meta.url === pathToFileURL(process.argv[1]).href;",
+      "cell": "invoking the gate through a symlink still executes and grades the range",
+      "expectRed": "invoking the gate through a symlink still executes and grades the range",
+      "note": "Supplementary exact-head review invoked the same breaking fixture through a file symlink and measured exit 0 with no output. Canonical executable identity is what separates a CLI invocation from an import; comparing one canonical path with one alias silently disables the gate."
     }
   ]
 }

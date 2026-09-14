@@ -37,7 +37,7 @@
  * Exit 0 when every breaking commit in range is covered, 1 when one is not, 2 on misuse.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -317,6 +317,56 @@ if (process.argv.includes("--self-test")) {
   cell("REFUSE CONTROL: a patch changeset is not", isBreakingChangeset('---\n"@cotal-ai/core": patch\n---\n\nbody') === false);
   cell("REFUSE CONTROL: the word major in a changeset BODY is not a bump",
     isBreakingChangeset('---\n"@cotal-ai/core": patch\n---\n\nthis is a major improvement') === false);
+
+  // CHANGESET SIGNALS ARE RANGE-LOCAL, just like commits and upgrade sections. A major file that
+  // already exists at the base is pending work from another range, not a new breaking declaration
+  // by this one. Counting every major file at the head makes an unrelated README edit fail until
+  // somebody writes a duplicate upgrade section. These repositories exercise the real CLI rather
+  // than only the front-matter parser: unchanged major stays quiet, while a new major and a
+  // patch-to-major transition both refuse.
+  {
+    const tmp = mkdtempSync(join(tmpdir(), "upgrade-gate-changesets-"));
+    const git = (args, cwd) => spawnSync("git", args, { cwd, encoding: "utf8" });
+    const build = (name, baseBump, headBump) => {
+      const dir = join(tmp, name);
+      mkdirSync(dir);
+      git(["init", "-q", "."], dir);
+      git(["config", "user.email", "selftest@example.invalid"], dir);
+      git(["config", "user.name", "selftest"], dir);
+      mkdirSync(join(dir, ".changeset"));
+      mkdirSync(join(dir, "docs"));
+      writeFileSync(join(dir, "docs", "UPGRADING.md"), "# Upgrading\n\n## From 1.0 to 2.0\n\nExisting guidance.\n");
+      if (baseBump) writeFileSync(join(dir, ".changeset", "existing.md"), `---\n"@cotal-ai/core": ${baseBump}\n---\n\nbase\n`);
+      writeFileSync(join(dir, "README.md"), "base\n");
+      git(["add", "."], dir);
+      git(["commit", "-qm", "chore: base"], dir);
+      if (headBump) writeFileSync(join(dir, ".changeset", "existing.md"), `---\n"@cotal-ai/core": ${headBump}\n---\n\nhead\n`);
+      writeFileSync(join(dir, "README.md"), "head\n");
+      git(["add", "."], dir);
+      git(["commit", "-qm", "docs: unrelated readme edit"], dir);
+      return dir;
+    };
+    const run = (dir) => spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--range", "HEAD^..HEAD"], { cwd: dir, encoding: "utf8" });
+    const unchangedMajor = run(build("unchanged-major", "major", null));
+    const noMajor = run(build("no-major", null, null));
+    const newMajor = run(build("new-major", null, "major"));
+    const raisedMajor = run(build("patch-to-major", "patch", "major"));
+    cell("REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
+      unchangedMajor.status === 0, { status: unchangedMajor.status, stdout: unchangedMajor.stdout, stderr: unchangedMajor.stderr });
+    cell("REFUSE CONTROL: a range with no major changeset still passes",
+      noMajor.status === 0, { status: noMajor.status });
+    cell("a newly introduced major changeset is a breaking signal for this range",
+      newMajor.status === 1 && /changeset existing\.md/.test(newMajor.stdout), { status: newMajor.status, stdout: newMajor.stdout });
+    cell("changing an existing changeset from patch to major is a breaking signal",
+      raisedMajor.status === 1 && /changeset existing\.md/.test(raisedMajor.stdout), { status: raisedMajor.status, stdout: raisedMajor.stdout });
+    const linkedGate = join(tmp, "gate-link.mjs");
+    symlinkSync(fileURLToPath(import.meta.url), linkedGate);
+    const throughLink = spawnSync(process.execPath, [linkedGate, "--range", "HEAD^..HEAD"], { cwd: join(tmp, "new-major"), encoding: "utf8" });
+    cell("invoking the gate through a symlink still executes and grades the range",
+      throughLink.status === 1 && /REFUSED/.test(throughLink.stdout),
+      { status: throughLink.status, stdout: throughLink.stdout, stderr: throughLink.stderr });
+    rmSync(tmp, { recursive: true, force: true });
+  }
 
   // The section reader. The live page is the accept control for it, so a reader that has quietly
   // stopped parsing headings cannot pass by returning nothing.
@@ -683,7 +733,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 68;
+  const EXPECTED = 73;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
@@ -711,7 +761,14 @@ if (process.argv.includes("--self-test")) {
 
 // ---- CLI ---------------------------------------------------------------------------------------
 
-const RUN_AS_CLI = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+const RUN_AS_CLI = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 if (RUN_AS_CLI) {
   // EXIT 2 IS MISUSE AND EXIT 1 IS A REFUSAL, AND THEY MUST NEVER BE CONFUSED. Measured on the
   // first version: a mistyped ref let `execFileSync` throw out of the top level, Node printed a
@@ -857,7 +914,7 @@ function main() {
   // A `major` changeset in range is the same signal. Read AT THE RANGE'S HEAD for the same reason
   // the page is: a replay of a past release that enumerated TODAY's `.changeset/` would be
   // reporting this branch's pending work as though it were that release's.
-  const rangeHead = range.split("..").pop() || "HEAD";
+  const [rangeBase = "", rangeHead = "HEAD"] = range.split("..");
   const changesetDir = ".changeset";
   let changesetNames = [];
   try {
@@ -867,9 +924,10 @@ function main() {
   }
   for (const name of changesetNames) {
     if (!name.endsWith(".md") || name === "README.md") continue;
-    let text = "";
-    try { text = gitQuiet(["show", `${rangeHead}:${changesetDir}/${name}`]); } catch { continue; }
-    if (isBreakingChangeset(text)) breaking.push(`changeset ${name} (major)`);
+    let headText = "", baseText = "";
+    try { headText = gitQuiet(["show", `${rangeHead}:${changesetDir}/${name}`]); } catch { continue; }
+    try { baseText = gitQuiet(["show", `${rangeBase}:${changesetDir}/${name}`]); } catch { /* new at head */ }
+    if (isBreakingChangeset(headText) && !isBreakingChangeset(baseText)) breaking.push(`changeset ${name} (major)`);
   }
   // The uncommitted case: the changeset that accompanies the very change being graded is not in
   // any tree yet, so a HEAD run also reads the working directory.
@@ -878,14 +936,15 @@ function main() {
       if (!name.endsWith(".md") || name === "README.md") continue;
       const label = `changeset ${name} (major)`;
       if (breaking.includes(label)) continue;
-      if (isBreakingChangeset(readFileSync(join(changesetDir, name), "utf8"))) breaking.push(label);
+      let committedText = "";
+      try { committedText = gitQuiet(["show", `HEAD:${changesetDir}/${name}`]); } catch { /* untracked */ }
+      if (isBreakingChangeset(readFileSync(join(changesetDir, name), "utf8")) && !isBreakingChangeset(committedText)) breaking.push(label);
     }
   }
 
   // THE SECTIONS THIS RANGE ADDED, base against head. Reading only the head would answer "does the
   // page have sections", which every page does forever after its first release; the difference is
   // what answers "did THIS range write one".
-  const [rangeBase] = range.split("..");
   const pageAt = (ref) => {
     try {
       return gitQuiet(["show", `${ref}:${UPGRADING_PATH.split("\\").join("/")}`]);
