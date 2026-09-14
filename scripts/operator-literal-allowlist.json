@@ -113,8 +113,8 @@
   },
   "implementations/cli/src/lib/join-target.ts": {
     "shared-ipv4": {
-      "count": 2,
-      "reason": "shared address range and user-facing examples"
+      "count": 3,
+      "reason": "shared address range and user-facing examples, including a range boundary constant closing a sentence in a comment"
     }
   },
   "implementations/manager/smoke/attach-auth.smoke.ts": {
