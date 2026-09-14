@@ -112,14 +112,15 @@ because it launders the absence of review into a green tick.
 
 ## Self-test and mutation proof
 
-The gate grades itself in one invocation, `--self-test`, over 39 cells including three replay legs:
+The gate grades itself in one invocation, `--self-test`, over 42 cells including three replay legs:
 breaking with no new section refuses and names what it caught, breaking with a new section passes,
 and non-breaking with no section passes. The middle and last legs are what distinguish a working
-gate from one that reds on everything. Two of the 39 need real release history and report UNGRADED
-rather than passing in a shallow checkout, so the count a run prints is 37 passed plus 2 UNGRADED
-when history is truncated, and 39 passed when it is not.
+gate from one that reds on everything. Two of the 42 need real release history and report UNGRADED
+rather than passing in a shallow checkout, so the line a run prints is 40 passed plus 2 UNGRADED
+when history is truncated, and 42 passed when it is not. Both numbers are read off a run rather
+than counted by hand.
 
-A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 11 mutants, each of which
+A mutation fixture (`scripts/mutations/upgrade-section-gate.json`) carries 13 mutants, each of which
 must red a named cell. Two of them exist because they were real defects during development: one
 accepted a hollow section with a heading and no body, and one over-corrected so that a legitimate
 short section was refused. Both directions are held.

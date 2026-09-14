@@ -30,6 +30,9 @@
  *   node scripts/upgrade-section-gate.mjs --self-test   grade this tool against its own controls
  *   node scripts/upgrade-section-gate.mjs --base <ref>   check <ref>..HEAD
  *   node scripts/upgrade-section-gate.mjs --range a..b   check an arbitrary range (replay a release)
+ *   node scripts/upgrade-section-gate.mjs --merge-snapshot   check a pull request's own range,
+ *       derived as HEAD^1..HEAD from a checked-out merge commit. Refuses anything else, because
+ *       on a single-parent checkout HEAD^1 is the previous commit and the range silently shrinks.
  *
  * Exit 0 when every breaking commit in range is covered, 1 when one is not, 2 on misuse.
  */
