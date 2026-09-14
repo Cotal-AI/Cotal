@@ -216,8 +216,8 @@
     {
       "name": "unchanged major changesets at the base are counted as new breaking signals",
       "file": "scripts/upgrade-section-gate.mjs",
-      "find": "    const baseMajorPackages = new Set(majorChangesetPackages(baseText));",
-      "replace": "    const baseMajorPackages = new Set();",
+      "find": "  const baseMajorPackages = majorPackagesAt(rangeBase);",
+      "replace": "  const baseMajorPackages = new Set();",
       "cell": "REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
       "expectRed": "REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
       "note": "Supplementary exact-head review reproduced an unrelated README-only range being refused because a major changeset already existed at both endpoints. The gate's signals must be range-local, so the base-to-head transition is load-bearing."
@@ -234,8 +234,8 @@
     {
       "name": "a new major package is hidden when its changeset file already contains another major",
       "file": "scripts/upgrade-section-gate.mjs",
-      "find": "    const addedMajorPackages = [...headMajorPackages].filter((pkg) => !baseMajorPackages.has(pkg));",
-      "replace": "    const addedMajorPackages = headMajorPackages.size > 0 && baseMajorPackages.size === 0 ? [...headMajorPackages] : [];",
+      "find": "  const addedMajorPackages = [...headMajorPackages].filter((pkg) => !baseMajorPackages.has(pkg));",
+      "replace": "  const addedMajorPackages = headMajorPackages.size > 0 && baseMajorPackages.size === 0 ? [...headMajorPackages] : [];",
       "cell": "adding a second major package beside an existing major is a new breaking signal",
       "expectRed": "adding a second major package beside an existing major is a new breaking signal",
       "note": "Exact-head review found the file-level boolean comparison stayed true at both ends when core was already major, hiding a newly major auth package. The package-name set difference is load-bearing even when the file was already breaking for another package."

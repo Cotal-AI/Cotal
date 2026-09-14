@@ -357,6 +357,25 @@ if (process.argv.includes("--self-test")) {
       return dir;
     };
     const run = (dir) => spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--range", "HEAD^..HEAD"], { cwd: dir, encoding: "utf8" });
+    const buildLayouts = (name, baseFiles, headFiles) => {
+      const dir = join(tmp, name);
+      mkdirSync(dir);
+      git(["init", "-q", "."], dir);
+      git(["config", "user.email", "selftest@example.invalid"], dir);
+      git(["config", "user.name", "selftest"], dir);
+      mkdirSync(join(dir, ".changeset"));
+      mkdirSync(join(dir, "docs"));
+      writeFileSync(join(dir, "docs", "UPGRADING.md"), "# Upgrading\n\n## From 1.0 to 2.0\n\nExisting guidance.\n");
+      for (const [name, text] of Object.entries(baseFiles)) writeFileSync(join(dir, ".changeset", name), text);
+      git(["add", "."], dir);
+      git(["commit", "-qm", "chore: base"], dir);
+      for (const name of readdirSync(join(dir, ".changeset"))) rmSync(join(dir, ".changeset", name));
+      for (const [name, text] of Object.entries(headFiles)) writeFileSync(join(dir, ".changeset", name), text);
+      writeFileSync(join(dir, "README.md"), "head\n");
+      git(["add", "."], dir);
+      git(["commit", "-qm", "docs: rearrange changesets"], dir);
+      return dir;
+    };
     const unchangedMajor = run(build("unchanged-major", "major", null));
     const noMajor = run(build("no-major", null, null));
     const newMajor = run(build("new-major", null, "major"));
@@ -368,22 +387,41 @@ if (process.argv.includes("--self-test")) {
     const addedBesideMajor = run(build("add-major-beside-major", baseOnlyCoreMajor, headTwoMajors));
     const raisedBesideMajor = run(build("raise-major-beside-major", baseCoreMajorAuthPatch, headTwoMajors));
     const removedMajor = run(build("remove-major", baseOnlyCoreMajor, headOnlyCorePatch));
+    const coreMajor = '---\n"@cotal-ai/core": major\n---\n\ncore\n';
+    const authMajor = '---\n"@cotal-ai/auth": major\n---\n\nauth\n';
+    const bothMajors = '---\n"@cotal-ai/core": major\n"@cotal-ai/auth": major\n---\n\nboth\n';
+    const renamed = run(buildLayouts("rename-major", { "old-name.md": coreMajor }, { "new-name.md": coreMajor }));
+    const replaced = run(buildLayouts("replace-major", { "old-name.md": coreMajor }, { "replacement.md": coreMajor }));
+    const split = run(buildLayouts("split-major", { "both.md": bothMajors }, { "core.md": coreMajor, "auth.md": authMajor }));
+    const merged = run(buildLayouts("merge-major", { "core.md": coreMajor, "auth.md": authMajor }, { "both.md": bothMajors }));
+    const addedAcrossFiles = run(buildLayouts("add-package-across-files", { "core.md": coreMajor }, { "core.md": coreMajor, "auth.md": authMajor }));
     cell("REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
       unchangedMajor.status === 0, { status: unchangedMajor.status, stdout: unchangedMajor.stdout, stderr: unchangedMajor.stderr });
     cell("REFUSE CONTROL: a range with no major changeset still passes",
       noMajor.status === 0, { status: noMajor.status });
     cell("a newly introduced major changeset is a breaking signal for this range",
-      newMajor.status === 1 && /changeset existing\.md/.test(newMajor.stdout), { status: newMajor.status, stdout: newMajor.stdout });
+      newMajor.status === 1 && /new major packages/.test(newMajor.stdout), { status: newMajor.status, stdout: newMajor.stdout });
     cell("changing an existing changeset from patch to major is a breaking signal",
-      raisedMajor.status === 1 && /changeset existing\.md/.test(raisedMajor.stdout), { status: raisedMajor.status, stdout: raisedMajor.stdout });
+      raisedMajor.status === 1 && /new major packages/.test(raisedMajor.stdout), { status: raisedMajor.status, stdout: raisedMajor.stdout });
     cell("adding a second major package beside an existing major is a new breaking signal",
-      addedBesideMajor.status === 1 && /changeset existing\.md/.test(addedBesideMajor.stdout),
+      addedBesideMajor.status === 1 && /new major packages/.test(addedBesideMajor.stdout),
       { status: addedBesideMajor.status, stdout: addedBesideMajor.stdout });
     cell("promoting a package from patch to major is seen even beside an existing major",
-      raisedBesideMajor.status === 1 && /changeset existing\.md/.test(raisedBesideMajor.stdout),
+      raisedBesideMajor.status === 1 && /new major packages/.test(raisedBesideMajor.stdout),
       { status: raisedBesideMajor.status, stdout: raisedBesideMajor.stdout });
     cell("REFUSE CONTROL: removing a major package is not a new breaking signal",
       removedMajor.status === 0, { status: removedMajor.status, stdout: removedMajor.stdout, stderr: removedMajor.stderr });
+    cell("REFUSE CONTROL: renaming a changeset file preserves the global major-package set",
+      renamed.status === 0, { status: renamed.status, stdout: renamed.stdout, stderr: renamed.stderr });
+    cell("REFUSE CONTROL: replacing a changeset filename with the same package signal stays green",
+      replaced.status === 0, { status: replaced.status, stdout: replaced.stdout, stderr: replaced.stderr });
+    cell("REFUSE CONTROL: splitting one changeset into two preserves the global package set",
+      split.status === 0, { status: split.status, stdout: split.stdout, stderr: split.stderr });
+    cell("REFUSE CONTROL: merging two changesets into one preserves the global package set",
+      merged.status === 0, { status: merged.status, stdout: merged.stdout, stderr: merged.stderr });
+    cell("adding a major package in a different changeset file still refuses",
+      addedAcrossFiles.status === 1 && /@cotal-ai\/auth/.test(addedAcrossFiles.stdout),
+      { status: addedAcrossFiles.status, stdout: addedAcrossFiles.stdout });
     const linkedGate = join(tmp, "gate-link.mjs");
     symlinkSync(fileURLToPath(import.meta.url), linkedGate);
     const throughLink = spawnSync(process.execPath, [linkedGate, "--range", "HEAD^..HEAD"], { cwd: join(tmp, "new-major"), encoding: "utf8" });
@@ -758,7 +796,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 76;
+  const EXPECTED = 81;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
@@ -941,36 +979,36 @@ function main() {
   // reporting this branch's pending work as though it were that release's.
   const [rangeBase = "", rangeHead = "HEAD"] = range.split("..");
   const changesetDir = ".changeset";
-  let changesetNames = [];
-  try {
-    changesetNames = gitQuiet(["ls-tree", "--name-only", `${rangeHead}:${changesetDir}`]).split("\n").map((s) => s.trim()).filter(Boolean);
-  } catch {
-    changesetNames = [];
-  }
-  for (const name of changesetNames) {
-    if (!name.endsWith(".md") || name === "README.md") continue;
-    let headText = "", baseText = "";
-    try { headText = gitQuiet(["show", `${rangeHead}:${changesetDir}/${name}`]); } catch { continue; }
-    try { baseText = gitQuiet(["show", `${rangeBase}:${changesetDir}/${name}`]); } catch { /* new at head */ }
-    const headMajorPackages = new Set(majorChangesetPackages(headText));
-    const baseMajorPackages = new Set(majorChangesetPackages(baseText));
-    const addedMajorPackages = [...headMajorPackages].filter((pkg) => !baseMajorPackages.has(pkg));
-    if (addedMajorPackages.length > 0) breaking.push(`changeset ${name} (major: ${addedMajorPackages.join(", ")})`);
-  }
+  const majorPackagesAt = (ref) => {
+    const packages = new Set();
+    let names = [];
+    try {
+      names = gitQuiet(["ls-tree", "--name-only", `${ref}:${changesetDir}`]).split("\n").map((s) => s.trim()).filter(Boolean);
+    } catch { return packages; }
+    for (const name of names) {
+      if (!name.endsWith(".md") || name === "README.md") continue;
+      let text = "";
+      try { text = gitQuiet(["show", `${ref}:${changesetDir}/${name}`]); } catch { continue; }
+      for (const pkg of majorChangesetPackages(text)) packages.add(pkg);
+    }
+    return packages;
+  };
+  const baseMajorPackages = majorPackagesAt(rangeBase);
+  const headMajorPackages = majorPackagesAt(rangeHead);
+  const addedMajorPackages = [...headMajorPackages].filter((pkg) => !baseMajorPackages.has(pkg));
+  if (addedMajorPackages.length > 0) breaking.push(`changesets (new major packages: ${addedMajorPackages.join(", ")})`);
   // The uncommitted case: the changeset that accompanies the very change being graded is not in
   // any tree yet, so a HEAD run also reads the working directory.
   if (rangeHead === "HEAD" && existsSync(changesetDir)) {
+    const workingMajorPackages = new Set();
     for (const name of readdirSync(changesetDir)) {
       if (!name.endsWith(".md") || name === "README.md") continue;
-      const label = `changeset ${name} (major)`;
-      if (breaking.includes(label)) continue;
-      let committedText = "";
-      try { committedText = gitQuiet(["show", `HEAD:${changesetDir}/${name}`]); } catch { /* untracked */ }
-      const workingMajorPackages = new Set(majorChangesetPackages(readFileSync(join(changesetDir, name), "utf8")));
-      const committedMajorPackages = new Set(majorChangesetPackages(committedText));
-      const addedMajorPackages = [...workingMajorPackages].filter((pkg) => !committedMajorPackages.has(pkg));
-      if (addedMajorPackages.length > 0) breaking.push(`changeset ${name} (major: ${addedMajorPackages.join(", ")})`);
+      for (const pkg of majorChangesetPackages(readFileSync(join(changesetDir, name), "utf8"))) workingMajorPackages.add(pkg);
     }
+    const committedMajorPackages = majorPackagesAt("HEAD");
+    const workingAddedMajorPackages = [...workingMajorPackages].filter((pkg) => !committedMajorPackages.has(pkg));
+    if (workingAddedMajorPackages.length > 0)
+      breaking.push(`working changesets (new major packages: ${workingAddedMajorPackages.join(", ")})`);
   }
 
   // THE SECTIONS THIS RANGE ADDED, base against head. Reading only the head would answer "does the

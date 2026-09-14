@@ -168,12 +168,12 @@ because it launders the absence of review into a green tick.
 
 ## Self-test and mutation proof
 
-The gate grades itself in one invocation, `--self-test`, over 77 cells including three replay legs:
+The gate grades itself in one invocation, `--self-test`, over 82 cells including three replay legs:
 breaking with no new section refuses and names what it caught, breaking with a new section passes,
 and non-breaking with no section passes. The middle and last legs are what distinguish a working
-gate from one that reds on everything. Two of the 77 need real release history and report UNGRADED
-rather than passing in a shallow checkout, so the line a run prints is 75 passed plus 2 UNGRADED
-when history is truncated, and 77 passed when it is not. Both numbers are read off a run rather
+gate from one that reds on everything. Two of the 82 need real release history and report UNGRADED
+rather than passing in a shallow checkout, so the line a run prints is 80 passed plus 2 UNGRADED
+when history is truncated, and 82 passed when it is not. Both numbers are read off a run rather
 than counted by hand.
 
 THE SUITE MUST NOT DEPEND ON THE SHAPE OF THE CHECKOUT IT RUNS IN, and it did. Two cells ran
