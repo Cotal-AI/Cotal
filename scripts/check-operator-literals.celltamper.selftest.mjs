@@ -963,12 +963,35 @@ try {
     //
     // So the taint set starts at the first parameter and grows: an alias binds the whole value and
     // inherits it, and a destructure of a tainted value names the very fields this guard exists to
-    // forbid, so a destructured binding IS the leak and is reported at the point of binding. Taint
-    // does not cross a call, deliberately: passing the parameter on is out of scope here and is
-    // covered by the readers on the other end being derived and walked themselves.
+    // forbid, so a destructured binding IS the leak and is reported at the point of binding.
+    //
+    // AND TAINT MAY NOT ESCAPE THROUGH A CALL, which is the door review walked through next. An
+    // earlier revision let a reader pass its parameter on, reasoning that the function at the other
+    // end would be derived and walked itself. That holds only if the other end parses rows, and a
+    // LAUNDERER need not: `const pickRows = (anything) => anything.exitCode === 2 ? [] : anything.rows;`
+    // names no row literal, so it is not a row reader, is never derived, and is never walked. The
+    // reader calling it stayed honest, touched neither field, and the exit-2 oracle was restored in
+    // full at 92/92. Every component behaved exactly as specified and the SCOPE was the defect.
+    //
+    // So handing a tainted value to another function is itself the leak, reported at the call site.
+    // The three real readers never do this, measured before the rule was written, so it costs them
+    // nothing: a reader needing a helper can hand it the ROWS, which is what it was given. This
+    // replaces a claim about where taint goes with a rule that it does not leave, and that is the
+    // only version which does not need a second denominator naming every function that might
+    // receive one. A denominator of launderers would be this lane's defect for the seventh time.
     const walkBody = (node, owner, param) => {
       const tainted = new Set([param]);
       const scan = (current) => {
+        // A tainted value handed to any function escapes this walker's view, so the handover is the
+        // leak. The callee is named so the row says where it went, not merely that it went.
+        if (ts.isCallExpression(current)) {
+          for (const argument of current.arguments) {
+            if (ts.isIdentifier(argument) && tainted.has(argument.text)) {
+              const callee = ts.isIdentifier(current.expression) ? current.expression.text : "call";
+              found.push(`${owner}:escapes_into(${callee})`);
+            }
+          }
+        }
         if (ts.isVariableDeclaration(current) && current.initializer) {
           // `const source = r;` aliases the whole tainted value.
           if (ts.isIdentifier(current.initializer) && tainted.has(current.initializer.text)) {
@@ -1030,14 +1053,17 @@ try {
   // It reaches the exit code through an ALIAS and a DESTRUCTURE as well as directly, because those
   // are the two hops review used to walk past an earlier version, and a control that only exercises
   // the direct spelling would report a healthy nonzero while taint propagation was broken.
+  // It also HANDS THE VALUE TO A FUNCTION, because the escape rule is the fourth thing this walker
+  // does and a control that never escapes would let the escape rule be deleted silently.
   const { found: plantedLeak } = runFieldsNamedBy(
     'const planted = (r, id) => { const alias = r; const { output } = alias;'
       + ' if (alias.exitCode === 2 || output) return "0";'
+      + ' const laundered = launder(r);'
       + ' return r.rows.find((c) => c.startsWith("SELFTEST_RESULT_ROW ") && c.includes(id)); };',
   );
   // Each hop must be represented, not just the total: `planted_control=4` could be four direct
   // reads with both propagation paths dead. The row names them so the reader can see all three.
-  const PLANTED_PATHS = ["alias.exitCode", "destructured.output", "r.rows"];
+  const PLANTED_PATHS = ["alias.exitCode", "destructured.output", "r.rows", "escapes_into(launder)"];
   check(
     "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
     leaked.length === 0 && plantedLeak.length > 0

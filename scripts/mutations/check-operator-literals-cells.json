@@ -224,6 +224,14 @@
       "replace": "                void field;",
       "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
       "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
+    },
+    {
+      "name": "a tainted value handed to another function stops being a leak, so a laundering helper hides the run",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "            if (ts.isIdentifier(argument) && tainted.has(argument.text)) {",
+      "replace": "            if (false && ts.isIdentifier(argument) && tainted.has(argument.text)) {",
+      "expectRed": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one",
+      "cell": "signature guard: no row reader can reach a run's exit code, and the walker that says so is proven able to see one"
     }
   ]
 }
