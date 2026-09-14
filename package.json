@@ -703,7 +703,7 @@
     "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts",
     "smoke:publish-closure-gate": "tsx bin/smoke/publish-closure-gate.smoke.ts",
     "smoke:jcode-queue-fallback-loss": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-loss.smoke.ts",
-    "smoke:temp-containment": "pnpm --filter @cotal-ai/workspace build && tsx bin/smoke/temp-containment.smoke.ts"
+    "smoke:temp-containment": "pnpm --filter \"@cotal-ai/workspace...\" build && tsx bin/smoke/temp-containment.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

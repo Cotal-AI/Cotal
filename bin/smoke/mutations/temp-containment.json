@@ -1,0 +1,67 @@
+{
+  "suite": [
+    "bin/smoke/temp-containment.smoke.ts"
+  ],
+  "guard": "a recursive delete refuses any target that is not a strict child of the root it was minted under, and a control socket path over sun_path is refused by name rather than by a bare EINVAL",
+  "command": "pnpm smoke:temp-containment",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/temp-containment.json",
+  "why": [
+    "THE GUARD IS GRADED THROUGH THE ASSERTION, NOT THROUGH A DELETE, and that is deliberate rather",
+    "than timid. The incident this file exists for was a cleanup that deleted the PARENT of its own",
+    "mkdtemp — on a host where tmpdir() is /tmp, that took an orchestrator's relay socket and",
+    "fourteen seats' control sockets, and stopped only on a root-owned EPERM. A fixture that proved",
+    "the fix by performing the delete would reproduce the outage to demonstrate that the outage is",
+    "fixed. The containment DECISION lives in assertContainedIn, so every mutation below disarms a",
+    "real branch of the real guard and every cell reads a refusal that did not happen — with no",
+    "traversing path ever reaching rmSync.",
+    "",
+    "NO MUTATION HERE TOUCHES A PATH ANY SUITE LATER DELETES, MOVES OR WRITES INTO. The mutants",
+    "change comparison logic only; none changes what a path RESOLVES to, which is the class that",
+    "caused the incident and must not be re-triggered to test the fix for it.",
+    "",
+    "THE THIRD MUTATION IS THE ONE THAT LOOKS HARMLESS. Swapping physical() for resolve() leaves a",
+    "containment check that still refuses '..' and still refuses the root itself, so two of the three",
+    "Part A cells stay green. Only the symlink cell moves. A lexical prefix compare is satisfied by a",
+    "symlink pointing anywhere, so that single cell is the whole difference between 'contained' and",
+    "'contained unless someone made a link', and without it the canonicalization could be dropped in a",
+    "tidying commit with every other cell still green.",
+    "",
+    "PART B IS GRADED ON THE MESSAGE, NOT ON THE THROW. EINVAL already fails; what was missing was a",
+    "failure that names the path, its length and the limit. The cell asserts all three, so a refusal",
+    "that regressed to a bare throw would redden it."
+  ],
+  "mutations": [
+    {
+      "name": "the outside-the-root check is disarmed, so a target that resolves outside its root is deleted",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "  if (!t.startsWith(r.endsWith(sep) ? r : r + sep))",
+      "replace": "  if (!t.startsWith(r.endsWith(sep) ? r : r + sep) && false)",
+      "expectRed": "✗ FAIL: a target that resolves outside its root is refused",
+      "cell": "✗ FAIL: a target that resolves outside its root is refused"
+    },
+    {
+      "name": "containment stops being STRICT, so the root itself is accepted as contained",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "  if (t === r)",
+      "replace": "  if (false && t === r)",
+      "expectRed": "✗ FAIL: a target that resolves to the root itself is refused, not treated as contained",
+      "cell": "✗ FAIL: a target that resolves to the root itself is refused, not treated as contained"
+    },
+    {
+      "name": "the target is compared lexically instead of canonically, so a symlink out of the root passes",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "    t = physical(target);",
+      "replace": "    t = resolve(target);",
+      "expectRed": "✗ FAIL: a symlink inside the root whose target is outside it is refused",
+      "cell": "✗ FAIL: a symlink inside the root whose target is outside it is refused"
+    },
+    {
+      "name": "the sun_path length check is disarmed, so an over-long socket path is returned for the bind to reject with EINVAL",
+      "file": "extensions/connector-core/src/runtime.ts",
+      "find": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES) {",
+      "replace": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES && false) {",
+      "expectRed": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit",
+      "cell": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit"
+    }
+  ]
+}
