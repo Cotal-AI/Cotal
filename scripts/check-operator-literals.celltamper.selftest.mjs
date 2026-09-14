@@ -979,6 +979,14 @@ try {
     "  matchCell('own-inline', subjectText, 'host-name', 0, (t) => Number(t.length), 1),",
     "  matchCell('wrapped', shapeIPv4Count, 'host-name', 0, ((r) => r)((t) => Number(t.length)), 1),",
     "  matchCell('short-arity', subjectText, shapeIPv4Count),",
+    // LONG arity, not short, and the distinction is load-bearing. A SHORT call leaves index 4
+    // undefined, so the missing-argument branch returns opaque on its own and the arity check is
+    // never exercised: removing that check left the suite green, which the corpus caught as a
+    // SURVIVED mutant. This call has one argument too many and a BARE IDENTIFIER sitting at index
+    // 4, so without the arity check it classifies happily as a shared class. That is the real
+    // hazard: a signature that grows a parameter shifts every reader one slot right, and a table
+    // still reading the old slot reports a confident wrong class rather than a refusal.
+    "  matchCell('long-arity', subjectText, 'host-name', 0, shapeIPv4Count, 1, 'extra'),",
     "  cidrBoundaryCell('owns-it', 'a', 'b', 'rule'),",
     "];",
   ].join("\n"));
@@ -989,8 +997,9 @@ try {
       && plantedReaderRow("own-inline") === "inline@own-inline"
       && plantedReaderRow("wrapped") === "opaque@wrapped"
       && plantedReaderRow("short-arity") === "opaque@short-arity"
+      && plantedReaderRow("long-arity") === "opaque@long-arity"
       && plantedReaderRow("owns-it") === "owned@cidrBoundaryCell",
-    `shared=${plantedReaderRow("shared")}/shapeIPv4Count own-inline=${plantedReaderRow("own-inline")}/inline@own-inline wrapped=${plantedReaderRow("wrapped")}/opaque@wrapped short-arity=${plantedReaderRow("short-arity")}/opaque@short-arity owns-it=${plantedReaderRow("owns-it")}/owned@cidrBoundaryCell`,
+    `shared=${plantedReaderRow("shared")}/shapeIPv4Count own-inline=${plantedReaderRow("own-inline")}/inline@own-inline wrapped=${plantedReaderRow("wrapped")}/opaque@wrapped short-arity=${plantedReaderRow("short-arity")}/opaque@short-arity long-arity=${plantedReaderRow("long-arity")}/opaque@long-arity owns-it=${plantedReaderRow("owns-it")}/owned@cidrBoundaryCell`,
   );
 
   // A THIRD INPUT THAT IS NOT A READING OF THE SOURCE AT ALL: THE CELLS THAT ACTUALLY RAN.
