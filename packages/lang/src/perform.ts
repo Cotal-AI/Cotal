@@ -617,6 +617,9 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         ...(model !== undefined ? { model } : {}),
         ...(variant !== undefined ? { variant } : {}),
         ...(option(bag, "cwd") !== undefined ? { cwd: option(bag, "cwd") as string } : {}),
+        ...(option(bag, "placement") !== undefined
+          ? { placement: option(bag, "placement") as { endpoint: string; instanceId: string } }
+          : {}),
         ...(option(bag, "worktree") !== undefined ? { worktree: option(bag, "worktree") as string } : {}),
         ...(option(bag, "role") !== undefined ? { role: option(bag, "role") as string } : {}),
         ...(option(bag, "join") !== undefined ? { join: option(bag, "join") as ChannelHandleValue[] } : {}),
@@ -639,6 +642,12 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           model: model ?? null,
           variant: variant ?? null,
           cwd: req.cwd ?? null,
+          // #1616 item 3, identity half: the PLACEMENT TARGET is hashed into the step's input, so
+          // replaying the same step against a different manager instance diverges instead of
+          // silently reusing the resolution that was taken against the old one.
+          placement: req.placement === undefined
+            ? null
+            : { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId },
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),

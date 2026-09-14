@@ -242,7 +242,17 @@ export class MeshHandler {
    * the next effect instead of poisoning every spawn for the handler's lifetime.
    */
   private managerService: Promise<ResolvedService> | undefined;
-  private manager(): Promise<ResolvedService> {
+  private manager(instanceId?: string): Promise<ResolvedService> {
+    // #1616 ITEM 3 — PINNED DISPATCH. An explicit placement target resolves through the EXISTING
+    // instance-dispatch API: `resolveService`'s `instanceId` opt (endpoint-invoke.ts:274-280)
+    // becomes `EpRoute { mode: "inst", instanceId }` at :113, and the handle it returns carries
+    // `pinnedInstanceId` (:315) so `invokeCommand` addresses that instance and never the class
+    // queue. It is deliberately NOT served from `managerService`: that memo holds the class-anycast
+    // resolution, and handing a pinned caller the anycast handle would reinstate the exact fallback
+    // this item removes. A wrong, unavailable or replaced instance therefore fails to resolve —
+    // before a child exists — instead of quietly succeeding somewhere else.
+    if (instanceId !== undefined)
+      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId });
     this.managerService ??= resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller)
       .catch((e) => {
         this.managerService = undefined;
@@ -1183,6 +1193,27 @@ export class MeshHandler {
       throw new EffectError("L4000", "spawn",
         `spawn(${req.persona}) cwd must be a non-empty absolute directory on the serving manager's host; refusing ${JSON.stringify(req.cwd)} rather than falling back`);
 
+    // #1616 ITEM 2 — THE AFFINITY GATE. A directory is HOST-LOCAL, so a request that names one but
+    // names no manager instance rides the class `one` queue and lands wherever the anycast fell.
+    // The design record calls that combination not acceptable, so it REFUSES. There is deliberately
+    // NO anycast fallback: falling back IS the defect. And the refusal is raised HERE, ahead of
+    // `readPermits`, ahead of `this.manager()`'s describe round-trip, ahead of any submission,
+    // acceptance or launch — so nothing is reserved, claimed or started before it. Legacy
+    // cwd-omitted spawns never reach this line and keep their prior behaviour byte for byte.
+    if (req.cwd !== undefined && req.placement === undefined)
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) names a cwd but no placement target: a host-local directory needs an explicit { endpoint, instanceId } manager instance, and this spawn refuses rather than falling back to class anycast`);
+    if (req.placement !== undefined
+        && (typeof req.placement.endpoint !== "string" || req.placement.endpoint.length === 0
+          || typeof req.placement.instanceId !== "string" || req.placement.instanceId.length === 0))
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) placement must name both an endpoint and an instanceId; refusing ${JSON.stringify(req.placement)} rather than dispatching unpinned`);
+    // Naming a target the run is not bound to is a mismatched target, not a request to go find it:
+    // automatic manager discovery is outside this bounded repair, so it refuses here too.
+    if (req.placement !== undefined && req.placement.endpoint !== this.binding.endpoint)
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) placement targets endpoint ${JSON.stringify(req.placement.endpoint)} but this run is bound to ${JSON.stringify(this.binding.endpoint)}; refusing rather than dispatching off-binding`);
+
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
     // identity was bound before the crash. Go straight back to the terminal. An entry that says
     // `adoptedFrom` names the goal the ORPHANED spawn submitted, not this step's own request id:
@@ -1231,7 +1262,7 @@ export class MeshHandler {
       if (ext === undefined) {
         let reply: EpAttributedReply | undefined;
         try {
-          const service = await this.manager();
+          const service = await this.manager(req.placement?.instanceId);
           reply = await invokeCommand(this.nc, this.binding.space, service, "spawn", spawnArgs(req), {
             id: goalId,
             deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
@@ -2419,12 +2450,24 @@ export function canonicalCwd(cwd: string): string {
   return realpathSync(cwd);
 }
 
+/** {@link canonicalCwd} on the dispatch path: a path that does not resolve is not normalized into
+ *  something else, it is handed to the serving manager unchanged so the manager's own
+ *  existence check produces the refusal. Only a path that REALLY resolves is claimed, and it is
+ *  claimed under its realpath. */
+function canonicalCwdOrRaw(cwd: string): string {
+  try { return canonicalCwd(cwd); } catch { return cwd; }
+}
+
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
-    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
+    // #1616 item 5: the claim keys on the CANONICAL form, so two physical aliases of one clone
+    // contend for one directory identity instead of each taking its own. An unresolvable path is
+    // left as written and refused by the serving manager, which is the authority for filesystem
+    // validation — the raw string travels only to be refused, never to be launched in.
+    ...(req.cwd !== undefined ? { cwd: canonicalCwdOrRaw(req.cwd) } : {}),
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
     ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
