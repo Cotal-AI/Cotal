@@ -385,19 +385,38 @@ check(
   clean.result,
 );
 
-const manual = await preflightNpmPublish({
-  fixedPackages: fixed,
-  workspacePackages: workspace,
-  registryBase: "https://fake.registry",
-  env: { NPM_TOKEN: "test-only" },
-  fetchImpl: (async () => ({ status: 404 })) as unknown as typeof fetch,
-  log: () => {},
-});
+// This call is deliberately wrapped. An unguarded refusal here aborts the whole file, and every
+// cell below it then reports nothing at all rather than reporting red. Green by not running and
+// green by passing are indistinguishable to a reader counting failures, so a refusal is captured
+// and named here instead of being allowed to silence the rest of the suite.
+const manualRun = await (async () => {
+  try {
+    return {
+      result: await preflightNpmPublish({
+        fixedPackages: fixed,
+        workspacePackages: workspace,
+        registryBase: "https://fake.registry",
+        env: { NPM_TOKEN: "test-only" },
+        fetchImpl: (async () => ({ status: 404 })) as unknown as typeof fetch,
+        log: () => {},
+      }),
+      error: undefined,
+    };
+  } catch (error) {
+    return { result: undefined, error };
+  }
+})();
+check(
+  "the manual token census completes rather than aborting the remaining cells",
+  manualRun.error === undefined,
+  manualRun.error,
+);
+const manual = manualRun.result;
 check(
   "manual token escape hatch keeps the fixed-group census without requiring GitHub OIDC",
-  manual.state === "ready"
+  manual?.state === "ready"
     && manual.rows.every((row) => row.oidc === "not-available:classic-token" && row.direct === "not-available:classic-token"),
-  manual,
+  manualRun.error ?? manual,
 );
 
 const partial = await scenario({ present: new Set(["@cotal-ai/seat"]) });
